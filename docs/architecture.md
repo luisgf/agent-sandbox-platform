@@ -10,6 +10,13 @@ cliente → control-plane → node-agent → microVM → pod-daemon
 
 La frontera de seguridad primaria es la microVM; los contenedores dentro del guest, si se incorporan, son una comodidad de empaquetado y no sustituyen esa frontera.
 
+
+## Diagrama
+
+![Arquitectura](diagram.svg)
+
+Fuente Mermaid: [`diagram.mmd`](diagram.mmd).
+
 ## Capas
 
 ### 1. Cliente

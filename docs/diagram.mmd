@@ -1,39 +1,50 @@
-flowchart LR
-    C[Cliente / IDE / CLI]
+flowchart TB
+  subgraph CLIENT["Cliente"]
+    IDE["IDE / orquestador"]
+    ASP["CLI asp<br/>sandbox run"]
+  end
 
-    subgraph CP[Control plane - Go]
-      API[HTTP API]
-      DB[(PostgreSQL)]
-      JWKS[JWKS / OIDC issuer]
-      API --> DB
-      API --> JWKS
+  subgraph CP["Control plane (Go)"]
+    API["HTTP API<br/>sandboxes · nodes · exec"]
+    AUTH["API keys · mTLS enroll<br/>cert rotate/revoke"]
+    DB[("PostgreSQL<br/>state · events · leases")]
+    OIDC["OIDC / JWKS<br/>mint + key prev"]
+    ATTEST["Attestation verify<br/>Fence / STONITH"]
+    API --> AUTH
+    API --> DB
+    API --> OIDC
+    API --> ATTEST
+  end
+
+  subgraph NODE["Nodo bare metal / VM"]
+    NA["Node agent (Go)<br/>reconciler · FakeVMM/CH"]
+    VMM["Cloud Hypervisor<br/>socket /run/asp/ch-id.sock"]
+    NFT["nftables redirect<br/>HTTP/DNS soft|enforce"]
+    EP["Egress proxy :8888<br/>DNS sink :5353"]
+    TAP["TAP + NAT"]
+    HVS["host-vsock<br/>26500 exec · 26501 SSH · 26502 OIDC"]
+
+    subgraph GUEST["microVM guest"]
+      PD["pod-daemon (Rust)"]
+      SSHP["ssh-agent-vsock<br/>SSH_AUTH_SOCK"]
+      WORK["Agent workload"]
+      WORK -->|"Exec / files"| PD
+      WORK --> SSHP
+      SSHP -->|"vsock CID2:26501"| PD
     end
 
-    subgraph NODE[Nodo bare metal o VM]
-      NA[Node agent - Go]
-      VMM[Cloud Hypervisor]
-      EP[Egress HTTP + DNS proxy]
-      TAP[TAP + NAT]
+    NA -->|"Start/Stop"| VMM
+    VMM --> GUEST
+    NA <-->|"vsock / unix dry-run"| PD
+    NA --> HVS
+    HVS -.->|"SSH agent / OIDC"| GUEST
+    GUEST --> TAP
+    TAP --> NFT
+    NFT --> EP
+  end
 
-      subgraph GUEST[microVM Debian]
-        PD[pod-daemon - Rust]
-        WORK[Agent workload]
-        IDSOCK[Identity socket]
-        SSHSOCK[SSH agent socket]
-        WORK -->|Exec / files| PD
-        WORK -->|aud only| IDSOCK
-        WORK --> SSHSOCK
-        IDSOCK --> PD
-        SSHSOCK --> PD
-      end
-
-      NA -->|lifecycle| VMM
-      VMM --> GUEST
-      NA <-->|vsock| PD
-      GUEST --> TAP --> EP
-    end
-
-    C -->|HTTPS| API
-    API -->|mTLS: desired state| NA
-    NA -->|attested token request| JWKS
-    EP -->|allowlisted only| NET[Internet]
+  IDE -->|"HTTPS + API key"| API
+  ASP -->|"HTTPS + API key"| API
+  API -->|"mTLS desired state"| NA
+  NA -->|"attested token"| OIDC
+  EP -->|"allowlist only"| NET["Internet"]

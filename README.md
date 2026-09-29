@@ -13,6 +13,13 @@ Diseño y esqueleto de referencia para una plataforma de sandboxes de agentes al
 - Credenciales fuera del disco invitado: SSH agent reenviado y tokens OIDC de corta vida.
 - Despliegue operativo sencillo: nodos de sandbox fuera de Kubernetes.
 
+
+## Diagrama de arquitectura
+
+![Arquitectura Agent Sandbox Platform](docs/diagram.svg)
+
+Vista editable en Mermaid: [`docs/diagram.mmd`](docs/diagram.mmd). Regenerar SVG: `./scripts/gen-diagram.sh` (o `npx @mermaid-js/mermaid-cli -i docs/diagram.mmd -o docs/diagram.svg`).
+
 ## Estado del MVP — **solution complete**
 
 - **Control plane**: sandboxes/nodes/events; API keys; enrollment PKI; exec proxy; tenant egress; OIDC discovery/JWKS/mint.
