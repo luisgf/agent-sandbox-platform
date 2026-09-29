@@ -1,62 +1,85 @@
 # Agent Sandbox Platform
 
-Diseño y esqueleto de referencia para una plataforma de sandboxes de agentes al estilo de un IDE agente: **VMM FOSS + plano de control propio**. Cada sandbox se ejecuta dentro de una microVM y se administra mediante un daemon invitado con un canal host–guest explícito.
+Diseño y esqueleto de referencia para una plataforma de sandboxes de agentes al estilo de un IDE agente: **VMM FOSS + plano de control propio**. Cada sandbox corre dentro de una microVM y se administra con un daemon invitado (`pod-daemon`) y un canal host–guest explícito (vsock).
 
-> **Proyecto independiente.** No está afiliado, patrocinado ni respaldado por Cursor, Anysphere, anyrun ni sus compañías o productos relacionados.
+> **Proyecto independiente.** No está afiliado, patrocinado ni respaldado por Cursor, Anysphere, anyrun ni sus compañías o productos relacionados. Está inspirado en ese tipo de sandboxes; el código y el threat model son propios.
 
-## Objetivos
+## Para qué sirve
 
-- Aislamiento fuerte mediante microVMs con Cloud Hypervisor por defecto.
-- API multi-tenant y registro auditable del ciclo de vida.
-- Ejecución y transferencia de archivos a través de `pod-daemon` por vsock (unix en dry-run).
-- Egreso denegado por defecto, mediado por proxies HTTP y DNS.
-- Credenciales fuera del disco invitado: SSH agent reenviado y tokens OIDC de corta vida.
-- Despliegue operativo sencillo: nodos de sandbox fuera de Kubernetes.
+- Aislar workloads de agentes (código no confiable) con frontera **microVM** (Cloud Hypervisor por defecto; `FakeVMM` en dry-run/CI).
+- Orquestar el ciclo de vida multi-tenant vía API (`control-plane`) y reconciliación en el nodo (`node-agent --reconcile`).
+- Ejecutar comandos y (según evolución) archivos a través de `pod-daemon` por vsock — sin exponer el hipervisor al cliente.
+- Controlar **egress deny-by-default** con forward proxy HTTP(S) + DNS sink + nft redirect (`soft|enforce`).
+- Mantener **credenciales fuera del guest**: SSH agent host-held (vsock 26501) y tokens OIDC de corta vida (26502 / identity proxy).
 
+## Qué no es
+
+- Un RuntimeClass de Kubernetes ni “microVMs como Pods” (ver [ADR-0004](docs/adr/0004-k8s-scope.md)).
+- Attestation TPM/SEV de hardware (hoy: firma software de `BootStatement`; interfaz lista para plug-ins).
+- STONITH BMC de producción (hay leases + `FenceProvider` stub/webhook; BMC real es ops).
+- Un SDK multi-lenguaje: la CLI `asp` es demo/ops sobre el HTTP API existente.
+- Magia SoftFail: sin root/`nft`/KVM, CI demuestra el plano de control, **no** bypass-proof ni aislamiento real.
 
 ## Diagrama de arquitectura
 
 ![Arquitectura Agent Sandbox Platform](docs/diagram.svg)
 
-Vista editable en Mermaid: [`docs/diagram.mmd`](docs/diagram.mmd). Regenerar SVG: `./scripts/gen-diagram.sh` (o `npx @mermaid-js/mermaid-cli -i docs/diagram.mmd -o docs/diagram.svg`).
+Vista editable: [`docs/diagram.mmd`](docs/diagram.mmd). Regenerar SVG: `./scripts/gen-diagram.sh`.
 
-## Estado del MVP — **solution complete**
+Narrativa completa (threat model, trust boundaries, identidad, leases): [`docs/architecture.md`](docs/architecture.md).
 
-- **Control plane**: sandboxes/nodes/events; API keys; enrollment PKI; exec proxy; tenant egress; OIDC discovery/JWKS/mint.
-- **Node-agent**: CH / FakeVMM; enroll/mTLS; exec + egress-check; identity proxy; SSH agent bridge; **reconciler**; **per-sandbox CH spawn**; **hybrid vsock exec**; **`--host-vsock`** (26501 SSH / 26502 identity); **`--tap-auto`**.
-- **pod-daemon**: HTTP JSON unix/vsock/tcp; `ASP_HOST_CID=2`.
-- **Guest image**: Dockerfile + systemd/OpenRC; `scripts/build-guest-rootfs.sh`.
-- **Pack**: `make pack` → `/workspace/agent-sandbox-platform-release.tar.gz`.
-- **Ops**: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) e2e; límites conocidos en [`docs/roadmap.md`](docs/roadmap.md).
+## Estado del MVP — **solution complete** (+ hardening 2b–2f)
 
-**Post-MVP hecho:** egress HTTP forward proxy + DNS sink; leases multi-nodo; rotación OIDC `ASP_OIDC_KEY_PREV`; **Fase 2c:** remote attestation MVP, FenceProvider, proxy hardening; **Fase 2d:** rotación/revocación certs, `ASP_MTLS_STRICT`, SSH confirm; **Fase 2e:** nft redirect completo (HTTP+DNS, soft|enforce) + SSH agent auto en guest (vsock proxy). **CLI `asp`:** demo lifecycle (`cli/`, `docs/why-cli-asp.md`).
-
-**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV hardware attest; Windows guests; virtiofs SSH (alternativa manual; auto = vsock).
-
-Smokes: [`docs/mvp-smoke.md`](docs/mvp-smoke.md), `make smoke`.
-
-## Mapa de componentes
-
-| Ruta | Responsabilidad |
+| Área | Contenido |
 |---|---|
-| [`control-plane/`](control-plane/) | API HTTP/TLS, estado deseado, tenancy, PKI enrollment, inventario y exec proxy |
-| [`node-agent/`](node-agent/) | Ciclo de vida de microVM, enrollment/mTLS, exec proxy, host-vsock, TAP |
-| [`pod-daemon/`](pod-daemon/) | API dentro del guest para exec (unix/vsock/tcp) |
-| [`images/guest/`](images/guest/) | Imagen Debian mínima y empaquetado de `pod-daemon` |
-| [`docs/`](docs/) | Arquitectura, diagrama, roadmap y decisiones |
-| [`cli/`](cli/) | Demo CLI `asp` (sandbox create/get/list/exec/delete/run) |
-| [`scripts/`](scripts/) | Smokes, pack, guest rootfs, vsock notes |
+| Control plane | sandboxes/nodes/events; API keys; enrollment PKI; exec proxy; egress; OIDC; attest; leases; cert rotate/revoke; `ASP_MTLS_STRICT` |
+| Node-agent | CH spawn / FakeVMM; reconciler; hybrid vsock exec; host-vsock 26501/26502; TAP auto; egress proxy+DNS; nft soft\|enforce; SSH confirm; guest SSH auto |
+| pod-daemon | HTTP JSON unix/vsock/tcp; `ASP_HOST_CID=2` |
+| Guest image | Dockerfile + systemd/OpenRC + `vsock-ssh-agent-proxy` |
+| CLI | `asp` (`make asp`) — `sandbox run` one-liner |
+| Pack | `make pack` → tarball de release |
 
-Flujo principal:
+**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado.
+
+## Cómo funciona (mapa rápido)
 
 ```text
-Cliente → Control plane → Node agent (localhost exec) → hybrid vsock CONNECT 26500 → pod-daemon
-Guest → AF_VSOCK CID 2 :26501/26502 → node-agent SSH agent / identity
+Cliente / asp ──HTTPS+API key──► Control plane
+                                    │ mTLS desired state
+                                    ▼
+                              Node agent ──Start/Stop──► Cloud Hypervisor / FakeVMM
+                                    │                         │
+                     exec 26500 ◄───┼──── hybrid vsock ───────┤
+                     SSH  26501 ◄───┼──── guest→host ─────────┤
+                     OIDC 26502 ◄───┼─────────────────────────┘
+                                    │
+                              TAP → nft asp_egress → proxy :8888 → Internet (allowlist)
 ```
 
-## Cómo leer las decisiones
+## Límites (honestos, no negociables en docs)
 
-Las decisiones vinculantes están en [`docs/adr/`](docs/adr/):
+| Tema | Realidad en código |
+|---|---|
+| Dry-run | `--dry-run` = FakeVMM; útil para CI; no es KVM |
+| nft | `--nft-egress-mode=soft` SoftFail sin root; `enforce` exige privilegios |
+| Attest | Software ECDSA (`ASP_ATTEST_KEY`) ≠ TPM/SEV |
+| Leases | TTL software + FenceProvider opcional ≠ STONITH BMC |
+| K8s | Opcional solo para desplegar el CP; sandboxes no son Pods |
+
+## Mapa de documentación
+
+| Doc | Contenido |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Arquitectura, threat model, flujos |
+| [`docs/diagram.svg`](docs/diagram.svg) / [`.mmd`](docs/diagram.mmd) | Diagrama |
+| [`docs/roadmap.md`](docs/roadmap.md) | Fases 0–2f + gaps |
+| [`docs/mvp-smoke.md`](docs/mvp-smoke.md) | Smoke dry-run (sin KVM) |
+| [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) | Ops CH + KVM real |
+| [`docs/adr/`](docs/adr/) | Decisiones (0001–0006) |
+| [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI) |
+| [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) | Puertos vsock |
+
+### ADRs
 
 1. [VMM: Cloud Hypervisor](docs/adr/0001-vmm-choice.md)
 2. [Red y egress](docs/adr/0002-networking.md)
@@ -65,57 +88,66 @@ Las decisiones vinculantes están en [`docs/adr/`](docs/adr/):
 5. [Fase 2d hardening](docs/adr/0005-fase-2d-hardening.md)
 6. [Fase 2e nft + SSH guest](docs/adr/0006-fase-2e-nft-ssh-guest.md)
 
-Empieza por [`docs/architecture.md`](docs/architecture.md), consulta el [diagrama Mermaid](docs/diagram.mmd) y usa el [roadmap](docs/roadmap.md). Para CH real en host KVM: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
+## Mapa de componentes
 
-## Desarrollo local
+| Ruta | Responsabilidad |
+|---|---|
+| [`control-plane/`](control-plane/) | API HTTP/TLS, tenancy, PKI, OIDC, attest, leases |
+| [`node-agent/`](node-agent/) | VMM, reconciler, egress/nft, host-vsock, TAP |
+| [`pod-daemon/`](pod-daemon/) | API en el guest (exec) |
+| [`images/guest/`](images/guest/) | Rootfs Debian + helpers SSH |
+| [`cli/`](cli/) | Demo CLI `asp` |
+| [`docs/`](docs/) | Arquitectura, ADRs, ops |
+| [`scripts/`](scripts/) | Smokes, pack, nft, rootfs, diagrama |
 
-Requisitos: Go 1.22+, Rust estable y Cargo. Docker opcional para Postgres / guest rootfs.
+## Quickstart (dry-run)
+
+Requisitos: Go 1.22+, Rust/Cargo. Docker opcional (Postgres / guest rootfs). **No hace falta KVM.**
 
 ```bash
 make test
-make smoke
-make asp          # binario build/asp
-make smoke-asp    # opcional: CLI e2e dry-run
-make pack   # → /workspace/agent-sandbox-platform-release.tar.gz
-
-# Postgres smoke (opcional):
-docker compose up -d postgres
-export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
-(cd control-plane && DATABASE_URL="$DATABASE_URL" go test ./... -count=1)
+make smoke          # smokes enroll/identity/reconcile
+make asp            # → build/asp
+make smoke-asp      # CLI e2e dry-run
 ```
 
-Arranque de demostración:
+Arranque manual mínimo (tres terminales):
 
 ```bash
 export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 (cd control-plane && go run ./cmd/api)
 
-# Otra terminal — pod-daemon + node-agent dry-run:
 (cd pod-daemon && cargo run -- --listen unix --unix-socket /tmp/pod-daemon.sock)
+
 (cd node-agent && go run ./cmd/node-agent \
   --control-plane-url=http://127.0.0.1:8080 --node-id=dev-node \
   --dry-run --enroll --bootstrap-token=dev-node-bootstrap \
   --cert-dir=/tmp/asp-node-certs --agent-listen=127.0.0.1:9100 \
   --pod-daemon-sock=/tmp/pod-daemon.sock \
+  --reconcile \
   --host-vsock --host-vsock-dir=/tmp/asp-hv \
   --ssh-agent-bridge=/tmp/asp-ssh-agent.sock \
   --guest-ssh-agent-auto \
   --identity-listen=/tmp/asp-identity.sock)
-# nft soft (dry-run / no root): add --egress-proxy-listen=:8888 --nft-egress-redirect --nft-egress-mode=soft
+# Opcional nft soft: --egress-proxy-listen=:8888 --nft-egress-redirect --nft-egress-mode=soft
 ```
 
-### CLI `asp` (ciclo de vida)
+One-liner de agente/ops:
 
 ```bash
-make asp   # → build/asp
-# Requiere CP + pod-daemon + node-agent dry-run con --reconcile
-# (docs/mvp-smoke.md §4) y pin al node-id enrollado:
 ./build/asp sandbox run --node-id=dev-node --cmd 'echo hello'
-# Building blocks: create | get | list | exec | delete
-# Docs: docs/why-cli-asp.md · smoke: make smoke-asp
 ```
 
-Ver también [`docs/mvp-smoke.md`](docs/mvp-smoke.md) (dry-run) y [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) (CH + KVM real).
+Detalle de precondiciones, resultados esperados y fallos: [`docs/mvp-smoke.md`](docs/mvp-smoke.md).  
+Host con KVM: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
+
+### Postgres opcional
+
+```bash
+docker compose up -d postgres
+export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
+(cd control-plane && DATABASE_URL="$DATABASE_URL" go test ./... -count=1)
+```
 
 ## Vsock ports
 

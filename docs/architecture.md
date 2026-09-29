@@ -1,77 +1,224 @@
-# Arquitectura
+# Arquitectura — Agent Sandbox Platform
 
 ## Resumen
 
-La plataforma separa orquestación, ejecución privilegiada y carga invitada. El camino de control es:
+La plataforma separa **orquestación**, **ejecución privilegiada en el nodo** y **carga invitada**. El camino de control es:
 
 ```text
-cliente → control-plane → node-agent → microVM → pod-daemon
+cliente (IDE / asp / automatización)
+  → control-plane (API multi-tenant, estado, OIDC, attest, fence)
+    → node-agent (reconciler, VMM, TAP, nft, proxies, host-vsock)
+      → microVM (Cloud Hypervisor | FakeVMM)
+        → pod-daemon (exec/files por vsock)
 ```
 
-La frontera de seguridad primaria es la microVM; los contenedores dentro del guest, si se incorporan, son una comodidad de empaquetado y no sustituyen esa frontera.
+La frontera de seguridad **primaria** es la microVM. Los contenedores dentro del guest, si se incorporan, son comodidad de empaquetado y **no** sustituyen esa frontera.
 
+> Proyecto independiente FOSS, inspirado en sandboxes de agentes de IDE. No afiliado a Cursor, Anysphere ni anyrun.
 
 ## Diagrama
 
 ![Arquitectura](diagram.svg)
 
-Fuente Mermaid: [`diagram.mmd`](diagram.mmd).
+Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts/gen-diagram.sh`.
+
+## Threat model (sketch)
+
+| Activo | Amenaza | Mitigación en ASP |
+|---|---|---|
+| Secretos del operador (SSH keys, OIDC) | Exfiltración desde guest | Claves host-held; OIDC corto; guest no elige claims |
+| Aislamiento entre sandboxes / tenants | Escape / lateral movement | microVM + TAP por sandbox; deny-default egress |
+| Integridad del nodo | Node-agent o cert comprometido | mTLS enroll; rotate/revoke cert; attest software |
+| Egress corporativo | Guest bypasea proxy | Forward proxy + DNS sink + nft `asp_egress` (enforce en bare-metal) |
+| Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Leases TTL + FenceProvider opcional (≠ STONITH BMC real) |
+| Plano de control | API anónima / path mal cableado | API keys; `ASP_MTLS_STRICT`; rutas públicas mínimas |
+
+**No cubierto (honestidad):** TPM/SEV hardware attestation; bypass-proof nft medido en CI sin KVM; Windows guests; “Kubernetes NetworkPolicy como frontera”.
+
+## Trust boundaries
+
+```text
+┌─ Cliente ─────────────────────────────────────────────┐
+│  Confianza: API key Bearer. No habla con VMM.         │
+└───────────────────────────┬───────────────────────────┘
+                            │ HTTPS
+┌─ Control plane ───────────┴───────────────────────────┐
+│  Autoridad de tenancy, cuotas, JWKS, attest verify,   │
+│  leases/fence. Store Postgres (o MemoryStore lab).    │
+└───────────────────────────┬───────────────────────────┘
+                            │ mTLS (node cert)
+┌─ Node agent (privileged host) ────────────────────────┐
+│  Único invocado del VMM. Proxies egress. Host-vsock.  │
+│  SoftFail sin CAP_NET_ADMIN en lab.                   │
+└───────────────────────────┬───────────────────────────┘
+                            │ virtio / vsock (no confiar en guest)
+┌─ Guest (untrusted) ───────────────────────────────────┐
+│  pod-daemon + workload. Sin NET_ADMIN. Sin secretos   │
+│  largos. Solo aud + requests de firma.                │
+└───────────────────────────────────────────────────────┘
+```
 
 ## Capas
 
 ### 1. Cliente
 
-CLI, IDE o servicio automatizado. Se autentica ante el control plane, solicita un sandbox, consulta su estado y abre operaciones de ejecución o archivos. Nunca habla directamente con el hipervisor ni recibe credenciales de infraestructura permanentes.
+CLI `asp`, IDE o servicio automatizado. Se autentica ante el CP, crea/consulta sandboxes y lanza `exec`. Nunca recibe credenciales de infraestructura permanentes ni sockets del hipervisor.
 
 ### 2. Control plane (Go)
 
-Expone la API multi-tenant, valida autorización y cuotas, mantiene el estado deseado y el historial inmutable de eventos, elige un nodo compatible y entrega una orden firmada al node-agent. Publica JWKS para validar tokens OIDC. Puede desplegarse en Kubernetes, pero no ejecuta workloads de usuario.
+Paquete `control-plane/`: API HTTP/TLS, store, PKI de enrollment, OIDC, attestation verify, fence al reclaim.
+
+Responsabilidades:
+
+- Estado deseado de sandboxes y journal `sandbox_events`.
+- Inventario de nodos (enroll, register, heartbeat, rotate/revoke).
+- Work queue: `GET /v1/nodes/{id}/work` + claim/status/renew-lease.
+- Proxy de exec hacia `agent_endpoint` del nodo (`POST /v1/sandboxes/{id}/exec`).
+- Egress policies por tenant; JWKS público.
+
+Puede vivir en Kubernetes **solo como Deployment del API** (ADR-0004); no ejecuta workloads de usuario.
 
 ### 3. Node agent (Go)
 
-Proceso privilegiado por nodo. Prepara discos, TAP/NAT, cgroups y dispositivos; inicia Cloud Hypervisor; conecta vsock; registra salud y capacidad; y reconcilia estado real contra estado deseado. Es la única capa autorizada para invocar al VMM y para pedir tokens vinculados a una atestación válida.
+Proceso privilegiado por nodo (`node-agent/`). Prepara TAP, aplica nft (soft|enforce), arranca FakeVMM o Cloud Hypervisor, registra dialers vsock, expone:
+
+| Puerto / socket | Rol |
+|---|---|
+| `--agent-listen` (default `127.0.0.1:9100`) | Exec proxy localhost (`/v1/internal/exec`) |
+| host→guest **26500** | pod-daemon HTTP (hybrid vsock CONNECT) |
+| guest→host **26501** | SSH agent pump |
+| guest→host **26502** | OIDC identity HTTP |
+| `--egress-proxy-listen` | Forward proxy allowlist |
+| `--egress-dns-sink` | DNS NXDOMAIN non-allowlisted |
 
 ### 4. microVM
 
-Debian mínimo sin acceso al socket del runtime del host, sin `NET_ADMIN` y sin secretos persistentes. Recibe una NIC virtio restringida y vsock. La imagen base es inmutable; los cambios del sandbox viven en un overlay efímero o volumen explícito.
+Debian mínimo (`images/guest/`). Sin socket del runtime del host, sin `NET_ADMIN`, sin secretos persistentes. NIC virtio restringida + vsock. Rootfs inmutable; cambios en overlay efímero u ops explícita.
 
 ### 5. pod-daemon (Rust)
 
-PID de servicio dentro del guest. Escucha por vsock en producción (socket Unix en desarrollo), implementará `Exec`, `ReadFile`, `WriteFile` y `Metrics`, y materializa sockets locales para el puente de SSH agent e identidad. No decide tenancy ni identidad.
+PID de servicio en el guest. Escucha vsock (prod) o unix (dry-run). Expone `Exec` (y contratos de files/metrics según evolución). Materializa paths locales; **no** decide tenancy.
 
-## Ciclo de vida
+## Ciclo de vida (secuencia)
 
-Estados nominales:
+Estados (`store.SandboxState`):
 
 ```text
-requested → scheduled → starting → running → paused → running → stopping → stopped
+requested → starting → running ⇄ paused → stopping → stopped
+                ↘ failed (terminal para el intento)
 ```
 
-`failed` es terminal para un intento. Cada transición requiere control optimista de versión y genera un `sandbox_event`; los reintentos deben ser idempotentes. El node-agent reconcilia en vez de depender de una secuencia de RPC perfecta.
+Con `ASP_AUTO_PROVISION=0` (default prod/bare-metal):
 
-## Identidad
+1. Cliente `POST /v1/sandboxes` → `requested` (+ evento).
+2. Node-agent `--reconcile` hace `GET …/work`.
+3. `POST …/claim` atómico → `starting` + lease TTL (~30s).
+4. TAP (si `--tap-auto`) → VMM `Start` → dialer vsock → `POST …/status` `running`.
+5. Attestation opcional: nodo firma `BootStatement`, CP `POST …/attest`.
+6. Heartbeat + `renew-lease` mientras corre.
+7. `DELETE /v1/sandboxes/{id}` → `stopping` → VMM Stop + cleanup TAP/sockets → `stopped`.
 
-Hay dos canales y ningún secreto de larga duración dentro de la imagen:
+Reintentos idempotentes; el reconciler **reconcilia** estado real vs deseado en lugar de asumir RPC perfectos. `state_version` evita lost updates.
 
-1. **SSH:** el agente permanece en el host. El node-agent expone un proxy limitado por vsock que `pod-daemon` presenta como socket Unix invitado. Las claves privadas no cruzan la frontera.
-2. **OIDC:** el proceso invitado hace `POST /v1/tokens/oidc` sobre un socket Unix administrado por `pod-daemon`, enviando únicamente `aud`. El node-agent valida la atestación y fija `tenant_id`, `sandbox_id`, nodo, expiración y políticas; el guest no puede elegirlos. El control plane firma tokens de corta vida y publica JWKS.
+## Flujos de identidad
 
-Todas las llamadas de servicio usan mTLS e identidades rotables. Las API keys externas se almacenan sólo como hash.
+### SSH agent (host-held)
 
-## Red y egress
+```text
+guest herramienta ssh
+  → SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
+    → vsock-ssh-agent-proxy → AF_VSOCK CID 2:26501
+      → node-agent host-vsock / bridge
+        → [opcional confirm gate] → SSH_AUTH_SOCK del host
+```
 
-Cada microVM usa TAP conectado a la red del nodo y NAT para conectividad saliente. No hay entrada directa desde Internet. El tráfico HTTP(S) y las consultas DNS pasan obligatoriamente por proxies del nodo. La política es **deny-by-default** y la allowlist se calcula por tenant/sandbox. El proxy registra destino, decisión y volumen sin registrar cuerpos ni secretos.
+Nunca se copia la clave privada. Confirm: ADR-0005. Auto mount: ADR-0006.
 
-Los controles de red se aplican fuera del guest (nftables/eBPF, rutas y cgroups), porque el guest es carga no confiable. Véase [ADR-0002](adr/0002-networking.md).
+### OIDC
 
-## Datos y observabilidad
+```text
+guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}
+  → unix/vsock identity (26502)
+    → node-agent identity proxy (inyecta sandbox/tenant)
+      → CP POST /v1/internal/oidc/token
+        → JWT corto + claims server-side; JWKS en /oidc/jwks.json
+```
 
-PostgreSQL conserva tenants, sandboxes, eventos, API keys y nodos. Artefactos y snapshots futuros viven en object storage cifrado. Métricas incluyen latencia de scheduling, tiempo de arranque, uso de CPU/memoria, denegaciones de egress y salud del vsock. Logs y trazas llevan `tenant_id`, `sandbox_id` y `request_id`, con redacción de secretos.
+Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_attestation`.
 
-## Límites operativos
+## Red, egress y nft
 
-Kubernetes es opcional para el control plane. Los nodos de sandbox son bare metal o VMs administradas con node-agent; las microVMs no se modelan como Pods. Esto mantiene clara la propiedad de dispositivos, red y recuperación.
+Ver ADR-0002 y ADR-0006. Resumen operativo:
+
+1. TAP `asp-{shortid}` + IP host (p.ej. `10.200.0.1/24`).
+2. NAT MASQUERADE ops (`asp_nat`) — conectividad mínima hacia el proxy.
+3. Guest `HTTP_PROXY=http://10.200.0.1:8888`.
+4. `--nft-egress-redirect --nft-egress-mode=enforce` fuerza HTTP(S)+DNS por proxy/sink.
+5. En CI: `--nft-egress-mode=soft` (SoftFail sin root).
+
+## Modelo de datos (control plane)
+
+Tablas / entidades principales (migraciones `001`–`006`):
+
+| Entidad | Campos clave |
+|---|---|
+| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until |
+| `sandbox_events` | journal append-only de transiciones |
+| `nodes` | endpoint, agent_endpoint, capacity, cert_fingerprint/serial, fence_*, revoked_at |
+| `node_cert_revocations` | fingerprints revocados (006) |
+| `api_keys` | sha256 del secreto; Bearer |
+| `tenant_egress_rules` | host_pattern, port, enabled (003) |
+| attestation evidence | BootStatement firmado (005) |
+
+Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde al reiniciar).
+
+## Fallos y recuperación
+
+| Escenario | Comportamiento |
+|---|---|
+| Node-agent cae | Leases expiran; sandbox puede marcarse failed o re-request; otro nodo no reclaima `running` sin fence |
+| Lease expirado en `running` | CP puede invocar `FenceProvider` (Noop / HTTPWebhook / Redfish stub / IPMI stub) antes de reclaim |
+| SoftFail TAP/nft | Log warning; CH puede fallar al abrir TAP; **no** hay frontera de red real |
+| Attest/JWKS caído | Mint OIDC falla cerrado |
+| FakeVMM dry-run | Todo el plano de control funciona; **cero** aislamiento KVM |
+
+**Lease software ≠ STONITH.** BMC out-of-band real sigue siendo ops (documentado en bare-metal §8b–8c).
+
+## Dry-run vs bare-metal
+
+| | Dry-run (`--dry-run`) | Bare-metal |
+|---|---|---|
+| VMM | `FakeVMM` | Cloud Hypervisor spawn por sandbox |
+| pod-daemon | unix `--pod-daemon-sock` | hybrid vsock CONNECT 26500 |
+| host-vsock | `--host-vsock-dir` unix | AF_VSOCK real |
+| TAP / nft | SoftFail típico | `--tap-auto` + nft `enforce` |
+| Guía | [`mvp-smoke.md`](mvp-smoke.md) | [`bare-metal-ch.md`](bare-metal-ch.md) |
+
+## Cómo usan la plataforma los agentes
+
+1. Ops levanta CP + node-agent (+ pod-daemon en dry-run).
+2. Agente/orquestador usa **`asp`** o HTTP directo:
+
+```bash
+make asp
+./build/asp sandbox run --node-id=dev-node --cmd 'echo hello'
+# building blocks: create | get | list | exec | delete
+```
+
+3. El one-liner `run` hace create → wait `running` → exec → destroy (salvo `--keep`).
+4. Auth: `ASP_API_KEY` / `--api-key` (misma Bearer del CP).
+5. Detalle CLI: [`why-cli-asp.md`](why-cli-asp.md).
+
+Los agentes **no** necesitan hablar con CH ni con nft; solo con el control plane.
+
+## Límites operativos (reafirmados)
+
+- Kubernetes opcional solo para el CP; sandboxes ≠ Pods (ADR-0004).
+- Attestation software ≠ TPM/SEV.
+- SoftFail nft/TAP ≠ enforce.
+- Sin entrada directa desde Internet a microVMs.
+- Sin claves privadas ni refresh tokens en la imagen guest.
 
 ## Evolución
 
-El orden de implementación, criterios de salida y endurecimiento están en [`roadmap.md`](roadmap.md). Las decisiones normativas están en [`adr/`](adr/).
+Orden de fases, gaps y criterios: [`roadmap.md`](roadmap.md). Decisiones normativas: [`adr/`](adr/).

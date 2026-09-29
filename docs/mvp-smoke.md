@@ -1,8 +1,28 @@
 # MVP smoke — control-plane + node-agent + exec (+ Postgres / mTLS opcional)
 
-Guía rápida para el slice actual: memoria por defecto, Postgres cuando `DATABASE_URL` está set, enrollment/mTLS y exec dataplane en dry-run.
+Guía rápida del camino **dry-run** (FakeVMM, sin KVM): memoria por defecto, Postgres cuando `DATABASE_URL` está set, enrollment/mTLS y exec dataplane.
 
-Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal-ch.md`](bare-metal-ch.md).
+Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal-ch.md`](bare-metal-ch.md). Arquitectura: [`architecture.md`](architecture.md). Diagrama: [`diagram.svg`](diagram.svg).
+
+## Precondiciones / resultados / fallos (léelo antes)
+
+| | Detalle |
+|---|---|
+| **Precondiciones** | Go 1.22+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
+| **Qué demuestra** | Plano de control + enroll + exec unix + (scripts) identity/egress/reconcile/CLI. Contrato de APIs y flags. |
+| **Qué NO demuestra** | Aislamiento de hipervisor, bypass-proof nft, AF_VSOCK real, TAP/NAT. Eso es bare-metal. |
+| **Resultado OK** | `curl /healthz` → `{"status":"ok"}`; exec → `exit_code:0`; smokes exit 0; `asp sandbox run` imprime stdout del guest. |
+| **Fallos típicos** | Puerto ocupado; olvidar `--reconcile` con `ASP_AUTO_PROVISION=0` (sandbox queda `requested`); pod-daemon caído (exec 5xx/timeout); API key requerida pero no enviada; SoftFail nft/TAP solo avisa en logs. |
+
+Scripts automatizados (preferibles a copiar curls a mano):
+
+```bash
+./scripts/smoke-enroll-exec.sh
+./scripts/smoke-identity-egress.sh
+./scripts/smoke-reconcile.sh
+./scripts/smoke-asp-cli.sh   # o: make smoke-asp
+# make smoke  # agrega los tres primeros según Makefile
+```
 
 ## 0. (Opcional) Postgres local
 
@@ -166,10 +186,11 @@ Flujo: cliente → control-plane `POST /v1/sandboxes/{id}/exec` → node-agent `
 ## Notas
 
 - Sin `DATABASE_URL`: persistencia solo en memoria; reiniciar el API borra sandboxes/nodos.
-- Con `DATABASE_URL`: migraciones `001_init.sql` + `002_node_enrollment.sql` + `003_tenant_egress.sql` al arrancar.
-- Auth opcional API key en rutas de tenant; `/healthz` y `/v1/nodes/enroll` son públicos para API keys (enroll usa `ASP_NODE_BOOTSTRAP_TOKEN`).
-- TLS: `ASP_TLS_CERT`/`ASP_TLS_KEY`; client CA con `ASP_CLIENT_CA` (VerifyClientCertIfGiven + middleware en register/heartbeat).
-- CA de enrollment: `ASP_CA_CERT`/`ASP_CA_KEY` o `/tmp/asp-dev-ca`.
+- Con `DATABASE_URL`: migraciones embebidas `001`–`006` al arrancar (`init`, enrollment, egress, leases, attestation/fence, cert rotation).
+- Auth opcional API key en rutas de tenant; `/healthz` y `/v1/nodes/enroll` son públicos respecto a API keys (enroll usa `ASP_NODE_BOOTSTRAP_TOKEN`). Con `ASP_MTLS_STRICT=1` el enroll vive en `ASP_ENROLL_LISTEN` (ver ADR-0005).
+- TLS: `ASP_TLS_CERT`/`ASP_TLS_KEY`; client CA con `ASP_CLIENT_CA` (lab: `VerifyClientCertIfGiven` + middleware; prod: `ASP_MTLS_STRICT=1`).
+- CA de enrollment: `ASP_CA_CERT`/`ASP_CA_KEY` o auto-create en `/tmp/asp-dev-ca`.
+- **Modo dry-run:** node-agent `--dry-run` → FakeVMM; `--pod-daemon-sock` unix. No confundir con bare-metal (omitir `--dry-run`, hybrid vsock, `--tap-auto`, nft `enforce`).
 
 ## 6. Egress allowlist + OIDC + SSH agent bridge
 
@@ -246,9 +267,10 @@ Clave de firma: `ASP_OIDC_KEY` (PEM path; auto-create) e issuer `ASP_OIDC_ISSUER
 (cd node-agent && go run ./cmd/node-agent --dry-run \
   --ssh-agent-bridge=/tmp/asp-ssh-agent.sock ...)
 
-# En el guest (futuro / docs): symlink tip
-# ln -sf /run/host-services/ssh-auth.sock /run/agent-sandbox/ssh-agent.sock
-# El bridge MVP vive en el node-agent; pod-daemon solo documenta el path.
+# Guest productivo (Fase 2e): ssh-agent-vsock.service →
+#   SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock  (vsock CID 2:26501)
+# Lab sin KVM: ASP_SSH_AGENT_UPSTREAM=unix:/tmp/asp-hv/host-vsock-26501.sock
+# Confirm gate opcional: --ssh-agent-confirm + POST /v1/internal/ssh-agent/approve
 ```
 
 Migraciones con Postgres: `001` + `002` + `003_tenant_egress.sql`.
@@ -273,7 +295,7 @@ export ASP_AUTO_PROVISION=0
 | `--reconcile` / `ASP_RECONCILE=1` | Loop de reconciliación |
 | `--reconcile-interval` | Default 2s |
 
-> CH real: multi-socket spawn + hybrid vsock exec (`--ch-socket-dir`; ver [`bare-metal-ch.md`](bare-metal-ch.md) §5–§6). Dry-run: FakeVMM + unix sock. Post-MVP: host-vsock identity/SSH, TAP auto, fase 2c/2d (ver roadmap). Gaps: virtiofs auto, TPM/SEV hardware.
+> **Dry-run vs bare-metal:** aquí FakeVMM + unix sock bastan. CH real = multi-socket spawn + hybrid vsock (`--ch-socket-dir`; [`bare-metal-ch.md`](bare-metal-ch.md) §5–§6). Si Create deja el sandbox en `requested` y nunca pasa a `running`, casi seguro falta `--reconcile` en el node-agent (o tienes `ASP_AUTO_PROVISION=0` sin reconciler). Gaps conocidos: SoftFail nft/TAP, attestation software ≠ TPM/SEV (roadmap).
 
 
 ## 8. CLI `asp` (demo lifecycle)

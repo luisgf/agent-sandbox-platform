@@ -2,9 +2,17 @@
 
 Guía operativa para correr **agent-sandbox-platform** con Cloud Hypervisor (CH) real — **sin `--dry-run` / FakeVMM** — en un host Linux con KVM.
 
-> Esta guía describe el código **tal cual** (MVP solution-complete: multi-socket CH, vsock exec 26500, **host-vsock** 26501/26502, **TAP auto** opcional).
+> Código **tal cual** (MVP solution-complete + hardening 2b–2e): multi-socket CH, vsock exec **26500**, host-vsock **26501/26502**, TAP auto, forward proxy + DNS sink, nft `asp_egress` soft|enforce, SSH guest auto, attest software, leases/fence.
 
-Smoke dry-run (sin KVM): [`mvp-smoke.md`](mvp-smoke.md). Roadmap: [`roadmap.md`](roadmap.md).
+Smoke dry-run (sin KVM): [`mvp-smoke.md`](mvp-smoke.md). Arquitectura: [`architecture.md`](architecture.md). Roadmap: [`roadmap.md`](roadmap.md). Diagrama: [`diagram.svg`](diagram.svg).
+
+### Precondiciones → resultado → fallos (bare-metal)
+
+| | |
+|---|---|
+| **Precondiciones** | CPU con VT-x/AMD-V, `/dev/kvm` usable, usuario en grupo `kvm` (y `netdev` si crea TAP), binario `cloud-hypervisor`, `vmlinux` + `rootfs.img` en `/opt/sandbox/`, CAP_NET_ADMIN o root para TAP/nft enforce, CP alcanzable (TLS/mTLS). |
+| **Resultado OK** | Sandbox `requested`→`running` vía reconciler; `asp sandbox exec` o `POST …/exec` devuelve stdout; guest tiene `SSH_AUTH_SOCK`; egress no allowlisted → 403; con nft enforce, dial directo 80/443/DNS no bypasea el proxy. |
+| **Fallos típicos** | Sin KVM → CH aborta (usa dry-run); sin `--tap-auto` ni TAP manual → `vm.create` falla al abrir device; SoftFail TAP/nft → logs warn pero **no** hay frontera; `ASP_AUTO_PROVISION=1` → `running` mentiroso sin VMM; rootfs viejo sin `vsock-ssh-agent-proxy` → sin `SSH_AUTH_SOCK`; nft enforce sin `nft`/root → node-agent no arranca el redirect. |
 
 ---
 
@@ -149,8 +157,9 @@ Cada microVM debería tener **TAP + NAT en el host**. Egress HTTP/DNS deny-by-de
 - El reconciler pone `TapDevice: "asp-" + shortID(sandbox_id)` (8 primeros chars del UUID) en el `vm.create` de CH.
 - **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add 10.200.0.1/24`) antes de Start y lo borra en Stop. **SoftFail:** sin `CAP_NET_ADMIN` / permisos, loguea warning y continúa (CH puede fallar al abrir el TAP).
 - Sin `--tap-auto`, prepáralo a mano (sketch abajo) o el create fallará al abrir el device.
-- La allowlist de tenant (`PUT /v1/tenants/{id}/egress`) y `POST /v1/internal/egress-check` existen; el **proxy HTTP/DNS completo** (intercept + enforce en wire) es trabajo futuro.
-- nftables NAT sigue siendo **ops manual** (§3.3).
+- Allowlist de tenant (`PUT /v1/tenants/{id}/egress`) + check API; **forward proxy HTTP(S)** (`--egress-proxy-listen`) y **DNS sink** (`--egress-dns-sink`) están listos (fase 2b). Guest: `HTTP_PROXY` → IP TAP host:8888.
+- **nft redirect anti-bypass** (`--nft-egress-redirect`, modo `soft|enforce`) fuerza HTTP(S)+DNS por el proxy/sink (fase 2e, §8e). Tabla `asp_egress`.
+- **NAT/MASQUERADE** (`asp_nat`) sigue siendo **ops manual** (§3.3): da ruta IP mínima; no sustituye el proxy deny-default.
 
 ### 3.2 Sketch: crear TAP + IP host (manual o referencia de `--tap-auto`)
 
@@ -262,7 +271,7 @@ docker compose up -d postgres
 export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 ```
 
-Migraciones `001`–`004` se aplican al arrancar el API si `DATABASE_URL` está set.
+Migraciones `001`–`006` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation).
 
 ### 4.2 TLS + client CA + bootstrap
 
