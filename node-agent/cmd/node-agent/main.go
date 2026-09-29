@@ -1,0 +1,578 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress/mitm"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/execproxy"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostvsock"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
+)
+
+type config struct {
+	ControlPlaneURL   string
+	NodeID            string
+	CHAPISocket       string
+	CHSocketDir       string
+	VMMBinary         string
+	DryRun            bool
+	Endpoint          string
+	AgentListen       string
+	Enroll            bool
+	BootstrapToken    string
+	CertDir           string
+	MTLS              bool
+	PodDaemonSock     string
+	PodDaemonPort     uint
+	HeartbeatEvery    time.Duration
+	EgressEnforce     bool
+	SSHAgentBridge    string
+	IdentityListen    string
+	DefaultSandboxID  string
+	Reconcile         bool
+	ReconcileEvery    time.Duration
+	TapAuto           bool
+	HostVsock         bool
+	HostVsockDir      string // unix factory fallback when AF_VSOCK unavailable / lab
+	EgressProxyListen string
+	EgressDNSSink     string
+	EgressMITMCA      string
+	EgressMITM        bool
+	SSHAgentConfirm      bool
+	EgressNFTRedirect    bool
+	NFTEgressMode        string // soft | enforce
+	NFTDNSAction         string // redirect | drop
+	NFTHTTPPorts         string
+	GuestSubnet          string
+	GuestSSHAgentAuto    bool
+}
+
+func main() {
+	cfg := loadConfig()
+	slog.Info("node-agent starting",
+		"node_id", cfg.NodeID,
+		"control_plane_url", cfg.ControlPlaneURL,
+		"ch_api_socket", cfg.CHAPISocket,
+		"ch_socket_dir", cfg.CHSocketDir,
+		"dry_run", cfg.DryRun,
+		"enroll", cfg.Enroll,
+		"agent_listen", cfg.AgentListen,
+		"pod_daemon_sock", cfg.PodDaemonSock,
+		"pod_daemon_port", cfg.PodDaemonPort,
+		"egress_enforce", cfg.EgressEnforce,
+		"ssh_agent_bridge", cfg.SSHAgentBridge,
+		"identity_listen", cfg.IdentityListen,
+		"reconcile", cfg.Reconcile,
+		"tap_auto", cfg.TapAuto,
+		"host_vsock", cfg.HostVsock,
+		"egress_proxy_listen", cfg.EgressProxyListen,
+		"egress_dns_sink", cfg.EgressDNSSink,
+		"egress_mitm", cfg.EgressMITM,
+		"ssh_agent_confirm", cfg.SSHAgentConfirm,
+		"egress_nft_redirect", cfg.EgressNFTRedirect,
+		"nft_egress_mode", cfg.NFTEgressMode,
+		"guest_ssh_agent_auto", cfg.GuestSSHAgentAuto,
+	)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Enrollment uses a plain (or server-TLS) client with bootstrap token — no client cert yet.
+	plain := &http.Client{Timeout: 15 * time.Second}
+	if cfg.Enroll {
+		if cfg.BootstrapToken == "" {
+			slog.Error("--enroll requires --bootstrap-token or ASP_NODE_BOOTSTRAP_TOKEN")
+			os.Exit(2)
+		}
+		enrollClient := cpclient.New(cfg.ControlPlaneURL, plain)
+		resp, err := enrollClient.Enroll(ctx, cfg.BootstrapToken, cpclient.EnrollRequest{
+			ID:             cfg.NodeID,
+			Name:           cfg.NodeID,
+			Endpoint:       cfg.Endpoint,
+			AgentEndpoint:  agentEndpointURL(cfg),
+			VMMProfiles:    []string{"cloud-hypervisor"},
+			CapacityCPU:    4,
+			CapacityMemMiB: 8192,
+		})
+		if err != nil {
+			slog.Error("enrollment failed", "error", err)
+			os.Exit(1)
+		}
+		if err := cpclient.WriteCerts(cfg.CertDir, resp.ClientCertPEM, resp.ClientKeyPEM, resp.CACertPEM); err != nil {
+			slog.Error("write certs", "error", err)
+			os.Exit(1)
+		}
+		if resp.NodeID != "" {
+			cfg.NodeID = resp.NodeID
+		}
+		slog.Info("enrolled", "node_id", cfg.NodeID, "cert_dir", cfg.CertDir, "fingerprint", resp.CertFingerprint)
+	}
+
+	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS)
+	if err != nil {
+		slog.Error("load mTLS client", "error", err)
+		os.Exit(1)
+	}
+	if mtls {
+		slog.Info("using mTLS client certs", "cert_dir", cfg.CertDir)
+	}
+	cp := cpclient.New(cfg.ControlPlaneURL, httpClient)
+
+	var engine vmm.VMM
+	if cfg.DryRun {
+		engine = vmm.NewFakeVMM(slog.Default())
+		slog.Info("using FakeVMM (dry-run)")
+	} else if cfg.CHAPISocket != "" {
+		// Legacy shared/debug: talk to a pre-started CH on one socket (no spawn).
+		engine = vmm.NewCloudHypervisor(cfg.VMMBinary, cfg.CHAPISocket)
+		slog.Info("using Cloud Hypervisor shared API socket", "socket", cfg.CHAPISocket, "binary", cfg.VMMBinary)
+	} else {
+		// Default: spawn one cloud-hypervisor per sandbox under --ch-socket-dir.
+		engine = vmm.NewSpawningCloudHypervisor(cfg.VMMBinary, cfg.CHSocketDir)
+		slog.Info("using Cloud Hypervisor per-sandbox spawn", "socket_dir", cfg.CHSocketDir, "binary", cfg.VMMBinary)
+	}
+
+	var podClient *poddaemon.Client
+	var fallbackDialer poddaemon.Dialer
+	if cfg.PodDaemonSock != "" {
+		fallbackDialer = &poddaemon.UnixDialer{Path: cfg.PodDaemonSock}
+		podClient = poddaemon.NewClient(cfg.PodDaemonSock)
+		if err := podClient.Healthz(ctx); err != nil {
+			slog.Warn("pod-daemon healthz failed (will still proxy)", "error", err, "sock", cfg.PodDaemonSock)
+		} else {
+			slog.Info("pod-daemon reachable", "sock", cfg.PodDaemonSock)
+		}
+	}
+	pdRegistry := poddaemon.NewRegistry(fallbackDialer)
+
+	defaultAL := egress.NewAllowlistFromPolicy("deny-default", nil)
+	policyCache := &egress.PolicyCache{}
+	proxy := &execproxy.Server{
+		Pod:              podClient,
+		Registry:         pdRegistry,
+		Logger:           slog.Default(),
+		EgressEnforce:    cfg.EgressEnforce,
+		DefaultAllowlist: defaultAL,
+		PolicyCache:      policyCache,
+	}
+	httpSrv, ln, err := execproxy.ListenAndServe(cfg.AgentListen, proxy.Handler())
+	if err != nil {
+		slog.Error("exec proxy listen", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = httpSrv.Close()
+		_ = ln.Close()
+	}()
+	slog.Info("exec proxy listening", "addr", ln.Addr().String())
+
+	if cfg.EgressProxyListen != "" {
+		if !cfg.EgressEnforce {
+			slog.Warn("egress proxy listen set but --egress-enforce is off; proxy will still deny non-allowlisted")
+		}
+		fp := &egress.ForwardProxy{
+			Default:   defaultAL,
+			Cache:     policyCache,
+			Logger:    slog.Default(),
+			Enforce:   true, // proxy always deny-by-default when listening
+			RateLimit: egress.NewTokenBucket(egress.DefaultRate, egress.DefaultBurst),
+		}
+		if cfg.EgressMITM {
+			_ = os.Setenv("ASP_EGRESS_MITM", "1")
+			ca, err := mitm.LoadOrGenerate(cfg.EgressMITMCA)
+			if err != nil {
+				slog.Error("egress mitm ca", "error", err)
+				os.Exit(1)
+			}
+			fp.MITM = ca
+			slog.Warn("egress MITM CONNECT bump ENABLED — corp caution; guests must trust MITM CA")
+		}
+		go func() {
+			slog.Info("egress HTTP forward proxy listening", "addr", cfg.EgressProxyListen, "mitm", cfg.EgressMITM)
+			if err := fp.ListenAndServe(ctx, cfg.EgressProxyListen); err != nil {
+				slog.Error("egress proxy stopped", "error", err)
+			}
+		}()
+	}
+	if cfg.EgressDNSSink != "" {
+		sink := &egress.DNSSink{
+			Allowlist: defaultAL,
+			Cache:     policyCache,
+			Logger:    slog.Default(),
+			Enforce:   true,
+		}
+		go func() {
+			slog.Info("egress DNS sink listening", "addr", cfg.EgressDNSSink)
+			if err := sink.ListenAndServe(ctx, cfg.EgressDNSSink); err != nil {
+				slog.Error("egress dns sink stopped", "error", err)
+			}
+		}()
+	}
+
+	if cfg.EgressNFTRedirect {
+		proxyPort := 8888
+		if cfg.EgressProxyListen != "" {
+			// best-effort parse :PORT from listen addr
+			if i := strings.LastIndex(cfg.EgressProxyListen, ":"); i >= 0 {
+				if p, err := strconv.Atoi(cfg.EgressProxyListen[i+1:]); err == nil && p > 0 {
+					proxyPort = p
+				}
+			}
+		}
+		dnsSinkPort := 5353
+		if cfg.EgressDNSSink != "" {
+			if i := strings.LastIndex(cfg.EgressDNSSink, ":"); i >= 0 {
+				if p, err := strconv.Atoi(cfg.EgressDNSSink[i+1:]); err == nil && p > 0 {
+					dnsSinkPort = p
+				}
+			}
+		}
+		mode := nftredirect.ModeSoft
+		if strings.EqualFold(cfg.NFTEgressMode, "enforce") {
+			mode = nftredirect.ModeEnforce
+		}
+		if err := nftredirect.Apply(nftredirect.Config{
+			GuestSubnet: cfg.GuestSubnet,
+			ProxyPort:   proxyPort,
+			DNSSinkPort: dnsSinkPort,
+			HTTPPorts:   cfg.NFTHTTPPorts,
+			DNSAction:   cfg.NFTDNSAction,
+			Mode:        mode,
+			Logger:      slog.Default(),
+		}); err != nil {
+			slog.Error("egress-nft-redirect", "error", err, "mode", mode)
+			os.Exit(1)
+		}
+	}
+
+	var sshApprover *sshagent.Approver
+	if cfg.SSHAgentConfirm {
+		sshApprover = sshagent.NewApprover(30 * time.Second)
+		proxy.SSHApprover = sshApprover
+		slog.Info("ssh-agent confirmation gate enabled",
+			"approve", "POST /v1/internal/ssh-agent/approve")
+	}
+
+	var sshBridge *sshagent.Bridge
+	if cfg.SSHAgentBridge != "" {
+		sshBridge = &sshagent.Bridge{
+			ListenPath: cfg.SSHAgentBridge,
+			HostSock:   os.Getenv("SSH_AUTH_SOCK"),
+			Logger:     slog.Default(),
+			Confirm:    sshApprover,
+		}
+		if err := sshBridge.Start(); err != nil {
+			slog.Error("ssh-agent bridge", "error", err)
+			os.Exit(1)
+		}
+		defer sshBridge.Close()
+		slog.Info("ssh-agent bridge listening", "path", cfg.SSHAgentBridge,
+			"host_sock", os.Getenv("SSH_AUTH_SOCK") != "",
+			"confirm", sshApprover != nil)
+	}
+
+	idProxy := &identity.Proxy{
+		ControlPlaneURL:  cfg.ControlPlaneURL,
+		HTTP:             httpClient,
+		DefaultSandboxID: cfg.DefaultSandboxID,
+		Logger:           slog.Default(),
+	}
+
+	var idLn interface{ Close() error }
+	if cfg.IdentityListen != "" {
+		if filepath.Ext(cfg.IdentityListen) == ".sock" || cfg.IdentityListen[0] == '/' {
+			ln, srv, err := identity.ListenUnix(cfg.IdentityListen, idProxy.Handler())
+			if err != nil {
+				slog.Error("identity proxy listen", "error", err)
+				os.Exit(1)
+			}
+			defer func() { _ = srv.Close(); _ = ln.Close() }()
+			idLn = ln
+			slog.Info("identity proxy listening (unix)", "path", cfg.IdentityListen)
+		} else {
+			srv, ln, err := execproxy.ListenAndServe(cfg.IdentityListen, idProxy.Handler())
+			if err != nil {
+				slog.Error("identity proxy listen", "error", err)
+				os.Exit(1)
+			}
+			defer func() { _ = srv.Close(); _ = ln.Close() }()
+			idLn = ln
+			slog.Info("identity proxy listening (tcp)", "addr", ln.Addr().String())
+		}
+		_ = idLn
+	}
+
+	if cfg.HostVsock {
+		factory, err := hostVsockFactory(cfg)
+		if err != nil {
+			slog.Error("host-vsock factory", "error", err)
+			os.Exit(1)
+		}
+		hv := &hostvsock.Service{
+			Factory:         factory,
+			SSHHostSock:     os.Getenv("SSH_AUTH_SOCK"),
+			SSHConfirm:      sshApprover,
+			IdentityHandler: idProxy.Handler(),
+			Logger:          slog.Default(),
+		}
+		if err := hv.Start(); err != nil {
+			slog.Error("host-vsock start", "error", err)
+			os.Exit(1)
+		}
+		defer hv.Close()
+		slog.Info("host-vsock guest→host services up",
+			"ssh_port", hostvsock.PortSSHAgent,
+			"identity_port", hostvsock.PortIdentity,
+			"guest_dial_cid", hostvsock.HostCID,
+		)
+	}
+
+	if cfg.GuestSSHAgentAuto {
+		if !cfg.HostVsock && cfg.SSHAgentBridge == "" {
+			slog.Warn("guest-ssh-agent-auto set but neither --host-vsock nor --ssh-agent-bridge; guest unit will have nothing to dial")
+		} else {
+			slog.Info("guest-ssh-agent-auto: guest image should run ssh-agent-vsock.service",
+				"guest_sock", "/run/agent-sandbox/ssh-agent.sock",
+				"host_cid", hostvsock.HostCID,
+				"host_port", hostvsock.PortSSHAgent,
+				"env_SSH_AUTH_SOCK", "/run/agent-sandbox/ssh-agent.sock",
+			)
+		}
+	}
+
+	if err := cp.Register(ctx, cpclient.RegisterRequest{
+		ID:             cfg.NodeID,
+		Name:           cfg.NodeID,
+		Endpoint:       cfg.Endpoint,
+		AgentEndpoint:  agentEndpointURL(cfg),
+		VMMProfiles:    []string{"cloud-hypervisor"},
+		CapacityCPU:    4,
+		CapacityMemMiB: 8192,
+		FenceEndpoint:  os.Getenv("ASP_FENCE_ENDPOINT"),
+		FenceToken:     os.Getenv("ASP_FENCE_TOKEN"),
+	}); err != nil {
+		slog.Error("control-plane registration failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("registered with control plane", "node_id", cfg.NodeID, "agent_endpoint", agentEndpointURL(cfg))
+
+	if err := cp.Heartbeat(ctx, cfg.NodeID); err != nil {
+		slog.Warn("initial heartbeat failed", "error", err)
+	}
+
+	if !cfg.DryRun && cfg.CHAPISocket != "" {
+		if err := engine.Ping(ctx); err != nil {
+			slog.Warn("CH ping failed (is cloud-hypervisor running with --api-socket?)", "error", err)
+		}
+	}
+
+	var rec *reconciler.Reconciler
+	if cfg.Reconcile {
+		micro, ok := engine.(vmm.MicroVM)
+		if !ok {
+			slog.Error("engine does not implement MicroVM")
+			os.Exit(1)
+		}
+		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
+		rec.VsockDir = cfg.CHSocketDir
+		if cfg.PodDaemonPort > 0 {
+			rec.VsockPort = uint32(cfg.PodDaemonPort)
+		}
+		rec.Registry = pdRegistry
+		if cfg.DryRun {
+			rec.PodDaemonUnix = cfg.PodDaemonSock
+		}
+		rec.TapAuto = cfg.TapAuto
+		if cfg.TapAuto {
+			rec.Tap = &tap.Manager{Logger: slog.Default(), SoftFail: true}
+		}
+		rec.SSHAgentShared = cfg.SSHAgentBridge
+		go rec.Run(ctx)
+	} else if cfg.DryRun {
+		// Legacy smoke without reconciler: one-shot FakeVMM create/boot demo.
+		demo := vmm.MicroVMConfig{
+			ID:         "dry-run-demo",
+			KernelPath: "/opt/sandbox/vmlinux",
+			RootFSPath: "/opt/sandbox/rootfs.img",
+			CPUs:       1,
+			MemoryMiB:  256,
+			TapDevice:  "asp-demo0000",
+			VsockCID:   3,
+			VsockPath:  "/tmp/dry-run-vsock.sock",
+		}
+		if err := engine.CreateVM(ctx, demo); err != nil {
+			slog.Error("dry-run CreateVM", "error", err)
+			os.Exit(1)
+		}
+		if err := engine.Boot(ctx); err != nil {
+			slog.Error("dry-run Boot", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("dry-run create/boot complete; serving exec proxy until signal")
+	} else {
+		slog.Info("node-agent idle; pass --reconcile to claim sandboxes")
+	}
+
+	ticker := time.NewTicker(cfg.HeartbeatEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("node-agent shutting down")
+			return
+		case <-ticker.C:
+			if err := cp.Heartbeat(ctx, cfg.NodeID); err != nil {
+				slog.Warn("heartbeat failed", "error", err)
+			}
+		}
+	}
+}
+
+func hostVsockFactory(cfg config) (hostvsock.ListenerFactory, error) {
+	if cfg.HostVsockDir != "" {
+		return hostvsock.UnixFactory{Dir: cfg.HostVsockDir}, nil
+	}
+	if cfg.DryRun {
+		dir := filepath.Join(os.TempDir(), "asp-host-vsock")
+		return hostvsock.UnixFactory{Dir: dir}, nil
+	}
+	// Prefer AF_VSOCK; if /dev/vsock missing, fall back to unix under socket dir.
+	if _, err := os.Stat("/dev/vsock"); err != nil {
+		dir := cfg.CHSocketDir
+		if dir == "" {
+			dir = "/run/asp"
+		}
+		slog.Warn("/dev/vsock unavailable; host-vsock using unix factory", "dir", dir)
+		return hostvsock.UnixFactory{Dir: dir}, nil
+	}
+	return hostvsock.AFVsockFactory{}, nil
+}
+
+func agentEndpointURL(cfg config) string {
+	if cfg.Endpoint != "" && cfg.Endpoint != "http://127.0.0.1:0" {
+		return cfg.Endpoint
+	}
+	return "http://" + cfg.AgentListen
+}
+
+func loadConfig() config {
+	var cfg config
+	flag.StringVar(&cfg.ControlPlaneURL, "control-plane-url", getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8080"), "control plane base URL")
+	flag.StringVar(&cfg.NodeID, "node-id", os.Getenv("NODE_ID"), "node identifier")
+	flag.StringVar(&cfg.CHAPISocket, "ch-api-socket", os.Getenv("CH_API_SOCKET"), "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir")
+	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
+	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
+	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
+	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
+	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "localhost listen addr for internal exec proxy")
+	flag.BoolVar(&cfg.Enroll, "enroll", getenv("ASP_ENROLL", "") == "1", "perform bootstrap enrollment before register")
+	flag.StringVar(&cfg.BootstrapToken, "bootstrap-token", os.Getenv("ASP_NODE_BOOTSTRAP_TOKEN"), "bootstrap token for enrollment")
+	flag.StringVar(&cfg.CertDir, "cert-dir", getenv("ASP_CERT_DIR", "/var/lib/asp/node-certs"), "directory for node client certs")
+	flag.BoolVar(&cfg.MTLS, "mtls", getenv("ASP_MTLS", "") == "1", "require mTLS client certs for control-plane calls")
+	flag.StringVar(&cfg.PodDaemonSock, "pod-daemon-sock", os.Getenv("ASP_POD_DAEMON_SOCK"), "unix socket path for pod-daemon (dry-run / local fallback)")
+	flag.UintVar(&cfg.PodDaemonPort, "pod-daemon-port", 26500, "guest vsock/TCP port for pod-daemon HTTP (CH hybrid CONNECT)")
+	flag.BoolVar(&cfg.EgressEnforce, "egress-enforce", getenv("ASP_EGRESS_ENFORCE", "") == "1", "return 403 on /v1/internal/egress-check denials; required intent for --egress-proxy-listen")
+	flag.StringVar(&cfg.EgressProxyListen, "egress-proxy-listen", os.Getenv("ASP_EGRESS_PROXY_LISTEN"), "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
+	flag.StringVar(&cfg.EgressDNSSink, "egress-dns-sink", os.Getenv("ASP_EGRESS_DNS_SINK"), "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names")
+	flag.StringVar(&cfg.EgressMITMCA, "egress-mitm-ca", os.Getenv("ASP_EGRESS_MITM_CA"), "optional path to MITM CA PEM (generate/load); used only with --egress-mitm / ASP_EGRESS_MITM=1")
+	flag.BoolVar(&cfg.EgressMITM, "egress-mitm", getenv("ASP_EGRESS_MITM", "") == "1", "ENABLE CONNECT TLS bump (corp caution; default off)")
+	flag.StringVar(&cfg.SSHAgentBridge, "ssh-agent-bridge", os.Getenv("ASP_SSH_AGENT_BRIDGE"), "unix socket path for SSH agent bridge (proxies SSH_AUTH_SOCK or FakeAgent)")
+	flag.StringVar(&cfg.IdentityListen, "identity-listen", os.Getenv("ASP_IDENTITY_LISTEN"), "unix path (.sock) or TCP addr for guest OIDC identity proxy")
+	flag.StringVar(&cfg.DefaultSandboxID, "default-sandbox-id", os.Getenv("ASP_SANDBOX_ID"), "default sandbox id for identity proxy dry-run")
+	flag.BoolVar(&cfg.Reconcile, "reconcile", getenv("ASP_RECONCILE", "") == "1", "poll control-plane work and drive VMM lifecycle")
+	flag.BoolVar(&cfg.TapAuto, "tap-auto", getenv("ASP_TAP_AUTO", "") == "1", "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
+	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "listen AF_VSOCK 26501(ssh-agent)+26502(identity) for guest→host (CID 2)")
+	flag.StringVar(&cfg.HostVsockDir, "host-vsock-dir", os.Getenv("ASP_HOST_VSOCK_DIR"), "if set, use unix sockets under this dir instead of AF_VSOCK (lab)")
+	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", getenv("ASP_SSH_AGENT_CONFIRM", "") == "1", "require POST /v1/internal/ssh-agent/approve before SignRequest (one-shot TTL)")
+	flag.BoolVar(&cfg.EgressNFTRedirect, "egress-nft-redirect", getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1" || getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1", "apply nftables guest HTTP+DNS redirect (see --nft-egress-mode)")
+	flag.BoolVar(&cfg.EgressNFTRedirect, "nft-egress-redirect", getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1" || getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1", "alias of --egress-nft-redirect (Fase 2e)")
+	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", "soft"), "nft redirect failure mode: soft (SoftFail) | enforce (fail hard)")
+	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
+	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
+	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest CIDR for --egress-nft-redirect / --nft-egress-redirect")
+	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
+	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
+	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")
+	flag.Parse()
+	cfg.HeartbeatEvery = *hb
+	cfg.ReconcileEvery = *recEvery
+
+	// Fase 2e: default guest SSH auto-mount when host side is enabled, unless
+	// ASP_GUEST_SSH_AGENT_AUTO=0 was used to force-disable via guestSSHAgentAutoDefault.
+	if !cfg.GuestSSHAgentAuto {
+		disable := os.Getenv("ASP_GUEST_SSH_AGENT_AUTO")
+		forcedOff := disable == "0" || disable == "false" || disable == "FALSE" || disable == "no" || disable == "NO"
+		if !forcedOff && (cfg.HostVsock || cfg.SSHAgentBridge != "") {
+			cfg.GuestSSHAgentAuto = true
+		}
+	}
+	if cfg.NFTEgressMode == "" {
+		cfg.NFTEgressMode = "soft"
+	}
+
+	if cfg.NodeID == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			slog.Error("derive node-id", "error", err)
+			os.Exit(2)
+		}
+		cfg.NodeID = hostname
+	}
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = "http://" + cfg.AgentListen
+	}
+	if cfg.CertDir == "" {
+		cfg.CertDir = filepath.Join(os.TempDir(), "asp-node-certs")
+	}
+	// For lab/dry-run default cert dir under /tmp if default system path is not writable.
+	if cfg.CertDir == "/var/lib/asp/node-certs" {
+		if err := os.MkdirAll(cfg.CertDir, 0o755); err != nil {
+			cfg.CertDir = filepath.Join(os.TempDir(), "asp-node-certs", cfg.NodeID)
+		}
+	}
+	return cfg
+}
+
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// guestSSHAgentAutoDefault: ASP_GUEST_SSH_AGENT_AUTO=0 disables; =1 enables;
+// unset → enabled when ASP_HOST_VSOCK=1 or ASP_SSH_AGENT_BRIDGE is set (Fase 2e).
+func guestSSHAgentAutoDefault() bool {
+	v := os.Getenv("ASP_GUEST_SSH_AGENT_AUTO")
+	switch v {
+	case "0", "false", "FALSE", "no", "NO":
+		return false
+	case "1", "true", "TRUE", "yes", "YES":
+		return true
+	}
+	if os.Getenv("ASP_HOST_VSOCK") == "1" {
+		return true
+	}
+	if os.Getenv("ASP_SSH_AGENT_BRIDGE") != "" {
+		return true
+	}
+	return false
+}

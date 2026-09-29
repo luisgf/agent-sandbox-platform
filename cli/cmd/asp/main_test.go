@@ -1,0 +1,104 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/client"
+)
+
+func TestSandboxRunLifecycle(t *testing.T) {
+	var mu sync.Mutex
+	state := "requested"
+	deleted := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		var in client.CreateInput
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		nid := in.NodeID
+		sb := client.Sandbox{ID: "run-1", TenantID: in.TenantID, State: "requested", ImageRef: in.ImageRef}
+		if nid != "" {
+			sb.NodeID = &nid
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(sb)
+	})
+	mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if state == "requested" {
+			state = "running"
+		}
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "run-1", State: state})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.ExecResult{Stdout: "hello\n", ExitCode: 7})
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		deleted = true
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "run-1", State: "stopping"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var stdout, stderr strings.Builder
+	code := run([]string{
+		"sandbox", "run",
+		"--cp-url", srv.URL,
+		"--timeout", "2s",
+		"--node-id", "n1",
+		"--cmd", "echo hello",
+	}, &stdout, &stderr)
+	if code != 7 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "hello") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "created sandbox") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !deleted {
+		t.Fatal("expected destroy on exit")
+	}
+}
+
+func TestSandboxRunKeep(t *testing.T) {
+	deleted := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "k1", State: "running"})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.ExecResult{Stdout: "ok\n", ExitCode: 0})
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		deleted = true
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "k1", State: "stopping"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var stdout, stderr strings.Builder
+	code := run([]string{
+		"sandbox", "run", "--cp-url", srv.URL, "--keep", "--", "true",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if deleted {
+		t.Fatal("must not destroy with --keep")
+	}
+	if !strings.Contains(stderr.String(), "keeping") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+}

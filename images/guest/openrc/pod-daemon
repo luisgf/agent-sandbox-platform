@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Example OpenRC script (copy to /etc/init.d/pod-daemon on Alpine/OpenRC guests).
+name="pod-daemon"
+description="ASP guest pod-daemon (vsock)"
+command="/usr/local/bin/pod-daemon"
+command_args="--listen vsock --vsock-port 26500"
+command_user="sandboxd:sandboxd"
+pidfile="/run/agent-sandbox/pod-daemon.pid"
+command_background=true
+
+depend() {
+    need localmount
+}
+
+start_pre() {
+    checkpath -d -m 0750 -o sandboxd:sandboxd /run/agent-sandbox
+    export ASP_HOST_CID=2
+}

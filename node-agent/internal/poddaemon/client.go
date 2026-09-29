@@ -1,0 +1,100 @@
+// Package poddaemon talks to the guest pod-daemon over Unix, CH hybrid vsock, or AF_VSOCK.
+package poddaemon
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"time"
+)
+
+// ExecRequest is forwarded to pod-daemon POST /v1/exec.
+type ExecRequest struct {
+	Cmd []string          `json:"cmd"`
+	Env map[string]string `json:"env,omitempty"`
+	Cwd string            `json:"cwd,omitempty"`
+}
+
+// ExecResponse is the sync MVP result from pod-daemon.
+type ExecResponse struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+}
+
+// Client dials pod-daemon via an injectable Dialer (Unix / hybrid vsock / AF_VSOCK).
+type Client struct {
+	Dialer Dialer
+	HTTP   *http.Client
+	// Socket is retained for backward-compatible logging when using UnixDialer.
+	Socket string
+}
+
+// NewClient builds a Unix-socket client (dry-run / --pod-daemon-sock).
+func NewClient(socket string) *Client {
+	c := NewClientFromDialer(&UnixDialer{Path: socket})
+	c.Socket = socket
+	return c
+}
+
+// NewClientFromDialer builds a Client around any Dialer (tests inject fakes).
+func NewClientFromDialer(d Dialer) *Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return d.Dial(ctx)
+		},
+	}
+	return &Client{
+		Dialer: d,
+		HTTP: &http.Client{
+			Transport: transport,
+			Timeout:   60 * time.Second,
+		},
+	}
+}
+
+func (c *Client) Healthz(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://pod-daemon/healthz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthz status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) Exec(ctx context.Context, in ExecRequest) (ExecResponse, error) {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return ExecResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://pod-daemon/v1/exec", bytes.NewReader(body))
+	if err != nil {
+		return ExecResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return ExecResponse{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return ExecResponse{}, fmt.Errorf("exec status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+	}
+	var out ExecResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return ExecResponse{}, err
+	}
+	return out, nil
+}

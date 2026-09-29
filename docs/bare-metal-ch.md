@@ -1,0 +1,736 @@
+# Operación bare-metal con Cloud Hypervisor real (KVM)
+
+Guía operativa para correr **agent-sandbox-platform** con Cloud Hypervisor (CH) real — **sin `--dry-run` / FakeVMM** — en un host Linux con KVM.
+
+> Esta guía describe el código **tal cual** (MVP solution-complete: multi-socket CH, vsock exec 26500, **host-vsock** 26501/26502, **TAP auto** opcional).
+
+Smoke dry-run (sin KVM): [`mvp-smoke.md`](mvp-smoke.md). Roadmap: [`roadmap.md`](roadmap.md).
+
+---
+
+## 1. Prerrequisitos
+
+### Hardware / virtualización
+
+| Requisito | Comprobación |
+|---|---|
+| CPU VT-x (Intel) o AMD-V | `grep -E 'vmx\|svm' /proc/cpuinfo` |
+| Módulo KVM cargado | `lsmod \| grep kvm` |
+| Nodo `/dev/kvm` usable | `ls -l /dev/kvm` (grupo `kvm`, modo `rw` para el usuario del node-agent) |
+| `kvm-ok` (Ubuntu) | `sudo apt install cpu-checker && kvm-ok` |
+
+**Nested virtualización:** si el host ASP es a su vez una VM (p. ej. lab en cloud), habilita nested en el hipervisor padre (`kvm-intel.nested=1` / `kvm-amd.nested=1`). Nested funciona para desarrollo; densidad y latencia son peores que bare metal. En producción corporativa preferir hosts físicos o VMs con passthrough de KVM ya validado.
+
+### Paquetes Ubuntu / Debian
+
+```bash
+sudo apt update
+sudo apt install -y \
+  cpu-checker \
+  qemu-utils \
+  iproute2 \
+  iptables \
+  nftables \
+  bridge-utils \
+  curl \
+  ca-certificates \
+  jq \
+  docker.io docker-compose-v2   # Postgres local vía compose
+# Opcional: build de binarios ASP
+# golang-go rustc cargo
+```
+
+El usuario del servicio node-agent debe pertenecer al grupo `kvm` (y normalmente `netdev` si crea TAPs):
+
+```bash
+sudo usermod -aG kvm,netdev "$USER"
+# re-login o newgrp kvm
+```
+
+### Sin `/dev/kvm` en este entorno
+
+Si faltan KVM/privilegios (CI, sandbox compartido, contenedor sin devices), **no** hace falta arrancar CH aquí: usa `--dry-run` + FakeVMM ([`mvp-smoke.md`](mvp-smoke.md)) y reserva esta guía para el host de lab/prod con KVM.
+
+---
+
+## 2. Instalar Cloud Hypervisor y assets guest
+
+### 2.1 Binario `cloud-hypervisor`
+
+Patrón de releases oficiales:
+
+```text
+https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/vX.Y.Z/cloud-hypervisor-static
+https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/vX.Y.Z/cloud-hypervisor-static-aarch64
+# latest:
+https://github.com/cloud-hypervisor/cloud-hypervisor/releases/latest/download/cloud-hypervisor-static
+```
+
+Ejemplo x86-64 (fija una versión en prod; no uses `latest` ciegamente):
+
+```bash
+CH_VER=v53.0   # ajustar a la release validada
+sudo install -d -m 0755 /usr/local/bin /var/lib/asp/bin
+curl -fsSL -o /tmp/cloud-hypervisor-static \
+  "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VER}/cloud-hypervisor-static"
+chmod +x /tmp/cloud-hypervisor-static
+sudo mv /tmp/cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
+cloud-hypervisor --version
+```
+
+El flag `--ch-binary` / env `CLOUD_HYPERVISOR_BIN` apunta al binario que el node-agent **spawnea por sandbox** en el modo por defecto (`--ch-socket-dir`, sockets `/run/asp/ch-{sandboxID}.sock`). El override legacy `--ch-api-socket` sigue permitiendo un CH pre-arrancado (shared/debug) sin spawn. Ver §5.
+
+### 2.2 Kernel + rootfs (virtio, vsock)
+
+Necesitas:
+
+1. **Kernel** Linux con virtio-blk, virtio-net, vsock (`CONFIG_VIRTIO_*`, `CONFIG_VHOST_VSOCK` / guest `CONFIG_VSOCKETS`). CH suele arrancar con un `vmlinux` (PVH) o firmware + kernel según perfil.
+2. **Rootfs** raw/ext4 (o formato que CH acepte en `disks[].path`) con `pod-daemon` y red mínima.
+
+Layout recomendado de assets bajo **`/var/lib/asp/`**, con symlinks a las rutas que el reconciler usa **hoy** (hardcodeadas):
+
+| Ruta código (reconciler) | Uso |
+|---|---|
+| `/opt/sandbox/vmlinux` | `MicroVMConfig.KernelPath` |
+| `/opt/sandbox/rootfs.img` | `MicroVMConfig.RootFSPath` |
+
+```bash
+sudo install -d -m 0755 \
+  /var/lib/asp/{bin,images,kernels,certs,node-certs,run,tap} \
+  /opt/sandbox \
+  /run/asp \
+  /run/cloud-hypervisor
+
+# Ejemplo: copiar kernel/rootfs validados
+sudo cp /path/to/vmlinux /var/lib/asp/kernels/vmlinux
+sudo cp /path/to/rootfs.img /var/lib/asp/images/rootfs.img
+sudo ln -sfn /var/lib/asp/kernels/vmlinux /opt/sandbox/vmlinux
+sudo ln -sfn /var/lib/asp/images/rootfs.img /opt/sandbox/rootfs.img
+```
+
+Fuentes típicas de kernel/rootfs:
+
+- Kernel branch Cloud Hypervisor (`ch_*` defconfig) → `vmlinux`.
+- Rootfs: exportar la imagen OCI de [`images/guest`](../images/guest/) a ext4 (pipeline futuro), o una cloud image mínima convertida a raw (`qemu-img convert`) e inyectar `pod-daemon`.
+
+**Cmdline** que envía el reconciler hoy:
+
+```text
+console=ttyS0 root=/dev/vda reboot=k panic=1
+```
+
+(Ajusta el guest para que `/dev/vda` sea el rootfs virtio-blk.)
+
+### 2.3 Layout `/var/lib/asp/` (convención ops)
+
+```text
+/var/lib/asp/
+  bin/                 # copias locales de cloud-hypervisor si no usas /usr/local/bin
+  kernels/vmlinux
+  images/rootfs.img
+  certs/               # CA / TLS servidor del control-plane (corp)
+  node-certs/          # default ASP_CERT_DIR del node-agent
+  tap/                 # scripts/state de TAP (opcional)
+/run/asp/              # sockets runtime: ch-{sandboxID}.sock + vsock-{sandboxID}.sock
+/run/cloud-hypervisor/api.sock   # opcional: --ch-api-socket shared/legacy/debug
+/opt/sandbox/{vmlinux,rootfs.img} → symlinks a /var/lib/asp/...
+```
+
+---
+
+## 3. Red: TAP, NAT, DNS / egress
+
+### 3.1 Modelo (ADR-0002)
+
+Cada microVM debería tener **TAP + NAT en el host**. Egress HTTP/DNS deny-by-default vía proxies del nodo. El guest **no** recibe `NET_ADMIN`.
+
+**Hoy en código:**
+
+- El reconciler pone `TapDevice: "asp-" + shortID(sandbox_id)` (8 primeros chars del UUID) en el `vm.create` de CH.
+- **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add 10.200.0.1/24`) antes de Start y lo borra en Stop. **SoftFail:** sin `CAP_NET_ADMIN` / permisos, loguea warning y continúa (CH puede fallar al abrir el TAP).
+- Sin `--tap-auto`, prepáralo a mano (sketch abajo) o el create fallará al abrir el device.
+- La allowlist de tenant (`PUT /v1/tenants/{id}/egress`) y `POST /v1/internal/egress-check` existen; el **proxy HTTP/DNS completo** (intercept + enforce en wire) es trabajo futuro.
+- nftables NAT sigue siendo **ops manual** (§3.3).
+
+### 3.2 Sketch: crear TAP + IP host (manual o referencia de `--tap-auto`)
+
+```bash
+#!/usr/bin/env bash
+# /var/lib/asp/tap/setup-tap.sh <tap-name> <host-ip/cidr>
+set -euo pipefail
+TAP="${1:?tap name}"   # reconciler: asp-<8chars>
+HOST_CIDR="${2:-10.200.0.1/24}"
+
+sudo ip tuntap add dev "$TAP" mode tap user "$(id -un)"
+sudo ip link set "$TAP" up
+sudo ip addr add "$HOST_CIDR" dev "$TAP" 2>/dev/null || true
+# El guest necesita DHCP estático o cloud-init; CH no configura IP sola.
+```
+
+Con `--tap-auto` el node-agent ejecuta el equivalente (usuario del proceso; suele necesitar capabilities o root).
+
+### 3.3 Sketch: nftables MASQUERADE (NAT saliente)
+
+```bash
+#!/usr/bin/env bash
+# Minimal NAT: guest subnet → interfaz de egress del host (ej. eth0)
+set -euo pipefail
+EGRESS_IF="${1:-eth0}"
+GUEST_NET="${2:-10.200.0.0/24}"
+
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo nft -f - <<NFT
+table inet asp_nat {
+  chain postrouting {
+    type nat hook postrouting priority 100;
+    ip saddr $GUEST_NET oifname "$EGRESS_IF" masquerade
+  }
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+    iifname "tap-*" oifname "$EGRESS_IF" accept
+    iifname "$EGRESS_IF" oifname "tap-*" ct state related,established accept
+  }
+}
+NFT
+```
+
+Esto da **conectividad IP mínima**. No sustituye el proxy deny-default.
+
+### 3.4 DNS / egress proxy (HTTP forward + DNS sink)
+
+| Capa | Estado |
+|---|---|
+| Allowlist API + check en CP/node | **Listo** (fase 1d) |
+| `--egress-enforce` → 403 en check denegado | **Listo** |
+| `--egress-proxy-listen :8888` forward proxy (CONNECT + HTTP) | **Listo** (post-MVP) |
+| `--egress-dns-sink :5353` NXDOMAIN non-allowlisted | **Listo** (opcional) |
+| TAP create/delete | **`--tap-auto`** (soft-fail sin perms) |
+| NAT + nftables host | **Ops manual** (esta sección) |
+| nft redirect HTTP+DNS (`asp_egress`) | **Fase 2e** (`--nft-egress-redirect --nft-egress-mode=enforce`) |
+
+#### Guest → host TAP proxy
+
+El forward proxy escucha en el host (p. ej. en la IP del TAP `10.200.0.1:8888`). En el guest:
+
+```bash
+# Sustituye 10.200.0.1 por la IP del host en el TAP de esa microVM
+export HTTP_PROXY=http://10.200.0.1:8888
+export HTTPS_PROXY=http://10.200.0.1:8888
+export NO_PROXY=localhost,127.0.0.1,10.200.0.0/24
+```
+
+Allowlist efectiva (deny-by-default), en orden:
+
+1. Header por request `X-ASP-Allowlist-JSON` (lab/tests)
+2. Cache del último `egress_allowlist` adjunto a exec
+3. Env `ASP_EGRESS_ALLOWLIST_JSON` en el node-agent
+4. Allowlist default deny del proceso
+
+Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomendado junto a `--egress-enforce`). Hardening: rate-limit token-bucket por host/sandbox, límite de body (`ASP_EGRESS_MAX_BODY`), deny de schemes no-HTTP, audit JSON. MITM CONNECT bump **off** por defecto; solo con `--egress-mitm` / `ASP_EGRESS_MITM=1` + `--egress-mitm-ca` (corp caution).
+
+#### DNS
+
+**Opción A (recomendada con proxy HTTP):** usar solo el proxy para HTTP(S); bloquear UDP/53 saliente del guest hacia resolvers públicos con nftables (ops) para que el guest no bypassée por DNS directo a IPs.
+
+**Opción B:** `--egress-dns-sink=:5353` — stub UDP que resuelve (LookupIP) solo hostnames allowlisted y responde **NXDOMAIN** al resto. Apunta `resolv.conf` del guest a la IP TAP del host (puerto 5353 vía DNAT, o escucha en `:53` si tienes CAP_NET_BIND_SERVICE).
+
+```bash
+# node-agent (ejemplo)
+--egress-enforce \
+--egress-proxy-listen=0.0.0.0:8888 \
+--egress-dns-sink=0.0.0.0:5353
+```
+
+Camino mínimo recomendado hoy:
+
+1. NAT (§3.3) para que el guest tenga ruta al proxy (no hace falta full Internet).
+2. Allowlist del tenant + `ASP_EGRESS_DENY_DEFAULT=1`.
+3. Node-agent `--egress-enforce --egress-proxy-listen=…` (+ DNS sink opcional).
+4. Guest: `HTTP_PROXY`/`HTTPS_PROXY` → IP TAP host:8888.
+5. (Endurecimiento) nft bloquear forward directo guest→WAN excepto hacia el proxy.
+
+---
+
+## 4. Control-plane
+
+### 4.1 Postgres (compose)
+
+Desde la raíz del repo:
+
+```bash
+docker compose up -d postgres
+export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
+```
+
+Migraciones `001`–`004` se aplican al arrancar el API si `DATABASE_URL` está set.
+
+### 4.2 TLS + client CA + bootstrap
+
+```bash
+# Persistencia de CA de enrollment (corp: fuera de /tmp)
+export ASP_CA_CERT=/var/lib/asp/certs/ca.crt
+export ASP_CA_KEY=/var/lib/asp/certs/ca.key
+
+# TLS servidor
+export ASP_TLS_CERT=/var/lib/asp/certs/server.crt
+export ASP_TLS_KEY=/var/lib/asp/certs/server.key
+# Misma CA de enrollment como client CA (VerifyClientCertIfGiven)
+export ASP_CLIENT_CA=/var/lib/asp/certs/ca.crt
+
+export ASP_BOOTSTRAP_API_KEY='…secreto-tenant…'     # Bearer API
+export ASP_NODE_BOOTSTRAP_TOKEN='…secreto-nodo…'    # enroll
+export ASP_REQUIRE_API_KEY=1
+export ASP_EGRESS_DENY_DEFAULT=1
+export ASP_AUTO_PROVISION=0                         # obligatorio en bare-metal real
+export ASP_OIDC_ISSUER='https://cp.ejemplo.corp:8443'
+export LISTEN_ADDR=:8443
+
+(cd control-plane && go run ./cmd/api)
+# o binario empaquetado + systemd
+```
+
+Notas TLS (código actual):
+
+- `ASP_TLS_CERT` + `ASP_TLS_KEY` activan HTTPS.
+- Con `ASP_CLIENT_CA`: `ClientAuth = VerifyClientCertIfGiven` (enroll sigue sin exigir client cert; register/heartbeat/oidc mint sí vía middleware).
+- `ASP_AUTO_PROVISION=0` (default): Create deja `requested` para el reconciler. **No** uses `=1` en prod (stub sync → `running` sin VMM).
+
+### 4.3 Health
+
+```bash
+curl -fsS https://127.0.0.1:8443/healthz --cacert /var/lib/asp/certs/ca.crt
+# o HTTP lab: curl -fsS http://127.0.0.1:8080/healthz
+```
+
+---
+
+## 5. Node-agent + Cloud Hypervisor
+
+### 5.1 Cómo habla el cliente con CH (código real)
+
+`internal/vmm/cloudhypervisor.go`:
+
+- **Modo por defecto (per-sandbox):** `Start(sandbox)` spawnea
+  `cloud-hypervisor --api-socket /run/asp/ch-{sandboxID}.sock` (`--ch-socket-dir`, default `/run/asp`),
+  espera a que el socket acepte `vmm.ping`, luego `vm.create` + `vm.boot`.
+  `Stop(id)` hace `vm.delete`, mata el proceso y borra el socket.
+- **Modo shared/legacy:** si `--ch-api-socket` / `CH_API_SOCKET` está set, no spawnea;
+  habla con un CH ya arrancado en ese socket (un VM a la vez; útil para debug).
+- Rutas: `GET /api/v1/vmm.ping`, `PUT /api/v1/vm.create`, `PUT /api/v1/vm.boot`, `PUT /api/v1/vm.delete`, `PUT /api/v1/vm.pause`.
+- `--dry-run` sigue usando `FakeVMM` (sin CH).
+
+Flags relevantes (`cmd/node-agent/main.go`):
+
+| Flag | Env | Default / notas |
+|---|---|---|
+| `--ch-socket-dir` | `CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{sandboxID}.sock`; **default** cuando no dry-run |
+| `--ch-api-socket` | `CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
+| `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` — binario spawneado por sandbox |
+| `--dry-run` | `DRY_RUN=1` | **omitir** en bare-metal real |
+| `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop |
+| `--enroll` | `ASP_ENROLL=1` | + `--bootstrap-token` |
+| `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
+| `--mtls` | `ASP_MTLS=1` | client certs hacia CP |
+| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` |
+| `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix del pod-daemon (**host**, dry-run / fallback) |
+| `--pod-daemon-port` | | `26500` — puerto guest vsock para CONNECT |
+| `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check; intent para proxy |
+| `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | p.ej. `:8888` forward proxy HTTP(S) |
+| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | p.ej. `:5353` UDP NXDOMAIN non-allowlisted |
+| `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra `asp-{shortid}` en Start/Stop |
+| `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest→CID 2) |
+| `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix `host-vsock-{port}.sock` en vez de AF_VSOCK |
+| `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix bridge + symlinks `ssh-agent-{id}.sock` |
+| `--identity-listen` | `ASP_IDENTITY_LISTEN` | unix/TCP identity (además de host-vsock 26502) |
+
+### 5.2 Arrancar CH (per-sandbox vs shared)
+
+Un proceso CH = **una** VM (modelo OpenAPI de CH).
+
+**Default — el node-agent spawnea por sandbox** (no hace falta systemd de CH):
+
+```bash
+sudo install -d -m 0750 /run/asp
+# El reconciler, al Start, ejecuta:
+#   cloud-hypervisor --api-socket /run/asp/ch-{sandboxID}.sock
+# y diala Ping → CreateVM → Boot. En Stop: Delete → kill → rm socket.
+```
+
+**Override shared/debug** — CH pre-arrancado + `--ch-api-socket`:
+
+```bash
+sudo install -d -m 0755 /run/cloud-hypervisor
+sudo rm -f /run/cloud-hypervisor/api.sock
+cloud-hypervisor --api-socket /run/cloud-hypervisor/api.sock &
+curl --unix-socket /run/cloud-hypervisor/api.sock \
+  http://localhost/api/v1/vmm.ping
+
+# node-agent con:
+#   --ch-api-socket=/run/cloud-hypervisor/api.sock
+# (un sandbox a la vez en ese socket)
+```
+
+### 5.3 Enroll + reconciler (bare-metal)
+
+```bash
+export CONTROL_PLANE_URL='https://cp.ejemplo.corp:8443'
+export ASP_NODE_BOOTSTRAP_TOKEN='…'
+export ASP_CERT_DIR=/var/lib/asp/node-certs
+export ASP_MTLS=1
+export ASP_RECONCILE=1
+export ASP_EGRESS_ENFORCE=1
+export CH_SOCKET_DIR=/run/asp
+# Bare-metal: no hace falta ASP_POD_DAEMON_SOCK (hybrid vsock). Dry-run sí.
+# export ASP_POD_DAEMON_SOCK=/tmp/pod-daemon.sock
+
+(cd node-agent && go run ./cmd/node-agent \
+  --control-plane-url="$CONTROL_PLANE_URL" \
+  --node-id="$(hostname -s)" \
+  --ch-socket-dir="$CH_SOCKET_DIR" \
+  --ch-binary=/usr/local/bin/cloud-hypervisor \
+  --enroll --bootstrap-token="$ASP_NODE_BOOTSTRAP_TOKEN" \
+  --cert-dir="$ASP_CERT_DIR" --mtls \
+  --agent-listen=127.0.0.1:9100 \
+  --reconcile --reconcile-interval=2s \
+  --egress-enforce \
+  --tap-auto \
+  --host-vsock \
+  --ssh-agent-bridge=/run/asp/ssh-agent.sock \
+  --identity-listen=/run/asp/identity.sock)
+# sin --dry-run; sin --ch-api-socket → spawn per-sandbox
+```
+
+En modo shared (`--ch-api-socket` set), si CH no escucha: warning `CH ping failed (is cloud-hypervisor running with --api-socket?)`. En modo per-sandbox no hay ping al arrancar (el Ping ocurre dentro de cada `Start`).
+
+### 5.4 Multi-sandbox (hecho) y gaps restantes
+
+| Comportamiento | FakeVMM (`--dry-run`) | CH real (código actual) |
+|---|---|---|
+| Sandboxes concurrentes | Sí (`Running[id]`) | **Sí** — un proceso CH + socket por sandbox (`--ch-socket-dir`) |
+| Socket | N/A | `/run/asp/ch-{sandboxID}.sock` (o shared si `--ch-api-socket`) |
+| Spawn CH por sandbox | N/A | **Implementado** (`--ch-binary`) |
+| `Stop(id)` | Borra por id | `vm.delete` + kill proceso + rm socket de ese id |
+| `VsockCID` | 3 | **Único** por sandbox (allocator desde CID 3; path `/run/asp/vsock-{id}.sock`) |
+
+**Hecho en este parche:** spawn multi-socket por sandbox + `Stop(id)` alineado.
+
+**Hecho en 1h:** CIDs vsock únicos + hybrid dialer exec (§6).
+
+**Hecho en MVP solution-complete:** `--tap-auto` (`asp-{shortID}`); `--host-vsock` (26501/26502); symlinks SSH por sandbox.
+
+**Gaps restantes:** TPM/SEV hardware attest; fencing BMC de producción validado end-to-end; bypass-proof nft solo demostrable con TAP/KVM real (CI = soft/dry-run). SSH guest auto + nft completo: §8e / ADR-0006. Cert rotation, mTLS strict, SSH confirm: §8d / ADR-0005.
+
+Modo shared (`--ch-api-socket`) sigue siendo un sandbox a la vez — solo para debug.
+
+---
+
+## 6. Imagen guest y dataplane exec
+
+### 6.1 `images/guest`
+
+El [`Dockerfile`](../images/guest/Dockerfile) construye Debian bookworm-slim + `pod-daemon` (usuario `sandboxd`), unidad systemd, CMD vsock **26500**:
+
+```bash
+docker build -t agent-sandbox-guest -f images/guest/Dockerfile .
+./scripts/build-guest-rootfs.sh /var/lib/asp/images/rootfs.img
+sudo ln -sfn /var/lib/asp/images/rootfs.img /opt/sandbox/rootfs.img
+```
+
+Ver [`images/guest/README.md`](../images/guest/README.md). Firmar rootfs = ops/corp.
+
+### 6.2 pod-daemon y vsock
+
+| Modo | Estado |
+|---|---|
+| `--listen unix --unix-socket …` | **Implementado** (dry-run / smoke) |
+| `--listen vsock --vsock-port 26500` | **Implementado** — AF_VSOCK `CID_ANY:26500` en guest |
+| `--listen tcp --tcp-addr 0.0.0.0:26500` | **Implementado** — alternativa lab vía TAP (no vsock) |
+| CID en CreateVM | Reconciler asigna CID **único ≥ 3**; `VsockPath: /run/asp/vsock-{sandboxID}.sock` |
+
+### 6.3 Path exec productivo (hybrid vsock)
+
+Cloud Hypervisor expone un **multiplexor UDS** en el host (`vsock.cid` + `vsock.socket` en `vm.create`). El protocolo host→guest (Firecracker-compatible):
+
+```text
+host: connect(/run/asp/vsock-{id}.sock)
+host: write "CONNECT 26500\n"
+CH  : reenvía a guest AF_VSOCK port 26500
+guest pod-daemon: accept → HTTP
+CH  : ACK "OK <host_port>\n" al host
+host: HTTP POST /v1/exec sobre el mismo stream
+```
+
+Flujo completo:
+
+```text
+Cliente
+  → POST /v1/sandboxes/{id}/exec          (control-plane)
+  → POST {agent_endpoint}/v1/internal/exec (node-agent localhost)
+  → Registry[sandbox_id] → HybridVsockDialer (CONNECT 26500)
+  → guest pod-daemon POST /v1/exec
+```
+
+| Entorno | Dialer | Guest listen |
+|---|---|---|
+| Bare-metal CH | `HybridVsockDialer` (UDS + CONNECT) | `--listen vsock --vsock-port 26500` |
+| Dry-run / smoke | `UnixDialer` (`--pod-daemon-sock`) | `--listen unix` en el host |
+| Opcional AF_VSOCK host | `AFVsockDialer` (mdlayher/vsock) | mismo guest vsock; útil si el host expone `/dev/vsock` |
+
+Flags node-agent: `--pod-daemon-port=26500` (default); `--pod-daemon-sock` solo dry-run/fallback.
+
+### 6.4 Identity / SSH guest→host (`--host-vsock`)
+
+```text
+guest AF_VSOCK connect(cid=2, port=26501) → node-agent SSH agent pump
+guest AF_VSOCK connect(cid=2, port=26502) → identity HTTP POST /v1/tokens/oidc
+```
+
+También: unix `--ssh-agent-bridge` / `--identity-listen`; reconciler crea `/run/asp/ssh-agent-{id}.sock` → bridge.
+
+**Fase 2e — SSH auto en guest:** habilita `ssh-agent-vsock.service` en la imagen (vsock CID2:26501 → `/run/agent-sandbox/ssh-agent.sock`). Flag host `--guest-ssh-agent-auto` (default con `--host-vsock`). Virtiofs = alternativa ops manual. Ver [`guest-vsock-notes.md`](../scripts/guest-vsock-notes.md), [`why-2e-ssh-guest-mount.md`](why-2e-ssh-guest-mount.md).
+
+Kernel guest: `CONFIG_VIRTIO_VSOCKETS`. Host hybrid exec: CH muxer UDS (sin `/dev/vsock`). Host `--host-vsock`: necesita `/dev/vsock` o `--host-vsock-dir`.
+
+---
+
+## 7. Checklist de verificación
+
+Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`).
+
+1. **KVM**
+   - [ ] `kvm-ok` OK
+   - [ ] `ls -l /dev/kvm` accesible por el usuario ASP
+2. **CH**
+   - [ ] `cloud-hypervisor --version` (en `PATH` o `--ch-binary`)
+   - [ ] `/run/asp` writable por el usuario del node-agent (modo per-sandbox)
+   - [ ] Tras Start: socket `/run/asp/ch-{id}.sock` + `vmm.ping` vía curl unix-socket OK
+   - [ ] (Solo shared) proceso con `--api-socket` + ping al arrancar
+3. **Assets**
+   - [ ] `/opt/sandbox/vmlinux` y `/opt/sandbox/rootfs.img` resolubles
+   - [ ] TAP `asp-<short>` vía `--tap-auto` o creado a mano antes del claim
+4. **Control-plane**
+   - [ ] Postgres up; `ASP_AUTO_PROVISION=0`
+   - [ ] `GET /healthz` OK; TLS/mTLS según corp
+5. **Node-agent**
+   - [ ] Enroll + register; certs en `ASP_CERT_DIR`
+   - [ ] `--reconcile` sin `--dry-run`; opcional `--tap-auto --host-vsock`
+   - [ ] ping CH sin warning persistente (solo shared)
+6. **Ciclo sandbox**
+   - [ ] `POST /v1/sandboxes` → `requested` (y soft-assign si hay nodo ready)
+   - [ ] Reconciler claim → `starting` → VMM Start → `running`
+   - [ ] `GET /v1/sandboxes/{id}/events` muestra transiciones
+   - [ ] `POST .../exec` vía hybrid vsock (guest `--listen vsock`) o unix en dry-run
+   - [ ] (opcional) guest dial CID 2:26502 identity / 26501 SSH
+   - [ ] `DELETE /v1/sandboxes/{id}` → `stopping` → Stop/Delete → `stopped`
+7. **Egress (política)**
+   - [ ] `PUT /v1/tenants/{id}/egress` + check allow/deny
+   - [ ] Node `--egress-enforce`
+
+Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
+
+---
+
+## 8. Hardening corporativo
+
+| Control | Acción |
+|---|---|
+| mTLS nodos | `ASP_TLS_*` + `ASP_CLIENT_CA` + node `--mtls`; bootstrap token solo en enroll bootstrap |
+| API keys | `ASP_REQUIRE_API_KEY=1`; `ASP_BOOTSTRAP_API_KEY` en secret manager, no en git |
+| Auto-provision | **`ASP_AUTO_PROVISION=0`** (nunca stub sync en prod) |
+| Egress | `ASP_EGRESS_DENY_DEFAULT=1`; allowlist por tenant; `--egress-enforce`; NAT deny-forward default (§3) |
+| Secretos | CA/keys en `/var/lib/asp/certs` mode `0600`; rotación = fase 2 |
+| Superficie CH | Dir de sockets `/run/asp` root:kvm `0750`; un socket por sandbox |
+| Guest | Imagen mínima, sin claves, sin `NET_ADMIN`; pod-daemon usuario no root |
+| Observabilidad | Journal `sandbox_events` / `node_events`; no loguear bodies ni tokens |
+| Nested | Solo lab; prod en bare metal o KVM dedicado |
+
+---
+
+
+
+## 8b. Multi-node leases (soft fencing) y rotación OIDC
+
+### Leases
+
+- `sandboxes.node_lease_until` (migración `004`): claim / status running / `POST /v1/sandboxes/{id}/renew-lease` extienden **30s**.
+- El reconciler renueva leases de sandboxes locales en cada tick.
+- Si el lease expira, otro nodo puede reclaim (→ `failed` o `requested` vía `ReclaimExpiredLeases` / claim).
+- `nodes.fence_token` es opcional (metadato ops).
+
+**Límite split-brain (honesto):** el lease software **no** es STONITH. Sin fencing out-of-band, dos reconcileres pueden solaparse. Mitigación: TTL corto + `ASP_FENCE_PROVIDER` (ver §8c).
+
+### Rotación de clave OIDC
+
+1. Genera nueva RSA PEM; configura `ASP_OIDC_KEY=/path/new.pem` y `ASP_OIDC_KEY_PREV=/path/old.pem`.
+2. Reinicia control-plane: JWKS publica **ambas** (`kid` actual + previo); mint usa solo la actual.
+3. Tras TTL de tokens antiguos (default 5m) + margen de caché JWKS de clientes, quita `ASP_OIDC_KEY_PREV` y reinicia.
+
+
+## 8c. Remote attestation, fencing y proxy hardening (Fase 2c)
+
+### Remote attestation (MVP software)
+
+1. Comparte `ASP_ATTEST_KEY` (PEM ECDSA P-256) entre node-agent y control-plane, o deja que cada lado use el PEM embebido en el bundle (`public_key_pem`) en lab.
+2. Tras `running`, el reconciler firma `BootStatement` y hace `POST /v1/sandboxes/{id}/attest`.
+3. Consulta: `GET /v1/sandboxes/{id}/attestation`; verificación sin store: `POST /v1/attestation/verify`.
+4. Mint OIDC incluye `x_asp_attestation` si la evidencia está dentro de `ASP_ATTEST_MAX_AGE` (default 10m).
+5. Hardware TPM/SEV: implementar la interfaz `Attestor` (plug-in futuro); el MVP es `SoftwareAttestor`.
+
+### STONITH / FenceProvider
+
+| `ASP_FENCE_PROVIDER` | Comportamiento |
+|---|---|
+| `noop` / vacío | Sin fence (default) |
+| `http_webhook` | `POST` JSON `{action:power_off,node_id}` a `nodes.fence_endpoint`; Bearer `fence_token` |
+| `redfish` | Stub HTTP basic → `{endpoint}/redfish/v1/Systems/1/Actions/ComputerSystem.Reset` |
+| `ipmi` | Exec `ipmitool … chassis power off` si existe; **SoftFail** si no |
+
+Registro de nodo: `fence_endpoint` + `fence_token` (migración `005`). Al **claim** que reclaims un sandbox **running** con lease expirado, el CP llama al provider antes de reasignar.
+
+> **Ops:** STONITH real exige BMC out-of-band (Redfish/IPMI alcanzable aunque el host esté hung). Un lease en Postgres **no** apaga VMs huérfanas.
+
+### Proxy hardening
+
+- Rate limit: token bucket (`DefaultRate`/`DefaultBurst`) keyed por `X-ASP-Sandbox-ID` + host.
+- Body limit: `ASP_EGRESS_MAX_BODY` (default 8MiB).
+- Schemes: solo `http`/`https`.
+- Audit: línea JSON `egress_audit`.
+- MITM: `--egress-mitm --egress-mitm-ca=/path/ca.pem` (default **off**).
+
+## 8d. Fase 2d — certs, mTLS estricto, SSH confirm, nft redirect
+
+### Rotación / revocación de certs de nodo
+
+**Por qué:** un cert robado no debe seguir hablando al CP. **Qué ganamos:** rotate + revoke + middleware.
+
+```bash
+# Emitir cert nuevo (bootstrap token o ASP_BOOTSTRAP_API_KEY)
+curl -fsS -X POST -H "Authorization: Bearer $ASP_NODE_BOOTSTRAP_TOKEN" \
+  https://cp:8080/v1/nodes/$NODE_ID/rotate-cert | jq .
+# Instalar PEMs en --cert-dir del node-agent y reiniciar agente
+
+# Revocar nodo (bloquea fingerprint actual)
+curl -fsS -X POST -H "Authorization: Bearer $ASP_NODE_BOOTSTRAP_TOKEN" \
+  https://cp:8080/v1/nodes/$NODE_ID/revoke
+```
+
+Migración `006` añade `cert_serial`, `revoked_at`, tabla `node_cert_revocations`.
+
+### mTLS estricto
+
+```bash
+export ASP_MTLS_STRICT=1
+export ASP_ENROLL_LISTEN=127.0.0.1:8081   # plaintext solo enroll
+# Listener TLS principal: RequireAndVerifyClientCert
+# Enroll / re-enroll: http://127.0.0.1:8081/v1/nodes/enroll (bootstrap token)
+# Rotate con cert vigente + API key sigue en el listener TLS.
+```
+
+### SSH agent confirmation
+
+```bash
+node-agent ... --ssh-agent-confirm --ssh-agent-bridge=/run/asp/ssh-agent.sock
+# Antes de que el guest firme:
+curl -fsS -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \
+  -d '{"ttl_seconds":60}'
+# Sin approve → SignRequest = SSH_AGENT_FAILURE
+```
+
+### nftables anti-bypass (sketch 2d → completo en §8e)
+
+```bash
+./scripts/nftables-egress-redirect.sh dry-run \
+  --guest-subnet 10.200.0.0/16 --proxy-port 8888 --dns-sink-port 5353
+```
+
+Detalle histórico 2d: [`adr/0005-fase-2d-hardening.md`](adr/0005-fase-2d-hardening.md). Completo: §8e.
+
+## 8e. Fase 2e — nft redirect completo + SSH guest auto
+
+### nft Enforce (bare-metal)
+
+**Por qué / Qué ganamos:** ver [`why-2e-nft-redirect.md`](why-2e-nft-redirect.md).
+
+```bash
+# Dry-run (sin root) — debe listar tabla asp_egress, 80/443 y DNS 53
+./scripts/nftables-egress-redirect.sh dry-run \
+  --guest-subnet 10.200.0.0/16 --proxy-port 8888 --dns-sink-port 5353
+
+# Apply Enforce (root + nft + TAP)
+sudo ./scripts/nftables-egress-redirect.sh apply --mode enforce \
+  --guest-subnet 10.200.0.0/16 --proxy-port 8888 \
+  --dns-sink-port 5353 --dns-action redirect
+
+# Desde node-agent:
+node-agent ... \
+  --egress-proxy-listen=:8888 --egress-dns-sink=:5353 \
+  --nft-egress-redirect --nft-egress-mode=enforce \
+  --nft-http-ports=80,443 --guest-subnet=10.200.0.0/16
+
+# SoftFail (CI / sin CAP_NET_ADMIN):
+node-agent ... --nft-egress-redirect --nft-egress-mode=soft
+```
+
+**Enforce requiere:** root, binario `nft`, iface TAP con el subnet guest, proxy y (si redirect) DNS sink escuchando. Sin eso, usa `soft`.
+
+### SSH agent auto en guest
+
+**Por qué / Qué ganamos:** ver [`why-2e-ssh-guest-mount.md`](why-2e-ssh-guest-mount.md).
+
+```bash
+# Host
+node-agent ... --host-vsock --ssh-agent-bridge=/run/asp/ssh-agent.sock --guest-ssh-agent-auto
+# (guest-ssh-agent-auto ya default on con --host-vsock)
+
+# Guest (imagen con ssh-agent-vsock.service):
+#   SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
+#   dial → vsock://2:26501
+```
+
+ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
+
+## 9. Troubleshooting
+
+| Síntoma | Causa probable | Qué mirar |
+|---|---|---|
+| `kvm-ok` FAIL / no `/dev/kvm` | VT-x/AMD-V off o nested no habilitado | BIOS; `lsmod kvm`; permisos grupo `kvm` |
+| `CH ping failed` | Solo modo shared: CH no corre o path distinto | `ps aux \| grep cloud-hypervisor`; `CH_API_SOCKET` vs `--api-socket` |
+| `wait for CH API` / spawn fail | Binario ausente, `/run/asp` no writable, KVM | `--ch-binary`; `ls -ld /run/asp`; `/dev/kvm` |
+| `vm.create` error TAP | TAP inexistente o sin permiso | `--tap-auto` o script §3.2; `netdev` / CAP_NET_ADMIN |
+| `vm.create` kernel/rootfs | Rutas `/opt/sandbox/*` rotas | Symlinks §2.2; cmdline `root=/dev/vda` |
+| Segundo sandbox `failed` (shared) | `--ch-api-socket` = un VM | Quita el flag; usa `--ch-socket-dir` (default) |
+| Create → `running` sin VMM | `ASP_AUTO_PROVISION=1` | Pon `=0` y usa `--reconcile` |
+| Enroll 401 | Token / TLS | `ASP_NODE_BOOTSTRAP_TOKEN`; enroll **no** lleva client cert |
+| Register/heartbeat 401 mTLS | Sin client cert | `--enroll` previo; `--mtls` + `cert-dir`; `ASP_CLIENT_CA` en CP |
+| Exec 502 / connection refused | `agent_endpoint` o pod-daemon | Nodo registered con `http://127.0.0.1:9100`; `--pod-daemon-sock`; §6.3 |
+| Exec OK en host pero no en guest | guest sin `--listen vsock` o puerto ≠ 26500 | Arranca pod-daemon vsock en guest; verifica CONNECT ACK; §6.3 |
+| Egress “allow” pero tráfico sale | Guest no usa HTTP_PROXY / DNS bypass | Apunta proxy §3.4; nft bloquear UDP53/WAN directo |
+| Permission denied cert-dir | `/var/lib/asp/node-certs` no writable | `mkdir` + owner; o `ASP_CERT_DIR` writable |
+| CID vsock conflict | (resuelto) allocator ≥3 | Si ves colisión, bug en `allocCID`; revisa handles |
+
+---
+
+
+---
+
+## 10. Procedimiento end-to-end (checklist ops)
+
+1. Instalar CH pinneado + assets (`vmlinux`, `rootfs.img` vía `build-guest-rootfs.sh`) → symlinks `/opt/sandbox/*`.
+2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens.
+3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`).
+4. `POST /v1/sandboxes` → reconciler claim → TAP `asp-*` → CH spawn → `running`.
+5. `POST /v1/sandboxes/{id}/exec` → hybrid CONNECT 26500 → guest pod-daemon.
+6. Desde guest: dial CID 2 ports 26501/26502 (o socat); mint OIDC / SSH agent.
+7. `DELETE /v1/sandboxes/{id}` → Stop → delete TAP + sockets → `stopped`.
+8. Pack release: `make pack` → `/workspace/agent-sandbox-platform-release.tar.gz`.
+
+Smokes dry-run (sin KVM): `make smoke`.
+
+## Referencias rápidas
+
+- Cliente CH: `node-agent/internal/vmm/cloudhypervisor.go`
+- Flags: `node-agent/cmd/node-agent/main.go`, [`node-agent/README.md`](../node-agent/README.md)
+- Reconciler + paths: `node-agent/internal/reconciler/reconciler.go`
+- CP env: [`control-plane/README.md`](../control-plane/README.md)
+- Smoke dry-run: [`mvp-smoke.md`](mvp-smoke.md)
+- Red ADR: [`adr/0002-networking.md`](adr/0002-networking.md)

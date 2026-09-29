@@ -1,0 +1,39 @@
+flowchart LR
+    C[Cliente / IDE / CLI]
+
+    subgraph CP[Control plane - Go]
+      API[HTTP API]
+      DB[(PostgreSQL)]
+      JWKS[JWKS / OIDC issuer]
+      API --> DB
+      API --> JWKS
+    end
+
+    subgraph NODE[Nodo bare metal o VM]
+      NA[Node agent - Go]
+      VMM[Cloud Hypervisor]
+      EP[Egress HTTP + DNS proxy]
+      TAP[TAP + NAT]
+
+      subgraph GUEST[microVM Debian]
+        PD[pod-daemon - Rust]
+        WORK[Agent workload]
+        IDSOCK[Identity socket]
+        SSHSOCK[SSH agent socket]
+        WORK -->|Exec / files| PD
+        WORK -->|aud only| IDSOCK
+        WORK --> SSHSOCK
+        IDSOCK --> PD
+        SSHSOCK --> PD
+      end
+
+      NA -->|lifecycle| VMM
+      VMM --> GUEST
+      NA <-->|vsock| PD
+      GUEST --> TAP --> EP
+    end
+
+    C -->|HTTPS| API
+    API -->|mTLS: desired state| NA
+    NA -->|attested token request| JWKS
+    EP -->|allowlisted only| NET[Internet]

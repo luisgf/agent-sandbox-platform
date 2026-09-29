@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# Example OpenRC script: guest SSH agent via vsock → unix.
+name="ssh-agent-vsock"
+description="ASP guest SSH agent (vsock CID2:26501 → unix)"
+command="/usr/local/bin/vsock-ssh-agent-proxy"
+command_args="--listen /run/agent-sandbox/ssh-agent.sock --cid ${ASP_HOST_CID:-2} --port 26501"
+command_user="sandboxd:sandboxd"
+pidfile="/run/agent-sandbox/ssh-agent-vsock.pid"
+command_background=true
+
+depend() {
+    need localmount
+}
+
+start_pre() {
+    checkpath -d -m 0750 -o sandboxd:sandboxd /run/agent-sandbox
+    export ASP_HOST_CID="${ASP_HOST_CID:-2}"
+    export SSH_AUTH_SOCK="/run/agent-sandbox/ssh-agent.sock"
+}

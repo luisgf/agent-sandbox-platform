@@ -1,0 +1,22 @@
+[Unit]
+Description=ASP guest pod-daemon (vsock HTTP)
+After=network.target
+ConditionPathExists=/usr/local/bin/pod-daemon
+
+[Service]
+Type=simple
+User=sandboxd
+Group=sandboxd
+Environment=ASP_HOST_CID=2
+ExecStart=/usr/local/bin/pod-daemon --listen vsock --vsock-port 26500
+Restart=on-failure
+RestartSec=1
+RuntimeDirectory=agent-sandbox
+RuntimeDirectoryMode=0750
+
+# Guest→host identity (OIDC mint) via host CID 2 port 26502 — apps may curl via a
+# small vsock HTTP client or socat; see scripts/guest-vsock-notes.md.
+# SSH agent: set SSH_AUTH_SOCK after linking host-forwarded socket, or dial CID 2:26501.
+
+[Install]
+WantedBy=multi-user.target

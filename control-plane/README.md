@@ -1,0 +1,62 @@
+# Control plane
+
+Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o PostgreSQL (`DATABASE_URL`), journal de eventos, API keys, enrollment PKI, egress allowlist, OIDC (JWKS/mint) y proxy de exec hacia node-agents.
+
+## Endpoints
+
+| Método | Ruta | Estado |
+|---|---|---|
+| GET | `/healthz` | OK (siempre público) |
+| GET | `/.well-known/openid-configuration` | OIDC discovery |
+| GET | `/oidc/jwks.json` | JWKS público |
+| POST | `/v1/internal/oidc/token` | Mint JWT (nodo; tenant desde store) |
+| POST | `/v1/sandboxes` | Create + provision stub → `running` |
+| GET | `/v1/sandboxes?tenant_id=` | List |
+| GET | `/v1/sandboxes/{id}` | Get |
+| GET | `/v1/sandboxes/{id}/events` | Audit trail |
+| POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`) |
+| POST | `/v1/sandboxes/{id}/claim` | Claim atómico (+ lease 30s) |
+| POST | `/v1/sandboxes/{id}/status` | Estado observado por el agente |
+| POST | `/v1/sandboxes/{id}/renew-lease` | Renueva `node_lease_until` |
+| POST | `/v1/sandboxes/{id}/attest` | Guarda evidencia de boot firmada (nodo) |
+| GET | `/v1/sandboxes/{id}/attestation` | Última atestación |
+| POST | `/v1/attestation/verify` | Verifica bundle sin persistir |
+| PUT/GET | `/v1/tenants/{id}/egress` | Allowlist de egress |
+| POST | `/v1/tenants/{id}/egress/check` | Helper de evaluación |
+| POST | `/v1/nodes/enroll` | Bootstrap token → client cert PEMs |
+| POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (bootstrap o API key); revoca fingerprint anterior |
+| POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados |
+| POST | `/v1/nodes/register` | Registra/actualiza nodo |
+| POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
+| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler |
+| GET | `/v1/nodes` | Lista nodos |
+
+## Variables de entorno
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `LISTEN_ADDR` | `:8080` | Bind address |
+| `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones `001`–`006` |
+| `ASP_REQUIRE_API_KEY` | unset | `1` fuerza Bearer auth |
+| `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap` tenant `default` |
+| `ASP_NODE_BOOTSTRAP_TOKEN` | unset | Token para `/v1/nodes/enroll` |
+| `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |
+| `ASP_TLS_CERT` / `ASP_TLS_KEY` | unset | TLS servidor |
+| `ASP_CLIENT_CA` | unset | Client CA (register/heartbeat/oidc mint); habilita check de revocación |
+| `ASP_MTLS_STRICT` | unset | `1` → `RequireAndVerifyClientCert` en listener TLS |
+| `ASP_ENROLL_LISTEN` | `127.0.0.1:8081` | Plaintext enroll-only cuando `ASP_MTLS_STRICT=1` |
+| `ASP_OIDC_KEY` | `/tmp/asp-oidc-key.pem` | PEM RSA de firma actual (auto-create; mint) |
+| `ASP_OIDC_KEY_PREV` | unset | PEM RSA previa (solo JWKS durante rotación) |
+| `ASP_OIDC_ISSUER` | `http://127.0.0.1$LISTEN_ADDR` | Issuer OIDC |
+| `ASP_ATTEST_KEY` | `/tmp/asp-attest-key.pem` | PEM ECDSA firma/verificación atestación |
+| `ASP_ATTEST_MAX_AGE` | `10m` | Freshness para verify + claim OIDC |
+| `ASP_FENCE_PROVIDER` | `noop` | `noop`\|`http_webhook`\|`redfish`\|`ipmi` |
+| `ASP_FENCE_USER` | | Usuario Redfish/IPMI |
+| `ASP_EGRESS_DEFAULT_ALLOW` | `1` en memory-dev | Vacío = allow-all |
+| `ASP_EGRESS_DENY_DEFAULT` | unset | Vacío = deny (harden; desactiva allow memory) |
+| `ASP_AUTO_PROVISION` | unset/false | `1` = stub sync Create→running; default deja `requested` |
+
+```bash
+go test ./...
+ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
+```

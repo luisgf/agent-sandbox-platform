@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1.7
+# Build from repo root:
+#   docker build -t agent-sandbox-guest -f images/guest/Dockerfile .
+FROM rust:1-bookworm AS build-rust
+WORKDIR /src/pod-daemon
+COPY pod-daemon/Cargo.toml pod-daemon/Cargo.lock* ./
+COPY pod-daemon/src ./src
+RUN if [ -f Cargo.lock ]; then cargo build --release --locked; else cargo build --release; fi
+
+FROM golang:1.22-bookworm AS build-go
+WORKDIR /src/vsock-ssh-agent-proxy
+COPY images/guest/cmd/vsock-ssh-agent-proxy/go.mod ./
+COPY images/guest/cmd/vsock-ssh-agent-proxy/*.go ./
+RUN go mod tidy && CGO_ENABLED=0 go build -o /out/vsock-ssh-agent-proxy .
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /nonexistent --shell /usr/sbin/nologin sandboxd \
+    && install -d -o sandboxd -g sandboxd -m 0750 /run/agent-sandbox \
+    && install -d -m 0755 /etc/systemd/system
+COPY --from=build-rust /src/pod-daemon/target/release/pod-daemon /usr/local/bin/pod-daemon
+COPY --from=build-go /out/vsock-ssh-agent-proxy /usr/local/bin/vsock-ssh-agent-proxy
+COPY images/guest/systemd/pod-daemon.service /etc/systemd/system/pod-daemon.service
+COPY images/guest/systemd/ssh-agent-vsock.service /etc/systemd/system/ssh-agent-vsock.service
+COPY images/guest/openrc/pod-daemon /etc/init.d/pod-daemon.openrc-example
+COPY images/guest/openrc/ssh-agent-vsock /etc/init.d/ssh-agent-vsock.openrc-example
+COPY images/guest/helpers/ssh-agent-vsock-socat.sh /usr/local/share/asp/ssh-agent-vsock-socat.sh
+# Default productive listen: AF_VSOCK port 26500 (host dials via CH hybrid CONNECT).
+# SSH agent: enable ssh-agent-vsock.service (vsock CID2:26501 → /run/agent-sandbox/ssh-agent.sock).
+ENV ASP_HOST_CID=2
+ENV SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
+USER sandboxd
+ENTRYPOINT ["/usr/local/bin/pod-daemon"]
+CMD ["--listen", "vsock", "--vsock-port", "26500"]

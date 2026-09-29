@@ -1,0 +1,245 @@
+// Package execproxy exposes a localhost HTTP server that proxies exec to pod-daemon.
+package execproxy
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
+)
+
+// Server is the node-agent internal callback API for the control plane.
+type Server struct {
+	Pod           *poddaemon.Client // optional fallback when Registry has no entry
+	Registry      *poddaemon.Registry
+	Logger        *slog.Logger
+	EgressEnforce bool
+	// DefaultAllowlist used when request omits egress_allowlist (and for egress-check).
+	DefaultAllowlist *egress.Allowlist
+	// PolicyCache stores the last allowlist from exec for the HTTP forward proxy.
+	PolicyCache *egress.PolicyCache
+	// SSHApprover optional one-shot SignRequest approvals (POST /v1/internal/ssh-agent/approve).
+	SSHApprover *sshagent.Approver
+}
+
+type egressRuleDTO struct {
+	HostPattern string `json:"host_pattern"`
+	Port        *int   `json:"port,omitempty"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type egressPolicyDTO struct {
+	TenantID string          `json:"tenant_id"`
+	Mode     string          `json:"mode"`
+	Rules    []egressRuleDTO `json:"rules"`
+}
+
+type execBody struct {
+	SandboxID       string            `json:"sandbox_id"`
+	Cmd             []string          `json:"cmd"`
+	Env             map[string]string `json:"env,omitempty"`
+	Cwd             string            `json:"cwd,omitempty"`
+	EgressAllowlist *egressPolicyDTO  `json:"egress_allowlist,omitempty"`
+}
+
+type egressCheckBody struct {
+	Host            string           `json:"host"`
+	Port            int              `json:"port,omitempty"`
+	EgressAllowlist *egressPolicyDTO `json:"egress_allowlist,omitempty"`
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+	})
+	mux.HandleFunc("POST /v1/internal/exec", s.handleExec)
+	mux.HandleFunc("POST /v1/internal/egress-check", s.handleEgressCheck)
+	mux.HandleFunc("POST /v1/internal/ssh-agent/approve", s.handleSSHAgentApprove)
+	return mux
+}
+
+func (s *Server) clientFor(sandboxID string) (*poddaemon.Client, error) {
+	if s.Registry != nil {
+		c, err := s.Registry.ClientFor(sandboxID)
+		if err == nil {
+			return c, nil
+		}
+		// Fall through to Pod if registry miss and fallback client exists.
+		if s.Pod == nil {
+			return nil, err
+		}
+	}
+	if s.Pod != nil {
+		return s.Pod, nil
+	}
+	return nil, errPodUnavailable
+}
+
+var errPodUnavailable = &podErr{msg: "pod-daemon client not configured"}
+
+type podErr struct{ msg string }
+
+func (e *podErr) Error() string { return e.msg }
+
+func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	var body execBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(body.Cmd) == 0 {
+		writeErr(w, http.StatusBadRequest, "cmd required")
+		return
+	}
+	if body.EgressAllowlist != nil {
+		al := s.allowlistFromDTO(body.EgressAllowlist)
+		if s.PolicyCache != nil {
+			s.PolicyCache.Set(al)
+		}
+	}
+	client, err := s.clientFor(body.SandboxID)
+	if err != nil || client == nil {
+		msg := "pod-daemon client not configured"
+		if err != nil {
+			msg = err.Error()
+		}
+		writeErr(w, http.StatusServiceUnavailable, msg)
+		return
+	}
+	out, err := client.Exec(r.Context(), poddaemon.ExecRequest{
+		Cmd: body.Cmd,
+		Env: body.Env,
+		Cwd: body.Cwd,
+	})
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("pod-daemon exec", "error", err, "sandbox_id", body.SandboxID)
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) handleEgressCheck(w http.ResponseWriter, r *http.Request) {
+	var body egressCheckBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Host == "" {
+		writeErr(w, http.StatusBadRequest, "host required")
+		return
+	}
+	al := s.DefaultAllowlist
+	if body.EgressAllowlist != nil {
+		al = s.allowlistFromDTO(body.EgressAllowlist)
+		if s.PolicyCache != nil {
+			s.PolicyCache.Set(al)
+		}
+	}
+	if al == nil {
+		al = egress.NewAllowlistFromPolicy("deny-default", nil)
+	}
+	host, port := egress.ParseHostPort(body.Host)
+	if body.Port > 0 {
+		port = body.Port
+	}
+	err := al.CheckHostPort(host, port)
+	allowed := err == nil
+	status := http.StatusOK
+	if s.EgressEnforce && !allowed {
+		status = http.StatusForbidden
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"host":    host,
+		"port":    port,
+		"allowed": allowed,
+		"error":   errString(err),
+	})
+}
+
+func (s *Server) allowlistFromDTO(dto *egressPolicyDTO) *egress.Allowlist {
+	// Effective policy from CP only includes enabled rules; still honor Enabled=false if present.
+	rules := make([]egress.Rule, 0, len(dto.Rules))
+	anyEnabledFlag := false
+	for _, r := range dto.Rules {
+		if r.Enabled {
+			anyEnabledFlag = true
+			break
+		}
+	}
+	for _, r := range dto.Rules {
+		if r.HostPattern == "" {
+			continue
+		}
+		if anyEnabledFlag && !r.Enabled {
+			continue
+		}
+		rules = append(rules, egress.Rule{HostPattern: r.HostPattern, Port: r.Port})
+	}
+	return egress.NewAllowlistFromPolicy(dto.Mode, rules)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// ListenAndServe binds addr (e.g. 127.0.0.1:9100) and serves until ctx-like shutdown via returned server.
+func ListenAndServe(addr string, h http.Handler) (*http.Server, net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	srv := &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	return srv, ln, nil
+}
+
+func (s *Server) handleSSHAgentApprove(w http.ResponseWriter, r *http.Request) {
+	if s.SSHApprover == nil {
+		writeErr(w, http.StatusServiceUnavailable, "ssh-agent confirmation gate not enabled (--ssh-agent-confirm)")
+		return
+	}
+	ttl := 30 * time.Second
+	var body struct {
+		TTLSeconds int `json:"ttl_seconds"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.TTLSeconds > 0 {
+		ttl = time.Duration(body.TTLSeconds) * time.Second
+	}
+	token, exp := s.SSHApprover.Approve(ttl)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"token":      token,
+		"expires_at": exp.UTC().Format(time.RFC3339),
+		"one_shot":   true,
+		"note":       "next SignRequest on the bridged agent consumes this approval",
+	})
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}

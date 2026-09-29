@@ -1,0 +1,27 @@
+# Build artifacts
+/build/
+**/target/
+*.exe
+*.test
+*.out
+
+# Go
+*.exe~
+vendor/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local secrets / runtime
+.env
+.env.*
+*.pem
+*.key
+/run/
+**/ch-*.sock
+
+# Release tarball lives outside or regenerated via make pack
+*.tar.gz
