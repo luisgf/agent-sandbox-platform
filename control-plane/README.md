@@ -36,8 +36,12 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | Variable | Default | Descripción |
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Bind address |
-| `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones `001`–`006` |
+| `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
 | `ASP_REQUIRE_API_KEY` | unset | `1` fuerza Bearer auth |
+| `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
+| `ASP_IDP_AUDIENCE` | unset | Audiencia esperada del JWT (`aud`) |
+| `ASP_IDP_JWKS_URL` | unset | JWKS; si vacío → discovery desde issuer |
+| `ASP_IDP_REQUIRED` | `0` | `1` exige JWT IdP en create/list/get/exec/destroy/events |
 | `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap` tenant `default` |
 | `ASP_NODE_BOOTSTRAP_TOKEN` | unset | Token para `/v1/nodes/enroll` |
 | `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |

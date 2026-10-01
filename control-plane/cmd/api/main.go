@@ -16,6 +16,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/api"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
@@ -108,6 +109,20 @@ func main() {
 	srv.Fence = fence.FromEnv()
 	slog.Info("attestor ready", "name", attestor.Name(), "kid", attestor.KID(), "fence", srv.Fence.Name())
 	authCfg := api.AuthConfigFromEnv()
+	idpVal, idpCfg, err := idp.FromEnv()
+	if err != nil {
+		slog.Error("idp config", "error", err)
+		os.Exit(1)
+	}
+	authCfg.IdP = idpVal
+	authCfg.IdPRequired = idpCfg.Required
+	if idpCfg.Enabled() {
+		slog.Info("idp jwt validation ready",
+			"issuer", idpCfg.Issuer,
+			"audience", idpCfg.Audience,
+			"jwks_url", idpCfg.JWKSURL,
+			"required", idpCfg.Required)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -197,7 +212,7 @@ func main() {
 		}
 
 		slog.Info("control-plane API listening (TLS)", "addr", addr, "store", storeName,
-			"auth_require", authCfg.Require, "client_ca", clientCAPath != "",
+			"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
 			"mtls_strict", mtlsStrict)
 		if err := server.ListenAndServeTLS(tlsCert, tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("API stopped", "error", err)
@@ -211,7 +226,7 @@ func main() {
 	}
 
 	slog.Info("control-plane API listening", "addr", addr, "store", storeName,
-		"auth_require", authCfg.Require)
+		"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("API stopped", "error", err)
 		os.Exit(1)

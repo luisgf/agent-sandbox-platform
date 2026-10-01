@@ -36,8 +36,9 @@ Sin sujeto humano:
 - UID de Linux en el guest **≠** empleado. No vamos a “mapear UIDs” como authz.
 - El bridge SSH **global** de hoy sigue siendo inseguro para multi-usuario hasta la fase de sesión/scoped (ADR-0007 fase 4).
 - No hay IdP embebido ni magia SoftFail: sin JWKS/config de Entra/Okta no hay login humano.
-- Diseño aceptado; **fase 1 (schema + audit) hecha**; authz IdP / JWT / RBAC / SSH scoped / `user_sub` en mint **aún no** (fases 2–5).
-- En lab, `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
+- Diseño aceptado; **fases 1–2 hechas** (schema/audit + validación JWT IdP en CP). RBAC / SSH scoped / `user_sub` en mint **aún no** (fases 3–5).
+- En lab (`ASP_IDP_REQUIRED` off / sin `ASP_IDP_ISSUER`), `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
+- Con JWT IdP: `owner_sub` y `actor_sub` salen del `sub` del token; un body `owner_sub` distinto → 403.
 
 ## Cómo encaja con lo que ya hay
 
@@ -58,3 +59,22 @@ Humano (JWT IdP) ──create──► sandbox{ owner_sub, tenant_id }
          │
          └──(indirecto) guest mint OIDC ──► JWT{ sub=sandbox/…, user_sub=owner_sub, act }
 ```
+
+
+## Fase 2 — JWT IdP en el control-plane (qué cambia ops)
+
+| Variable | Default | Efecto |
+|---|---|---|
+| `ASP_IDP_ISSUER` | unset | Si vacío → IdP off (lab). Si set → valida Bearer JWT RS256. |
+| `ASP_IDP_AUDIENCE` | unset | Si set → exige `aud` (string o array). |
+| `ASP_IDP_JWKS_URL` | unset | JWKS directo; si vacío usa discovery `{issuer}/.well-known/openid-configuration`. |
+| `ASP_IDP_REQUIRED` | `0` | `1` → create/list/get/exec/destroy/events exigen JWT válido. Nodos (enroll/heartbeat/work/claim/…) **no**. |
+
+Matriz breve:
+
+| Situación | Create/exec/destroy | Node enroll/heartbeat/work |
+|---|---|---|
+| IdP off (lab) | Body/`X-ASP-Actor-Sub` OK; API key opcional | Igual que antes (bootstrap / mTLS) |
+| IdP on, token presente | `owner_sub`/`actor_sub` = token `sub`; email del claim si viene | Sin cambio (JWT humano no aplica) |
+| IdP on, token falso | **401** | Sin cambio |
+| `ASP_IDP_REQUIRED=1` sin token | **401** en rutas user-facing sandbox | Sigue sin exigir JWT humano |

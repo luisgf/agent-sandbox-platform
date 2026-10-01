@@ -8,16 +8,20 @@ import (
 	"os"
 	"strings"
 
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
 type ctxKey int
 
-const apiKeyContextKey ctxKey = 1
+const (
+	apiKeyContextKey ctxKey = 1
+	idpPrincipalKey  ctxKey = 2
+)
 
-// AuthConfig controls optional Bearer API-key middleware and mTLS route policy.
+// AuthConfig controls optional Bearer API-key middleware, IdP JWT (ADR-0007), and mTLS route policy.
 type AuthConfig struct {
-	// Require forces auth even when no keys exist (ASP_REQUIRE_API_KEY=1).
+	// Require forces API-key auth even when no keys exist (ASP_REQUIRE_API_KEY=1).
 	Require bool
 	// RequireNodeClientCert enforces a verified peer cert on node agent routes
 	// (register/heartbeat/oidc mint). Enrollment is exempt and uses the bootstrap token.
@@ -26,6 +30,10 @@ type AuthConfig struct {
 	RequireNodeClientCert bool
 	// RejectRevokedCerts checks peer cert fingerprints against the store revocation set.
 	RejectRevokedCerts bool
+	// IdP validates corporate OIDC JWTs when non-nil (ASP_IDP_ISSUER configured).
+	IdP *idp.Validator
+	// IdPRequired forces a valid IdP JWT on user-facing sandbox routes (ASP_IDP_REQUIRED=1).
+	IdPRequired bool
 }
 
 func AuthConfigFromEnv() AuthConfig {
@@ -35,6 +43,7 @@ func AuthConfigFromEnv() AuthConfig {
 		Require:               v == "1" || strings.EqualFold(v, "true"),
 		RequireNodeClientCert: clientCA != "",
 		RejectRevokedCerts:    clientCA != "",
+		IdPRequired:           idp.ConfigFromEnv().Required,
 	}
 }
 
@@ -42,6 +51,12 @@ func AuthConfigFromEnv() AuthConfig {
 func APIKeyFromContext(ctx context.Context) (store.ApiKey, bool) {
 	k, ok := ctx.Value(apiKeyContextKey).(store.ApiKey)
 	return k, ok
+}
+
+// IdPPrincipalFromContext returns the IdP JWT principal when present.
+func IdPPrincipalFromContext(ctx context.Context) (idp.Principal, bool) {
+	p, ok := ctx.Value(idpPrincipalKey).(idp.Principal)
+	return p, ok
 }
 
 // publicPaths never require API keys.
@@ -83,6 +98,28 @@ func isNodeAgentPath(path string) bool {
 	return false
 }
 
+// isUserFacingSandboxPath is the IdP JWT surface (create/list/get/exec/destroy/events).
+// Node claim/status/attest/renew-lease stay on mTLS / internal auth.
+func isUserFacingSandboxPath(path string) bool {
+	if path == "/v1/sandboxes" {
+		return true
+	}
+	if !strings.HasPrefix(path, "/v1/sandboxes/") {
+		return false
+	}
+	rest := strings.TrimPrefix(path, "/v1/sandboxes/")
+	if rest == "" {
+		return false
+	}
+	// node-internal suffixes
+	for _, suf := range []string{"/claim", "/status", "/attest", "/renew-lease"} {
+		if strings.HasSuffix(path, suf) {
+			return false
+		}
+	}
+	return true
+}
+
 // PeerCertFingerprint returns lowercase hex SHA-256 of the leaf peer cert DER, or "".
 func PeerCertFingerprint(r *http.Request) string {
 	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
@@ -92,10 +129,12 @@ func PeerCertFingerprint(r *http.Request) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// AuthMiddleware enforces Bearer API keys when required or when any keys exist.
+// AuthMiddleware enforces Bearer API keys when required or when any keys exist,
+// and validates IdP JWTs when configured (ADR-0007 phase 2).
 // /healthz, OIDC discovery/JWKS, and /v1/nodes/enroll are always public for API keys.
 // When RequireNodeClientCert is set, node agent routes require a verified peer cert.
 // When RejectRevokedCerts is set, revoked fingerprints are rejected with 401.
+// Node mTLS routes never require human IdP JWTs.
 func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +167,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Node agent routes authenticated via mTLS skip API key when client cert present.
+			// Node agent routes authenticated via mTLS skip API key / IdP when client cert present.
 			if cfg.RequireNodeClientCert && isNodeAgentPath(r.URL.Path) &&
 				r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 				next.ServeHTTP(w, r)
@@ -143,6 +182,33 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				}
 			}
 
+			raw := bearerToken(r.Header.Get("Authorization"))
+
+			// IdP JWT path: when validator configured and bearer looks like a JWT,
+			// validate and attach principal. Node-agent paths never take this branch
+			// when mTLS already short-circuited above; without mTLS, node paths still
+			// prefer API key / open lab (JWT not required).
+			if cfg.IdP != nil && idp.LooksLikeJWT(raw) && !isNodeAgentPath(r.URL.Path) {
+				p, err := cfg.IdP.Validate(raw)
+				if err != nil {
+					writeError(w, http.StatusUnauthorized, "invalid idp token")
+					return
+				}
+				ctx := context.WithValue(r.Context(), idpPrincipalKey, p)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			// ASP_IDP_REQUIRED: user-facing sandbox routes need a validated IdP JWT.
+			if cfg.IdPRequired && isUserFacingSandboxPath(r.URL.Path) {
+				if cfg.IdP == nil {
+					writeError(w, http.StatusUnauthorized, "idp not configured")
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "missing or invalid idp bearer token")
+				return
+			}
+
 			n, err := s.CountAPIKeys()
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "auth store error")
@@ -153,7 +219,6 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			raw := bearerToken(r.Header.Get("Authorization"))
 			if raw == "" {
 				writeError(w, http.StatusUnauthorized, "missing bearer token")
 				return

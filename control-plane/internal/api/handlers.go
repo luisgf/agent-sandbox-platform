@@ -70,11 +70,14 @@ type execRequest struct {
 	ActorSub string `json:"actor_sub,omitempty"`
 }
 
-// HeaderASPActorSub carries the human/service actor for lab until IdP JWT (ADR-0007).
+// HeaderASPActorSub carries the human/service actor for lab when no IdP JWT is present (ADR-0007).
 const HeaderASPActorSub = "X-ASP-Actor-Sub"
 
-// resolveActorSub prefers header, then body, then optional create-time owner fallback.
+// resolveActorSub prefers IdP JWT sub, then header, then body, then optional create-time owner fallback.
 func resolveActorSub(r *http.Request, bodyActor, ownerFallback string) string {
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {
+		return strings.TrimSpace(p.Sub)
+	}
 	if v := strings.TrimSpace(r.Header.Get(HeaderASPActorSub)); v != "" {
 		return v
 	}
@@ -92,6 +95,8 @@ type execResponse struct {
 
 // CreateSandbox validates a request and persists a sandbox.
 // With ASP_AUTO_PROVISION=1 the sync stub moves it to running; otherwise it stays requested.
+// When an IdP JWT is present (ADR-0007 phase 2), owner_sub/actor_sub come from the token sub;
+// a forged body owner_sub that disagrees is rejected. Token email fills owner_email when present.
 func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	var input store.CreateSandboxInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -100,7 +105,20 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	input.OwnerSub = strings.TrimSpace(input.OwnerSub)
 	input.OwnerEmail = strings.TrimSpace(input.OwnerEmail)
-	input.ActorSub = resolveActorSub(r, input.ActorSub, input.OwnerSub)
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {
+		sub := strings.TrimSpace(p.Sub)
+		if input.OwnerSub != "" && input.OwnerSub != sub {
+			writeError(w, http.StatusForbidden, "owner_sub does not match IdP token sub")
+			return
+		}
+		input.OwnerSub = sub
+		if email := strings.TrimSpace(p.Email); email != "" {
+			input.OwnerEmail = email
+		}
+		input.ActorSub = sub
+	} else {
+		input.ActorSub = resolveActorSub(r, input.ActorSub, input.OwnerSub)
+	}
 	sb, err := s.Store.CreateSandbox(input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {

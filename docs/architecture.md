@@ -148,7 +148,7 @@ guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}
 
 Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_attestation`.
 
-> **Gap / siguiente paso:** schema owner/actor (ADR-0007 fase 1) ya está; falta JWT IdP, RBAC, `user_sub` en mint y SSH scoped: [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
+> **Gap / siguiente paso:** schema owner/actor + JWT IdP en CP (ADR-0007 fases 1–2) ya están; falta RBAC, `user_sub` en mint y SSH scoped: [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
 
 ## Red, egress y nft
 

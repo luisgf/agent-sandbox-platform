@@ -87,7 +87,7 @@ Cliente / asp ──HTTPS+API key──► Control plane
 4. [Alcance de Kubernetes](docs/adr/0004-k8s-scope.md)
 5. [Fase 2d hardening](docs/adr/0005-fase-2d-hardening.md)
 6. [Fase 2e nft + SSH guest](docs/adr/0006-fase-2e-nft-ssh-guest.md)
-7. [Identidad multi-usuario / IdP](docs/adr/0007-multi-user-identity.md) — diseño; ver también [`docs/why-multi-user-identity.md`](docs/why-multi-user-identity.md)
+7. [Identidad multi-usuario / IdP](docs/adr/0007-multi-user-identity.md) — fases 1–2 (schema + JWT IdP); ver [`docs/why-multi-user-identity.md`](docs/why-multi-user-identity.md)
 
 ## Mapa de componentes
 

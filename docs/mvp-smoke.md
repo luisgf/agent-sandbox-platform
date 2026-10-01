@@ -86,7 +86,7 @@ curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/sandboxes \
   }'
 # → JSON con id, state="running", node_id="local-dev"
 
-> **ADR-0007 fase 1 (opcional):** puedes enviar `"owner_sub"` / `"owner_email"` en el body de create y/o el header `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; smokes existentes no cambian. Get/List/events devuelven `owner_*` y `actor_sub` cuando se informan. **Sin** JWT IdP todavía.
+> **ADR-0007 fases 1–2 (opcional):** sin IdP, puedes enviar `"owner_sub"` / `"owner_email"` en el body y/o `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; **smokes existentes no cambian** (`ASP_IDP_REQUIRED` off). Con IdP: ver § «Lab JWT IdP (fase 2)» más abajo.
 
 
 # Pin a un nodo concreto (dry-run exec):
@@ -321,3 +321,30 @@ Smoke dedicado (arranca CP en `:18081`):
 ```
 
 Ver [`why-cli-asp.md`](why-cli-asp.md).
+
+
+## Lab JWT IdP (ADR-0007 fase 2)
+
+Smokes por defecto **no** activan IdP. Para probar validación local:
+
+```bash
+# 1) Genera RSA + JWKS estático (ejemplo con openssl + jq; o usa el test helper mental)
+#    Arranca un JWKS HTTP local y apunta:
+export ASP_IDP_ISSUER="http://127.0.0.1:9999"
+export ASP_IDP_AUDIENCE="asp-api"
+export ASP_IDP_JWKS_URL="http://127.0.0.1:9999/jwks"
+# ASP_IDP_REQUIRED=0  → JWT opcional (si viene Bearer JWT se valida)
+# ASP_IDP_REQUIRED=1  → create/list/get/exec/destroy/events exigen JWT
+
+# 2) Create con token válido → owner_sub = claim sub; email del claim si existe
+curl -s -X POST http://127.0.0.1:8080/v1/sandboxes \
+  -H "Authorization: Bearer ${ASP_ID_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"tenant-demo","image_ref":"debian:bookworm-slim","cpu_millis":1000,"memory_mib":512}'
+
+# 3) JWT falso / firma mala → 401
+# 4) Body owner_sub distinto del sub del token → 403
+# 5) Rutas de nodo (enroll / heartbeat / work / claim) **no** piden JWT humano
+```
+
+Tests automatizados (RSA + JWKS estático): `go test ./internal/authn/idp/ ./internal/api/ -run IdP` en `control-plane`.
