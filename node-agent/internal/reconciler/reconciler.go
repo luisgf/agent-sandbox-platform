@@ -13,6 +13,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
@@ -59,8 +60,15 @@ type Reconciler struct {
 	Tap *tap.Manager
 
 	// SSHAgentShared is the host bridge socket path (--ssh-agent-bridge).
-	// When set, Start creates VsockDir/ssh-agent-{id}.sock → shared for virtiofs docs.
+	// When set (and no per-sandbox registry path), Start creates
+	// VsockDir/ssh-agent-{id}.sock → shared for virtiofs docs (legacy).
 	SSHAgentShared string
+
+	// SSHRegistry optional per-sandbox SSH agent upstream map (ADR-0007 phase 4).
+	// On Start, Bind(sandboxID, owner_sub) expands ASP_SSH_AGENT_SOCK_TEMPLATE;
+	// AttachSandbox ServeConn uses the resolved HostSock. Symlink targets the
+	// resolved path when non-empty.
+	SSHRegistry *sshagent.Registry
 
 	// GuestHost, when set, attaches hybrid guest→host acceptors on the CH
 	// muxer path ({vsock}_26501 / {vsock}_26502). Required for SSH agent +
@@ -191,9 +199,24 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 	}
 
+	// Per-sandbox SSH agent upstream (ADR-0007 phase 4) before hybrid attach
+	// so ServeConn sees the bound HostSock.
+	if r.SSHRegistry != nil {
+		path := r.SSHRegistry.Bind(sb.ID, sb.OwnerSub)
+		r.Logger.Info("ssh-agent upstream bound",
+			"sandbox_id", sb.ID,
+			"owner_sub", sb.OwnerSub,
+			"host_sock", path,
+			"template", r.SSHRegistry.Template != "",
+		)
+	}
+
 	// Hybrid guest→host acceptors before VMM start so CH can connect as soon
 	// as the guest dials CID 2. Distinct paths from the muxer UDS itself.
 	if err := r.attachGuestHost(sb.ID, cfg.VsockPath); err != nil {
+		if r.SSHRegistry != nil {
+			r.SSHRegistry.Unset(sb.ID)
+		}
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
@@ -288,7 +311,17 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 }
 
 func (r *Reconciler) linkSSHAgent(sandboxID string) string {
-	if r.SSHAgentShared == "" {
+	target := r.SSHAgentShared
+	if r.SSHRegistry != nil {
+		if p, ok := r.SSHRegistry.Get(sandboxID); ok {
+			if p == "" {
+				// Intentional FakeAgent — no virtiofs symlink.
+				return ""
+			}
+			target = p
+		}
+	}
+	if target == "" {
 		return ""
 	}
 	vsockDir := r.VsockDir
@@ -298,8 +331,8 @@ func (r *Reconciler) linkSSHAgent(sandboxID string) string {
 	_ = os.MkdirAll(vsockDir, 0o755)
 	link := filepath.Join(vsockDir, "ssh-agent-"+sandboxID+".sock")
 	_ = os.Remove(link)
-	if err := os.Symlink(r.SSHAgentShared, link); err != nil {
-		r.Logger.Warn("ssh-agent symlink", "link", link, "target", r.SSHAgentShared, "error", err)
+	if err := os.Symlink(target, link); err != nil {
+		r.Logger.Warn("ssh-agent symlink", "link", link, "target", target, "error", err)
 		return ""
 	}
 	return link
@@ -398,10 +431,12 @@ func (r *Reconciler) attachGuestHost(sandboxID, muxerPath string) error {
 }
 
 func (r *Reconciler) detachGuestHost(sandboxID string) {
-	if r.GuestHost == nil {
-		return
+	if r.GuestHost != nil {
+		r.GuestHost.DetachSandbox(sandboxID)
 	}
-	r.GuestHost.DetachSandbox(sandboxID)
+	if r.SSHRegistry != nil {
+		r.SSHRegistry.Unset(sandboxID)
+	}
 }
 
 // Handles returns a copy of locally tracked sandbox IDs (tests).

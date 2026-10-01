@@ -3,7 +3,7 @@
 // Port map (guest dials CID 2):
 //
 //	26500 — reserved for host→guest pod-daemon (CH hybrid CONNECT; not served here)
-//	26501 — SSH agent protocol byte-pump → SSH_AUTH_SOCK / FakeAgent
+//	26501 — SSH agent protocol byte-pump → per-sandbox HostSock / FakeAgent
 //	26502 — identity HTTP (POST /v1/tokens/oidc)
 //
 // Two host listen paths:
@@ -77,9 +77,13 @@ func (f UnixFactory) PathFor(port uint32) string {
 
 // Service accepts guest connections on SSH + identity ports.
 type Service struct {
-	Factory         ListenerFactory
-	SSHHostSock     string // SSH_AUTH_SOCK path; empty → FakeAgent
-	SSHConfirm      *sshagent.Approver // optional SignRequest confirmation gate
+	Factory     ListenerFactory
+	SSHHostSock string             // legacy node-wide SSH_AUTH_SOCK; empty → FakeAgent (global listener)
+	SSHConfirm  *sshagent.Approver // optional SignRequest confirmation gate
+	// SSHRegistry optional per-sandbox upstream map (ADR-0007 phase 4).
+	// When set, hybrid AttachSandbox ServeConn uses Registry.Lookup(sandboxID)
+	// with no process-env fallback.
+	SSHRegistry     *sshagent.Registry
 	IdentityHandler http.Handler
 	Logger          *slog.Logger
 
@@ -170,7 +174,14 @@ func (s *Service) Close() error {
 	return nil
 }
 
+// acceptSSH serves the optional global listener (legacy node-wide HostSock).
 func (s *Service) acceptSSH(ln net.Listener) {
+	s.acceptSSHUpstream(ln, s.SSHHostSock, false /* scoped */)
+}
+
+// acceptSSHUpstream pumps SSH agent to hostSock. When scoped, empty/missing
+// sock → FakeAgent (no SSH_AUTH_SOCK env fallback).
+func (s *Service) acceptSSHUpstream(ln net.Listener, hostSock string, scoped bool) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -189,9 +200,26 @@ func (s *Service) acceptSSH(ln net.Listener) {
 		}
 		go func(c net.Conn) {
 			defer c.Close()
-			sshagent.ServeConnWithConfirm(c, s.SSHHostSock, s.SSHConfirm, s.Logger)
+			if scoped {
+				sshagent.ServeConnScoped(c, hostSock, s.SSHConfirm, s.Logger)
+			} else {
+				sshagent.ServeConnWithConfirm(c, hostSock, s.SSHConfirm, s.Logger)
+			}
 		}(conn)
 	}
+}
+
+// resolveHybridSSHSock returns (hostSock, scoped) for a sandbox at Attach time.
+// scoped=true → ServeConnScoped (no process SSH_AUTH_SOCK fallback).
+func (s *Service) resolveHybridSSHSock(sandboxID string) (string, bool) {
+	if s.SSHRegistry == nil {
+		return s.SSHHostSock, false
+	}
+	if p, ok := s.SSHRegistry.Get(sandboxID); ok {
+		return p, true
+	}
+	// Unbound: Lookup → Fallback (lab) or "" when template mode.
+	return s.SSHRegistry.Lookup(sandboxID), true
 }
 
 func (s *Service) serveIdentity(ln net.Listener) {

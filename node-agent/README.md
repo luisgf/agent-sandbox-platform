@@ -32,7 +32,9 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra TAP `asp-{shortid}` (soft-fail sin perms) |
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest CID 2) |
 | `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix bajo este dir en vez de AF_VSOCK |
-| `--ssh-agent-confirm` | `ASP_SSH_AGENT_CONFIRM=1` | exige approve one-shot antes de SignRequest |
+| `--ssh-agent-confirm` | `ASP_SSH_AGENT_CONFIRM` | exige approve one-shot; default on si multi-user/template (`=0` fuerza off) |
+| `--ssh-agent-sock-template` | `ASP_SSH_AGENT_SOCK_TEMPLATE` | path template por sandbox (`{owner_sub}`/`{sandbox_id}`); missing → FakeAgent |
+| `--multi-user` | `ASP_MULTI_USER=1` (o `ASP_IDP_REQUIRED=1`) | perfil multi-user: confirm default-on |
 | `--egress-nft-redirect` / `--nft-egress-redirect` | `ASP_EGRESS_NFT_REDIRECT` / `ASP_NFT_EGRESS_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect |
 | `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `soft` (default) \| `enforce` |
 | `--nft-http-ports` | `ASP_NFT_HTTP_PORTS` | default `80,443` |
@@ -54,7 +56,9 @@ go run ./cmd/node-agent \
   --tap-auto
 ```
 
-Endpoints internos (`--agent-listen`): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con `--ssh-agent-confirm`).
+Endpoints internos (`--agent-listen`): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con confirm; body/header `actor_sub` audit).
+
+ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (ServeConnScoped, sin fallback a `SSH_AUTH_SOCK` global). Ops provisiona las keys en esa ruta; ASP no spawnea agents.
 
 Guest→host: ver [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).
 

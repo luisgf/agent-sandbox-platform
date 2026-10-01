@@ -131,7 +131,7 @@ guest herramienta ssh
   → SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
     → vsock-ssh-agent-proxy → AF_VSOCK CID 2:26501
       → node-agent host-vsock / bridge
-        → [opcional confirm gate] → SSH_AUTH_SOCK del host
+        → [confirm gate; multi-user default-on] → HostSock por sandbox (template) / FakeAgent / legacy SSH_AUTH_SOCK
 ```
 
 Nunca se copia la clave privada. Confirm: ADR-0005. Auto mount: ADR-0006.
@@ -148,7 +148,7 @@ guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}
 
 Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_attestation`.
 
-> **Gap / siguiente paso:** schema owner/actor + JWT IdP + RBAC (ADR-0007 fases 1–3) ya están; falta `user_sub` en mint y SSH scoped: [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
+> **Gap / siguiente paso:** schema/JWT/RBAC/SSH scoped MVP (ADR-0007 fases 1–4) ya están; falta `user_sub`/`act` en mint (fase 5): [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
 
 ## Red, egress y nft
 

@@ -159,6 +159,9 @@ func (s *Signer) PublicKey() *rsa.PublicKey {
 }
 
 // Mint creates a signed JWT. sub = "sandbox/{sandboxID}"; tenant/sandbox claims are authoritative.
+//
+// ADR-0007 phase 5 (not yet): accept owner_sub and emit user_sub / act claims so
+// workload tokens carry the human chain. Guest must never supply user_sub.
 func (s *Signer) Mint(tenantID, sandboxID, aud, nonce string) (string, Claims, error) {
 	if strings.TrimSpace(sandboxID) == "" {
 		return "", Claims{}, errors.New("sandbox_id required")

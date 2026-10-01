@@ -191,6 +191,9 @@ type Sandbox struct {
 	CPUMillis  int     `json:"cpu_millis"`
 	MemoryMiB  int     `json:"memory_mib"`
 	VMMProfile string  `json:"vmm_profile"`
+	// OwnerSub is the IdP subject of the sandbox creator (ADR-0007). Used to
+	// expand ASP_SSH_AGENT_SOCK_TEMPLATE for per-user SSH agent upstreams.
+	OwnerSub string `json:"owner_sub,omitempty"`
 }
 
 type workResponse struct {

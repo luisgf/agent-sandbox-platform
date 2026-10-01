@@ -222,20 +222,43 @@ func (s *Server) handleSSHAgentApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := 30 * time.Second
 	var body struct {
-		TTLSeconds int `json:"ttl_seconds"`
+		TTLSeconds int    `json:"ttl_seconds"`
+		ActorSub   string `json:"actor_sub"`
+		SandboxID  string `json:"sandbox_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.TTLSeconds > 0 {
 		ttl = time.Duration(body.TTLSeconds) * time.Second
 	}
+	actor := body.ActorSub
+	if actor == "" {
+		actor = r.Header.Get("X-ASP-Actor-Sub")
+	}
 	token, exp := s.SSHApprover.Approve(ttl)
+	log := s.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Info("ssh-agent approve issued",
+		"actor_sub", actor,
+		"sandbox_id", body.SandboxID,
+		"expires_at", exp.UTC().Format(time.RFC3339),
+		"one_shot", true,
+	)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	out := map[string]any{
 		"token":      token,
 		"expires_at": exp.UTC().Format(time.RFC3339),
 		"one_shot":   true,
 		"note":       "next SignRequest on the bridged agent consumes this approval",
-	})
+	}
+	if actor != "" {
+		out["actor_sub"] = actor
+	}
+	if body.SandboxID != "" {
+		out["sandbox_id"] = body.SandboxID
+	}
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {

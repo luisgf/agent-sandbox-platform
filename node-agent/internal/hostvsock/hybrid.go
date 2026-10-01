@@ -23,6 +23,9 @@ func HybridGuestPath(muxerPath string, port uint32) string {
 // sandboxHybrid holds per-sandbox hybrid guest→host listeners.
 type sandboxHybrid struct {
 	muxerPath string
+	sandboxID string
+	hostSock  string // resolved upstream at Attach; empty + scoped → FakeAgent
+	scoped    bool   // true → ServeConnScoped (no env SSH_AUTH_SOCK fallback)
 	sshLn     net.Listener
 	idLn      net.Listener
 }
@@ -58,7 +61,15 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 		return fmt.Errorf("hybrid listen identity %s: %w", idPath, err)
 	}
 
-	h := &sandboxHybrid{muxerPath: muxerPath, sshLn: sshLn, idLn: idLn}
+	hostSock, scoped := s.resolveHybridSSHSock(sandboxID)
+	h := &sandboxHybrid{
+		muxerPath: muxerPath,
+		sandboxID: sandboxID,
+		hostSock:  hostSock,
+		scoped:    scoped,
+		sshLn:     sshLn,
+		idLn:      idLn,
+	}
 
 	s.mu.Lock()
 	if s.hybrids == nil {
@@ -79,7 +90,7 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 		return fmt.Errorf("hostvsock service closed")
 	}
 
-	go s.acceptSSH(sshLn)
+	go s.acceptSSHUpstream(sshLn, hostSock, scoped)
 	if s.IdentityHandler != nil {
 		go s.serveIdentity(idLn)
 	} else {
@@ -91,6 +102,8 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 		"muxer", muxerPath,
 		"ssh_path", sshPath,
 		"identity_path", idPath,
+		"ssh_host_sock", hostSock,
+		"ssh_scoped", scoped,
 	)
 	return nil
 }
@@ -136,4 +149,15 @@ func (s *Service) closeAllHybridsLocked() {
 		closeHybrid(h)
 		delete(s.hybrids, id)
 	}
+}
+
+// HostSockFor returns the resolved SSH upstream for an attached sandbox (tests).
+func (s *Service) HostSockFor(sandboxID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, ok := s.hybrids[sandboxID]
+	if !ok || h == nil {
+		return "", false
+	}
+	return h.hostSock, true
 }

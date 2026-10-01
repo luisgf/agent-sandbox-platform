@@ -1,6 +1,6 @@
 # ADR-0007: Identidad multi-usuario (humano ↔ sandbox)
 
-- **Estado:** Aceptada — **fases 1–3 implementadas** (schema/audit + IdP JWT + RBAC); fases 4–5 pendientes (SSH scoped, workload `user_sub`)
+- **Estado:** Aceptada — **fases 1–4 implementadas** (schema/audit + IdP JWT + RBAC + SSH scoped MVP); fase 5 pendiente (workload `user_sub`)
 - **Fecha:** 2026-10
 - **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [`../why-multi-user-identity.md`](../why-multi-user-identity.md), [`../architecture.md`](../architecture.md), [`../roadmap.md`](../roadmap.md) (§ readiness corporativa)
 - **Extiende:** el modelo de “identidad” de ADR-0003 (tenant + sandbox + nodo) con **sujeto humano** del IdP corporativo
@@ -147,7 +147,21 @@ El bridge global actual es **inseguro para multi-usuario real**. Tres opciones, 
 | **B. Confirm gate default-on + approve atado a actor** | `--ssh-agent-confirm` default en multi-user; `POST …/approve` exige JWT y comprueba que el actor es owner/admin del sandbox que originó el SignRequest | Reusa código de ADR-0005; auditable | Sigue siendo *una* keyring host si el sock es compartido; solo añade fricción + audit |
 | **C. Session agent** | Al create/attach, el CP/node-agent lanza un `ssh-agent` efímero, carga solo las keys de la sesión (via SSH agent forwarding del cliente o secret broker), lo destruye al stop | Blindaje temporal; no reutiliza el agent del operador del host | Más piezas; UX de carga de keys |
 
-**Decisión de diseño:** adoptar **B como default obligatorio** en cuanto haya >1 usuario humano por nodo, y **A o C como objetivo** antes de declarar “corporate ready” para SSH. Documentar explícitamente: *bridge global + un solo `SSH_AUTH_SOCK` de operador = no multi-user-safe*.
+**Decisión de diseño:** adoptar **B como default obligatorio** en cuanto haya >1 usuario humano por nodo, y **A (template/path por owner_sub)** como MVP de fase 4. **C** (spawn de agent efímero) queda fuera de alcance de esta fase. Documentar explícitamente: *sin template, bridge global + un solo `SSH_AUTH_SOCK` de operador = no multi-user-safe*.
+
+#### Fase 4 — implementación MVP (2026-10)
+
+| Pieza | Comportamiento |
+|---|---|
+| `sshagent.Registry` | `Bind(sandboxID, owner_sub)` → path; `Lookup` / `Scoped` |
+| Flag / env | `ASP_SSH_AGENT_SOCK_TEMPLATE=/run/asp/ssh-agents/{owner_sub}.sock` |
+| `hostvsock.AttachSandbox` | ServeConnScoped con HostSock del registry (no env fallback) |
+| Symlink | `/run/asp/ssh-agent-{id}.sock` → path resuelto (virtiofs docs) |
+| Confirm | Default-on si `ASP_MULTI_USER=1` o `ASP_IDP_REQUIRED=1` o template set; `ASP_SSH_AGENT_CONFIRM=0` fuerza off |
+| Approve | `POST …/ssh-agent/approve` acepta `actor_sub` / `X-ASP-Actor-Sub` + `sandbox_id` (audit log) |
+| Fallback | Path ausente o bind vacío → **FakeAgent** (sin claves) |
+
+**Límite honesto:** ASP no crea ni carga claves en el agent del usuario; ops debe materializar el UDS (ssh-agent forwarding, vault, 1Password, …) en la ruta del template.
 
 ## Alternativas consideradas
 
@@ -179,7 +193,7 @@ El bridge global actual es **inseguro para multi-usuario real**. Tres opciones, 
 ### Límites honestos (no-goals de este ADR)
 
 - **No** hay equivalencia guest Linux UID ↔ humano.
-- **No** prometemos que el bridge SSH global actual sea seguro con varios usuarios; hay que pasar a sesión/scoped (fase 4).
+- **No** prometemos que el bridge SSH global (sin template) sea seguro con varios usuarios; fase 4 aporta template/registry + confirm default-on, no un spawner de agents.
 - **No** implementamos IdP embebido; solo validamos tokens de IdPs externos.
 - **No** sustituimos mTLS de nodo por JWT humano.
 - Attestation sigue siendo software-signed salvo plug-in futuro (ADR-0003 / 2c).
@@ -209,7 +223,7 @@ El bridge global actual es **inseguro para multi-usuario real**. Tres opciones, 
 | **(1) Schema + audit** | `owner_sub` / `owner_email`; eventos con `actor_sub` (API key → placeholder `apikey:…` o header de lab) | ✅ **Hecho:** migración `007_multi_user_identity.sql`; Create acepta `owner_sub`/`owner_email` + `X-ASP-Actor-Sub` (lab: vacío OK); create/exec/destroy auditan `actor_sub` | `store`, migrations, `api/handlers` |
 | **(2) IdP JWT en CP API** | Validar Bearer JWT (`ASP_IDP_*`); create/actor desde token; `ASP_IDP_REQUIRED=1` exige JWT en rutas user-facing | ✅ **Hecho:** JWKS/discovery; iss/aud/exp/sig; lab default off | `internal/authn/idp`, `api/auth.go`, handlers |
 | **(3) RBAC** | Roles admin/operator/viewer desde claims IdP; matriz de arriba | ✅ **Hecho:** authz en create/list/get/exec/destroy/egress; list tenant-wide | `idp` role map + `api/authz` + handlers |
-| **(4) SSH por sesión / confirm default-on** | Confirm default en perfiles multi-user; approve ligado a actor; diseño A o C para sock | Doc bare-metal + flag; no SignRequest anónimo entre usuarios | `sshagent`, execproxy approve |
+| **(4) SSH por sesión / confirm default-on** | Confirm default en perfiles multi-user; approve con `actor_sub`; sock por sandbox vía template (opción A pragmática) | ✅ **Hecho (MVP):** `ASP_SSH_AGENT_SOCK_TEMPLATE`; registry sandbox→sock; ServeConnScoped; confirm default-on con `ASP_MULTI_USER`/`ASP_IDP_REQUIRED`/template; approve audita `actor_sub` | `sshagent.Registry`, `hostvsock.AttachSandbox`, reconciler, execproxy |
 | **(5) Workload OIDC + `user_sub`** | Mint incluye `user_sub`/`act` desde `owner_sub` | JWKS consumers ven claim; guest no puede override | `oidc.Signer`, identity proxy |
 
 Orden intencional: **no** mintir `user_sub` antes de tener owner real en store (1→2→5); **no** declarar SSH multi-user-ready solo con (2).
@@ -222,10 +236,10 @@ Orden intencional: **no** mintir `user_sub` antes de tener owner real en store (
 | **1 Schema + audit** | **Hecho** (2026-10): `owner_sub`/`owner_email` en sandbox; `actor_sub` en `sandbox_events`; Create/Get/List exponen owner; lab acepta body/`X-ASP-Actor-Sub` (vacío OK). |
 | **2 IdP JWT** | **Hecho** (2026-10): `ASP_IDP_ISSUER` / `ASP_IDP_AUDIENCE` / `ASP_IDP_JWKS_URL` (o discovery) / `ASP_IDP_REQUIRED`; valida RS256 + iss/aud/exp; `owner_sub`/`actor_sub` desde token; rechazo de `owner_sub` forjado; rutas node mTLS sin JWT humano. |
 | **3 RBAC** | **Hecho** (2026-10): roles `admin`/`operator`/`viewer` desde `ASP_IDP_ROLE_CLAIM` + `ASP_IDP_ROLE_MAP` o prefijo `asp-*`; destroy operator = propios salvo `sandbox:destroy-any`; list tenant-wide para admin/operator/viewer; IdP off = sin RBAC (lab). |
-| **4 SSH scoped** | Pendiente |
-| **5 Workload `user_sub`** | Pendiente |
+| **4 SSH scoped** | **Hecho (MVP 2026-10):** registry `sandboxID→unix path`; `ASP_SSH_AGENT_SOCK_TEMPLATE` (`{owner_sub}`/`{sandbox_id}`); hybrid ServeConnScoped (sin fallback a `SSH_AUTH_SOCK` global); symlink `ssh-agent-{id}.sock` → path resuelto; confirm default-on en multi-user; approve registra `actor_sub`. **No** spawnea ssh-agent por usuario (ops provisiona socks/keys). |
+| **5 Workload `user_sub`** | Pendiente (stub en `oidc.Signer.Mint`) |
 
-**Límite honesto fase 1–3:** sin IdP configurado (lab), el cliente *puede* enviar `owner_sub` en el body y `X-ASP-Actor-Sub`; **no hay RBAC**. Con Bearer JWT IdP presente (o `ASP_IDP_REQUIRED=1`), el CP toma `sub` del token, mapea rol desde groups/roles claims, y **aplica la matriz** (create=admin|operator; exec=owner|admin|operator; destroy=owner|admin|operator-own; egress=admin; list/get=viewer+). Tabla `tenant_memberships` aún no (membership vía claims). SSH scoped / `user_sub` = fases 4–5.
+**Límite honesto fase 1–4:** sin IdP configurado (lab), el cliente *puede* enviar `owner_sub` en el body y `X-ASP-Actor-Sub`; **no hay RBAC**. Con Bearer JWT IdP presente (o `ASP_IDP_REQUIRED=1`), el CP toma `sub` del token, mapea rol desde groups/roles claims, y **aplica la matriz**. Tabla `tenant_memberships` aún no. SSH fase 4 es **path injection / template** — no un gestor de agentes; sin template el bridge legacy (`SSH_AUTH_SOCK` global) sigue existiendo y **no** es multi-user-safe. `user_sub` en mint = fase 5.
 
 ## Referencias cruzadas
 

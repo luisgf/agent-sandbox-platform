@@ -94,9 +94,16 @@ func (a *Approver) gcLocked(now time.Time) {
 // ConfirmingServeConn proxies the SSH agent protocol to hostSock, but denies
 // SignRequest messages unless Approver.Consume succeeds (one-shot TTL approval).
 // Identities and other non-sign messages are forwarded (or FakeAgent if no host).
+// Empty hostSock falls back to process SSH_AUTH_SOCK (legacy).
 func ConfirmingServeConn(client net.Conn, hostSock string, approver *Approver, logger *slog.Logger) {
+	ConfirmingServeConnOpts(client, hostSock, approver, logger, true)
+}
+
+// ConfirmingServeConnOpts is ConfirmingServeConn with explicit env-fallback control.
+// allowEnvFallback=false is required for per-sandbox scoped upstreams (ADR-0007 §4).
+func ConfirmingServeConnOpts(client net.Conn, hostSock string, approver *Approver, logger *slog.Logger, allowEnvFallback bool) {
 	defer client.Close()
-	if hostSock == "" {
+	if hostSock == "" && allowEnvFallback {
 		hostSock = os.Getenv("SSH_AUTH_SOCK")
 	}
 	var upstream net.Conn

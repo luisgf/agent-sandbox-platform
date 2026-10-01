@@ -106,17 +106,31 @@ func (b *Bridge) handle(client net.Conn) {
 
 // ServeConn handles one SSH agent client: byte-pumps to hostSock when present,
 // otherwise FakeAgent. Used by Bridge and hostvsock guest→host port 26501.
+// Empty hostSock falls back to process SSH_AUTH_SOCK (legacy node-wide bridge).
 func ServeConn(client net.Conn, hostSock string) {
 	ServeConnWithConfirm(client, hostSock, nil, nil)
 }
 
 // ServeConnWithConfirm is ServeConn with an optional SignRequest confirmation gate.
+// Empty hostSock falls back to process SSH_AUTH_SOCK (legacy).
 func ServeConnWithConfirm(client net.Conn, hostSock string, confirm *Approver, logger *slog.Logger) {
+	serveConn(client, hostSock, confirm, logger, true)
+}
+
+// ServeConnScoped is ServeConn for per-sandbox upstreams (ADR-0007 phase 4).
+// Empty or missing hostSock → FakeAgent; never falls back to process SSH_AUTH_SOCK
+// (that would re-share the operator agent across sandboxes/users).
+func ServeConnScoped(client net.Conn, hostSock string, confirm *Approver, logger *slog.Logger) {
+	serveConn(client, hostSock, confirm, logger, false)
+}
+
+func serveConn(client net.Conn, hostSock string, confirm *Approver, logger *slog.Logger, allowEnvFallback bool) {
 	if confirm != nil {
-		ConfirmingServeConn(client, hostSock, confirm, logger)
+		ConfirmingServeConnOpts(client, hostSock, confirm, logger, allowEnvFallback)
 		return
 	}
-	if hostSock == "" {
+	defer client.Close()
+	if hostSock == "" && allowEnvFallback {
 		hostSock = os.Getenv("SSH_AUTH_SOCK")
 	}
 	if hostSock != "" {
@@ -126,6 +140,9 @@ func ServeConnWithConfirm(client net.Conn, hostSock string, confirm *Approver, l
 				defer upstream.Close()
 				pump(client, upstream)
 				return
+			}
+			if logger != nil {
+				logger.Warn("ssh-agent dial host sock failed; using FakeAgent", "error", err, "host_sock", hostSock)
 			}
 		}
 	}

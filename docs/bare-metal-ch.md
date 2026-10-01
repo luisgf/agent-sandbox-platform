@@ -637,6 +637,9 @@ export ASP_ENROLL_LISTEN=127.0.0.1:8081   # plaintext solo enroll
 
 ### SSH agent confirmation
 
+Multi-user (ADR-0007 fase 4): `ASP_SSH_AGENT_SOCK_TEMPLATE=/run/asp/ssh-agents/{owner_sub}.sock` + `ASP_MULTI_USER=1` (confirm default-on). Ops debe crear el UDS con las keys del usuario; path ausente → FakeAgent. Sin template = bridge global legacy (no multi-user-safe).
+
+
 ```bash
 node-agent ... --ssh-agent-confirm --ssh-agent-bridge=/run/asp/ssh-agent.sock
 # Antes de que el guest firme:

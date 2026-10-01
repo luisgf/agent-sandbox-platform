@@ -18,8 +18,8 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress/mitm"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/execproxy"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostvsock"
-	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
@@ -28,35 +28,37 @@ import (
 )
 
 type config struct {
-	ControlPlaneURL   string
-	NodeID            string
-	CHAPISocket       string
-	CHSocketDir       string
-	VMMBinary         string
-	DryRun            bool
-	Endpoint          string
-	AgentListen       string
-	Enroll            bool
-	BootstrapToken    string
-	CertDir           string
-	MTLS              bool
-	PodDaemonSock     string
-	PodDaemonPort     uint
-	HeartbeatEvery    time.Duration
-	EgressEnforce     bool
-	SSHAgentBridge    string
-	IdentityListen    string
-	DefaultSandboxID  string
-	Reconcile         bool
-	ReconcileEvery    time.Duration
-	TapAuto           bool
-	HostVsock         bool
-	HostVsockDir      string // unix factory fallback when AF_VSOCK unavailable / lab
-	EgressProxyListen string
-	EgressDNSSink     string
-	EgressMITMCA      string
-	EgressMITM        bool
+	ControlPlaneURL      string
+	NodeID               string
+	CHAPISocket          string
+	CHSocketDir          string
+	VMMBinary            string
+	DryRun               bool
+	Endpoint             string
+	AgentListen          string
+	Enroll               bool
+	BootstrapToken       string
+	CertDir              string
+	MTLS                 bool
+	PodDaemonSock        string
+	PodDaemonPort        uint
+	HeartbeatEvery       time.Duration
+	EgressEnforce        bool
+	SSHAgentBridge       string
+	IdentityListen       string
+	DefaultSandboxID     string
+	Reconcile            bool
+	ReconcileEvery       time.Duration
+	TapAuto              bool
+	HostVsock            bool
+	HostVsockDir         string // unix factory fallback when AF_VSOCK unavailable / lab
+	EgressProxyListen    string
+	EgressDNSSink        string
+	EgressMITMCA         string
+	EgressMITM           bool
 	SSHAgentConfirm      bool
+	SSHAgentSockTemplate string // ASP_SSH_AGENT_SOCK_TEMPLATE
+	MultiUser            bool   // ASP_MULTI_USER=1 → confirm default-on + scoped SSH
 	EgressNFTRedirect    bool
 	NFTEgressMode        string // soft | enforce
 	NFTDNSAction         string // redirect | drop
@@ -87,6 +89,8 @@ func main() {
 		"egress_dns_sink", cfg.EgressDNSSink,
 		"egress_mitm", cfg.EgressMITM,
 		"ssh_agent_confirm", cfg.SSHAgentConfirm,
+		"ssh_agent_sock_template", cfg.SSHAgentSockTemplate,
+		"multi_user", cfg.MultiUser,
 		"egress_nft_redirect", cfg.EgressNFTRedirect,
 		"nft_egress_mode", cfg.NFTEgressMode,
 		"guest_ssh_agent_auto", cfg.GuestSSHAgentAuto,
@@ -263,19 +267,29 @@ func main() {
 		}
 	}
 
+	// Per-sandbox SSH agent upstream registry (ADR-0007 phase 4).
+	sshFallback := os.Getenv("SSH_AUTH_SOCK")
+	sshRegistry := sshagent.NewRegistry(cfg.SSHAgentSockTemplate, sshFallback)
+	if cfg.SSHAgentSockTemplate != "" {
+		slog.Info("ssh-agent sock template enabled (per-sandbox/owner upstream)",
+			"template", cfg.SSHAgentSockTemplate,
+			"note", "missing path → FakeAgent; keys provisioned outside ASP")
+	}
+
 	var sshApprover *sshagent.Approver
 	if cfg.SSHAgentConfirm {
 		sshApprover = sshagent.NewApprover(30 * time.Second)
 		proxy.SSHApprover = sshApprover
 		slog.Info("ssh-agent confirmation gate enabled",
-			"approve", "POST /v1/internal/ssh-agent/approve")
+			"approve", "POST /v1/internal/ssh-agent/approve",
+			"multi_user", cfg.MultiUser)
 	}
 
 	var sshBridge *sshagent.Bridge
 	if cfg.SSHAgentBridge != "" {
 		sshBridge = &sshagent.Bridge{
 			ListenPath: cfg.SSHAgentBridge,
-			HostSock:   os.Getenv("SSH_AUTH_SOCK"),
+			HostSock:   sshFallback,
 			Logger:     slog.Default(),
 			Confirm:    sshApprover,
 		}
@@ -285,7 +299,7 @@ func main() {
 		}
 		defer sshBridge.Close()
 		slog.Info("ssh-agent bridge listening", "path", cfg.SSHAgentBridge,
-			"host_sock", os.Getenv("SSH_AUTH_SOCK") != "",
+			"host_sock", sshFallback != "",
 			"confirm", sshApprover != nil)
 	}
 
@@ -329,8 +343,9 @@ func main() {
 		}
 		hvSvc = &hostvsock.Service{
 			Factory:         factory,
-			SSHHostSock:     os.Getenv("SSH_AUTH_SOCK"),
+			SSHHostSock:     sshFallback,
 			SSHConfirm:      sshApprover,
+			SSHRegistry:     sshRegistry,
 			IdentityHandler: idProxy.Handler(),
 			Logger:          slog.Default(),
 		}
@@ -407,9 +422,11 @@ func main() {
 			rec.Tap = &tap.Manager{Logger: slog.Default(), SoftFail: true}
 		}
 		rec.SSHAgentShared = cfg.SSHAgentBridge
+		rec.SSHRegistry = sshRegistry
 		if hvSvc != nil {
 			rec.GuestHost = hvSvc
-			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox")
+			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox",
+				"ssh_scoped", cfg.SSHAgentSockTemplate != "" || cfg.MultiUser)
 		}
 		go rec.Run(ctx)
 	} else if cfg.DryRun {
@@ -507,7 +524,9 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.TapAuto, "tap-auto", getenv("ASP_TAP_AUTO", "") == "1", "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
 	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "guest→host SSH(26501)+identity(26502): AF_VSOCK/unix lab + per-sandbox CH hybrid {vsock}_{port}")
 	flag.StringVar(&cfg.HostVsockDir, "host-vsock-dir", os.Getenv("ASP_HOST_VSOCK_DIR"), "if set, use unix sockets under this dir instead of AF_VSOCK (lab)")
-	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", getenv("ASP_SSH_AGENT_CONFIRM", "") == "1", "require POST /v1/internal/ssh-agent/approve before SignRequest (one-shot TTL)")
+	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", false, "require POST /v1/internal/ssh-agent/approve before SignRequest (one-shot TTL); default on in multi-user")
+	flag.StringVar(&cfg.SSHAgentSockTemplate, "ssh-agent-sock-template", os.Getenv("ASP_SSH_AGENT_SOCK_TEMPLATE"), "per-sandbox SSH agent upstream path template ({owner_sub}/{sandbox_id}/{id}); missing → FakeAgent")
+	flag.BoolVar(&cfg.MultiUser, "multi-user", getenv("ASP_MULTI_USER", "") == "1" || getenv("ASP_IDP_REQUIRED", "") == "1", "multi-user profile: SSH confirm default-on + prefer scoped agent socks")
 	flag.BoolVar(&cfg.EgressNFTRedirect, "egress-nft-redirect", getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1" || getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1", "apply nftables guest HTTP+DNS redirect (see --nft-egress-mode)")
 	flag.BoolVar(&cfg.EgressNFTRedirect, "nft-egress-redirect", getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1" || getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1", "alias of --egress-nft-redirect (Fase 2e)")
 	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", "soft"), "nft redirect failure mode: soft (SoftFail) | enforce (fail hard)")
@@ -520,6 +539,10 @@ func loadConfig() config {
 	flag.Parse()
 	cfg.HeartbeatEvery = *hb
 	cfg.ReconcileEvery = *recEvery
+
+	// ADR-0007 phase 4: confirm default-on when multi-user / sock template / IdP required.
+	// ASP_SSH_AGENT_CONFIRM=0 forces off; =1 forces on; unset → multi-user default.
+	cfg.SSHAgentConfirm = sshAgentConfirmDefault(cfg)
 
 	// Fase 2e: default guest SSH auto-mount when host side is enabled, unless
 	// ASP_GUEST_SSH_AGENT_AUTO=0 was used to force-disable via guestSSHAgentAutoDefault.
@@ -562,6 +585,26 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// sshAgentConfirmDefault: ASP_SSH_AGENT_CONFIRM=1 on, =0 off;
+// unset → on when multi-user (ASP_MULTI_USER / ASP_IDP_REQUIRED / sock template).
+func sshAgentConfirmDefault(cfg config) bool {
+	v := os.Getenv("ASP_SSH_AGENT_CONFIRM")
+	switch v {
+	case "1", "true", "TRUE", "yes", "YES":
+		return true
+	case "0", "false", "FALSE", "no", "NO":
+		return false
+	}
+	// Flag explicitly passed as true via --ssh-agent-confirm without env.
+	if cfg.SSHAgentConfirm {
+		return true
+	}
+	if cfg.MultiUser || cfg.SSHAgentSockTemplate != "" {
+		return true
+	}
+	return false
 }
 
 // guestSSHAgentAutoDefault: ASP_GUEST_SSH_AGENT_AUTO=0 disables; =1 enables;

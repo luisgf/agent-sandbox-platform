@@ -139,3 +139,86 @@ func dialUnixEventually(t *testing.T, path string, timeout time.Duration) net.Co
 	t.Fatalf("dial %s: %v", path, last)
 	return nil
 }
+
+func TestHybridAttachUsesRegistrySock(t *testing.T) {
+	dir := t.TempDir()
+	up := filepath.Join(dir, "owner-alice.sock")
+	uln, err := net.Listen("unix", up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uln.Close()
+	go func() {
+		for {
+			c, err := uln.Accept()
+			if err != nil {
+				return
+			}
+			go sshagent.ServeFakeAgentConn(c)
+		}
+	}()
+
+	reg := sshagent.NewRegistry(filepath.Join(dir, "owner-{owner_sub}.sock"), "/should-not-use")
+	reg.Bind("sb-alice", "alice")
+
+	muxer := filepath.Join(dir, "vsock-alice.sock")
+	svc := &Service{
+		SkipGlobalListeners: true,
+		SSHHostSock:         "/legacy-global.sock",
+		SSHRegistry:         reg,
+	}
+	t.Setenv("SSH_AUTH_SOCK", "/env-should-not-leak.sock")
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	if err := svc.AttachSandbox("sb-alice", muxer); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.DetachSandbox("sb-alice")
+
+	got, ok := svc.HostSockFor("sb-alice")
+	if !ok || got != up {
+		t.Fatalf("HostSockFor=%q ok=%v want %q", got, ok, up)
+	}
+
+	path := HybridGuestPath(muxer, PortSSHAgent)
+	client := dialUnixEventually(t, path, 2*time.Second)
+	defer client.Close()
+	count, err := sshagent.RequestIdentities(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("count=%d", count)
+	}
+}
+
+func TestHybridAttachTemplateMissingIsFakeAgent(t *testing.T) {
+	dir := t.TempDir()
+	reg := sshagent.NewRegistry(filepath.Join(dir, "missing-{owner_sub}.sock"), "/should-not-use")
+	reg.Bind("sb-x", "nobody")
+
+	muxer := filepath.Join(dir, "vsock-x.sock")
+	svc := &Service{SkipGlobalListeners: true, SSHRegistry: reg}
+	t.Setenv("SSH_AUTH_SOCK", "") // even if set, scoped must not use env for missing path
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	if err := svc.AttachSandbox("sb-x", muxer); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.DetachSandbox("sb-x")
+
+	path := HybridGuestPath(muxer, PortSSHAgent)
+	client := dialUnixEventually(t, path, 2*time.Second)
+	defer client.Close()
+	count, err := sshagent.RequestIdentities(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("FakeAgent count=%d", count)
+	}
+}

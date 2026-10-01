@@ -34,9 +34,10 @@ Sin sujeto humano:
 ## Qué no ganamos (límites honestos)
 
 - UID de Linux en el guest **≠** empleado. No vamos a “mapear UIDs” como authz.
-- El bridge SSH **global** de hoy sigue siendo inseguro para multi-usuario hasta la fase de sesión/scoped (ADR-0007 fase 4).
+- Sin `ASP_SSH_AGENT_SOCK_TEMPLATE`, el bridge SSH **global** (`SSH_AUTH_SOCK` del operador) sigue siendo inseguro para multi-usuario.
+- Con template (fase 4): cada sandbox resuelve un UDS por `owner_sub` (o FakeAgent si falta); **no** spawneamos ssh-agent ni cargamos keys — eso es ops.
 - No hay IdP embebido ni magia SoftFail: sin JWKS/config de Entra/Okta no hay login humano.
-- Diseño aceptado; **fases 1–3 hechas** (schema/audit + JWT IdP + RBAC). SSH scoped / `user_sub` en mint **aún no** (fases 4–5).
+- Diseño aceptado; **fases 1–4 hechas** (schema/audit + JWT IdP + RBAC + SSH scoped MVP). `user_sub` en mint **aún no** (fase 5).
 - En lab (`ASP_IDP_REQUIRED` off / sin `ASP_IDP_ISSUER`), `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
 - Con JWT IdP: `owner_sub` y `actor_sub` salen del `sub` del token; un body `owner_sub` distinto → 403.
 
@@ -100,3 +101,33 @@ Matriz efectiva (IdP on + JWT presente):
 | Egress policy | no | sí | no | no |
 
 **Elección list:** tenant-wide para operator/viewer (no filtro a propios). IdP off → sin RBAC (lab/smokes iguales).
+
+
+## Fase 4 — SSH scoped (qué cambia ops)
+
+| Variable / flag | Default | Efecto |
+|---|---|---|
+| `ASP_SSH_AGENT_SOCK_TEMPLATE` / `--ssh-agent-sock-template` | unset | Si set → path por sandbox vía `{owner_sub}` / `{sandbox_id}` / `{id}`. Ausente → FakeAgent. Sin template → legacy `SSH_AUTH_SOCK` global. |
+| `ASP_MULTI_USER=1` | off | Perfil multi-user: confirm SSH default-on. |
+| `ASP_IDP_REQUIRED=1` | (CP) | En node-agent también enciende `--multi-user` heuristics → confirm default-on. |
+| `ASP_SSH_AGENT_CONFIRM` | unset | `1` fuerza on; `0` fuerza off; unset → on si multi-user/template. |
+
+Flujo:
+
+```text
+reconciler Start(sandbox{owner_sub})
+  → Registry.Bind(id, owner_sub)  // expand template
+  → AttachSandbox → ServeConnScoped(hostSock)  // no env fallback
+  → symlink /run/asp/ssh-agent-{id}.sock → hostSock (si no vacío)
+```
+
+Approve (audit):
+
+```bash
+curl -s -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \
+  -H 'Content-Type: application/json' \
+  -H 'X-ASP-Actor-Sub: user:alice' \
+  -d '{"ttl_seconds":30,"sandbox_id":"sb-1","actor_sub":"user:alice"}'
+```
+
+**Límite honesto:** no es un session-agent spawner (opción C del ADR); las claves reales deben existir en el UDS del template **antes** de que el guest firme.
