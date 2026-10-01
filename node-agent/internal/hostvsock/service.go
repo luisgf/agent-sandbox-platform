@@ -1,10 +1,16 @@
-// Package hostvsock serves guest→host services over AF_VSOCK (host CID 2).
+// Package hostvsock serves guest→host services (SSH agent + identity).
 //
 // Port map (guest dials CID 2):
 //
 //	26500 — reserved for host→guest pod-daemon (CH hybrid CONNECT; not served here)
 //	26501 — SSH agent protocol byte-pump → SSH_AUTH_SOCK / FakeAgent
 //	26502 — identity HTTP (POST /v1/tokens/oidc)
+//
+// Two host listen paths:
+//
+//  1. Optional global AF_VSOCK (or lab UnixFactory under --host-vsock-dir).
+//  2. Per-sandbox Cloud Hypervisor / Firecracker hybrid muxer sockets
+//     `{vsockMuxer}_{port}` via AttachSandbox — required for CH guest→host.
 package hostvsock
 
 import (
@@ -16,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +45,8 @@ type ListenerFactory interface {
 }
 
 // AFVsockFactory listens on Linux AF_VSOCK (requires /dev/vsock).
+// Note: Cloud Hypervisor hybrid vsock does NOT deliver guest→host connections
+// to AF_VSOCK Listen; use AttachSandbox for CH.
 type AFVsockFactory struct{}
 
 func (AFVsockFactory) Listen(port uint32) (net.Listener, error) {
@@ -74,19 +83,41 @@ type Service struct {
 	IdentityHandler http.Handler
 	Logger          *slog.Logger
 
-	mu     sync.Mutex
-	sshLn  net.Listener
-	idLn   net.Listener
-	closed bool
+	// SkipGlobalListeners, when true, Start does not open Factory listeners.
+	// Useful when only hybrid AttachSandbox paths are desired (tests / CH-only).
+	SkipGlobalListeners bool
+
+	mu      sync.Mutex
+	sshLn   net.Listener
+	idLn    net.Listener
+	hybrids map[string]*sandboxHybrid
+	closed  bool
 }
 
-// Start opens listeners and serves until Close.
+// Start opens optional global listeners and serves until Close.
+// Hybrid per-sandbox acceptors are added via AttachSandbox.
 func (s *Service) Start() error {
-	if s.Factory == nil {
-		s.Factory = AFVsockFactory{}
-	}
 	if s.Logger == nil {
 		s.Logger = slog.Default()
+	}
+	s.mu.Lock()
+	if s.hybrids == nil {
+		s.hybrids = make(map[string]*sandboxHybrid)
+	}
+	s.closed = false
+	s.mu.Unlock()
+
+	if s.SkipGlobalListeners {
+		s.Logger.Info("host vsock: hybrid-only mode (no global AF_VSOCK/unix listeners)",
+			"ssh_agent_port", PortSSHAgent,
+			"identity_port", PortIdentity,
+			"guest_host_cid", HostCID,
+		)
+		return nil
+	}
+
+	if s.Factory == nil {
+		s.Factory = AFVsockFactory{}
 	}
 	sshLn, err := s.Factory.Listen(PortSSHAgent)
 	if err != nil {
@@ -116,17 +147,20 @@ func (s *Service) Start() error {
 	return nil
 }
 
-// Close stops both listeners.
+// Close stops global and all hybrid listeners.
 func (s *Service) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	s.closeAllHybridsLocked()
 	var errs []error
 	if s.sshLn != nil {
 		errs = append(errs, s.sshLn.Close())
+		s.sshLn = nil
 	}
 	if s.idLn != nil {
 		errs = append(errs, s.idLn.Close())
+		s.idLn = nil
 	}
 	for _, e := range errs {
 		if e != nil {
@@ -140,6 +174,10 @@ func (s *Service) acceptSSH(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			// Listener closed by Close() or DetachSandbox — exit quietly.
+			if isListenerClosed(err) {
+				return
+			}
 			s.mu.Lock()
 			closed := s.closed
 			s.mu.Unlock()
@@ -183,4 +221,17 @@ func (s *Service) acceptDrain(ln net.Listener, name string) {
 		}(conn)
 		s.Logger.Warn("host-vsock: no identity handler; draining", "service", name)
 	}
+}
+
+func isListenerClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	// Some platforms still surface the historic Accept string.
+	msg := err.Error()
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "listener closed")
 }

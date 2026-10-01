@@ -17,6 +17,13 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
 
+// GuestHostAcceptor registers per-sandbox CH/Firecracker hybrid guest→host
+// listeners on {vsockMuxer}_{port}. Implemented by hostvsock.Service.
+type GuestHostAcceptor interface {
+	AttachSandbox(sandboxID, muxerPath string) error
+	DetachSandbox(sandboxID string)
+}
+
 // Handle holds per-sandbox local state after a successful Start.
 type Handle struct {
 	CID       uint32
@@ -54,6 +61,11 @@ type Reconciler struct {
 	// SSHAgentShared is the host bridge socket path (--ssh-agent-bridge).
 	// When set, Start creates VsockDir/ssh-agent-{id}.sock → shared for virtiofs docs.
 	SSHAgentShared string
+
+	// GuestHost, when set, attaches hybrid guest→host acceptors on the CH
+	// muxer path ({vsock}_26501 / {vsock}_26502). Required for SSH agent +
+	// identity under Cloud Hypervisor hybrid vsock.
+	GuestHost GuestHostAcceptor
 
 	mu      sync.Mutex
 	handles map[string]Handle
@@ -179,7 +191,19 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 	}
 
+	// Hybrid guest→host acceptors before VMM start so CH can connect as soon
+	// as the guest dials CID 2. Distinct paths from the muxer UDS itself.
+	if err := r.attachGuestHost(sb.ID, cfg.VsockPath); err != nil {
+		if r.TapAuto {
+			_ = r.tapMgr().Delete(cfg.TapDevice)
+		}
+		r.releaseCID(cfg.VsockCID)
+		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "guest-host: "+err.Error())
+		return fmt.Errorf("guest-host attach: %w", err)
+	}
+
 	if err := r.Engine.Start(ctx, cfg); err != nil {
+		r.detachGuestHost(sb.ID)
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
@@ -239,6 +263,7 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 	}
 	if had {
 		r.releaseCID(h.CID)
+		r.detachGuestHost(sb.ID)
 		if r.Registry != nil {
 			r.Registry.Unregister(sb.ID)
 		}
@@ -359,6 +384,24 @@ func (r *Reconciler) releaseCID(cid uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.freeCID = append(r.freeCID, cid)
+}
+
+func (r *Reconciler) attachGuestHost(sandboxID, muxerPath string) error {
+	if r.GuestHost == nil || muxerPath == "" {
+		return nil
+	}
+	// Skip hybrid attach in dry-run unix pod-daemon mode (no CH muxer).
+	if r.PodDaemonUnix != "" {
+		return nil
+	}
+	return r.GuestHost.AttachSandbox(sandboxID, muxerPath)
+}
+
+func (r *Reconciler) detachGuestHost(sandboxID string) {
+	if r.GuestHost == nil {
+		return
+	}
+	r.GuestHost.DetachSandbox(sandboxID)
 }
 
 // Handles returns a copy of locally tracked sandbox IDs (tests).

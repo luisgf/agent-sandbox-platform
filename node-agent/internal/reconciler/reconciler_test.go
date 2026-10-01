@@ -266,3 +266,109 @@ func TestReconcilerTapAutoAndSSHLink(t *testing.T) {
 		t.Fatalf("expected tap delete in %v", recTap.Calls)
 	}
 }
+
+type recordingGuestHost struct {
+	mu      sync.Mutex
+	attaches []string
+	detaches []string
+}
+
+func (r *recordingGuestHost) AttachSandbox(sandboxID, muxerPath string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attaches = append(r.attaches, sandboxID+"|"+muxerPath)
+	return nil
+}
+
+func (r *recordingGuestHost) DetachSandbox(sandboxID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.detaches = append(r.detaches, sandboxID)
+}
+
+func TestReconcilerAttachesHybridGuestHost(t *testing.T) {
+	var mu sync.Mutex
+	type sb struct {
+		ID    string  `json:"id"`
+		Node  *string `json:"node_id"`
+		State string  `json:"state"`
+		Image string  `json:"image_ref"`
+		CPU   int     `json:"cpu_millis"`
+		Mem   int     `json:"memory_mib"`
+	}
+	sandbox := &sb{ID: "hyb-0001-aaaa", State: "requested", Image: "img", CPU: 500, Mem: 256}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/work"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": []any{sandbox}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+			nid := "n1"
+			sandbox.Node = &nid
+			sandbox.State = "starting"
+			_ = json.NewEncoder(w).Encode(sandbox)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
+			var body struct {
+				State string `json:"state"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			sandbox.State = body.State
+			_ = json.NewEncoder(w).Encode(sandbox)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	gh := &recordingGuestHost{}
+	fake := vmm.NewFakeVMM(nil)
+	cp := cpclient.New(srv.URL, srv.Client())
+	rec := New(cp, "n1", fake, nil, time.Hour)
+	rec.VsockDir = dir
+	rec.GuestHost = gh
+	rec.tick(context.Background())
+
+	h, ok := rec.HandleOf("hyb-0001-aaaa")
+	if !ok {
+		t.Fatal("no handle")
+	}
+	gh.mu.Lock()
+	att := append([]string{}, gh.attaches...)
+	gh.mu.Unlock()
+	if len(att) != 1 {
+		t.Fatalf("attaches=%v", att)
+	}
+	want := "hyb-0001-aaaa|" + h.VsockPath
+	if att[0] != want {
+		t.Fatalf("attach=%q want %q", att[0], want)
+	}
+
+	sandbox.State = "stopping"
+	rec.tick(context.Background())
+	gh.mu.Lock()
+	det := append([]string{}, gh.detaches...)
+	gh.mu.Unlock()
+	if len(det) != 1 || det[0] != "hyb-0001-aaaa" {
+		t.Fatalf("detaches=%v", det)
+	}
+}
+
+func TestReconcilerSkipsHybridWhenPodDaemonUnix(t *testing.T) {
+	gh := &recordingGuestHost{}
+	rec := New(nil, "n1", vmm.NewFakeVMM(nil), nil, time.Hour)
+	rec.GuestHost = gh
+	rec.PodDaemonUnix = "/tmp/pod.sock"
+	if err := rec.attachGuestHost("sb", "/run/asp/vsock-sb.sock"); err != nil {
+		t.Fatal(err)
+	}
+	gh.mu.Lock()
+	n := len(gh.attaches)
+	gh.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("dry-run should skip hybrid attach, got %d", n)
+	}
+}

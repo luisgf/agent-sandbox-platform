@@ -86,10 +86,12 @@ Proceso privilegiado por nodo (`node-agent/`). Prepara TAP, aplica nft (soft|enf
 |---|---|
 | `--agent-listen` (default `127.0.0.1:9100`) | Exec proxy localhost (`/v1/internal/exec`) |
 | host→guest **26500** | pod-daemon HTTP (hybrid vsock CONNECT) |
-| guest→host **26501** | SSH agent pump |
-| guest→host **26502** | OIDC identity HTTP |
+| guest→host **26501** | SSH agent pump (CH: `{vsock}_{26501}` hybrid UDS) |
+| guest→host **26502** | OIDC identity HTTP (CH: `{vsock}_{26502}`) |
 | `--egress-proxy-listen` | Forward proxy allowlist |
 | `--egress-dns-sink` | DNS NXDOMAIN non-allowlisted |
+
+> Guest→host under Cloud Hypervisor: see [`why-ch-hybrid-guest-host.md`](why-ch-hybrid-guest-host.md). AF_VSOCK Listen alone is insufficient for CH hybrid muxer.
 
 ### 4. microVM
 

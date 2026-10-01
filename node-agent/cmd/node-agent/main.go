@@ -320,28 +320,30 @@ func main() {
 		_ = idLn
 	}
 
+	var hvSvc *hostvsock.Service
 	if cfg.HostVsock {
 		factory, err := hostVsockFactory(cfg)
 		if err != nil {
 			slog.Error("host-vsock factory", "error", err)
 			os.Exit(1)
 		}
-		hv := &hostvsock.Service{
+		hvSvc = &hostvsock.Service{
 			Factory:         factory,
 			SSHHostSock:     os.Getenv("SSH_AUTH_SOCK"),
 			SSHConfirm:      sshApprover,
 			IdentityHandler: idProxy.Handler(),
 			Logger:          slog.Default(),
 		}
-		if err := hv.Start(); err != nil {
+		if err := hvSvc.Start(); err != nil {
 			slog.Error("host-vsock start", "error", err)
 			os.Exit(1)
 		}
-		defer hv.Close()
+		defer hvSvc.Close()
 		slog.Info("host-vsock guest→host services up",
 			"ssh_port", hostvsock.PortSSHAgent,
 			"identity_port", hostvsock.PortIdentity,
 			"guest_dial_cid", hostvsock.HostCID,
+			"hybrid_attach", "per-sandbox on reconciler Start ({vsock}_{port})",
 		)
 	}
 
@@ -405,6 +407,10 @@ func main() {
 			rec.Tap = &tap.Manager{Logger: slog.Default(), SoftFail: true}
 		}
 		rec.SSHAgentShared = cfg.SSHAgentBridge
+		if hvSvc != nil {
+			rec.GuestHost = hvSvc
+			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox")
+		}
 		go rec.Run(ctx)
 	} else if cfg.DryRun {
 		// Legacy smoke without reconciler: one-shot FakeVMM create/boot demo.
@@ -499,7 +505,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.DefaultSandboxID, "default-sandbox-id", os.Getenv("ASP_SANDBOX_ID"), "default sandbox id for identity proxy dry-run")
 	flag.BoolVar(&cfg.Reconcile, "reconcile", getenv("ASP_RECONCILE", "") == "1", "poll control-plane work and drive VMM lifecycle")
 	flag.BoolVar(&cfg.TapAuto, "tap-auto", getenv("ASP_TAP_AUTO", "") == "1", "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
-	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "listen AF_VSOCK 26501(ssh-agent)+26502(identity) for guest→host (CID 2)")
+	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "guest→host SSH(26501)+identity(26502): AF_VSOCK/unix lab + per-sandbox CH hybrid {vsock}_{port}")
 	flag.StringVar(&cfg.HostVsockDir, "host-vsock-dir", os.Getenv("ASP_HOST_VSOCK_DIR"), "if set, use unix sockets under this dir instead of AF_VSOCK (lab)")
 	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", getenv("ASP_SSH_AGENT_CONFIRM", "") == "1", "require POST /v1/internal/ssh-agent/approve before SignRequest (one-shot TTL)")
 	flag.BoolVar(&cfg.EgressNFTRedirect, "egress-nft-redirect", getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1" || getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1", "apply nftables guest HTTP+DNS redirect (see --nft-egress-mode)")

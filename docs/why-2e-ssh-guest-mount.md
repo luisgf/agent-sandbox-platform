@@ -35,3 +35,5 @@ El host ya expone el SSH agent en AF_VSOCK CID **2** puerto **26501** (`--host-v
 - Hace falta **rebuild del rootfs** para hosts que aún no tienen el helper en la imagen.
 - Sin `--host-vsock` ni bridge, el flag auto solo advierte: el guest no tiene a quién dialar.
 - FakeAgent (0 keys) en lab sin `SSH_AUTH_SOCK` host valida protocolo, no git real.
+- Con Cloud Hypervisor, `--host-vsock` debe adjuntar listeners hybrid `{vsock}_26501`
+  (no basta AF_VSOCK Listen). Ver [`why-ch-hybrid-guest-host.md`](why-ch-hybrid-guest-host.md).

@@ -18,7 +18,7 @@ connect(UDS) → WRITE "CONNECT 26500\n" → READ "OK …\n" → HTTP
 
 Guest: `pod-daemon --listen vsock --vsock-port 26500` (AF_VSOCK `CID_ANY`).
 
-## Guest → host (SSH + identity) — AF_VSOCK CID 2
+## Guest → host (SSH + identity) — CID 2 + CH hybrid
 
 With virtio-vsock, the **host/hypervisor CID is 2**. Guest apps dial:
 
@@ -27,11 +27,26 @@ AF_VSOCK connect(cid=2, port=26501)  → SSH agent
 AF_VSOCK connect(cid=2, port=26502)  → identity HTTP
 ```
 
-Enable on the node:
+### Cloud Hypervisor / Firecracker hybrid (production)
+
+CH does **not** deliver those guest dials to host `AF_VSOCK Listen`. Instead the
+VMM connects to a host Unix socket named after the muxer path:
+
+```text
+muxer:   /run/asp/vsock-{sandboxID}.sock          (CH --vsock socket=…)
+guest→host SSH:       …/vsock-{sandboxID}.sock_26501
+guest→host identity:  …/vsock-{sandboxID}.sock_26502
+```
+
+With `--host-vsock --reconcile`, node-agent `AttachSandbox` listens on those
+paths per sandbox (before VMM start) and runs the same SSH/identity handlers.
+See [`docs/why-ch-hybrid-guest-host.md`](../docs/why-ch-hybrid-guest-host.md).
+
+### Optional global listeners (lab / non-hybrid VMM)
 
 ```bash
 node-agent --host-vsock --reconcile ...
-# Lab without /dev/vsock:
+# Lab without /dev/vsock (and dry-run):
 node-agent --host-vsock --host-vsock-dir=/run/asp ...
 # → unix sockets /run/asp/host-vsock-26501.sock and host-vsock-26502.sock
 ```
@@ -93,3 +108,39 @@ Host: `--host-vsock` (+ `--guest-ssh-agent-auto`, default on with host-vsock / s
 
 Use unix: `--pod-daemon-sock`, `--ssh-agent-bridge`, `--identity-listen`, and
 optionally `--host-vsock --host-vsock-dir=/tmp/asp-hv`.
+
+## Bare-metal demo: guest SSH agent via hybrid (26501)
+
+On the node (ncc1701d), after deploying a node-agent build with hybrid attach:
+
+```bash
+# Create sandbox, wait running, then exec into guest:
+# (adjust IDs / asp CLI as used on the host)
+
+# 1) Confirm hybrid listeners exist for the sandbox muxer:
+ls -l /run/asp/vsock-*.sock_26501 /run/asp/vsock-*.sock_26502
+
+# 2) In guest (via exec): start proxy if unit not already up
+vsock-ssh-agent-proxy -listen /run/agent-sandbox/ssh-agent.sock -cid 2 -port 26501 &
+
+# 3) REQUEST_IDENTITIES (type 11) → expect SSH_AGENT_IDENTITIES_ANSWER (type 12)
+perl -e '
+  use strict; use warnings;
+  my $sock = "/run/agent-sandbox/ssh-agent.sock";
+  use IO::Socket::UNIX;
+  my $s = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $sock)
+    or die "dial: $!";
+  # length-prefixed SSH agent: REQUEST_IDENTITIES = 11
+  my $payload = pack("C", 11);
+  print $s pack("N", length($payload)), $payload;
+  my $hdr; read($s, $hdr, 4) == 4 or die "hdr";
+  my $len = unpack("N", $hdr);
+  my $body; read($s, $body, $len) == $len or die "body";
+  my $type = unpack("C", substr($body, 0, 1));
+  print "GUEST_SSH_AGENT_OK type=$type\n";  # want 12
+  exit($type == 12 ? 0 : 1);
+'
+```
+
+Expected: `GUEST_SSH_AGENT_OK type=12` (empty identities from FakeAgent is fine
+when host has no `SSH_AUTH_SOCK`).
