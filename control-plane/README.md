@@ -42,6 +42,10 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | `ASP_IDP_AUDIENCE` | unset | Audiencia esperada del JWT (`aud`) |
 | `ASP_IDP_JWKS_URL` | unset | JWKS; si vacío → discovery desde issuer |
 | `ASP_IDP_REQUIRED` | `0` | `1` exige JWT IdP en create/list/get/exec/destroy/events |
+| `ASP_IDP_ROLE_CLAIM` | `groups` | Claim de grupos/roles para RBAC (fase 3) |
+| `ASP_IDP_ROLE_MAP` | unset | CSV `claim:role` (admin\|operator\|viewer); si set, gana sobre prefijo |
+| `ASP_IDP_ROLE_PREFIX` | `asp-` | Prefijo → rol (`asp-admin`, …) cuando no hay map |
+| `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios si el claim lo incluye |
 | `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap` tenant `default` |
 | `ASP_NODE_BOOTSTRAP_TOKEN` | unset | Token para `/v1/nodes/enroll` |
 | `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |

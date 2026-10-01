@@ -28,12 +28,22 @@ type Config struct {
 	Audience string
 	JWKSURL  string
 	Required bool
+	// RoleClaim is the JWT claim holding groups/roles (default "groups"). ASP_IDP_ROLE_CLAIM.
+	RoleClaim string
+	// RoleMap maps claim values → Role when ASP_IDP_ROLE_MAP is set (e.g. "asp-admin:admin").
+	RoleMap map[string]Role
+	// RolePrefix maps "{prefix}admin|operator|viewer" when RoleMap is empty (default "asp-").
+	RolePrefix string
+	// DestroyAnyGroup claim value that lets operators destroy any sandbox (default "sandbox:destroy-any").
+	DestroyAnyGroup string
 }
 
 // Principal is the authenticated human (or service principal) from an IdP JWT.
 type Principal struct {
-	Sub   string
-	Email string
+	Sub        string
+	Email      string
+	Role       Role
+	DestroyAny bool // operator may destroy non-owned sandboxes (ADR-0007)
 }
 
 // Validator verifies RS256 IdP JWTs against JWKS (fetched or static).
@@ -41,23 +51,25 @@ type Validator struct {
 	cfg    Config
 	client *http.Client
 
-	mu        sync.RWMutex
-	keys      map[string]*rsa.PublicKey // kid -> key; "" for single-key sets
-	keysAt    time.Time
-	cacheTTL  time.Duration
-	static    bool // keys pinned; never refetch
-	jwksURL   string
+	mu       sync.RWMutex
+	keys     map[string]*rsa.PublicKey // kid -> key; "" for single-key sets
+	keysAt   time.Time
+	cacheTTL time.Duration
+	static   bool // keys pinned; never refetch
+	jwksURL  string
 }
 
 // ConfigFromEnv reads ASP_IDP_* variables.
 // ASP_IDP_REQUIRED=0|1 (also true/yes). Discovery used when JWKS URL empty and Issuer set.
 func ConfigFromEnv() Config {
-	return Config{
+	cfg := Config{
 		Issuer:   strings.TrimSpace(os.Getenv("ASP_IDP_ISSUER")),
 		Audience: strings.TrimSpace(os.Getenv("ASP_IDP_AUDIENCE")),
 		JWKSURL:  strings.TrimSpace(os.Getenv("ASP_IDP_JWKS_URL")),
 		Required: envTruthy("ASP_IDP_REQUIRED"),
 	}
+	RoleConfigFromEnv(&cfg)
+	return cfg
 }
 
 func envTruthy(key string) bool {
@@ -78,6 +90,15 @@ func NewValidator(cfg Config) (*Validator, error) {
 	cfg.JWKSURL = strings.TrimSpace(cfg.JWKSURL)
 	if cfg.Issuer == "" {
 		return nil, errors.New("idp: issuer required")
+	}
+	if strings.TrimSpace(cfg.RoleClaim) == "" {
+		cfg.RoleClaim = defaultRoleClaim
+	}
+	if strings.TrimSpace(cfg.DestroyAnyGroup) == "" {
+		cfg.DestroyAnyGroup = defaultDestroyAnyGroup
+	}
+	if len(cfg.RoleMap) == 0 && strings.TrimSpace(cfg.RolePrefix) == "" {
+		cfg.RolePrefix = defaultRolePrefix
 	}
 	return &Validator{
 		cfg:      cfg,
@@ -298,7 +319,36 @@ func (v *Validator) Validate(token string) (Principal, error) {
 	if email == "" {
 		email = strings.TrimSpace(claims.PreferredUsername)
 	}
-	return Principal{Sub: claims.Sub, Email: email}, nil
+	roleValues := extractRoleClaim(cb, v.cfg.RoleClaim, claims)
+	role, destroyAny := v.cfg.MapRoles(roleValues)
+	return Principal{Sub: claims.Sub, Email: email, Role: role, DestroyAny: destroyAny}, nil
+}
+
+func extractRoleClaim(raw []byte, claim string, c claimsJSON) []string {
+	claim = strings.TrimSpace(claim)
+	if claim == "" {
+		claim = defaultRoleClaim
+	}
+	switch strings.ToLower(claim) {
+	case "groups":
+		return []string(c.Groups)
+	case "roles":
+		return []string(c.Roles)
+	}
+	// Custom claim name: pull from raw JSON object.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	rb, ok := m[claim]
+	if !ok {
+		return nil
+	}
+	var flex stringSliceFlex
+	if err := flex.UnmarshalJSON(rb); err != nil {
+		return nil
+	}
+	return []string(flex)
 }
 
 func (v *Validator) lookupKey(kid string) (*rsa.PublicKey, error) {
@@ -329,13 +379,15 @@ func (v *Validator) lookupKey(kid string) (*rsa.PublicKey, error) {
 }
 
 type claimsJSON struct {
-	Iss                string `json:"iss"`
-	Sub                string `json:"sub"`
-	Exp                int64  `json:"exp"`
-	Nbf                int64  `json:"nbf"`
-	Email              string `json:"email"`
-	PreferredUsername  string `json:"preferred_username"`
-	Aud                audFlex `json:"aud"`
+	Iss               string          `json:"iss"`
+	Sub               string          `json:"sub"`
+	Exp               int64           `json:"exp"`
+	Nbf               int64           `json:"nbf"`
+	Email             string          `json:"email"`
+	PreferredUsername string          `json:"preferred_username"`
+	Aud               audFlex         `json:"aud"`
+	Groups            stringSliceFlex `json:"groups"`
+	Roles             stringSliceFlex `json:"roles"`
 }
 
 // audFlex accepts JWT aud as string or []string.
@@ -416,6 +468,11 @@ func parseJWKS(raw []byte) (map[string]*rsa.PublicKey, error) {
 
 // SignTestToken builds an RS256 JWT for tests (same shape as corporate IdP tokens).
 func SignTestToken(key *rsa.PrivateKey, kid, iss, sub, aud, email string, exp time.Time) (string, error) {
+	return SignTestTokenClaims(key, kid, iss, sub, aud, email, exp, nil)
+}
+
+// SignTestTokenClaims is SignTestToken plus optional extra claims (e.g. groups/roles).
+func SignTestTokenClaims(key *rsa.PrivateKey, kid, iss, sub, aud, email string, exp time.Time, extra map[string]any) (string, error) {
 	if key == nil {
 		return "", errors.New("nil key")
 	}
@@ -434,6 +491,12 @@ func SignTestToken(key *rsa.PrivateKey, kid, iss, sub, aud, email string, exp ti
 	}
 	if email != "" {
 		claims["email"] = email
+	}
+	for k, v := range extra {
+		if k == "" || v == nil {
+			continue
+		}
+		claims[k] = v
 	}
 	hb, _ := json.Marshal(header)
 	cb, err := json.Marshal(claims)

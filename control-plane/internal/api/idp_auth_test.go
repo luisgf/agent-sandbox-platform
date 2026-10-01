@@ -34,7 +34,16 @@ func testIdP(t *testing.T) (*rsa.PrivateKey, string, *idp.Validator) {
 
 func mintUserJWT(t *testing.T, key *rsa.PrivateKey, kid, sub, email string) string {
 	t.Helper()
-	tok, err := idp.SignTestToken(key, kid, "https://idp.test.local", sub, "asp-api", email, time.Now().Add(time.Hour))
+	return mintUserJWTWithGroups(t, key, kid, sub, email, []string{"asp-operator"})
+}
+
+func mintUserJWTWithGroups(t *testing.T, key *rsa.PrivateKey, kid, sub, email string, groups []string) string {
+	t.Helper()
+	extra := map[string]any{}
+	if len(groups) > 0 {
+		extra["groups"] = groups
+	}
+	tok, err := idp.SignTestTokenClaims(key, kid, "https://idp.test.local", sub, "asp-api", email, time.Now().Add(time.Hour), extra)
 	if err != nil {
 		t.Fatal(err)
 	}

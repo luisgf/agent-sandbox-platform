@@ -86,7 +86,7 @@ curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/sandboxes \
   }'
 # → JSON con id, state="running", node_id="local-dev"
 
-> **ADR-0007 fases 1–2 (opcional):** sin IdP, puedes enviar `"owner_sub"` / `"owner_email"` en el body y/o `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; **smokes existentes no cambian** (`ASP_IDP_REQUIRED` off). Con IdP: ver § «Lab JWT IdP (fase 2)» más abajo.
+> **ADR-0007 fases 1–3 (opcional):** sin IdP, puedes enviar `"owner_sub"` / `"owner_email"` en el body y/o `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; **smokes existentes no cambian** (`ASP_IDP_REQUIRED` off). Con IdP: ver § «Lab JWT IdP (fase 2)» más abajo.
 
 
 # Pin a un nodo concreto (dry-run exec):
@@ -335,6 +335,9 @@ export ASP_IDP_AUDIENCE="asp-api"
 export ASP_IDP_JWKS_URL="http://127.0.0.1:9999/jwks"
 # ASP_IDP_REQUIRED=0  → JWT opcional (si viene Bearer JWT se valida)
 # ASP_IDP_REQUIRED=1  → create/list/get/exec/destroy/events exigen JWT
+# Fase 3 RBAC (solo con JWT): groups asp-admin|asp-operator|asp-viewer
+# export ASP_IDP_ROLE_CLAIM=groups
+# export ASP_IDP_ROLE_PREFIX=asp-
 
 # 2) Create con token válido → owner_sub = claim sub; email del claim si existe
 curl -s -X POST http://127.0.0.1:8080/v1/sandboxes \

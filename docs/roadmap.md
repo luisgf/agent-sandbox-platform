@@ -207,13 +207,13 @@ Rollout:
 |---|---|---|
 | **3u.1** | Schema `owner_sub` / `owner_email` + audit `actor_sub` | ✅ **Hecho** (migración `007_multi_user_identity.sql`; lab: vacío OK; header `X-ASP-Actor-Sub`) |
 | **3u.2** | Validación JWT IdP (Entra/Okta/OIDC) en API del CP | ✅ **Hecho** (`internal/authn/idp`; `ASP_IDP_*`; lab default off) |
-| **3u.3** | RBAC admin / operator / viewer + membership por tenant | Pendiente |
+| **3u.3** | RBAC admin / operator / viewer desde claims IdP | ✅ **Hecho** (`ASP_IDP_ROLE_*`; list tenant-wide; destroy operator=propios) |
 | **3u.4** | SSH: confirm default-on atado a actor; sock/sesión por usuario (objetivo) | Pendiente |
 | **3u.5** | Mint OIDC workload con `user_sub` / `act` desde `owner_sub` | Pendiente |
 
 **Criterio “corporate ready” (identidad):** create/exec/destroy atribuibles a humano; JWT de workload con cadena `user_sub`; SSH no compartido a ciegas entre usuarios del mismo nodo. API keys quedan como principals de servicio.
 
-**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.2** implementadas; RBAC / SSH / workload `user_sub` (3u.3+) pendientes.
+**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.3** implementadas (schema + JWT IdP + RBAC); SSH scoped / workload `user_sub` (3u.4–3u.5) pendientes.
 
 ## Fase 3 — Multi-nodo y fiabilidad
 

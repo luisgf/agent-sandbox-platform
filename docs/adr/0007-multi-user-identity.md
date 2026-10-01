@@ -1,6 +1,6 @@
 # ADR-0007: Identidad multi-usuario (humano ↔ sandbox)
 
-- **Estado:** Aceptada — **fases 1–2 implementadas** (schema/audit + IdP JWT en CP); fases 3–5 pendientes (RBAC, SSH scoped, workload `user_sub`)
+- **Estado:** Aceptada — **fases 1–3 implementadas** (schema/audit + IdP JWT + RBAC); fases 4–5 pendientes (SSH scoped, workload `user_sub`)
 - **Fecha:** 2026-10
 - **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [`../why-multi-user-identity.md`](../why-multi-user-identity.md), [`../architecture.md`](../architecture.md), [`../roadmap.md`](../roadmap.md) (§ readiness corporativa)
 - **Extiende:** el modelo de “identidad” de ADR-0003 (tenant + sandbox + nodo) con **sujeto humano** del IdP corporativo
@@ -90,6 +90,9 @@ Config ops prevista (nombres ilustrativos): `ASP_IDP_ISSUER`, `ASP_IDP_AUDIENCE`
 | Egress / tenant policy | no | sí | no | no | admin key | no |
 
 Política por defecto recomendada para destroy de `operator`: **solo sandboxes propios** salvo claim/grupo `sandbox:destroy-any`.
+
+**Elección fase 3 (list):** operator y viewer ven **tenant-wide** (todos los sandboxes del `tenant_id` consultado), no filtro a propios. ADR permitía «todos o filtro» para operator; elegimos **todos** para que un operator pueda descubrir sandboxes del tenant sin ser admin. El aislamiento fino queda en **exec/destroy** (owner o rol). Viewer es RO sobre esa misma visibilidad.
+
 
 ### Flujos
 
@@ -205,7 +208,7 @@ El bridge global actual es **inseguro para multi-usuario real**. Tres opciones, 
 |---|---|---|---|
 | **(1) Schema + audit** | `owner_sub` / `owner_email`; eventos con `actor_sub` (API key → placeholder `apikey:…` o header de lab) | ✅ **Hecho:** migración `007_multi_user_identity.sql`; Create acepta `owner_sub`/`owner_email` + `X-ASP-Actor-Sub` (lab: vacío OK); create/exec/destroy auditan `actor_sub` | `store`, migrations, `api/handlers` |
 | **(2) IdP JWT en CP API** | Validar Bearer JWT (`ASP_IDP_*`); create/actor desde token; `ASP_IDP_REQUIRED=1` exige JWT en rutas user-facing | ✅ **Hecho:** JWKS/discovery; iss/aud/exp/sig; lab default off | `internal/authn/idp`, `api/auth.go`, handlers |
-| **(3) RBAC** | Roles admin/operator/viewer + membership; matriz de arriba | Tests authz; list filtrado por rol | memberships + handlers |
+| **(3) RBAC** | Roles admin/operator/viewer desde claims IdP; matriz de arriba | ✅ **Hecho:** authz en create/list/get/exec/destroy/egress; list tenant-wide | `idp` role map + `api/authz` + handlers |
 | **(4) SSH por sesión / confirm default-on** | Confirm default en perfiles multi-user; approve ligado a actor; diseño A o C para sock | Doc bare-metal + flag; no SignRequest anónimo entre usuarios | `sshagent`, execproxy approve |
 | **(5) Workload OIDC + `user_sub`** | Mint incluye `user_sub`/`act` desde `owner_sub` | JWKS consumers ven claim; guest no puede override | `oidc.Signer`, identity proxy |
 
@@ -218,11 +221,11 @@ Orden intencional: **no** mintir `user_sub` antes de tener owner real en store (
 |---|---|
 | **1 Schema + audit** | **Hecho** (2026-10): `owner_sub`/`owner_email` en sandbox; `actor_sub` en `sandbox_events`; Create/Get/List exponen owner; lab acepta body/`X-ASP-Actor-Sub` (vacío OK). |
 | **2 IdP JWT** | **Hecho** (2026-10): `ASP_IDP_ISSUER` / `ASP_IDP_AUDIENCE` / `ASP_IDP_JWKS_URL` (o discovery) / `ASP_IDP_REQUIRED`; valida RS256 + iss/aud/exp; `owner_sub`/`actor_sub` desde token; rechazo de `owner_sub` forjado; rutas node mTLS sin JWT humano. |
-| **3 RBAC** | Pendiente |
+| **3 RBAC** | **Hecho** (2026-10): roles `admin`/`operator`/`viewer` desde `ASP_IDP_ROLE_CLAIM` + `ASP_IDP_ROLE_MAP` o prefijo `asp-*`; destroy operator = propios salvo `sandbox:destroy-any`; list tenant-wide para admin/operator/viewer; IdP off = sin RBAC (lab). |
 | **4 SSH scoped** | Pendiente |
 | **5 Workload `user_sub`** | Pendiente |
 
-**Límite honesto fase 1–2:** sin IdP configurado (lab), el cliente *puede* enviar `owner_sub` en el body y `X-ASP-Actor-Sub`. Con Bearer JWT IdP presente (o `ASP_IDP_REQUIRED=1`), el CP toma `sub` del token y **no confía** en un `owner_sub` de body que discrepe. RBAC por rol aún no (fase 3).
+**Límite honesto fase 1–3:** sin IdP configurado (lab), el cliente *puede* enviar `owner_sub` en el body y `X-ASP-Actor-Sub`; **no hay RBAC**. Con Bearer JWT IdP presente (o `ASP_IDP_REQUIRED=1`), el CP toma `sub` del token, mapea rol desde groups/roles claims, y **aplica la matriz** (create=admin|operator; exec=owner|admin|operator; destroy=owner|admin|operator-own; egress=admin; list/get=viewer+). Tabla `tenant_memberships` aún no (membership vía claims). SSH scoped / `user_sub` = fases 4–5.
 
 ## Referencias cruzadas
 

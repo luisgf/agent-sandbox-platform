@@ -36,7 +36,7 @@ Sin sujeto humano:
 - UID de Linux en el guest **≠** empleado. No vamos a “mapear UIDs” como authz.
 - El bridge SSH **global** de hoy sigue siendo inseguro para multi-usuario hasta la fase de sesión/scoped (ADR-0007 fase 4).
 - No hay IdP embebido ni magia SoftFail: sin JWKS/config de Entra/Okta no hay login humano.
-- Diseño aceptado; **fases 1–2 hechas** (schema/audit + validación JWT IdP en CP). RBAC / SSH scoped / `user_sub` en mint **aún no** (fases 3–5).
+- Diseño aceptado; **fases 1–3 hechas** (schema/audit + JWT IdP + RBAC). SSH scoped / `user_sub` en mint **aún no** (fases 4–5).
 - En lab (`ASP_IDP_REQUIRED` off / sin `ASP_IDP_ISSUER`), `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
 - Con JWT IdP: `owner_sub` y `actor_sub` salen del `sub` del token; un body `owner_sub` distinto → 403.
 
@@ -78,3 +78,25 @@ Matriz breve:
 | IdP on, token presente | `owner_sub`/`actor_sub` = token `sub`; email del claim si viene | Sin cambio (JWT humano no aplica) |
 | IdP on, token falso | **401** | Sin cambio |
 | `ASP_IDP_REQUIRED=1` sin token | **401** en rutas user-facing sandbox | Sigue sin exigir JWT humano |
+
+
+## Fase 3 — RBAC (qué cambia ops)
+
+| Variable | Default | Efecto |
+|---|---|---|
+| `ASP_IDP_ROLE_CLAIM` | `groups` | Claim del JWT con grupos/roles (`groups`, `roles`, u otro nombre). |
+| `ASP_IDP_ROLE_MAP` | unset | Mapa `claimValue:role` CSV, p.ej. `Corp.Admin:admin,Corp.Ops:operator`. Si set, tiene prioridad sobre prefijo. |
+| `ASP_IDP_ROLE_PREFIX` | `asp-` (si no hay map) | `asp-admin` → admin, `asp-operator` → operator, `asp-viewer` → viewer. También acepta roles bare (`admin`). |
+| `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Si el claim incluye este valor, un **operator** puede destroy de cualquier sandbox del tenant. |
+
+Matriz efectiva (IdP on + JWT presente):
+
+| Acción | owner | admin | operator | viewer |
+|---|---|---|---|---|
+| Create | — (pasa a owner) | sí | sí | no |
+| List / Get | sí | sí (todos) | sí (**tenant-wide**) | sí (**tenant-wide**, RO) |
+| Exec | sí | sí | sí | no |
+| Destroy | sí | sí | sí **solo propios** (o +destroy-any) | no |
+| Egress policy | no | sí | no | no |
+
+**Elección list:** tenant-wide para operator/viewer (no filtro a propios). IdP off → sin RBAC (lab/smokes iguales).

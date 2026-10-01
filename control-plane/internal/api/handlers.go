@@ -95,8 +95,9 @@ type execResponse struct {
 
 // CreateSandbox validates a request and persists a sandbox.
 // With ASP_AUTO_PROVISION=1 the sync stub moves it to running; otherwise it stays requested.
-// When an IdP JWT is present (ADR-0007 phase 2), owner_sub/actor_sub come from the token sub;
+// When an IdP JWT is present (ADR-0007 phase 2–3), owner_sub/actor_sub come from the token sub;
 // a forged body owner_sub that disagrees is rejected. Token email fills owner_email when present.
+// Phase 3: create requires admin or operator role from IdP groups/roles claims.
 func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	var input store.CreateSandboxInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -106,6 +107,10 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	input.OwnerSub = strings.TrimSpace(input.OwnerSub)
 	input.OwnerEmail = strings.TrimSpace(input.OwnerEmail)
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {
+		if !canCreate(p) {
+			forbid(w, "forbidden: create requires admin or operator role")
+			return
+		}
 		sub := strings.TrimSpace(p.Sub)
 		if input.OwnerSub != "" && input.OwnerSub != sub {
 			writeError(w, http.StatusForbidden, "owner_sub does not match IdP token sub")
@@ -147,11 +152,25 @@ func (s *Server) GetSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canGet(p, sb) {
+			forbid(w, "forbidden: insufficient role to get sandbox")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, sb)
 }
 
 // ListSandboxes returns sandboxes, optionally filtered by tenant_id.
+// With IdP JWT (phase 3): requires viewer+; list is tenant-wide for admin/operator/viewer
+// (see filterSandboxesForList / ADR-0007 phase-3 choice).
 func (s *Server) ListSandboxes(w http.ResponseWriter, r *http.Request) {
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canList(p) {
+			forbid(w, "forbidden: list requires viewer, operator, or admin role")
+			return
+		}
+	}
 	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	list, err := s.Store.ListSandboxes(tenantID)
 	if err != nil {
@@ -160,6 +179,9 @@ func (s *Server) ListSandboxes(w http.ResponseWriter, r *http.Request) {
 	}
 	if list == nil {
 		list = []store.Sandbox{}
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		list = filterSandboxesForList(p, list)
 	}
 	writeJSON(w, http.StatusOK, listSandboxesResponse{Sandboxes: list})
 }
@@ -171,13 +193,20 @@ func (s *Server) ListSandboxEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	if _, err := s.Store.GetSandbox(id); err != nil {
+	sb, err := s.Store.GetSandbox(id)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canGet(p, sb) {
+			forbid(w, "forbidden: insufficient role to list events")
+			return
+		}
 	}
 	events, err := s.Store.ListEvents(id)
 	if err != nil {
@@ -415,6 +444,12 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canExec(p, sb) {
+			forbid(w, "forbidden: exec requires owner, admin, or operator")
+			return
+		}
+	}
 	if sb.NodeID == nil || *sb.NodeID == "" {
 		writeError(w, http.StatusConflict, "sandbox has no assigned node")
 		return
@@ -530,6 +565,12 @@ func (s *Server) GetTenantEgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "tenant id required")
 		return
 	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canManageEgress(p) {
+			forbid(w, "forbidden: egress policy requires admin role")
+			return
+		}
+	}
 	rules, err := s.Store.ListEgressRules(id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -555,6 +596,12 @@ func (s *Server) PutTenantEgress(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "tenant id required")
 		return
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canManageEgress(p) {
+			forbid(w, "forbidden: egress policy requires admin role")
+			return
+		}
 	}
 	var req putEgressRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -595,6 +642,12 @@ func (s *Server) CheckTenantEgress(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "tenant id required")
 		return
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canManageEgress(p) {
+			forbid(w, "forbidden: egress policy requires admin role")
+			return
+		}
 	}
 	var req egressCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -895,6 +948,21 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorSub := resolveActorSub(r, "", "")
+	existing, err := s.Store.GetSandbox(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "sandbox not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canDestroy(p, existing) {
+			forbid(w, "forbidden: destroy requires owner, admin, or operator with destroy-any")
+			return
+		}
+	}
 	sb, err := s.Store.MarkSandboxStopping(id, actorSub)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -910,7 +978,6 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, sb)
 }
-
 
 func mustJSON(v any) json.RawMessage {
 	b, err := json.Marshal(v)

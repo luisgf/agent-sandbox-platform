@@ -121,7 +121,10 @@ func main() {
 			"issuer", idpCfg.Issuer,
 			"audience", idpCfg.Audience,
 			"jwks_url", idpCfg.JWKSURL,
-			"required", idpCfg.Required)
+			"required", idpCfg.Required,
+			"role_claim", idpCfg.RoleClaim,
+			"role_prefix", idpCfg.RolePrefix,
+			"rbac", true)
 	}
 
 	mux := http.NewServeMux()

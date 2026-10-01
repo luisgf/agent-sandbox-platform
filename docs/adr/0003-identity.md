@@ -67,7 +67,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Guest mount auto (hecho en 2e).
 - Hardware attestors vía interfaz `Attestor` (Fase 3+).
 - Política de confirm por fingerprint de clave (hoy: gate global on/off).
-- **Sujeto humano / IdP corporativo** (`owner_sub`, RBAC, workload `user_sub`): [0007](0007-multi-user-identity.md) — fase 1 schema/audit hecha; IdP JWT/RBAC/`user_sub` pendientes.
+- **Sujeto humano / IdP corporativo** (`owner_sub`, RBAC, workload `user_sub`): [0007](0007-multi-user-identity.md) — fases 1–3 (schema + JWT IdP + RBAC) hechas; SSH scoped / `user_sub` pendientes.
 
 ## Detalle de implementación en este repo
 

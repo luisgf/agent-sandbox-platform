@@ -134,3 +134,62 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatal("want required false")
 	}
 }
+
+func TestMapRolesPrefixAndMap(t *testing.T) {
+	cfg := Config{RoleClaim: "groups", RolePrefix: "asp-", DestroyAnyGroup: "sandbox:destroy-any"}
+	role, any := cfg.MapRoles([]string{"asp-viewer", "asp-operator"})
+	if role != RoleOperator || any {
+		t.Fatalf("got %q any=%v", role, any)
+	}
+	role, any = cfg.MapRoles([]string{"asp-admin", "sandbox:destroy-any"})
+	if role != RoleAdmin || !any {
+		t.Fatalf("got %q any=%v", role, any)
+	}
+	cfg.RoleMap = map[string]Role{"Corp.Admin": RoleAdmin, "Corp.Ops": RoleOperator}
+	cfg.RolePrefix = ""
+	role, _ = cfg.MapRoles([]string{"Corp.Ops"})
+	if role != RoleOperator {
+		t.Fatalf("map got %q", role)
+	}
+}
+
+func TestValidateExtractsRoleFromGroups(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const iss = "https://idp.example.test"
+	const aud = "asp-api"
+	const kid = "test-kid"
+	v, err := NewValidatorWithPublicKeys(Config{Issuer: iss, Audience: aud, RoleClaim: "groups", RolePrefix: "asp-"}, map[string]*rsa.PublicKey{kid: &key.PublicKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := SignTestTokenClaims(key, kid, iss, "user-alice", aud, "a@ex.com", time.Now().Add(time.Hour), map[string]any{
+		"groups": []string{"asp-admin", "other"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := v.Validate(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Role != RoleAdmin {
+		t.Fatalf("role=%q", p.Role)
+	}
+}
+
+func TestRoleConfigFromEnv(t *testing.T) {
+	t.Setenv("ASP_IDP_ROLE_CLAIM", "roles")
+	t.Setenv("ASP_IDP_ROLE_MAP", "g-admin:admin,g-op:operator")
+	t.Setenv("ASP_IDP_ROLE_PREFIX", "")
+	t.Setenv("ASP_IDP_DESTROY_ANY_GROUP", "destroy-world")
+	cfg := ConfigFromEnv()
+	if cfg.RoleClaim != "roles" || cfg.RoleMap["g-admin"] != RoleAdmin {
+		t.Fatalf("%+v", cfg)
+	}
+	if cfg.DestroyAnyGroup != "destroy-world" {
+		t.Fatalf("destroy=%q", cfg.DestroyAnyGroup)
+	}
+}
