@@ -1,0 +1,35 @@
+# Template: ASP control-plane (lab IdP on ncc1701d).
+# Install (on host): 
+#   sudo cp scripts/systemd/asp-control-plane.service /etc/systemd/system/
+#   # adjust User/paths if clone ≠ /home/ubuntu/src/bots
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now asp-control-plane.service
+#
+# Secrets: EnvironmentFile only — never commit ~/.secrets/asp-idp.env
+# Docs: docs/ops-idp-keycloak-lab.md
+[Unit]
+Description=ASP control-plane (Keycloak lab IdP)
+Documentation=file:///home/ubuntu/src/bots/docs/ops-idp-keycloak-lab.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/src/bots
+# Non-secret ASP_IDP_* live here (mode 600). Missing file = unit fail (lab expects IdP on).
+EnvironmentFile=/home/ubuntu/.secrets/asp-idp.env
+Environment=LISTEN_ADDR=127.0.0.1:18112
+Environment=ASP_OIDC_ISSUER=http://127.0.0.1:18112
+Environment=ASP_AUTH_REQUIRE=0
+# Optional lab PEM paths (auto-created under /tmp if absent)
+Environment=ASP_OIDC_KEY_PATH=/tmp/asp-oidc-key.pem
+Environment=ASP_ATTEST_KEY_PATH=/tmp/asp-attest-key.pem
+ExecStart=/home/ubuntu/src/bots/build/api
+Restart=on-failure
+RestartSec=2
+# Bind is loopback-only via LISTEN_ADDR; do not expose 18112 on 0.0.0.0 without TLS+authz.
+
+[Install]
+WantedBy=multi-user.target

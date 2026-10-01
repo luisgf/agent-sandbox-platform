@@ -37,7 +37,7 @@ Sin sujeto humano:
 - Sin `ASP_SSH_AGENT_SOCK_TEMPLATE`, el bridge SSH **global** (`SSH_AUTH_SOCK` del operador) sigue siendo inseguro para multi-usuario.
 - Con template (fase 4): cada sandbox resuelve un UDS por `owner_sub` (o FakeAgent si falta); **no** spawneamos ssh-agent ni cargamos keys — eso es ops.
 - No hay IdP embebido ni magia SoftFail: sin JWKS/config de Entra/Okta no hay login humano.
-- Diseño aceptado; **fases 1–5 hechas** (schema/audit + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). Ops IdP real / `tenant_memberships` / socks SSH siguen siendo gaps de despliegue.
+- Diseño aceptado; **fases 1–5 hechas** (schema/audit + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). Lab Keycloak (`asp`) cableado en ncc1701d ([ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md)). Gaps: Entra/Okta prod, `tenant_memberships`, socks SSH por usuario.
 - En lab (`ASP_IDP_REQUIRED` off / sin `ASP_IDP_ISSUER`), `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
 - Con JWT IdP: `owner_sub` y `actor_sub` salen del `sub` del token; un body `owner_sub` distinto → 403.
 
@@ -61,6 +61,27 @@ Humano (JWT IdP) ──create──► sandbox{ owner_sub, tenant_id }
          └──(indirecto) guest mint OIDC ──► JWT{ sub=sandbox/…, user_sub=owner_sub, act }
 ```
 
+
+
+
+## Lab Keycloak en ncc1701d — Por qué / Qué ganamos (ops)
+
+### Por qué
+
+El código de fases 2–3 valida JWT y RBAC, pero sin un IdP desplegado no hay prueba real de Bearer, ni contratos de `aud`/`groups`, ni disciplina de secretos fuera de git.
+
+### Qué ganamos
+
+- Realm `asp` + cliente `asp-api` + grupos `asp-*` / `sandbox:destroy-any`.
+- CP con `ASP_IDP_REQUIRED=1` en `127.0.0.1:18112` (systemd `asp-control-plane` o `scripts/run-cp-lab-idp.sh`).
+- Secretos solo en `~/.secrets/asp-idp.env` y `asp-keycloak-lab.txt` (rutas; no passwords en el repo).
+- Usuario `asp-lab` para password-grant de lab; healthz 200 + sandboxes sin token → 401.
+
+### Qué no (límites)
+
+- No sustituye Entra/Okta ni memberships SQL.
+- Admin UI: tunnel a `:8081` recomendado; el edge de `auth.luisgf.es` hoy aún proxy-a `/admin` (no asumir bloqueo).
+- Detalle completo: [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md).
 
 ## Fase 2 — JWT IdP en el control-plane (qué cambia ops)
 

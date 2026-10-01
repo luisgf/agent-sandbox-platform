@@ -68,3 +68,7 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 go test ./...
 ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
 ```
+
+## Lab IdP (Keycloak)
+
+En ncc1701d el CP lab carga `ASP_IDP_*` desde `/home/ubuntu/.secrets/asp-idp.env` (no en git). Unit: `asp-control-plane.service` → `127.0.0.1:18112`. Guía: [`docs/ops-idp-keycloak-lab.md`](../docs/ops-idp-keycloak-lab.md).

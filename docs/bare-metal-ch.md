@@ -298,6 +298,9 @@ export LISTEN_ADDR=:8443
 # o binario empaquetado + systemd
 ```
 
+Lab IdP (Keycloak realm `asp`, secretos en `~/.secrets/`, unit `asp-control-plane` en `127.0.0.1:18112`): ver [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md) y plantilla [`scripts/systemd/asp-control-plane.service`](../scripts/systemd/asp-control-plane.service).
+
+
 Notas TLS (código actual):
 
 - `ASP_TLS_CERT` + `ASP_TLS_KEY` activan HTTPS.

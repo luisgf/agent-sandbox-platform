@@ -1,0 +1,224 @@
+# Ops — Keycloak lab IdP (realm `asp`) cableado al control-plane
+
+Guía operativa del **lab** en ncc1701d: cómo el CP valida Bearer JWT de Keycloak **sin** meter secretos en git.  
+Diseño: [ADR-0007](adr/0007-multi-user-identity.md) · narrativa [why-multi-user-identity.md](why-multi-user-identity.md).
+
+## Por qué
+
+Las fases 3u.1–3u.5 del código ya saben validar JWT, mapear roles y exigir token. En lab hacía falta un IdP **real** (no mocks en test) para:
+
+1. Probar el camino `Authorization: Bearer <access_token>` de punta a punta.
+2. Fijar un contrato de claims (`iss` / `aud` / `groups`) que luego se traduzca a Entra/Okta.
+3. Separar **secretos del host** del repo (client secret, password de usuario de prueba).
+
+Sin este cableado, “IdP listo en código” sigue siendo teórico: el binary no ve JWKS ni `ASP_IDP_REQUIRED=1`.
+
+## Qué ganamos
+
+- Realm dedicado `asp` en `https://auth.luisgf.es/realms/asp` (issuer público, discovery/JWKS).
+- Cliente confidencial `asp-api` (`aud` = `asp-api`) alineado con `ASP_IDP_AUDIENCE`.
+- Grupos de lab: `asp-admin`, `asp-operator`, `asp-viewer` (+ claim `sandbox:destroy-any` para destroy operator no-propio).
+- CP en loopback `127.0.0.1:18112` con IdP **required**; `/healthz` público; rutas user-facing → **401** sin Bearer.
+- Secretos solo en el host (`~/.secrets/…`); plantilla systemd y scripts en git **sin** passwords.
+- Usuario de prueba `asp-lab` para password-grant / smokes manuales (no es cuenta de producción).
+
+## Qué no ganamos (límites honestos)
+
+| Límite | Realidad |
+|---|---|
+| No es Entra/Okta | Keycloak lab; el mapeo de grupos corporativos (`ASP_IDP_ROLE_MAP`) aún no está cableado a AD. |
+| Sin `tenant_memberships` | El rol sale del JWT; no hay tabla SQL de membership por tenant. |
+| Store memory en este lab CP | El unit actual no fuerza `DATABASE_URL`; audit/owner no persisten entre reinicios salvo que ops añada Postgres. |
+| Puerto 18112 solo loopback | No hay TLS ni reverse-proxy delante del CP lab; acceso remoto = SSH tunnel / bastion. |
+| Admin Keycloak en edge | Históricamente ADR infra pedía tunnel-only; **hoy** nginx de `auth.luisgf.es` hace `proxy_pass` de `location /` (incluye `/admin`) a `127.0.0.1:8081`. Postura segura recomendada: administrar por tunnel y **re-bloquear** `/admin` en edge cuando se pueda. |
+| Password grant | Útil para lab/CI scripts; OAuth corporativo real suele ser auth code / device / client credentials — no depender de ROPC en prod. |
+| Client secret en host | Quien lea `~/.secrets/asp-keycloak-lab.txt` puede impersonar el cliente; modo 600 + usuario `ubuntu` only. |
+| SSH multi-user | Este doc no materializa socks por `owner_sub`; ver fase 3u.4. |
+
+---
+
+## Piezas del lab
+
+```text
+Internet / operadores
+        │
+        ▼
+ https://auth.luisgf.es  ──nginx──►  Keycloak :8081 (docker infra-keycloak-1)
+        │                              realm asp, client asp-api
+        │ discovery + JWKS (público)
+        ▼
+ ~/.secrets/asp-idp.env  ──EnvironmentFile──►  asp-control-plane.service
+                                               binary ~/src/bots/build/api
+                                               LISTEN 127.0.0.1:18112
+        ▲
+        │ (password grant / tests)
+ usuario lab asp-lab + client secret  ←  ~/.secrets/asp-keycloak-lab.txt
+```
+
+### Realm / cliente / grupos
+
+| Recurso | Valor lab |
+|---|---|
+| Issuer | `https://auth.luisgf.es/realms/asp` |
+| JWKS | `https://auth.luisgf.es/realms/asp/protocol/openid-connect/certs` |
+| Cliente | `asp-api` (audiencia del access token) |
+| Grupos / roles claim | claim `groups`; prefijo `asp-` → `asp-admin` / `asp-operator` / `asp-viewer` |
+| Destroy-any | valor de grupo `sandbox:destroy-any` (`ASP_IDP_DESTROY_ANY_GROUP`) |
+| Usuario de prueba | `asp-lab` (password **solo** en el fichero de secretos del host) |
+
+### Variables `ASP_IDP_*` (no secretas; viven en el env file del host)
+
+| Variable | Valor lab típico | Efecto en CP |
+|---|---|---|
+| `ASP_IDP_ISSUER` | `https://auth.luisgf.es/realms/asp` | Enciende validador JWT |
+| `ASP_IDP_AUDIENCE` | `asp-api` | Exige `aud` |
+| `ASP_IDP_JWKS_URL` | `…/protocol/openid-connect/certs` | Evita depender solo de discovery |
+| `ASP_IDP_REQUIRED` | `1` | User-facing sin JWT → **401** |
+| `ASP_IDP_ROLE_CLAIM` | `groups` | Lee grupos del token |
+| `ASP_IDP_ROLE_PREFIX` | `asp-` | `asp-operator` → rol operator |
+| `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios |
+
+Código: `control-plane/internal/authn/idp` + middleware en `internal/api/auth.go`.
+
+### Secretos en el host (mencionar rutas, **nunca** passwords en git)
+
+| Ruta | Contenido | Uso |
+|---|---|---|
+| `/home/ubuntu/.secrets/asp-idp.env` | Solo `ASP_IDP_*` (issuer/aud/jwks/flags) | `EnvironmentFile=` del unit / `source` del runner ad-hoc |
+| `/home/ubuntu/.secrets/asp-keycloak-lab.txt` | `CLIENT_ID`, `CLIENT_SECRET`, `USER`, `PASSWORD`, issuer/JWKS | Password-grant y notas de ops; **no** lo carga el CP |
+
+Ambos: modo `600`, dueño `ubuntu`. No copiar al repo ni a issues/PRs.
+
+Plantilla conceptual de `asp-idp.env` (valores públicos OK; el fichero real ya existe en el host):
+
+```bash
+# ~/.secrets/asp-idp.env — mode 600; do not commit
+ASP_IDP_ISSUER=https://auth.luisgf.es/realms/asp
+ASP_IDP_AUDIENCE=asp-api
+ASP_IDP_JWKS_URL=https://auth.luisgf.es/realms/asp/protocol/openid-connect/certs
+ASP_IDP_REQUIRED=1
+ASP_IDP_ROLE_CLAIM=groups
+ASP_IDP_ROLE_PREFIX=asp-
+ASP_IDP_DESTROY_ANY_GROUP=sandbox:destroy-any
+```
+
+---
+
+## Cómo el CP valida Bearer
+
+1. Cliente envía `Authorization: Bearer <JWT>`.
+2. Si el bearer “parece JWT” y hay `ASP_IDP_ISSUER`, el middleware llama a `idp.Validator.Validate`:
+   - firma RS256 contra JWKS (cache ~5 min),
+   - `iss` / `aud` / `exp`,
+   - roles desde `ASP_IDP_ROLE_CLAIM` (+ prefix o `ASP_IDP_ROLE_MAP`).
+3. Principal → `owner_sub` / `actor_sub` / RBAC (ADR-0007 fases 2–3).
+4. Rutas **node** (enroll/heartbeat/work/…) **no** exigen JWT humano (mTLS / bootstrap).
+5. `/healthz`, discovery OIDC del **ASP** y JWKS de mint ASP siguen públicos.
+
+### Modo lab cuando IdP está off
+
+Si `ASP_IDP_ISSUER` vacío → validador nil:
+
+- No hay RBAC IdP.
+- Create/exec pueden usar body `owner_sub` / header `X-ASP-Actor-Sub` (smokes dry-run).
+- `ASP_IDP_REQUIRED=1` **sin** issuer configurado es configuración inválida/ops error (el unit lab siempre lleva issuer).
+
+Con IdP on + required (este lab): sin token en `GET /v1/sandboxes` → **401**  
+`{"error":"missing or invalid idp bearer token"}`.
+
+---
+
+## Admin UI Keycloak
+
+```bash
+# Desde el portátil (recomendado)
+ssh -L 8081:127.0.0.1:8081 ubuntu@ns31186228.ip-51-91-118.eu
+# Abrir http://127.0.0.1:8081/admin/ (realm asp)
+```
+
+Keycloak escucha en el host como `127.0.0.1:8081` (docker publish).  
+Nginx edge (`auth.luisgf.es`) hoy reenvía **todo** `/` a ese puerto — incluido admin (override ops 2026-07).  
+**Consecuencia:** no asumir “admin cerrado en edge” hasta que se reinstaure un `location ^~ /admin` deny/return. Mientras tanto, endurecer password de admin KC y preferir tunnel.
+
+---
+
+## systemd — `asp-control-plane.service`
+
+Plantilla en repo: [`scripts/systemd/asp-control-plane.service`](../scripts/systemd/asp-control-plane.service).
+
+| Campo | Valor lab ncc1701d |
+|---|---|
+| Unit | `asp-control-plane.service` |
+| Binary | `/home/ubuntu/src/bots/build/api` |
+| Listen | `127.0.0.1:18112` (`LISTEN_ADDR`) |
+| Env file | `/home/ubuntu/.secrets/asp-idp.env` |
+
+### Instalar / reemplazar el runner ad-hoc
+
+```bash
+# 1) Parar CP lab ad-hoc si ocupa 18112
+pkill -f '/tmp/asp-idp-lab/api' || true
+# o: kill $(cat /tmp/asp-idp-lab/cp.pid)
+
+# 2) Instalar unit (desde clone)
+sudo cp ~/src/bots/scripts/systemd/asp-control-plane.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now asp-control-plane.service
+
+# 3) Verificar
+systemctl is-active asp-control-plane.service   # active
+curl -fsS http://127.0.0.1:18112/healthz        # ok
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18112/v1/sandboxes
+# → 401 sin token
+```
+
+Runner ad-hoc (sin systemd): [`scripts/run-cp-lab-idp.sh`](../scripts/run-cp-lab-idp.sh) — útil para debug; **no** conviene junto al unit (mismo puerto).
+
+### Alternativas y consecuencias
+
+| Alternativa | Pros | Contras |
+|---|---|---|
+| **systemd + EnvironmentFile** (elegido) | Reinicio, logs journal, un solo puerto documentado | Paths absolutos del host en la plantilla |
+| Solo `run-cp-lab-idp.sh` | Rápido, copia binario a `/tmp` | Muere al logout/reboot; fácil olvidar IdP env |
+| CP en `:8080` compartido | Un solo listener | Choca con otros servicios lab en 8080; peor aislamiento IdP-required |
+| Meter secretos en unit `Environment=` | Simple | Filtra en `systemctl show` / backups; **rechazado** |
+
+---
+
+## Flujo de prueba (password grant) — sin pegar secretos
+
+```bash
+# Cargar CLIENT_ID / CLIENT_SECRET / USER / PASSWORD desde el fichero del host
+# (ops: set -a; source de un wrapper; no echo de secretos)
+TOKEN_URL='https://auth.luisgf.es/realms/asp/protocol/openid-connect/token'
+
+# Obtener access_token (ROPC lab). No registrar la respuesta en tickets.
+access=$(curl -fsS -X POST "$TOKEN_URL" \
+  -d "grant_type=password" \
+  -d "client_id=$CLIENT_ID" \
+  -d "client_secret=$CLIENT_SECRET" \
+  -d "username=$USER" \
+  -d "password=$PASSWORD" | jq -r .access_token)
+
+curl -fsS http://127.0.0.1:18112/v1/sandboxes?tenant_id=default \
+  -H "Authorization: Bearer $access"
+```
+
+Esperado: **200** (lista, posiblemente vacía) con token válido; **401** sin header.
+
+---
+
+## Checklist ops al tocar el IdP
+
+1. ¿Cambió issuer/aud/JWKS? Actualizar `~/.secrets/asp-idp.env` y `systemctl restart asp-control-plane`.
+2. ¿Rotó client secret? Solo `asp-keycloak-lab.txt` + scripts de grant; el CP **no** usa el secret (solo JWKS).
+3. ¿Nuevos grupos? Alinear nombres con `ASP_IDP_ROLE_PREFIX` o definir `ASP_IDP_ROLE_MAP`.
+4. ¿Promoción a Entra/Okta? Nuevo env file / unit drop-in; no reutilizar password grant ni el usuario `asp-lab`.
+
+## Referencias
+
+- ADR: [0007-multi-user-identity.md](adr/0007-multi-user-identity.md)
+- Por qué / qué ganamos: [why-multi-user-identity.md](why-multi-user-identity.md)
+- Roadmap readiness: [roadmap.md](roadmap.md)
+- Bare-metal general: [bare-metal-ch.md](bare-metal-ch.md)
+- Vars CP: [../control-plane/README.md](../control-plane/README.md)

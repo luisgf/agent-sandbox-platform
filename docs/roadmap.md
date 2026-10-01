@@ -213,7 +213,7 @@ Rollout:
 
 **Criterio “corporate ready” (identidad):** create/exec/destroy atribuibles a humano; JWT de workload con cadena `user_sub`; SSH no compartido a ciegas entre usuarios del mismo nodo. API keys quedan como principals de servicio.
 
-**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.5** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). Gaps ops residuales: cablear IdP real (JWKS Entra/Okta), tabla `tenant_memberships`, materializar socks SSH por usuario. SSH MVP = template/path ops, no daemon manager.
+**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.5** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). **Lab ops:** Keycloak realm `asp` @ `auth.luisgf.es` cableado al CP en ncc1701d (`asp-control-plane.service`, puerto `127.0.0.1:18112`) — ver [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md). Gaps residuales: IdP corporativo Entra/Okta, tabla `tenant_memberships`, materializar socks SSH por usuario. SSH MVP = template/path ops, no daemon manager.
 
 ## Fase 3 — Multi-nodo y fiabilidad
 
