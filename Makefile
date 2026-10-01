@@ -1,11 +1,11 @@
-.PHONY: test test-go test-rust test-guest-helper smoke smoke-proxy smoke-asp asp build pack clean help
+.PHONY: test test-go test-rust test-guest-helper smoke smoke-proxy smoke-asp smoke-asp-auth asp build pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
 ASP_BIN ?= $(ROOT)build/asp
 
 help:
-	@echo "targets: test | smoke | smoke-asp | asp | build | pack | clean"
+	@echo "targets: test | smoke | smoke-asp | smoke-asp-auth | asp | build | pack | clean"
 
 test: test-go test-rust test-guest-helper
 
@@ -30,6 +30,9 @@ smoke-proxy:
 
 smoke-asp:
 	$(ROOT)scripts/smoke-asp-cli.sh
+
+smoke-asp-auth:
+	$(ROOT)scripts/smoke-asp-auth-lab.sh
 
 asp build:
 	mkdir -p $(ROOT)build

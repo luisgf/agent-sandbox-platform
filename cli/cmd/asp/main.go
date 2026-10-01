@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/auth"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/client"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/cmdline"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/wait"
@@ -37,6 +38,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "sandbox":
 		return sandboxCmd(args[1:], stdout, stderr)
+	case "auth":
+		return authCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printRootUsage(stderr)
@@ -54,13 +57,23 @@ Usage:
   asp sandbox exec <id> (--cmd '…' | -- argv…)
   asp sandbox delete <id>
   asp sandbox run (--cmd '…' | -- argv…) [flags]
+  asp auth login|logout|status [flags]
   asp version
 
 Global env:
-  ASP_CP_URL   control-plane base URL (default http://127.0.0.1:8080)
-  ASP_API_KEY  Bearer API key (also --api-key)
+  ASP_CP_URL              control-plane base URL (default http://127.0.0.1:8080)
+  ASP_API_KEY             Bearer API key (also --api-key) — lab without IdP
+  ASP_ID_TOKEN            IdP access token (also --id-token); preferred Bearer
+  ASP_IDP_REQUIRED        if 1/true, require IdP token (auto-fetch when possible)
+  ASP_IDP_TOKEN_URL       OIDC token endpoint (or derive from ASP_IDP_ISSUER)
+  ASP_IDP_SECRETS_FILE    KEY=VALUE secrets (default ~/.secrets/asp-keycloak-lab.txt)
+  ASP_IDP_CLIENT_ID/_SECRET / ASP_IDP_USERNAME/_PASSWORD / ASP_IDP_GRANT_TYPE
 
-Demo (local dry-run stack already up — see docs/mvp-smoke.md):
+Agent one-liner (lab IdP on ncc1701d — see docs/ops-asp-agent-runner.md):
+  export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
+  asp sandbox run --tenant=default --cmd 'echo hello'
+
+Demo (local dry-run stack — docs/mvp-smoke.md):
   asp sandbox run --node-id=dev-node --cmd 'echo hello'
 `)
 }
@@ -68,6 +81,7 @@ Demo (local dry-run stack already up — see docs/mvp-smoke.md):
 type globalFlags struct {
 	cpURL   string
 	apiKey  string
+	idToken string
 	tenant  string
 	timeout time.Duration
 	jsonOut bool
@@ -76,15 +90,41 @@ type globalFlags struct {
 func addGlobalFlags(fs *flag.FlagSet, g *globalFlags) {
 	defURL := envOr("ASP_CP_URL", "http://127.0.0.1:8080")
 	defKey := os.Getenv("ASP_API_KEY")
+	defID := auth.EnvIDToken()
 	fs.StringVar(&g.cpURL, "cp-url", defURL, "control-plane base URL")
 	fs.StringVar(&g.apiKey, "api-key", defKey, "Bearer API key (env ASP_API_KEY)")
+	fs.StringVar(&g.idToken, "id-token", defID, "IdP access token (env ASP_ID_TOKEN)")
 	fs.StringVar(&g.tenant, "tenant", "tenant-demo", "tenant_id for create/list/run")
 	fs.DurationVar(&g.timeout, "timeout", 60*time.Second, "wait timeout for running state")
 	fs.BoolVar(&g.jsonOut, "json", false, "print raw JSON to stdout")
 }
 
-func newClient(g globalFlags) *client.Client {
-	return client.New(g.cpURL, g.apiKey)
+func newClient(g globalFlags) (*client.Client, error) {
+	c := client.New(g.cpURL, g.apiKey)
+	res, err := auth.ResolveBearer(context.Background(), auth.ResolveInput{
+		ExplicitToken: g.idToken,
+		APIKey:        g.apiKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	switch res.Source {
+	case "id-token", "cache", "fetch":
+		c.SetBearer(res.Bearer)
+		c.APIKey = "" // avoid dual semantics; Bearer is the IdP token
+	case "api-key":
+		// New() already set APIKey
+	}
+	return c, nil
+}
+
+func mustClient(g globalFlags, stderr io.Writer) (*client.Client, int) {
+	c, err := newClient(g)
+	if err != nil {
+		fmt.Fprintf(stderr, "auth: %v\n", err)
+		return nil, 1
+	}
+	return c, 0
 }
 
 func sandboxCmd(args []string, stdout, stderr io.Writer) int {
@@ -129,7 +169,10 @@ func cmdCreate(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	c := newClient(g)
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
 	ctx := context.Background()
 	sb, err := c.CreateSandbox(ctx, client.CreateInput{
 		TenantID:   g.tenant,
@@ -160,7 +203,10 @@ func cmdGet(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: asp sandbox get <id>")
 		return 2
 	}
-	c := newClient(g)
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
 	sb, err := c.GetSandbox(context.Background(), pos[0])
 	if err != nil {
 		fmt.Fprintf(stderr, "get: %v\n", err)
@@ -177,7 +223,10 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	c := newClient(g)
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
 	list, err := c.ListSandboxes(context.Background(), g.tenant)
 	if err != nil {
 		fmt.Fprintf(stderr, "list: %v\n", err)
@@ -209,7 +258,10 @@ func cmdDelete(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: asp sandbox delete <id>")
 		return 2
 	}
-	c := newClient(g)
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
 	sb, err := c.DeleteSandbox(context.Background(), pos[0])
 	if err != nil {
 		fmt.Fprintf(stderr, "delete: %v\n", err)
@@ -246,7 +298,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "exec: %v\n", err)
 		return 2
 	}
-	c := newClient(g)
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
 	res, err := c.Exec(context.Background(), id, client.ExecRequest{Cmd: argv, Cwd: *cwd})
 	if err != nil {
 		fmt.Fprintf(stderr, "exec: %v\n", err)
@@ -283,7 +338,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	c := newClient(g)
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
 	ctx := context.Background()
 	sb, err := c.CreateSandbox(ctx, client.CreateInput{
 		TenantID:   g.tenant,
@@ -372,6 +430,136 @@ func writeJSON(w io.Writer, v any) int {
 		return 1
 	}
 	return 0
+}
+
+
+func authCmd(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "auth subcommand required (login|logout|status)")
+		return 2
+	}
+	switch args[0] {
+	case "login":
+		return cmdAuthLogin(args[1:], stdout, stderr)
+	case "logout":
+		return cmdAuthLogout(args[1:], stdout, stderr)
+	case "status":
+		return cmdAuthStatus(args[1:], stdout, stderr)
+	case "-h", "--help", "help":
+		fmt.Fprintln(stderr, `asp auth — IdP token for control-plane
+
+  asp auth login [--print-env|--print-token] [--grant password|client_credentials]
+  asp auth logout
+  asp auth status
+
+Env: ASP_IDP_TOKEN_URL / ASP_IDP_ISSUER, ASP_IDP_SECRETS_FILE, ASP_IDP_GRANT_TYPE,
+     ASP_IDP_CLIENT_ID, ASP_IDP_CLIENT_SECRET, ASP_IDP_USERNAME, ASP_IDP_PASSWORD`)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown auth subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+func cmdAuthLogin(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("auth login", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	printEnv := fs.Bool("print-env", false, "print export ASP_ID_TOKEN=… to stdout")
+	printTok := fs.Bool("print-token", false, "print access_token only to stdout")
+	grant := fs.String("grant", "", "password|client_credentials (default: auto)")
+	secrets := fs.String("secrets", auth.DefaultSecretsPath(), "credentials KEY=VALUE file")
+	cache := fs.String("cache", auth.DefaultCachePath(), "token cache path")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	res, err := auth.ResolveBearer(context.Background(), auth.ResolveInput{
+		SecretsPath: *secrets,
+		CachePath:   *cache,
+		GrantType:   *grant,
+		ForceFetch:  true,
+		Required:    true,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "auth login: %v\n", err)
+		return 1
+	}
+	if res.Bearer == "" {
+		fmt.Fprintln(stderr, "auth login: empty token")
+		return 1
+	}
+	fmt.Fprintf(stderr, "asp: logged in (source=%s", res.Source)
+	if !res.Token.ExpiresAt().IsZero() {
+		fmt.Fprintf(stderr, " expires=%s", res.Token.ExpiresAt().Format(time.RFC3339))
+	}
+	fmt.Fprintln(stderr, ")")
+	if *printEnv {
+		fmt.Fprintf(stdout, "export ASP_ID_TOKEN=%s\n", shellSingleQuote(res.Bearer))
+		return 0
+	}
+	if *printTok {
+		fmt.Fprintln(stdout, res.Bearer)
+		return 0
+	}
+	return 0
+}
+
+func cmdAuthLogout(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("auth logout", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cache := fs.String("cache", auth.DefaultCachePath(), "token cache path")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := auth.ClearCache(*cache); err != nil {
+		fmt.Fprintf(stderr, "auth logout: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stderr, "asp: logged out (cache cleared)")
+	return 0
+}
+
+func cmdAuthStatus(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("auth status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cache := fs.String("cache", auth.DefaultCachePath(), "token cache path")
+	jsonOut := fs.Bool("json", false, "JSON status")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	type st struct {
+		HasEnvToken bool   `json:"has_env_token"`
+		CacheValid  bool   `json:"cache_valid"`
+		CachePath   string `json:"cache_path"`
+		ExpiresAt   string `json:"expires_at,omitempty"`
+		CanFetch    bool   `json:"can_fetch"`
+		IDPRequired bool   `json:"idp_required"`
+	}
+	out := st{
+		HasEnvToken: auth.EnvIDToken() != "",
+		CachePath:   *cache,
+		CanFetch:    auth.CanAutoFetch(),
+		IDPRequired: auth.IDPRequired(),
+	}
+	if tok, err := auth.LoadCache(*cache); err == nil {
+		out.CacheValid = tok.Valid(auth.DefaultSkew())
+		if exp := tok.ExpiresAt(); !exp.IsZero() {
+			out.ExpiresAt = exp.Format(time.RFC3339)
+		}
+	}
+	if *jsonOut {
+		return writeJSON(stdout, out)
+	}
+	fmt.Fprintf(stdout, "env_token=%v cache_valid=%v can_fetch=%v idp_required=%v",
+		out.HasEnvToken, out.CacheValid, out.CanFetch, out.IDPRequired)
+	if out.ExpiresAt != "" {
+		fmt.Fprintf(stdout, " expires=%s", out.ExpiresAt)
+	}
+	fmt.Fprintln(stdout)
+	return 0
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func envOr(key, def string) string {

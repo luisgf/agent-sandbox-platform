@@ -20,13 +20,19 @@ añadir un protocolo nuevo.
   destroy (salvo `--keep`). Exit code = `exit_code` del guest cuando es posible.
 - Flags/env alineados con el CP: `--cp-url` / `ASP_CP_URL`, `--api-key` /
   `ASP_API_KEY`, `--tenant`, `--timeout`, `--node-id`.
+- **IdP transparente:** `asp auth login` + auto `Authorization: Bearer` vía
+  `ASP_ID_TOKEN` / cache / password|client_credentials (`ASP_IDP_*`,
+  `~/.secrets/asp-keycloak-lab.txt`). Ver
+  [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).
 - Stderr para id/transiciones de estado; stdout para la salida del comando.
 - Tests con `httptest` (sin servidores vivos) + smoke opcional
-  [`scripts/smoke-asp-cli.sh`](../scripts/smoke-asp-cli.sh).
-- Docs en español con one-liner contra el stack dry-run local.
+  [`scripts/smoke-asp-cli.sh`](../scripts/smoke-asp-cli.sh) /
+  [`scripts/smoke-asp-auth-lab.sh`](../scripts/smoke-asp-auth-lab.sh).
+- Docs en español con one-liner contra el stack dry-run local y el lab IdP.
 
 ## Límites honestos
 
 Es un **cliente HTTP de demo/ops**, no un SDK multi-lenguaje ni un TUI. No
-streaméa exec byte-a-byte (el CP hoy devuelve JSON acumulado). Auth = la misma
-API key Bearer que el control-plane; no gestiona enrollment de nodos.
+streaméa exec byte-a-byte (el CP hoy devuelve JSON acumulado). Auth = API key
+**o** JWT IdP (lab Keycloak password grant / client_credentials); no es el
+flujo OAuth corporativo completo. No gestiona enrollment de nodos.

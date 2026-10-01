@@ -215,6 +215,15 @@ Esperado: **200** (lista, posiblemente vacía) con token válido; **401** sin he
 3. ¿Nuevos grupos? Alinear nombres con `ASP_IDP_ROLE_PREFIX` o definir `ASP_IDP_ROLE_MAP`.
 4. ¿Promoción a Entra/Okta? Nuevo env file / unit drop-in; no reutilizar password grant ni el usuario `asp-lab`.
 
+## CLI agente (Bearer automático)
+
+El binario `asp` puede obtener/refrescar el token y adjuntar `Authorization`
+sin que el agente gestione `curl` al token endpoint:
+
+- Doc: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md)
+- Comandos: `asp auth login|logout|status`; `asp sandbox *` auto-Bearer
+- Smoke: [`../scripts/smoke-asp-auth-lab.sh`](../scripts/smoke-asp-auth-lab.sh)
+
 ## Referencias
 
 - ADR: [0007-multi-user-identity.md](adr/0007-multi-user-identity.md)

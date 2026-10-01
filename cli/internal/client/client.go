@@ -15,14 +15,14 @@ import (
 
 // Sandbox mirrors control-plane store.Sandbox JSON (subset used by the CLI).
 type Sandbox struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	NodeID    *string `json:"node_id"`
-	State     string  `json:"state"`
-	ImageRef  string  `json:"image_ref"`
-	CPUMillis int     `json:"cpu_millis"`
-	MemoryMiB int     `json:"memory_mib"`
-	VMMProfile string `json:"vmm_profile"`
+	ID         string  `json:"id"`
+	TenantID   string  `json:"tenant_id"`
+	NodeID     *string `json:"node_id"`
+	State      string  `json:"state"`
+	ImageRef   string  `json:"image_ref"`
+	CPUMillis  int     `json:"cpu_millis"`
+	MemoryMiB  int     `json:"memory_mib"`
+	VMMProfile string  `json:"vmm_profile"`
 }
 
 // CreateInput is POST /v1/sandboxes body.
@@ -60,11 +60,13 @@ type apiError struct {
 // Client talks to the control-plane HTTP API.
 type Client struct {
 	BaseURL    string
-	APIKey     string
+	APIKey     string // legacy / service key; used if Bearer empty
+	Bearer     string // IdP access token (preferred Authorization value)
 	HTTPClient *http.Client
 }
 
 // New returns a Client with a sensible default timeout.
+// apiKey is used as Authorization Bearer when no IdP token is set via SetBearer.
 func New(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
@@ -73,6 +75,22 @@ func New(baseURL, apiKey string) *Client {
 			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+// SetBearer sets the preferred Authorization Bearer (IdP JWT). Empty clears it.
+func (c *Client) SetBearer(token string) {
+	c.Bearer = strings.TrimSpace(token)
+}
+
+// authHeader returns the value for Authorization, if any.
+func (c *Client) authHeader() string {
+	if t := strings.TrimSpace(c.Bearer); t != "" {
+		return "Bearer " + t
+	}
+	if k := strings.TrimSpace(c.APIKey); k != "" {
+		return "Bearer " + k
+	}
+	return ""
 }
 
 // CreateSandbox POSTs a new sandbox.
@@ -135,8 +153,8 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, want
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if ah := c.authHeader(); ah != "" {
+		req.Header.Set("Authorization", ah)
 	}
 	hc := c.HTTPClient
 	if hc == nil {

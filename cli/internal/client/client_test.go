@@ -93,3 +93,22 @@ func TestClientHTTPError(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestClientBearerPrefersIDToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Sandbox{ID: "x", State: "requested"})
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "api-key")
+	c.SetBearer("idp-jwt")
+	_, err := c.CreateSandbox(context.Background(), CreateInput{TenantID: "t", ImageRef: "i", CPUMillis: 1, MemoryMiB: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer idp-jwt" {
+		t.Fatalf("auth=%q", gotAuth)
+	}
+}

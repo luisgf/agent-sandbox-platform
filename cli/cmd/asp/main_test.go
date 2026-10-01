@@ -102,3 +102,30 @@ func TestSandboxRunKeep(t *testing.T) {
 		t.Fatalf("stderr=%q", stderr.String())
 	}
 }
+
+func TestSandboxListSendsIDToken(t *testing.T) {
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": []any{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	var stdout, stderr strings.Builder
+	code := run([]string{
+		"sandbox", "list",
+		"--cp-url", srv.URL,
+		"--id-token", "jwt-from-flag",
+		"--tenant", "default",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if gotAuth != "Bearer jwt-from-flag" {
+		t.Fatalf("auth=%q", gotAuth)
+	}
+}
