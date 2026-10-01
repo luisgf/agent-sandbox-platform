@@ -148,6 +148,8 @@ guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}
 
 Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_attestation`.
 
+> **Gap / siguiente paso (diseño):** la identidad de *cliente* hoy es API key → tenant, no humano. Multi-usuario (`owner_sub`, JWT IdP, RBAC, `user_sub` en mint, SSH scoped): [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
+
 ## Red, egress y nft
 
 Ver ADR-0002 y ADR-0006. Resumen operativo:

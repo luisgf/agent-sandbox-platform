@@ -2,6 +2,8 @@
 
 Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecimiento post-MVP (2b–2f). Cada fase hecha incluye qué entregó, por qué importaba y gaps residuales.
 
+Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md).
+
 ## Fase 0 — Esqueleto
 
 - Contratos de componentes, ADRs iniciales y esquema SQL.
@@ -193,11 +195,32 @@ Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
 - **Hecho.**
 
+## Readiness corporativa — Identidad multi-usuario (diseño)
+
+Gap explícito post-2f: la identidad operativa sigue siendo **tenant + sandbox + nodo** (API keys de CP). No hay sujeto humano, RBAC fino ni `user_sub` en tokens de workload hacia Entra/Okta. El SSH agent host-held es un bridge **global** al proceso — inseguro si varios humanos comparten nodo.
+
+**Decisión de diseño:** [ADR-0007](adr/0007-multi-user-identity.md) · narrativa [`why-multi-user-identity.md`](why-multi-user-identity.md).
+
+Rollout previsto (código **aún no**):
+
+| Subfase | Entrega |
+|---|---|
+| **3u.1** | Schema `owner_sub` / `owner_email` + audit `actor_sub` |
+| **3u.2** | Validación JWT IdP (Entra/Okta/OIDC) en API del CP |
+| **3u.3** | RBAC admin / operator / viewer + membership por tenant |
+| **3u.4** | SSH: confirm default-on atado a actor; sock/sesión por usuario (objetivo) |
+| **3u.5** | Mint OIDC workload con `user_sub` / `act` desde `owner_sub` |
+
+**Criterio “corporate ready” (identidad):** create/exec/destroy atribuibles a humano; JWT de workload con cadena `user_sub`; SSH no compartido a ciegas entre usuarios del mismo nodo. API keys quedan como principals de servicio.
+
+**Estado:** diseño aceptado (2026-10). Sin implementación de authz IdP todavía.
+
 ## Fase 3 — Multi-nodo y fiabilidad
 
 - Scheduler por capacidad; métricas/SLOs; caos; fencing BMC de producción endurecido.
 - Attestors hardware (TPM/SEV) vía `Attestor`.
 - Observabilidad de revoke, SignRequest deny, nft enforce failures.
+- Identidad multi-usuario / IdP: ver § readiness + ADR-0007 (puede avanzar en paralelo a 3u.*).
 
 ## Fase 4 — Escala y perfiles
 
@@ -211,3 +234,5 @@ Docs: [`why-cli-asp.md`](why-cli-asp.md).
 - Guardar claves privadas o refresh tokens en imágenes guest.
 - Compatibilidad con workloads que requieran `NET_ADMIN` en el guest.
 - Prometer que SoftFail nft/TAP equivale a enforce en producción.
+- Tratar UID Linux del guest como identidad humana (rechazado en ADR-0007).
+- Declarar SSH multi-user-safe mientras el bridge siga siendo un único `SSH_AUTH_SOCK` global (mitigación: ADR-0007 fase 3u.4).

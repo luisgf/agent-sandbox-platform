@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0001](0001-vmm-choice.md), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0006](0006-fase-2e-nft-ssh-guest.md) (guest mount auto), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md) (CH hybrid guest→host)
+- **Relacionados:** [0001](0001-vmm-choice.md), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0006](0006-fase-2e-nft-ssh-guest.md) (guest mount auto), [0007](0007-multi-user-identity.md) (humano ↔ sandbox / IdP), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md) (CH hybrid guest→host), [`../why-multi-user-identity.md`](../why-multi-user-identity.md)
 
 ## Contexto
 
@@ -67,6 +67,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Guest mount auto (hecho en 2e).
 - Hardware attestors vía interfaz `Attestor` (Fase 3+).
 - Política de confirm por fingerprint de clave (hoy: gate global on/off).
+- **Sujeto humano / IdP corporativo** (`owner_sub`, RBAC, workload `user_sub`): [0007](0007-multi-user-identity.md) — diseño aceptado, sin código aún.
 
 ## Detalle de implementación en este repo
 
@@ -102,7 +103,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 
 ## Referencias cruzadas
 
-- ADR-0005 (confirm), ADR-0006 (guest auto)
-- Why: [`../why-2d-ssh-confirm.md`](../why-2d-ssh-confirm.md), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md)
+- ADR-0005 (confirm), ADR-0006 (guest auto), **ADR-0007 (multi-user / IdP humano)**
+- Why: [`../why-2d-ssh-confirm.md`](../why-2d-ssh-confirm.md), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-multi-user-identity.md`](../why-multi-user-identity.md)
 - Arquitectura § Identidad: [`../architecture.md`](../architecture.md)
 - Diagrama: [`../diagram.mmd`](../diagram.mmd)
