@@ -42,6 +42,7 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 - Preferencia **vsock** sobre virtiofs (menos superficie CH, mismo mapa de puertos).
 - Lab sin KVM: `ASP_SSH_AGENT_UPSTREAM=unix:/path/to/host-vsock-26501.sock`.
 - Flag node-agent **`--guest-ssh-agent-auto`**: default on cuando hay `--host-vsock` o `--ssh-agent-bridge`; se puede forzar off con `ASP_GUEST_SSH_AGENT_AUTO=0`.
+- Con Cloud Hypervisor, el path productivo guest→host es **`AttachSandbox`** → `{vsock}_{26501}` (no basta AF_VSOCK Listen); ver why hybrid.
 - El confirm gate de 2d (`--ssh-agent-confirm`) **sigue aplicando** a firmas que llegan por host-vsock/bridge.
 
 ## Alternativas consideradas
@@ -87,7 +88,7 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 | Rootfs build | `scripts/build-guest-rootfs.sh` |
 | Guest README | `images/guest/README.md` |
 | Flag auto | `--guest-ssh-agent-auto` / `ASP_GUEST_SSH_AGENT_AUTO` |
-| Why | [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md) |
+| Why | [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md) |
 | Tests | `nftredirect/enforcer_test.go`, `vsock-ssh-agent-proxy/proxy_test.go`, `sshagent/guest_mount_test.go` |
 
 Ejemplo bare-metal (enforce):
@@ -110,6 +111,7 @@ node-agent ... --dry-run --egress-proxy-listen=:8888 \
 
 ## Límites honestos / no-goals
 
+- SSH auto diala CID 2:26501; en CH el host debe tener **`AttachSandbox`** (`{muxer}_26501`) o el guest ve RST.
 - **Sin TAP/KVM en CI no se prueba bypass-proof en hardware.** SoftFail mantiene verde el pipeline; no sustituye el checklist bare-metal.
 - SoftFail mal interpretado como “ya estamos seguros” es un anti-patrón — los docs deben decirlo en voz alta.
 - Virtiofs SSH **no** se automatiza; solo se documenta.

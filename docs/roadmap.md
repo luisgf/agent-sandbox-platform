@@ -104,7 +104,7 @@ Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecim
 
 Cierre shippable del MVP:
 
-1. **Identity + SSH guest→host vsock** — `HostVsockService` (`--host-vsock`): **26501** SSH / **26502** identity; lab `--host-vsock-dir`.
+1. **Identity + SSH guest→host vsock** — `HostVsockService` (`--host-vsock`): **26501** SSH / **26502** identity; lab `--host-vsock-dir`. En CH productive: reconciler **`AttachSandbox`** → UDS `{vsock}_{port}` (ver [`why-ch-hybrid-guest-host.md`](why-ch-hybrid-guest-host.md)); AF_VSOCK Listen solo no basta.
 2. **TAP auto** — `--tap-auto` SoftFail sin CAP_NET_ADMIN.
 3. **Guest image** — Dockerfile + systemd/OpenRC; `scripts/build-guest-rootfs.sh`.
 4. **Pack** — `scripts/pack-release.sh` + `Makefile`.
@@ -120,6 +120,7 @@ Cierre shippable del MVP:
 | No Windows guests | Solo Linux microVMs |
 | CH version pin | Ops fija release validada |
 | Virtiofs SSH sock | Path auto = vsock proxy guest (**2e**); virtiofs = ops manual |
+| CH hybrid guest→host | Requiere `{muxer}_{26501|26502}`; sin Attach → RST (fix post-2a) |
 | Packet intercept | Proxy en path; nft redirect **2e** (HTTP+DNS, soft\|enforce) |
 | Boot attestation | Software-signed (**2c**); TPM/SEV = plug-in futuro |
 | STONITH | Leases soft + FenceProvider stub; BMC real = ops |

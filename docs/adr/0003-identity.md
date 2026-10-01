@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0001](0001-vmm-choice.md), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0006](0006-fase-2e-nft-ssh-guest.md) (guest mount auto), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md)
+- **Relacionados:** [0001](0001-vmm-choice.md), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0006](0006-fase-2e-nft-ssh-guest.md) (guest mount auto), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md) (CH hybrid guest→host)
 
 ## Contexto
 
@@ -23,14 +23,15 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - El agente SSH y sus claves permanecen en el **host** (`SSH_AUTH_SOCK` del operador/servicio, o `FakeAgent` en lab).
 - El node-agent expone un bridge:
   - Unix: `--ssh-agent-bridge=/path.sock`
-  - Guest→host: `--host-vsock` escucha **AF_VSOCK puerto 26501** (CID 2 desde el guest); lab: `--host-vsock-dir` → unix `host-vsock-26501.sock`.
-- En el guest, `vsock-ssh-agent-proxy` (+ `ssh-agent-vsock.service`) materializa `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock` dialando `2:26501` (Fase 2e, `--guest-ssh-agent-auto`).
+  - Guest→host productivo (Cloud Hypervisor / Firecracker hybrid): con `--host-vsock --reconcile`, el reconciler hace **`AttachSandbox`** y escucha UDS **`{vsockPath}_26501`** (p. ej. `/run/asp/vsock-{id}.sock_26501`). El guest diala AF_VSOCK CID **2**:26501; el VMM conecta a ese UDS. Ver [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md).
+  - Lab / VMM no-hybrid: `--host-vsock` también puede abrir **AF_VSOCK Listen(26501)** y/o `--host-vsock-dir` → `host-vsock-26501.sock`. **AF_VSOCK Listen solo no basta** con el muxer hybrid de CH (sin `{muxer}_{port}` → RST).
+- En el guest, `vsock-ssh-agent-proxy` (+ `ssh-agent-vsock.service`) materializa `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock` dialando `2:26501` (Fase 2e, `--guest-ssh-agent-auto`) — sin cambios en el guest entre AF_VSOCK global y hybrid attach.
 - Opcional: `--ssh-agent-confirm` exige `POST /v1/internal/ssh-agent/approve` (TTL one-shot) antes de cada `SSH2_AGENTC_SIGN_REQUEST`; sin approve → `SSH_AGENT_FAILURE`.
 
 ### 2) OIDC ligado a atestación / sandbox
 
 - El guest solo puede pedir token vía socket de identidad: `POST /v1/tokens/oidc` con body **`{ "aud": "…" }`** (y opcionalmente nonce).
-- El node-agent (`--identity-listen` o host-vsock **26502**) fija `tenant_id`, `sandbox_id`, nodo, TTL y claims de autoridad a partir de la conexión / headers internos / store — **el guest no los elige**.
+- El node-agent (`--identity-listen` o host-vsock **26502**, en CH via `{vsockPath}_26502` + mismo dial guest CID 2:26502) fija `tenant_id`, `sandbox_id`, nodo, TTL y claims de autoridad a partir de la conexión / headers internos / store — **el guest no los elige**.
 - El control plane firma JWT de corta vida (`ASP_OIDC_KEY`) y publica JWKS (`GET /oidc/jwks.json`) + discovery.
 - Rotación básica: `ASP_OIDC_KEY` (mint) + `ASP_OIDC_KEY_PREV` (overlap en JWKS).
 - Tras Fase 2c, el mint puede exigir evidencia de attestation fresca (`x_asp_attestation`).
@@ -56,7 +57,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 
 ### Negativas
 
-- Dependencia de vsock / host-vsock correctamente cableado; sin unidad guest, no hay `SSH_AUTH_SOCK`.
+- Dependencia de vsock / host-vsock correctamente cableado (en CH: `AttachSandbox` por sandbox); sin unidad guest, no hay `SSH_AUTH_SOCK`.
 - Confirm gate puede romper automatizaciones que firman en bucle → hay que aprobar o desactivar el flag en lab.
 - Indisponibilidad de JWKS/atestación → **falla cerrada** (no hay token de respaldo persistente).
 - Attestation MVP es software-signed (ECDSA `ASP_ATTEST_KEY`), no TPM/SEV.
@@ -72,7 +73,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 | Pieza | Ruta / API |
 |---|---|
 | SSH bridge | `node-agent/internal/sshagent/` (`bridge.go`, `confirm.go`, `guest_mount.go`) |
-| Host vsock | `node-agent/internal/hostvsock/` — puertos 26501/26502 |
+| Host vsock | `node-agent/internal/hostvsock/` — `AttachSandbox` hybrid `{vsock}_{26501|26502}` + AF_VSOCK / `--host-vsock-dir` lab |
 | Identity proxy | `node-agent/internal/identity/` — unix/TCP → CP mint |
 | Guest proxy | `images/guest/cmd/vsock-ssh-agent-proxy/` + `images/guest/systemd/ssh-agent-vsock.service` |
 | OIDC signer | `control-plane/internal/oidc/` |
@@ -81,7 +82,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 | JWKS / discovery | `GET /oidc/jwks.json`, `GET /.well-known/openid-configuration` |
 | Approve SSH | `POST /v1/internal/ssh-agent/approve` (node-agent) |
 | Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--guest-ssh-agent-auto`, `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY` |
-| Notas vsock | `scripts/guest-vsock-notes.md` |
+| Notas vsock | `scripts/guest-vsock-notes.md`, `docs/why-ch-hybrid-guest-host.md` |
 | Smoke | `scripts/smoke-identity-egress.sh` |
 
 ### Rotación de claves OIDC (ops)
@@ -95,6 +96,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 
 - El socket Unix en el guest con permisos de fichero **no** es la autorización real; lo es el node-agent + CP.
 - FakeAgent (0 keys) en dry-run sin `SSH_AUTH_SOCK` — útil para protocolo, inútil para git real.
+- Un par UDS hybrid por sandbox×puerto; override de `VsockPath` mid-life requiere re-Attach (hoy no).
 - No hay vault de secretos genérico dentro del guest; solo SSH bridge + OIDC corto.
 - Virtiofs SSH sigue documentado como path manual, no el automatizado.
 
