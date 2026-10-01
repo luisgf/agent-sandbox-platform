@@ -49,3 +49,33 @@ func TestTokenForwardsToCP(t *testing.T) {
 		t.Fatalf("out=%+v", out)
 	}
 }
+
+func TestTokenIgnoresGuestUserSubAndAct(t *testing.T) {
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["sandbox_id"] != "sb-auth" {
+			t.Errorf("sandbox_id=%v", body["sandbox_id"])
+		}
+		// Proxy must not forward guest user_sub/act to CP.
+		if _, ok := body["user_sub"]; ok {
+			t.Errorf("proxy forwarded user_sub: %v", body["user_sub"])
+		}
+		if _, ok := body["act"]; ok {
+			t.Errorf("proxy forwarded act: %v", body["act"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok", "token_type": "Bearer", "expires_in": 300,
+		})
+	}))
+	defer cp.Close()
+
+	p := &Proxy{ControlPlaneURL: cp.URL, HTTP: cp.Client(), DefaultSandboxID: "sb-auth"}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tokens/oidc",
+		strings.NewReader(`{"aud":"https://api","user_sub":"user:eve","act":{"sub":"user:eve"}}`))
+	p.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}

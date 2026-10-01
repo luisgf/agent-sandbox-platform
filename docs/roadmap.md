@@ -197,7 +197,7 @@ Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
 ## Readiness corporativa — Identidad multi-usuario (diseño)
 
-Gap explícito post-2f: la identidad operativa sigue siendo **tenant + sandbox + nodo** (API keys de CP). No hay sujeto humano, RBAC fino ni `user_sub` en tokens de workload hacia Entra/Okta. El SSH agent host-held es un bridge **global** al proceso — inseguro si varios humanos comparten nodo.
+Gap post-2f (cerrado en código 3u.1–3u.5): faltaba sujeto humano, RBAC fino y `user_sub` en tokens de workload. **Implementado** en CP/node-agent; queda **ops**: JWKS IdP corporativo, memberships, socks SSH por usuario. Sin template, el bridge SSH global sigue siendo inseguro multi-user.
 
 **Decisión de diseño:** [ADR-0007](adr/0007-multi-user-identity.md) · narrativa [`why-multi-user-identity.md`](why-multi-user-identity.md).
 
@@ -209,11 +209,11 @@ Rollout:
 | **3u.2** | Validación JWT IdP (Entra/Okta/OIDC) en API del CP | ✅ **Hecho** (`internal/authn/idp`; `ASP_IDP_*`; lab default off) |
 | **3u.3** | RBAC admin / operator / viewer desde claims IdP | ✅ **Hecho** (`ASP_IDP_ROLE_*`; list tenant-wide; destroy operator=propios) |
 | **3u.4** | SSH: confirm default-on + registry/template por `owner_sub` (opción A MVP) | ✅ **Hecho** (`ASP_SSH_AGENT_SOCK_TEMPLATE`; ServeConnScoped; approve `actor_sub`; no spawner de agents) |
-| **3u.5** | Mint OIDC workload con `user_sub` / `act` desde `owner_sub` | Pendiente |
+| **3u.5** | Mint OIDC workload con `user_sub` / `act` desde `owner_sub` | ✅ **Hecho** (`oidc.MintIdentity`; CP desde store; guest override ignorado; lab sin owner omite claims) |
 
 **Criterio “corporate ready” (identidad):** create/exec/destroy atribuibles a humano; JWT de workload con cadena `user_sub`; SSH no compartido a ciegas entre usuarios del mismo nodo. API keys quedan como principals de servicio.
 
-**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.4** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP); workload `user_sub` (3u.5) pendiente. SSH MVP = template/path ops, no daemon manager.
+**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.5** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). Gaps ops residuales: cablear IdP real (JWKS Entra/Okta), tabla `tenant_memberships`, materializar socks SSH por usuario. SSH MVP = template/path ops, no daemon manager.
 
 ## Fase 3 — Multi-nodo y fiabilidad
 

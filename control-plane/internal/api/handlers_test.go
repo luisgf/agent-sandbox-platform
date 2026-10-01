@@ -774,3 +774,138 @@ func TestCreateSandboxActorFallsBackToOwner(t *testing.T) {
 		t.Fatalf("fallback actor_sub: %+v", ev.Events)
 	}
 }
+
+func TestOIDCMintIncludesUserSubFromOwner(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := store.NewMemoryStore()
+	srv := NewServer(mem)
+	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
+	mux := testMux(srv)
+
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"owner_sub":"user:alice"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", rr.Code, rr.Body.String())
+	}
+	var sb store.Sandbox
+	_ = json.Unmarshal(rr.Body.Bytes(), &sb)
+
+	jwksRR := httptest.NewRecorder()
+	mux.ServeHTTP(jwksRR, httptest.NewRequest(http.MethodGet, "/oidc/jwks.json", nil))
+	jwks := jwksRR.Body.Bytes()
+
+	mintBody := `{"sandbox_id":"` + sb.ID + `","aud":"https://api.example.com"}`
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/internal/oidc/token", bytes.NewBufferString(mintBody)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mint=%d %s", rr.Code, rr.Body.String())
+	}
+	var mint map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &mint)
+	claimsOut, _ := mint["claims"].(map[string]any)
+	if claimsOut["user_sub"] != "user:alice" {
+		t.Fatalf("response claims user_sub=%v", claimsOut["user_sub"])
+	}
+	act, _ := claimsOut["act"].(map[string]any)
+	if act == nil || act["sub"] != "user:alice" {
+		t.Fatalf("response claims act=%v", claimsOut["act"])
+	}
+	token, _ := mint["access_token"].(string)
+	claims, err := oidc.VerifyAgainstJWKS(token, jwks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.UserSub != "user:alice" {
+		t.Fatalf("jwt user_sub=%q", claims.UserSub)
+	}
+	if claims.Act == nil || claims.Act.Sub != "user:alice" {
+		t.Fatalf("jwt act=%v", claims.Act)
+	}
+	if claims.Subject != "sandbox/"+sb.ID {
+		t.Fatalf("sub=%q", claims.Subject)
+	}
+}
+
+func TestOIDCMintIgnoresGuestUserSubOverride(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := store.NewMemoryStore()
+	srv := NewServer(mem)
+	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
+	mux := testMux(srv)
+
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"owner_sub":"user:alice"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	var sb store.Sandbox
+	_ = json.Unmarshal(rr.Body.Bytes(), &sb)
+
+	// Guest/node tries to forge user_sub and act — must be ignored.
+	mintBody := `{"sandbox_id":"` + sb.ID + `","aud":"https://api.example.com","user_sub":"user:eve","act":{"sub":"user:eve"}}`
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/internal/oidc/token", bytes.NewBufferString(mintBody)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mint=%d %s", rr.Code, rr.Body.String())
+	}
+	var mint map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &mint)
+	claimsOut, _ := mint["claims"].(map[string]any)
+	if claimsOut["user_sub"] != "user:alice" {
+		t.Fatalf("forged user_sub accepted: %v", claimsOut["user_sub"])
+	}
+	act, _ := claimsOut["act"].(map[string]any)
+	if act == nil || act["sub"] != "user:alice" {
+		t.Fatalf("forged act accepted: %v", claimsOut["act"])
+	}
+}
+
+func TestOIDCMintLabWithoutOwnerStillWorks(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := store.NewMemoryStore()
+	srv := NewServer(mem)
+	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
+	mux := testMux(srv)
+
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	var sb store.Sandbox
+	_ = json.Unmarshal(rr.Body.Bytes(), &sb)
+	if sb.OwnerSub != "" {
+		t.Fatalf("lab owner should be empty, got %q", sb.OwnerSub)
+	}
+
+	mintBody := `{"sandbox_id":"` + sb.ID + `","aud":"https://api.example.com"}`
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/internal/oidc/token", bytes.NewBufferString(mintBody)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("lab mint=%d %s", rr.Code, rr.Body.String())
+	}
+	var mint map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &mint)
+	claimsOut, _ := mint["claims"].(map[string]any)
+	if _, ok := claimsOut["user_sub"]; ok {
+		t.Fatalf("lab mint must omit user_sub: %v", claimsOut)
+	}
+	if _, ok := claimsOut["act"]; ok {
+		t.Fatalf("lab mint must omit act: %v", claimsOut)
+	}
+	if claimsOut["tenant_id"] != "t1" {
+		t.Fatalf("claims=%v", claimsOut)
+	}
+}

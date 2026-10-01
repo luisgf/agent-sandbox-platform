@@ -751,9 +751,13 @@ type oidcTokenRequest struct {
 	SandboxID string `json:"sandbox_id"`
 	Aud       string `json:"aud"`
 	Nonce     string `json:"nonce,omitempty"`
+	// UserSub / Act are accepted only to be ignored: guest/node must never set human claims.
+	UserSub string `json:"user_sub,omitempty"`
+	Act     any    `json:"act,omitempty"`
 }
 
-// MintOIDCToken issues a short-lived JWT; tenant/sub come from the store (node cannot override).
+// MintOIDCToken issues a short-lived JWT; tenant/sub/user_sub come from the store
+// (node/guest cannot override). ADR-0007 phase 5: user_sub/act from sandbox.owner_sub.
 func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 	if s.OIDC == nil {
 		writeError(w, http.StatusServiceUnavailable, "oidc not configured")
@@ -772,6 +776,10 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "aud required")
 		return
 	}
+	// Explicitly discard guest/node-supplied human claims (never trusted).
+	_ = req.UserSub
+	_ = req.Act
+
 	sb, err := s.Store.GetSandbox(req.SandboxID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -782,7 +790,8 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attClaim := s.attestationClaim(sb.ID)
-	token, claims, err := s.OIDC.MintWithAttestation(sb.TenantID, sb.ID, req.Aud, req.Nonce, attClaim)
+	userSub := strings.TrimSpace(sb.OwnerSub) // authoritative; empty OK in lab
+	token, claims, err := s.OIDC.MintWithAttestation(sb.TenantID, sb.ID, req.Aud, req.Nonce, userSub, attClaim)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -797,6 +806,12 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		"sandbox_id": claims.SandboxID,
 		"aud":        claims.Audience,
 		"iss":        claims.Issuer,
+	}
+	if claims.UserSub != "" {
+		outClaims["user_sub"] = claims.UserSub
+	}
+	if claims.Act != nil {
+		outClaims["act"] = claims.Act
 	}
 	if claims.XAspAttestation != nil {
 		outClaims["x_asp_attestation"] = claims.XAspAttestation

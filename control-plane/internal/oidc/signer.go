@@ -46,6 +46,11 @@ type TokenRequest struct {
 	Nonce     string `json:"nonce,omitempty"`
 }
 
+// ActClaim is an RFC 8693-style actor claim (nested object with sub).
+type ActClaim struct {
+	Sub string `json:"sub"`
+}
+
 // Claims embedded in the JWT (subset exposed for tests).
 type Claims struct {
 	Issuer          string         `json:"iss"`
@@ -57,6 +62,8 @@ type Claims struct {
 	TenantID        string         `json:"tenant_id"`
 	SandboxID       string         `json:"sandbox_id"`
 	Nonce           string         `json:"nonce,omitempty"`
+	UserSub         string         `json:"user_sub,omitempty"` // human owner (ADR-0007 phase 5)
+	Act             *ActClaim      `json:"act,omitempty"`      // RFC 8693 actor chain
 	XAspAttestation map[string]any `json:"x_asp_attestation,omitempty"`
 }
 
@@ -159,10 +166,17 @@ func (s *Signer) PublicKey() *rsa.PublicKey {
 }
 
 // Mint creates a signed JWT. sub = "sandbox/{sandboxID}"; tenant/sandbox claims are authoritative.
-//
-// ADR-0007 phase 5 (not yet): accept owner_sub and emit user_sub / act claims so
-// workload tokens carry the human chain. Guest must never supply user_sub.
+// Lab / no owner: omits user_sub and act. Prefer MintIdentity when owner_sub is known.
 func (s *Signer) Mint(tenantID, sandboxID, aud, nonce string) (string, Claims, error) {
+	return s.MintIdentity(tenantID, sandboxID, aud, nonce, "", "")
+}
+
+// MintIdentity is Mint plus optional human-chain claims (ADR-0007 phase 5).
+// userSub must come from trusted CP state (sandbox.owner_sub), never from the guest.
+// When userSub is non-empty: claim user_sub = userSub and act = { "sub": actorOrUser }.
+// actorSub, if non-empty, becomes act.sub; otherwise act.sub = userSub.
+// Empty userSub omits both claims (lab without IdP / owner).
+func (s *Signer) MintIdentity(tenantID, sandboxID, aud, nonce, userSub, actorSub string) (string, Claims, error) {
 	if strings.TrimSpace(sandboxID) == "" {
 		return "", Claims{}, errors.New("sandbox_id required")
 	}
@@ -188,13 +202,24 @@ func (s *Signer) Mint(tenantID, sandboxID, aud, nonce string) (string, Claims, e
 		SandboxID: sandboxID,
 		Nonce:     nonce,
 	}
+	userSub = strings.TrimSpace(userSub)
+	actorSub = strings.TrimSpace(actorSub)
+	if userSub != "" {
+		claims.UserSub = userSub
+		actSub := userSub
+		if actorSub != "" {
+			actSub = actorSub
+		}
+		claims.Act = &ActClaim{Sub: actSub}
+	}
 	token, err := s.sign(claims)
 	return token, claims, err
 }
 
-// MintWithAttestation is Mint plus optional x_asp_attestation claim when evidence is fresh.
-func (s *Signer) MintWithAttestation(tenantID, sandboxID, aud, nonce string, attestation map[string]any) (string, Claims, error) {
-	token, claims, err := s.Mint(tenantID, sandboxID, aud, nonce)
+// MintWithAttestation is MintIdentity plus optional x_asp_attestation when evidence is fresh.
+// userSub is authoritative owner_sub from the store (empty = omit human claims).
+func (s *Signer) MintWithAttestation(tenantID, sandboxID, aud, nonce, userSub string, attestation map[string]any) (string, Claims, error) {
+	token, claims, err := s.MintIdentity(tenantID, sandboxID, aud, nonce, userSub, "")
 	if err != nil {
 		return "", Claims{}, err
 	}

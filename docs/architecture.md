@@ -139,7 +139,7 @@ Nunca se copia la clave privada. Confirm: ADR-0005. Auto mount: ADR-0006.
 ### OIDC
 
 ```text
-guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}
+guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}   # user_sub/act ignorados si vienen
   → unix/vsock identity (26502)
     → node-agent identity proxy (inyecta sandbox/tenant)
       → CP POST /v1/internal/oidc/token
@@ -148,7 +148,7 @@ guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}
 
 Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_attestation`.
 
-> **Gap / siguiente paso:** schema/JWT/RBAC/SSH scoped MVP (ADR-0007 fases 1–4) ya están; falta `user_sub`/`act` en mint (fase 5): [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
+> **ADR-0007 fases 1–5 hechas** (schema + JWT IdP + RBAC + SSH scoped + workload `user_sub`/`act`). Gaps ops: IdP real, `tenant_memberships`, socks SSH. Ver [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
 
 ## Red, egress y nft
 

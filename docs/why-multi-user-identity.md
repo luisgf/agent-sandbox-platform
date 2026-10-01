@@ -37,7 +37,7 @@ Sin sujeto humano:
 - Sin `ASP_SSH_AGENT_SOCK_TEMPLATE`, el bridge SSH **global** (`SSH_AUTH_SOCK` del operador) sigue siendo inseguro para multi-usuario.
 - Con template (fase 4): cada sandbox resuelve un UDS por `owner_sub` (o FakeAgent si falta); **no** spawneamos ssh-agent ni cargamos keys — eso es ops.
 - No hay IdP embebido ni magia SoftFail: sin JWKS/config de Entra/Okta no hay login humano.
-- Diseño aceptado; **fases 1–4 hechas** (schema/audit + JWT IdP + RBAC + SSH scoped MVP). `user_sub` en mint **aún no** (fase 5).
+- Diseño aceptado; **fases 1–5 hechas** (schema/audit + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). Ops IdP real / `tenant_memberships` / socks SSH siguen siendo gaps de despliegue.
 - En lab (`ASP_IDP_REQUIRED` off / sin `ASP_IDP_ISSUER`), `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
 - Con JWT IdP: `owner_sub` y `actor_sub` salen del `sub` del token; un body `owner_sub` distinto → 403.
 
@@ -131,3 +131,24 @@ curl -s -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \
 ```
 
 **Límite honesto:** no es un session-agent spawner (opción C del ADR); las claves reales deben existir en el UDS del template **antes** de que el guest firme.
+
+
+## Fase 5 — Workload OIDC `user_sub` / `act` (qué cambia)
+
+```text
+guest POST /v1/tokens/oidc {"aud":"…"}   # solo aud (+nonce); user_sub/act ignorados
+  → identity proxy 26502 (inyecta sandbox_id; nunca reenvía user_sub/act del guest)
+  → CP POST /v1/internal/oidc/token
+       CP: user_sub = sandbox.owner_sub (store); act = { "sub": user_sub }
+       Si owner_sub vacío (lab) → JWT sin user_sub/act (smokes iguales)
+```
+
+| Claim | Origen | Guest puede override |
+|---|---|---|
+| `sub` | `sandbox/{id}` | no |
+| `tenant_id` / `sandbox_id` | store | no |
+| `user_sub` | `owner_sub` del sandbox | **no** (ignorado) |
+| `act.sub` | = `user_sub` (owner) | **no** (ignorado) |
+| `aud` | body guest | sí (único campo elegido) |
+
+**Límite honesto:** el mint guest→proxy **no** lleva `actor_sub` humano de la acción actual (el guest no es autoridad). `act` refleja al **owner** del sandbox. Consumidores Entra/Okta deben confiar el JWKS de ASP (`ASP_OIDC_*`), no el IdP humano. Sin `owner_sub` persistido (lab / sandboxes legacy) no hay cadena humana en el token.

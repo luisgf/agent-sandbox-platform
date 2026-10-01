@@ -29,6 +29,8 @@ type guestTokenRequest struct {
 	Aud       string `json:"aud"`
 	Nonce     string `json:"nonce,omitempty"`
 	SandboxID string `json:"sandbox_id,omitempty"` // ignored for authority; logged if mismatch
+	UserSub   string `json:"user_sub,omitempty"`  // ignored — CP derives from owner_sub
+	Act       any    `json:"act,omitempty"`       // ignored — CP derives from owner_sub
 }
 
 type mintRequest struct {
@@ -78,6 +80,9 @@ func (p *Proxy) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SandboxID != "" && req.SandboxID != sandboxID && p.Logger != nil {
 		p.Logger.Warn("guest supplied sandbox_id ignored", "guest", req.SandboxID, "authoritative", sandboxID)
+	}
+	if (req.UserSub != "" || req.Act != nil) && p.Logger != nil {
+		p.Logger.Warn("guest supplied user_sub/act ignored", "guest_user_sub", req.UserSub)
 	}
 
 	token, err := p.mint(r.Context(), sandboxID, aud, req.Nonce)
