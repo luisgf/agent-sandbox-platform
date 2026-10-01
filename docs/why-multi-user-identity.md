@@ -36,7 +36,8 @@ Sin sujeto humano:
 - UID de Linux en el guest **≠** empleado. No vamos a “mapear UIDs” como authz.
 - El bridge SSH **global** de hoy sigue siendo inseguro para multi-usuario hasta la fase de sesión/scoped (ADR-0007 fase 4).
 - No hay IdP embebido ni magia SoftFail: sin JWKS/config de Entra/Okta no hay login humano.
-- Diseño aceptado; **código de authz IdP aún no implementado** (rollout por fases en el ADR).
+- Diseño aceptado; **fase 1 (schema + audit) hecha**; authz IdP / JWT / RBAC / SSH scoped / `user_sub` en mint **aún no** (fases 2–5).
+- En lab, `owner_sub` vacío y sin header de actor siguen siendo válidos — no rompe smokes existentes.
 
 ## Cómo encaja con lo que ya hay
 

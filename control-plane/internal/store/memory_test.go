@@ -348,7 +348,7 @@ func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 	if err != nil || running.State != SandboxRunning {
 		t.Fatalf("status running: %+v err=%v", running, err)
 	}
-	stopping, err := s.MarkSandboxStopping(sb.ID)
+	stopping, err := s.MarkSandboxStopping(sb.ID, "")
 	if err != nil || stopping.State != SandboxStopping {
 		t.Fatalf("destroy: %+v err=%v", stopping, err)
 	}
@@ -524,5 +524,105 @@ func TestMemoryStoreRotateAndRevokeCert(t *testing.T) {
 	_, err = s.RotateNodeCert("n-rot", CertMeta{Fingerprint: "fp-x", Serial: "sx"})
 	if err == nil || !errors.Is(err, ErrConflict) {
 		t.Fatalf("want conflict on revoked node, got %v", err)
+	}
+}
+
+func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	s := NewMemoryStore()
+
+	// Lab: empty owner_sub OK
+	sbEmpty, err := s.CreateSandbox(CreateSandboxInput{
+		TenantID:  "t-owner",
+		ImageRef:  "img",
+		CPUMillis: 100,
+		MemoryMiB: 128,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sbEmpty.OwnerSub != "" || sbEmpty.OwnerEmail != "" {
+		t.Fatalf("expected empty owner fields, got sub=%q email=%q", sbEmpty.OwnerSub, sbEmpty.OwnerEmail)
+	}
+	evEmpty, err := s.ListEvents(sbEmpty.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evEmpty) < 1 || evEmpty[0].ActorSub != "" {
+		t.Fatalf("expected empty actor_sub on create, got %+v", evEmpty)
+	}
+
+	// Persist owner + actor_sub (body actor falls back when only owner set)
+	sb, err := s.CreateSandbox(CreateSandboxInput{
+		TenantID:   "t-owner",
+		ImageRef:   "img",
+		CPUMillis:  100,
+		MemoryMiB:  128,
+		OwnerSub:   "user:alice",
+		OwnerEmail: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.OwnerSub != "user:alice" || sb.OwnerEmail != "alice@example.com" {
+		t.Fatalf("owner fields: %+v", sb)
+	}
+	got, err := s.GetSandbox(sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OwnerSub != "user:alice" || got.OwnerEmail != "alice@example.com" {
+		t.Fatalf("get owner fields: %+v", got)
+	}
+	list, err := s.ListSandboxes("t-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, x := range list {
+		if x.ID == sb.ID {
+			found = true
+			if x.OwnerSub != "user:alice" {
+				t.Fatalf("list owner_sub=%q", x.OwnerSub)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("sandbox missing from list")
+	}
+	ev, err := s.ListEvents(sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ev) < 1 || ev[0].ActorSub != "user:alice" {
+		t.Fatalf("create event actor_sub want user:alice, got %+v", ev)
+	}
+
+	// Explicit ActorSub wins over owner fallback
+	sb2, err := s.CreateSandbox(CreateSandboxInput{
+		TenantID:  "t-owner",
+		ImageRef:  "img",
+		CPUMillis: 100,
+		MemoryMiB: 128,
+		OwnerSub:  "user:bob",
+		ActorSub:  "user:carol",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev2, _ := s.ListEvents(sb2.ID)
+	if len(ev2) < 1 || ev2[0].ActorSub != "user:carol" {
+		t.Fatalf("explicit actor_sub: %+v", ev2)
+	}
+
+	// Destroy with actor_sub
+	_, err = s.MarkSandboxStopping(sb2.ID, "user:carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev2, _ = s.ListEvents(sb2.ID)
+	last := ev2[len(ev2)-1]
+	if last.ActorSub != "user:carol" {
+		t.Fatalf("destroy actor_sub=%q event=%+v", last.ActorSub, last)
 	}
 }

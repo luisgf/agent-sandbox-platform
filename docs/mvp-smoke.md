@@ -86,6 +86,9 @@ curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/sandboxes \
   }'
 # → JSON con id, state="running", node_id="local-dev"
 
+> **ADR-0007 fase 1 (opcional):** puedes enviar `"owner_sub"` / `"owner_email"` en el body de create y/o el header `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; smokes existentes no cambian. Get/List/events devuelven `owner_*` y `actor_sub` cuando se informan. **Sin** JWT IdP todavía.
+
+
 # Pin a un nodo concreto (dry-run exec):
 # "node_id": "dev-node"
 

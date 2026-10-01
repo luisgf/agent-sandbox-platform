@@ -70,6 +70,12 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	}
 	id := newID()
 	now := time.Now().UTC()
+	ownerSub := strings.TrimSpace(input.OwnerSub)
+	ownerEmail := strings.TrimSpace(input.OwnerEmail)
+	actorSub := strings.TrimSpace(input.ActorSub)
+	if actorSub == "" {
+		actorSub = ownerSub
+	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -80,9 +86,11 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO sandboxes (
 			id, tenant_id, node_id, state, vmm_profile, image_ref,
-			cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at
-		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7)`,
+			cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+			owner_sub, owner_email
+		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7,$8,$9)`,
 		id, input.TenantID, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB, now,
+		ownerSub, ownerEmail,
 	)
 	if err != nil {
 		return Sandbox{}, fmt.Errorf("insert sandbox: %w", err)
@@ -94,6 +102,7 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		EventType: "sandbox.created",
 		ToState:   strPtr(string(SandboxRequested)),
 		Actor:     "api",
+		ActorSub:  actorSub,
 		Payload:   json.RawMessage(`{}`),
 	}); err != nil {
 		return Sandbox{}, err
@@ -170,7 +179,8 @@ func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
 	ctx := context.Background()
 	row := p.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at
+		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+		       owner_sub, owner_email
 		FROM sandboxes WHERE id=$1`, id)
 	sb, err := scanSandbox(row)
 	if err != nil {
@@ -189,12 +199,14 @@ func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 	if tenantID == "" {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at
+			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+			       owner_sub, owner_email
 			FROM sandboxes ORDER BY created_at DESC`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at
+			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+			       owner_sub, owner_email
 			FROM sandboxes WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	}
 	if err != nil {
@@ -330,7 +342,8 @@ func (p *PostgresStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at
+		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+		       owner_sub, owner_email
 		FROM sandboxes
 		WHERE (node_id = $1 AND state IN ('requested','starting','stopping'))
 		   OR ((node_id IS NULL OR node_id = '') AND state = 'requested')
@@ -441,7 +454,8 @@ func (p *PostgresStore) ReclaimExpiredLeases(now time.Time, reRequest bool) ([]S
 	}
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at
+		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+		       owner_sub, owner_email
 		FROM sandboxes
 		WHERE state IN ('starting','running')
 		  AND (node_lease_until IS NULL OR node_lease_until <= $1)`, now)
@@ -517,10 +531,11 @@ func (p *PostgresStore) ReclaimExpiredLeases(now time.Time, reRequest bool) ([]S
 	return out, nil
 }
 
-func (p *PostgresStore) MarkSandboxStopping(id string) (Sandbox, error) {
+func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
+	actorSub = strings.TrimSpace(actorSub)
 	ctx := context.Background()
 	sb, err := p.GetSandbox(id)
 	if err != nil {
@@ -562,6 +577,7 @@ func (p *PostgresStore) MarkSandboxStopping(id string) (Sandbox, error) {
 		FromState: &from,
 		ToState:   strPtr(string(target)),
 		Actor:     "api",
+		ActorSub:  actorSub,
 		Payload:   payload,
 	}); err != nil {
 		return Sandbox{}, err
@@ -950,7 +966,7 @@ func (p *PostgresStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, sandbox_id, tenant_id, event_type, from_state, to_state,
-		       actor, request_id, payload, created_at
+		       actor, actor_sub, request_id, payload, created_at
 		FROM sandbox_events WHERE sandbox_id=$1 ORDER BY id ASC`, sandboxID)
 	if err != nil {
 		return nil, err
@@ -962,7 +978,7 @@ func (p *PostgresStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
 		var payload []byte
 		if err := rows.Scan(
 			&e.ID, &e.SandboxID, &e.TenantID, &e.EventType,
-			&e.FromState, &e.ToState, &e.Actor, &e.RequestID,
+			&e.FromState, &e.ToState, &e.Actor, &e.ActorSub, &e.RequestID,
 			&payload, &e.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1071,7 +1087,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 	err := row.Scan(
 		&sb.ID, &sb.TenantID, &sb.NodeID, &state, &sb.VMMProfile, &sb.ImageRef,
 		&sb.CPUMillis, &sb.MemoryMiB, &sb.StateVersion, &sb.NodeLeaseUntil,
-		&sb.CreatedAt, &sb.UpdatedAt,
+		&sb.CreatedAt, &sb.UpdatedAt, &sb.OwnerSub, &sb.OwnerEmail,
 	)
 	if err != nil {
 		return Sandbox{}, err
@@ -1113,10 +1129,11 @@ func emitEventTx(ctx context.Context, q interface {
 	_, err := q.Exec(ctx, `
 		INSERT INTO sandbox_events (
 			sandbox_id, tenant_id, event_type, from_state, to_state,
-			actor, request_id, payload
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			actor, actor_sub, request_id, payload
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		input.SandboxID, input.TenantID, input.EventType,
-		input.FromState, input.ToState, actor, input.RequestID, []byte(payload),
+		input.FromState, input.ToState, actor, strings.TrimSpace(input.ActorSub),
+		input.RequestID, []byte(payload),
 	)
 	return err
 }

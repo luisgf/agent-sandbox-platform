@@ -31,7 +31,8 @@ type Store interface {
 	// UpdateSandboxStatus sets lifecycle state (starting|running|failed|stopped).
 	UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error)
 	// MarkSandboxStopping moves an active sandbox to stopping for reconciler cleanup.
-	MarkSandboxStopping(id string) (Sandbox, error)
+	// actorSub is optional (ADR-0007); empty is OK in lab.
+	MarkSandboxStopping(id, actorSub string) (Sandbox, error)
 	// RenewSandboxLease extends node_lease_until for the owning node.
 	RenewSandboxLease(id, nodeID string) (Sandbox, error)
 	// ReclaimExpiredLeases marks stuck starting|running with expired leases as failed

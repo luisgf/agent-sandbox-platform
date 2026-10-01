@@ -51,6 +51,12 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		return Sandbox{}, err
 	}
 	now := time.Now().UTC()
+	ownerSub := strings.TrimSpace(input.OwnerSub)
+	ownerEmail := strings.TrimSpace(input.OwnerEmail)
+	actorSub := strings.TrimSpace(input.ActorSub)
+	if actorSub == "" {
+		actorSub = ownerSub
+	}
 	sb := Sandbox{
 		ID:           newID(),
 		TenantID:     input.TenantID,
@@ -61,6 +67,8 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		CPUMillis:    input.CPUMillis,
 		MemoryMiB:    input.MemoryMiB,
 		StateVersion: 1,
+		OwnerSub:     ownerSub,
+		OwnerEmail:   ownerEmail,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -99,6 +107,7 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		EventType: "sandbox.created",
 		ToState:   strPtr(string(SandboxRequested)),
 		Actor:     "api",
+		ActorSub:  actorSub,
 		Payload:   json.RawMessage(`{}`),
 	})
 
@@ -431,10 +440,11 @@ func (m *MemoryStore) ReclaimExpiredLeases(now time.Time, reRequest bool) ([]San
 	return out, nil
 }
 
-func (m *MemoryStore) MarkSandboxStopping(id string) (Sandbox, error) {
+func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
+	actorSub = strings.TrimSpace(actorSub)
 	m.mu.Lock()
 	sb, ok := m.sandboxes[id]
 	if !ok {
@@ -463,6 +473,7 @@ func (m *MemoryStore) MarkSandboxStopping(id string) (Sandbox, error) {
 			FromState: &from,
 			ToState:   strPtr(string(SandboxStopped)),
 			Actor:     "api",
+			ActorSub:  actorSub,
 			Payload:   json.RawMessage(`{"reason":"destroy_unassigned"}`),
 		})
 		return out, nil
@@ -487,6 +498,7 @@ func (m *MemoryStore) MarkSandboxStopping(id string) (Sandbox, error) {
 		FromState: &from,
 		ToState:   strPtr(string(SandboxStopping)),
 		Actor:     "api",
+		ActorSub:  actorSub,
 		Payload:   json.RawMessage(`{"reason":"destroy"}`),
 	})
 	return out, nil
@@ -740,6 +752,7 @@ func (m *MemoryStore) EmitEvent(input EmitEventInput) error {
 		FromState: cloneStr(input.FromState),
 		ToState:   cloneStr(input.ToState),
 		Actor:     actor,
+		ActorSub:  strings.TrimSpace(input.ActorSub),
 		RequestID: cloneStr(input.RequestID),
 		Payload:   append(json.RawMessage(nil), payload...),
 		CreatedAt: time.Now().UTC(),

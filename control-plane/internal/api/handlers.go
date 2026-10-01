@@ -66,6 +66,22 @@ type execRequest struct {
 	Cmd []string          `json:"cmd"`
 	Env map[string]string `json:"env,omitempty"`
 	Cwd string            `json:"cwd,omitempty"`
+	// ActorSub optional; X-ASP-Actor-Sub header wins (ADR-0007 phase 1).
+	ActorSub string `json:"actor_sub,omitempty"`
+}
+
+// HeaderASPActorSub carries the human/service actor for lab until IdP JWT (ADR-0007).
+const HeaderASPActorSub = "X-ASP-Actor-Sub"
+
+// resolveActorSub prefers header, then body, then optional create-time owner fallback.
+func resolveActorSub(r *http.Request, bodyActor, ownerFallback string) string {
+	if v := strings.TrimSpace(r.Header.Get(HeaderASPActorSub)); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(bodyActor); v != "" {
+		return v
+	}
+	return strings.TrimSpace(ownerFallback)
 }
 
 type execResponse struct {
@@ -82,6 +98,9 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	input.OwnerSub = strings.TrimSpace(input.OwnerSub)
+	input.OwnerEmail = strings.TrimSpace(input.OwnerEmail)
+	input.ActorSub = resolveActorSub(r, input.ActorSub, input.OwnerSub)
 	sb, err := s.Store.CreateSandbox(input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -368,6 +387,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cmd required")
 		return
 	}
+	actorSub := resolveActorSub(r, req.ActorSub, "")
 	sb, err := s.Store.GetSandbox(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -433,6 +453,14 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "invalid node-agent exec response")
 		return
 	}
+	_ = s.Store.EmitEvent(store.EmitEventInput{
+		SandboxID: sb.ID,
+		TenantID:  sb.TenantID,
+		EventType: "sandbox.exec",
+		Actor:     "api",
+		ActorSub:  actorSub,
+		Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "exit_code": out.ExitCode}),
+	})
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -848,7 +876,8 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	sb, err := s.Store.MarkSandboxStopping(id)
+	actorSub := resolveActorSub(r, "", "")
+	sb, err := s.Store.MarkSandboxStopping(id, actorSub)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -862,6 +891,15 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sb)
+}
+
+
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return b
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

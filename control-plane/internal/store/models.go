@@ -36,8 +36,12 @@ type Sandbox struct {
 	MemoryMiB      int          `json:"memory_mib"`
 	StateVersion   int64        `json:"state_version"`
 	NodeLeaseUntil *time.Time   `json:"node_lease_until,omitempty"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
+	// OwnerSub is the IdP subject of the creator (ADR-0007). Empty OK in lab until IdP JWT.
+	OwnerSub string `json:"owner_sub,omitempty"`
+	// OwnerEmail is optional ops/UI claim; not an authz key.
+	OwnerEmail string `json:"owner_email,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Node struct {
@@ -81,6 +85,8 @@ type SandboxEvent struct {
 	FromState *string         `json:"from_state,omitempty"`
 	ToState   *string         `json:"to_state,omitempty"`
 	Actor     string          `json:"actor"`
+	// ActorSub is the human/service principal for this action (ADR-0007 phase 1). Empty OK in lab.
+	ActorSub  string          `json:"actor_sub,omitempty"`
 	RequestID *string         `json:"request_id,omitempty"`
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt time.Time       `json:"created_at"`
@@ -94,6 +100,7 @@ type EmitEventInput struct {
 	FromState *string
 	ToState   *string
 	Actor     string
+	ActorSub  string
 	RequestID *string
 	Payload   json.RawMessage
 }
@@ -107,6 +114,11 @@ type CreateSandboxInput struct {
 	VMMProfile string `json:"vmm_profile"`
 	// NodeID optionally pins the provisioner stub to a specific node (MVP dry-run).
 	NodeID string `json:"node_id,omitempty"`
+	// OwnerSub / OwnerEmail: lab/transition accepts from JSON; phase 2+ come from IdP JWT.
+	OwnerSub   string `json:"owner_sub,omitempty"`
+	OwnerEmail string `json:"owner_email,omitempty"`
+	// ActorSub is who performs create now (header X-ASP-Actor-Sub preferred; body ok; falls back to OwnerSub).
+	ActorSub string `json:"actor_sub,omitempty"`
 }
 
 // RegisterNodeInput is the payload for node-agent registration.

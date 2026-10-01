@@ -668,3 +668,109 @@ func TestRotateWithBootstrapWhenAPIKeysExist(t *testing.T) {
 		t.Fatalf("rotate with bootstrap while API keys exist: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCreateSandboxOwnerAndActorHeader(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	srv := NewServer(store.NewMemoryStore())
+	mux := testMux(srv)
+
+	// Empty owner OK (lab)
+	body := `{"tenant_id":"t1","image_ref":"debian:bookworm","cpu_millis":1000,"memory_mib":512}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("empty owner create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var sb0 store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &sb0); err != nil {
+		t.Fatal(err)
+	}
+	if sb0.OwnerSub != "" {
+		t.Fatalf("want empty owner_sub, got %q", sb0.OwnerSub)
+	}
+
+	// Body owner + header actor
+	body = `{"tenant_id":"t1","image_ref":"debian:bookworm","cpu_millis":1000,"memory_mib":512,"owner_sub":"user:alice","owner_email":"alice@ex.com"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
+	req.Header.Set(HeaderASPActorSub, "user:operator")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var sb store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &sb); err != nil {
+		t.Fatal(err)
+	}
+	if sb.OwnerSub != "user:alice" || sb.OwnerEmail != "alice@ex.com" {
+		t.Fatalf("create response owner: %+v", sb)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/sandboxes/"+sb.ID, nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get status=%d", rr.Code)
+	}
+	var got store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OwnerSub != "user:alice" || got.OwnerEmail != "alice@ex.com" {
+		t.Fatalf("get owner: %+v", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/sandboxes/"+sb.ID+"/events", nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	var ev listEventsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Events) < 1 || ev.Events[0].ActorSub != "user:operator" {
+		t.Fatalf("create event actor_sub want user:operator, got %+v", ev.Events)
+	}
+
+	// Destroy with actor header
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sandboxes/"+sb.ID, nil)
+	req.Header.Set(HeaderASPActorSub, "user:operator")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("destroy status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/sandboxes/"+sb.ID+"/events", nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if err := json.Unmarshal(rr.Body.Bytes(), &ev); err != nil {
+		t.Fatal(err)
+	}
+	last := ev.Events[len(ev.Events)-1]
+	if last.ActorSub != "user:operator" {
+		t.Fatalf("destroy actor_sub=%q last=%+v", last.ActorSub, last)
+	}
+}
+
+func TestCreateSandboxActorFallsBackToOwner(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	srv := NewServer(store.NewMemoryStore())
+	mux := testMux(srv)
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":128,"owner_sub":"user:bob"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	var sb store.Sandbox
+	_ = json.Unmarshal(rr.Body.Bytes(), &sb)
+	req = httptest.NewRequest(http.MethodGet, "/v1/sandboxes/"+sb.ID+"/events", nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	var ev listEventsResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &ev)
+	if len(ev.Events) < 1 || ev.Events[0].ActorSub != "user:bob" {
+		t.Fatalf("fallback actor_sub: %+v", ev.Events)
+	}
+}
