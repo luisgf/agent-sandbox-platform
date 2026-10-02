@@ -77,8 +77,8 @@ Cliente / asp ──HTTPS+API key──► Control plane
 | [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) | Ops CH + KVM real |
 | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) | Lab Keycloak IdP (realm asp) + systemd CP — secretos fuera de git |
 | [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) | Runner agente: `asp auth` + Bearer automático + one-liner |
-| [`docs/adr/`](docs/adr/) | Decisiones (0001–0007) |
-| [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI, multi-user) |
+| [`docs/adr/`](docs/adr/) | Decisiones (0001–0008) |
+| [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI, multi-user, network-flow attribution) |
 | [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) | Puertos vsock |
 
 ### ADRs
@@ -90,6 +90,7 @@ Cliente / asp ──HTTPS+API key──► Control plane
 5. [Fase 2d hardening](docs/adr/0005-fase-2d-hardening.md)
 6. [Fase 2e nft + SSH guest](docs/adr/0006-fase-2e-nft-ssh-guest.md)
 7. [Identidad multi-usuario / IdP](docs/adr/0007-multi-user-identity.md) — fases 1–5 (schema + JWT IdP + RBAC + SSH scoped + workload user_sub/act); ver [`docs/why-multi-user-identity.md`](docs/why-multi-user-identity.md) · lab Keycloak: [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md)
+8. [Atribución de flujos de red → owner_sub](docs/adr/0008-network-flow-attribution.md) — **evaluación** (no implementada); ver [`docs/why-network-flow-attribution.md`](docs/why-network-flow-attribution.md)
 
 ## Mapa de componentes
 

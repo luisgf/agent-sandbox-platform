@@ -2,7 +2,7 @@
 
 Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecimiento post-MVP (2b–2f). Cada fase hecha incluye qué entregó, por qué importaba y gaps residuales.
 
-Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md).
+Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada).
 
 ## Fase 0 — Esqueleto
 
@@ -215,7 +215,25 @@ Rollout:
 
 **Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.5** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). **Lab ops:** Keycloak realm `asp` @ `auth.luisgf.es` cableado al CP en ncc1701d (`asp-control-plane.service`, puerto `127.0.0.1:18112`) — ver [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md). Gaps residuales: IdP corporativo Entra/Okta, tabla `tenant_memberships`, materializar socks SSH por usuario. SSH MVP = template/path ops, no daemon manager.
 
+## Futuro — Atribución de flujos de red → `owner_sub` (evaluación)
+
+Gap post-3u: el plano de control ya atribuye create/exec/OIDC a humano ([ADR-0007](adr/0007-multi-user-identity.md)), pero el **egress TCP/HTTPS** del guest no etiqueta de forma no forgeable quién es el dueño. El proxy solo ve `X-ASP-Sandbox-ID` opcional (guest-controlled); los TAP comparten CIDR host por defecto.
+
+**Decisión de diseño (evaluación):** [ADR-0008](adr/0008-network-flow-attribution.md) · narrativa [`why-network-flow-attribution.md`](why-network-flow-attribution.md).
+
+Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`) por sandbox; VLAN/VRF/eBPF como opciones pesadas. Guest-set marks/headers **no** son autoridad. Visibilidad corporativa = forced egress con identidad **host-injected**.
+
+| Subfase (prevista) | Entrega | Estado |
+|---|---|---|
+| **3n.0** | ADR + why + enlaces roadmap/arquitectura | ✅ **Hecho** (docs only) |
+| **3n.1** | Tabla host `srcKey → sandbox_id → owner_sub` + audit proxy enriquecido | ⏳ No implementado |
+| **3n.2** | Direccionamiento TAP / nft `ct mark` por iif | ⏳ No implementado |
+| **3n.3** | Forced egress → proxy corporativo (headers/mTLS host-side) | ⏳ No implementado |
+
+**Estado:** propuesta / aceptada para evaluación (2026-10). **Sin código** de atribución aún. Criterio futuro: dos sandboxes, distinto `owner_sub`, mismo destino → audit distinto sin headers del guest.
+
 ## Fase 3 — Multi-nodo y fiabilidad
+
 
 - Scheduler por capacidad; métricas/SLOs; caos; fencing BMC de producción endurecido.
 - Attestors hardware (TPM/SEV) vía `Attestor`.
@@ -226,6 +244,7 @@ Rollout:
 
 - Pools precalentados; perfil Firecracker; workspace persistente cifrado.
 - IPv6 / ampliación de nft; posibles NetworkPolicy-like rules por sandbox en el nodo.
+- Atribución de flujos → `owner_sub` (si 3n.* se acepta tras evaluación): ver ADR-0008.
 
 ## Fuera de alcance inicial
 
@@ -235,4 +254,5 @@ Rollout:
 - Compatibilidad con workloads que requieran `NET_ADMIN` en el guest.
 - Prometer que SoftFail nft/TAP equivale a enforce en producción.
 - Tratar UID Linux del guest como identidad humana (rechazado en ADR-0007).
+- Tratar marks/headers puestos por el guest como atribución de red (rechazado en ADR-0008; evaluación).
 - Declarar SSH multi-user-safe **sin** `ASP_SSH_AGENT_SOCK_TEMPLATE` (bridge global legacy); con template + confirm multi-user, el aislamiento es por path — keys siguen siendo responsabilidad de ops (ADR-0007 fase 3u.4).

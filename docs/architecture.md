@@ -30,6 +30,7 @@ Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts
 | Aislamiento entre sandboxes / tenants | Escape / lateral movement | microVM + TAP por sandbox; deny-default egress |
 | Integridad del nodo | Node-agent o cert comprometido | mTLS enroll; rotate/revoke cert; attest software |
 | Egress corporativo | Guest bypasea proxy | Forward proxy + DNS sink + nft `asp_egress` (enforce en bare-metal) |
+| Atribución de flujos a humano | Tras NAT no se sabe qué empleado dialó | Futuro: ADR-0008 (proxy + IP/mark → `owner_sub`); no implementado |
 | Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Leases TTL + FenceProvider opcional (≠ STONITH BMC real) |
 | Plano de control | API anónima / path mal cableado | API keys; `ASP_MTLS_STRICT`; rutas públicas mínimas |
 
@@ -160,6 +161,8 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 4. `--nft-egress-redirect --nft-egress-mode=enforce` fuerza HTTP(S)+DNS por proxy/sink.
 5. En CI: `--nft-egress-mode=soft` (SoftFail sin root).
 
+**Atribución de flujos → humano (futuro):** hoy el proxy puede ver `X-ASP-Sandbox-ID` (forgeable) y no propaga `owner_sub`. Diseño en evaluación — [ADR-0008](adr/0008-network-flow-attribution.md), [`why-network-flow-attribution.md`](why-network-flow-attribution.md): lookup host-side (IP/TAP o `ct mark`) → `sandbox_id` → `owner_sub`; forced egress corporativo con identidad inyectada en el host. **No implementado.**
+
 ## Modelo de datos (control plane)
 
 Tablas / entidades principales (migraciones `001`–`007`):
@@ -225,4 +228,4 @@ Los agentes **no** necesitan hablar con CH ni con nft; solo con el control plane
 
 ## Evolución
 
-Orden de fases, gaps y criterios: [`roadmap.md`](roadmap.md). Decisiones normativas: [`adr/`](adr/).
+Orden de fases, gaps y criterios: [`roadmap.md`](roadmap.md). Decisiones normativas: [`adr/`](adr/). Atribución de red a `owner_sub` (evaluación): [ADR-0008](adr/0008-network-flow-attribution.md).

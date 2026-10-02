@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0005](0005-fase-2d-hardening.md), [0006](0006-fase-2e-nft-ssh-guest.md), [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../bare-metal-ch.md`](../bare-metal-ch.md) §3
+- **Relacionados:** [0005](0005-fase-2d-hardening.md), [0006](0006-fase-2e-nft-ssh-guest.md), [0008](0008-network-flow-attribution.md) (atribución flujos → `owner_sub`, evaluación), [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../bare-metal-ch.md`](../bare-metal-ch.md) §3
 
 ## Contexto
 
@@ -65,6 +65,7 @@ El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`) y las 
 
 - Completado en 2e: puertos HTTP configurables + DNS + soft|enforce (ADR-0006).
 - Pendiente: bypass-proof medido en hardware real (no solo dry-run del script); IPv6; UDP no-DNS.
+- Pendiente (evaluación): atribución de flujos a `owner_sub` — [0008](0008-network-flow-attribution.md).
 
 ## Detalle de implementación en este repo
 
