@@ -58,19 +58,20 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		actorSub = ownerSub
 	}
 	sb := Sandbox{
-		ID:           newID(),
-		TenantID:     input.TenantID,
-		NodeID:       nil,
-		State:        SandboxRequested,
-		VMMProfile:   input.VMMProfile,
-		ImageRef:     input.ImageRef,
-		CPUMillis:    input.CPUMillis,
-		MemoryMiB:    input.MemoryMiB,
-		StateVersion: 1,
-		OwnerSub:     ownerSub,
-		OwnerEmail:   ownerEmail,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             newID(),
+		TenantID:       input.TenantID,
+		NodeID:         nil,
+		State:          SandboxRequested,
+		VMMProfile:     input.VMMProfile,
+		ImageRef:       input.ImageRef,
+		CPUMillis:      input.CPUMillis,
+		MemoryMiB:      input.MemoryMiB,
+		StateVersion:   1,
+		OwnerSub:       ownerSub,
+		OwnerEmail:     ownerEmail,
+		LastActivityAt: now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if sb.VMMProfile == "" {
 		sb.VMMProfile = "cloud-hypervisor"
@@ -151,7 +152,10 @@ func (m *MemoryStore) provisionStub(id, nodeID string) (Sandbox, error) {
 	sb.NodeID = &nid
 	sb.State = SandboxRunning
 	sb.StateVersion++
-	sb.UpdatedAt = time.Now().UTC()
+	nowRun := time.Now().UTC()
+	sb.UpdatedAt = nowRun
+	sb.LastActivityAt = nowRun
+	sb.StopReason = ""
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
 	m.mu.Unlock()
@@ -344,6 +348,10 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		until := leaseUntil(now)
 		sb.NodeLeaseUntil = &until
 	}
+	if state == SandboxRunning {
+		sb.LastActivityAt = now
+		sb.StopReason = ""
+	}
 	if state == SandboxStopped || state == SandboxFailed {
 		sb.NodeLeaseUntil = nil
 	}
@@ -502,6 +510,84 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 		Payload:   json.RawMessage(`{"reason":"destroy"}`),
 	})
 	return out, nil
+}
+
+func (m *MemoryStore) TouchSandboxActivity(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: id required", ErrInvalidInput)
+	}
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sb, ok := m.sandboxes[id]
+	if !ok {
+		return ErrNotFound
+	}
+	sb.LastActivityAt = now
+	m.sandboxes[id] = sb
+	return nil
+}
+
+func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error) {
+	if idleFor <= 0 {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	type pending struct {
+		id, tenant, from string
+		to               SandboxState
+	}
+	var events []pending
+	out := make([]Sandbox, 0)
+	for id, sb := range m.sandboxes {
+		if !IsActiveLifecycle(sb.State) {
+			continue
+		}
+		if DecideIdle(sb.LastActivityAt, now, idleFor) != IdleExpired {
+			continue
+		}
+		from := string(sb.State)
+		target := SandboxStopping
+		if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+			target = SandboxStopped
+		}
+		sb.State = target
+		sb.StopReason = StopReasonIdle
+		sb.NodeLeaseUntil = nil
+		sb.StateVersion++
+		sb.UpdatedAt = now
+		m.sandboxes[id] = sb
+		out = append(out, cloneSandbox(sb))
+		events = append(events, pending{id: id, tenant: sb.TenantID, from: from, to: target})
+	}
+	m.mu.Unlock()
+	for _, e := range events {
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: e.id,
+			TenantID:  e.tenant,
+			EventType: "sandbox.idle_reaped",
+			FromState: &e.from,
+			ToState:   strPtr(string(e.to)),
+			Actor:     "idle-reaper",
+			Payload:   mustJSON(map[string]any{"reason": StopReasonIdle, "idle_for": idleFor.String()}),
+		})
+	}
+	return out, nil
+}
+
+// SetLastActivityForTest pins last_activity_at (unit tests only).
+func (m *MemoryStore) SetLastActivityForTest(id string, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sb, ok := m.sandboxes[id]
+	if !ok {
+		return
+	}
+	sb.LastActivityAt = at.UTC()
+	m.sandboxes[id] = sb
 }
 
 func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {

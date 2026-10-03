@@ -450,6 +450,10 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if msg := idleExecBlock(sb); msg != "" {
+		writeError(w, http.StatusConflict, msg)
+		return
+	}
 	if sb.NodeID == nil || *sb.NodeID == "" {
 		writeError(w, http.StatusConflict, "sandbox has no assigned node")
 		return
@@ -514,6 +518,8 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		ActorSub:  actorSub,
 		Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "exit_code": out.ExitCode}),
 	})
+	// Successful exec is activity (including non-zero guest exit). Proxy failures return above.
+	_ = s.Store.TouchSandboxActivity(sb.ID)
 	writeJSON(w, http.StatusOK, out)
 }
 

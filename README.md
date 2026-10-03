@@ -64,6 +64,7 @@ Cliente / asp ──HTTPS+API key──► Control plane
 | nft | `--nft-egress-mode=soft` SoftFail sin root; `enforce` exige privilegios |
 | Attest | Software ECDSA (`ASP_ATTEST_KEY`) ≠ TPM/SEV |
 | Leases | TTL software + FenceProvider opcional ≠ STONITH BMC |
+| Idle stop | `ASP_SANDBOX_IDLE_TIMEOUT` apagado por defecto (smokes); lab systemd usa `2h`. Actividad = create, paso a `running`, exec OK. No es un GC del fichero `asp session` |
 | K8s | Opcional solo para desplegar el CP; sandboxes no son Pods |
 
 ## Mapa de documentación

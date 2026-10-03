@@ -15,14 +15,25 @@ import (
 
 // Sandbox mirrors control-plane store.Sandbox JSON (subset used by the CLI).
 type Sandbox struct {
-	ID         string  `json:"id"`
-	TenantID   string  `json:"tenant_id"`
-	NodeID     *string `json:"node_id"`
-	State      string  `json:"state"`
-	ImageRef   string  `json:"image_ref"`
-	CPUMillis  int     `json:"cpu_millis"`
-	MemoryMiB  int     `json:"memory_mib"`
-	VMMProfile string  `json:"vmm_profile"`
+	ID             string  `json:"id"`
+	TenantID       string  `json:"tenant_id"`
+	NodeID         *string `json:"node_id"`
+	State          string  `json:"state"`
+	ImageRef       string  `json:"image_ref"`
+	CPUMillis      int     `json:"cpu_millis"`
+	MemoryMiB      int     `json:"memory_mib"`
+	VMMProfile     string  `json:"vmm_profile"`
+	LastActivityAt string  `json:"last_activity_at,omitempty"`
+	// StopReason is "idle_timeout" when the control-plane reaper stopped this sandbox.
+	StopReason string `json:"stop_reason,omitempty"`
+}
+
+// StopReasonIdle matches control-plane store.StopReasonIdle.
+const StopReasonIdle = "idle_timeout"
+
+// IdleReaped reports that the control plane stopped this sandbox for inactivity.
+func (s Sandbox) IdleReaped() bool {
+	return s.StopReason == StopReasonIdle
 }
 
 // CreateInput is POST /v1/sandboxes body.

@@ -39,7 +39,7 @@ Hace falta un segundo contrato: **una sesión local** que recuerde el id y la UR
 | El fichero es local a la máquina del CLI | Otro host, otro contenedor o un `HOME` distinto no ve la sesión. El CP sí sigue teniendo el sandbox. |
 | No hay sync de workspace | virtiofs / copia del árbol del proyecto **no** se resuelve aquí. `exec` corre en el filesystem del guest. Editar ficheros en el host no los hace aparecer dentro de la microVM, y al revés. `--cwd` solo cambia el directorio **dentro del guest** si esa ruta existe. |
 | Exec no es stream | El CP responde JSON acumulado (`stdout` / `stderr` / `exit_code`). El CLI imprime eso al terminar. No hay byte-a-byte ni stdin interactivo. |
-| Sin GC de sesión | Este CLI no apaga sandboxes olvidados. `session start` sin `session stop` deja la microVM hasta que alguien haga `DELETE` (o un operador limpie). `--local` empeora el leak si se usa mal. |
+| GC solo en el CP, y solo si está encendido | Este CLI **no** apaga sandboxes por su cuenta. El control-plane puede hacerlo con `ASP_SANDBOX_IDLE_TIMEOUT` (recomendado `2h`; default del proceso **off** para no romper smokes). Si el reaper paró el sandbox, `session status` y `session exec` lo dicen (`idle timeout` / `idle_reaped=true`, exit 1) y **no** borran el JSON. `start --force` crea otro. `--local` en stop sigue sin llamar al CP. |
 | No aísla herramientas entre sí | Todos los `exec` de esa sesión comparten un guest: ficheros, procesos y `/tmp` persisten entre llamadas. Eso es la ventaja y el riesgo (un comando deja estado para el siguiente). |
 | Auth sigue siendo por invocación | Cada `exec` resuelve el Bearer de nuevo. Si el token caduca a mitad de sesión, el siguiente comando falla con 401 hasta `asp auth login` o el auto-fetch. El sandbox no se entera. |
 | `owner_sub` | Lo pone el CP desde el JWT ([ADR-0007](adr/0007-multi-user-identity.md)). La sesión no acepta un owner “de mentira” en el JSON local. |
@@ -115,6 +115,20 @@ asp session exec --cmd '<comando>'
 
 `session exec` **sin** fichero termina con exit 1 y el texto `no active session` en stderr. No crea un sandbox implícito: un tool silencioso no debe arrancar microVMs.
 
+## Parada por inactividad (reaper del CP)
+
+**Por qué.** `session start` sin `stop` deja la microVM. El plano de control puede pararla solo cuando lleva demasiado tiempo sin actividad, para no pagar CPU/RAM de un agente que se fue.
+
+**Umbral.** Variable `ASP_SANDBOX_IDLE_TIMEOUT` (duración: `2h` recomendado, `1h` también válido, `90m`, …). `0`, `off`, `false` o `disabled` lo apagan. Si la variable **no está**, el reaper no corre: los smokes y `go test` no tienen que acordarse de desactivarlo. El lab systemd sí exporta `2h`. Flag del binario del CP: `-idle-timeout 2h` (pisa el env). Intervalo del bucle: `ASP_SANDBOX_IDLE_SWEEP` (default `1m`).
+
+**Qué es actividad.** Create, el paso a `running` (el start terminó) y un exec que el CP proxyó bien. Renovar el lease del nodo, el heartbeat o un `GET` **no** mantienen viva la VM: si lo hicieran, el reconciler impediría el idle para siempre.
+
+**Qué hace el reaper.** Pasa el sandbox a `stopping` (el node-agent lo destruye) o a `stopped` si nunca tuvo nodo. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.
+
+**Qué ve esta CLI.** `asp session status` imprime `idle_reaped=true` (y `--json` el booleano) y sale **1**. `asp session exec` no llama al exec proxy si el GET ya trae `stop_reason=idle_timeout`; si el CP responde 409 con `idle timeout`, el mensaje es el mismo. El fichero de sesión no se borra solo.
+
+**Límites.** No hay idle “por sesión” distinto del umbral global del CP. Dos agentes con dos sandboxes comparten el mismo timeout. Un exec que falla antes de llegar al guest (red, 502) no cuenta como actividad. Filas ya existentes al aplicar la migración `008` empiezan el reloj en ese momento (`last_activity_at=now()`), no en el `created_at` histórico.
+
 ## Variables y flags
 
 | Nombre | Rol |
@@ -133,6 +147,7 @@ asp session exec --cmd '<comando>'
 | `no active session` | No hubo `start`, otro `HOME`, u otro `--session-file`. |
 | `active session …` en start | Ya hay JSON. `stop` o `start --force`. |
 | exec HTTP 404 | Alguien borró el sandbox y el JSON sigue. `stop` (limpia en 404) o `start --force`. |
+| `idle timeout` / `idle_reaped=true` | El reaper del CP paró el sandbox por inactividad (`ASP_SANDBOX_IDLE_TIMEOUT`). El JSON local sigue. `asp session start --force`. Ver control-plane README. |
 | exec 401 | Token caducado o `ASP_IDP_REQUIRED` sin secretos. `asp auth status`. |
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500) es exit **1**, no el código del guest. |
 | `state file kept` | `DELETE` falló (no 404). El JSON sigue para poder reintentar `stop`. |

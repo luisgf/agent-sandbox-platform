@@ -87,8 +87,8 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		INSERT INTO sandboxes (
 			id, tenant_id, node_id, state, vmm_profile, image_ref,
 			cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-			owner_sub, owner_email
-		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7,$8,$9)`,
+			owner_sub, owner_email, last_activity_at, stop_reason
+		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7,$7,$8,$9,$7,'')`,
 		id, input.TenantID, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB, now,
 		ownerSub, ownerEmail,
 	)
@@ -134,7 +134,7 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 			nodeID = input.NodeID
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE sandboxes SET state='running', node_id=$2, state_version=state_version+1, updated_at=$3
+			UPDATE sandboxes SET state='running', node_id=$2, state_version=state_version+1, updated_at=$3, last_activity_at=$3
 			WHERE id=$1`, id, nodeID, now3); err != nil {
 			return Sandbox{}, err
 		}
@@ -180,7 +180,7 @@ func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email
+		       owner_sub, owner_email, last_activity_at, stop_reason
 		FROM sandboxes WHERE id=$1`, id)
 	sb, err := scanSandbox(row)
 	if err != nil {
@@ -200,13 +200,13 @@ func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-			       owner_sub, owner_email
+			       owner_sub, owner_email, last_activity_at, stop_reason
 			FROM sandboxes ORDER BY created_at DESC`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-			       owner_sub, owner_email
+			       owner_sub, owner_email, last_activity_at, stop_reason
 			FROM sandboxes WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	}
 	if err != nil {
@@ -343,7 +343,7 @@ func (p *PostgresStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email
+		       owner_sub, owner_email, last_activity_at, stop_reason
 		FROM sandboxes
 		WHERE (node_id = $1 AND state IN ('requested','starting','stopping'))
 		   OR ((node_id IS NULL OR node_id = '') AND state = 'requested')
@@ -388,7 +388,9 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 		until = u
 	}
 	tag, err := tx.Exec(ctx, `
-		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3, node_lease_until=$4
+		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3, node_lease_until=$4,
+		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE last_activity_at END,
+		    stop_reason=CASE WHEN $2='running' THEN '' ELSE stop_reason END
 		WHERE id=$1`, id, string(state), now, until)
 	if err != nil {
 		return Sandbox{}, err
@@ -455,7 +457,7 @@ func (p *PostgresStore) ReclaimExpiredLeases(now time.Time, reRequest bool) ([]S
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email
+		       owner_sub, owner_email, last_activity_at, stop_reason
 		FROM sandboxes
 		WHERE state IN ('starting','running')
 		  AND (node_lease_until IS NULL OR node_lease_until <= $1)`, now)
@@ -586,6 +588,106 @@ func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error
 		return Sandbox{}, err
 	}
 	return p.GetSandbox(id)
+}
+
+func (p *PostgresStore) TouchSandboxActivity(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: id required", ErrInvalidInput)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sandboxes SET last_activity_at=$2 WHERE id=$1`, id, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error) {
+	if idleFor <= 0 {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	cutoff := now.Add(-idleFor)
+	ctx := context.Background()
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
+		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
+		       owner_sub, owner_email, last_activity_at, stop_reason
+		FROM sandboxes
+		WHERE state IN ('requested','scheduled','starting','running','paused')
+		  AND last_activity_at <= $1`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := make([]Sandbox, 0)
+	for rows.Next() {
+		sb, err := scanSandbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, sb)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]Sandbox, 0, len(candidates))
+	for _, sb := range candidates {
+		if DecideIdle(sb.LastActivityAt, now, idleFor) != IdleExpired {
+			continue
+		}
+		target := SandboxStopping
+		if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+			target = SandboxStopped
+		}
+		from := string(sb.State)
+		tx, err := p.pool.Begin(ctx)
+		if err != nil {
+			return out, err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE sandboxes
+			SET state=$2, stop_reason=$3, node_lease_until=NULL,
+			    state_version=state_version+1, updated_at=$4
+			WHERE id=$1 AND state=$5 AND last_activity_at <= $6`,
+			sb.ID, string(target), StopReasonIdle, now, from, cutoff)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return out, err
+		}
+		if tag.RowsAffected() == 0 {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		if err := emitEventTx(ctx, tx, EmitEventInput{
+			SandboxID: sb.ID,
+			TenantID:  sb.TenantID,
+			EventType: "sandbox.idle_reaped",
+			FromState: &from,
+			ToState:   strPtr(string(target)),
+			Actor:     "idle-reaper",
+			Payload:   mustJSON(map[string]any{"reason": StopReasonIdle, "idle_for": idleFor.String()}),
+		}); err != nil {
+			_ = tx.Rollback(ctx)
+			return out, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		got, err := p.GetSandbox(sb.ID)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, got)
+	}
+	return out, nil
 }
 
 func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
@@ -1087,7 +1189,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 	err := row.Scan(
 		&sb.ID, &sb.TenantID, &sb.NodeID, &state, &sb.VMMProfile, &sb.ImageRef,
 		&sb.CPUMillis, &sb.MemoryMiB, &sb.StateVersion, &sb.NodeLeaseUntil,
-		&sb.CreatedAt, &sb.UpdatedAt, &sb.OwnerSub, &sb.OwnerEmail,
+		&sb.CreatedAt, &sb.UpdatedAt, &sb.OwnerSub, &sb.OwnerEmail, &sb.LastActivityAt, &sb.StopReason,
 	)
 	if err != nil {
 		return Sandbox{}, err

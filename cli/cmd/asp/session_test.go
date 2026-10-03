@@ -288,3 +288,46 @@ func TestSessionStopKeepsFileOnAPIError(t *testing.T) {
 		t.Fatalf("state should remain: %+v %v", st, err)
 	}
 }
+
+func TestSessionStatusAndExecIdleReaped(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	var execs atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.Sandbox{
+			ID: "gone", State: "stopping", TenantID: "acme", StopReason: client.StopReasonIdle,
+		})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		execs.Add(1)
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"sandbox was stopped after idle timeout (reaped)"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	sessFile := filepath.Join(t.TempDir(), "session.json")
+	if err := session.Save(sessFile, session.State{SandboxID: "gone", CPURL: srv.URL, TenantID: "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	code := run([]string{"session", "status", "--session-file", sessFile}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "idle timeout") || !strings.Contains(stdout.String(), "idle_reaped=true") {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"session", "status", "--json", "--session-file", sessFile}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stdout.String(), `"idle_reaped": true`) {
+		t.Fatalf("json status exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"session", "exec", "--session-file", sessFile, "--cmd", "true"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "idle timeout") {
+		t.Fatalf("exec exit=%d stderr=%q", code, stderr.String())
+	}
+	if execs.Load() != 0 {
+		t.Fatalf("exec should not be proxied when already reaped, execs=%d", execs.Load())
+	}
+}

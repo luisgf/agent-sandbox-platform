@@ -23,6 +23,9 @@ EnvironmentFile=/home/ubuntu/.secrets/asp-idp.env
 Environment=LISTEN_ADDR=127.0.0.1:18112
 Environment=ASP_OIDC_ISSUER=http://127.0.0.1:18112
 Environment=ASP_AUTH_REQUIRE=0
+# Stop sandboxes idle for 2h (successful exec / create / start). 0 or off disables.
+# Process default is off so unit tests and short smokes do not reap; this lab unit opts in.
+Environment=ASP_SANDBOX_IDLE_TIMEOUT=2h
 # Optional lab PEM paths (auto-created under /tmp if absent)
 Environment=ASP_OIDC_KEY_PATH=/tmp/asp-oidc-key.pem
 Environment=ASP_ATTEST_KEY_PATH=/tmp/asp-attest-key.pem

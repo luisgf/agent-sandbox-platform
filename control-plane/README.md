@@ -63,11 +63,32 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | `ASP_EGRESS_DEFAULT_ALLOW` | `1` en memory-dev | Vacío = allow-all |
 | `ASP_EGRESS_DENY_DEFAULT` | unset | Vacío = deny (harden; desactiva allow memory) |
 | `ASP_AUTO_PROVISION` | unset/false | `1` = stub sync Create→running; default deja `requested` |
+| `ASP_SANDBOX_IDLE_TIMEOUT` | unset = **off** | Parada por inactividad. Duración Go (`2h`, `1h`, `90m`). `0` / `off` / `false` / `disabled` desactiva. El valor recomendado de lab/producción es **2h** (también vale `1h`); no es el default del proceso, para que los smokes cortos no tumben sandboxes. Flag equivalente: `-idle-timeout` / `--idle-timeout` (pisa el env). |
+| `ASP_SANDBOX_IDLE_SWEEP` | `1m` | Cada cuánto el bucle del CP llama al reaper. No enciende el reaper por sí solo. Mínimo efectivo 1s. |
+
 
 ```bash
 go test ./...
 ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
 ```
+
+## Parada por inactividad
+
+**Por qué.** Una sesión `asp session` (o un create olvidado) deja la microVM encendida hasta un `DELETE`. El reaper del control-plane marca `stopping` (o `stopped` si nunca se asignó nodo) cuando no hay actividad durante el umbral, y el reconciler del nodo apaga la VM.
+
+**Qué cuenta como actividad.** `last_activity_at` se mueve en: create, transición a `running` (start) y **exec con respuesta correcta del node-agent** (aunque el proceso del guest salga ≠ 0). No cuentan: GET, heartbeat, renovación de lease, ni un exec que ni siquiera llega al guest.
+
+**Cómo se configura.** Default del binario: apagado. En lab/producción:
+
+```bash
+ASP_SANDBOX_IDLE_TIMEOUT=2h   # recomendado; alternativa 1h
+# o al arrancar: ./api -idle-timeout 2h
+# ASP_SANDBOX_IDLE_TIMEOUT=0  o  off  → desactiva
+```
+
+La unit `scripts/systemd/asp-control-plane.service` fija `2h`. Los tests y smokes cortos no exportan la variable.
+
+**Límites.** El reaper no es un sustituto de `asp session stop`: el fichero local de sesión sigue apuntando al id; `asp session status` y `exec` lo dicen (`idle timeout` / `idle_reaped`) y hay que `asp session start --force`. La migración `008` rellena `last_activity_at` de filas viejas con `now()`, así que al activar el reaper no se destruye de golpe todo lo creado hace horas; el reloj de esas filas empieza en la migración. Evento de auditoría: `sandbox.idle_reaped` (`stop_reason=idle_timeout`).
 
 ## Lab IdP (Keycloak)
 

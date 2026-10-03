@@ -40,6 +40,11 @@ type Sandbox struct {
 	OwnerSub string `json:"owner_sub,omitempty"`
 	// OwnerEmail is optional ops/UI claim; not an authz key.
 	OwnerEmail string `json:"owner_email,omitempty"`
+	// LastActivityAt is the last successful exec, or create/start (transition to running).
+	// Lease renew and heartbeats do not move it. Idle reaping compares it to the threshold.
+	LastActivityAt time.Time `json:"last_activity_at"`
+	// StopReason is set by the idle reaper (idle_timeout). Empty otherwise.
+	StopReason string    `json:"stop_reason,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
@@ -78,13 +83,13 @@ type ApiKey struct {
 
 // SandboxEvent is an append-only audit row for sandbox lifecycle.
 type SandboxEvent struct {
-	ID        int64           `json:"id"`
-	SandboxID string          `json:"sandbox_id"`
-	TenantID  string          `json:"tenant_id"`
-	EventType string          `json:"event_type"`
-	FromState *string         `json:"from_state,omitempty"`
-	ToState   *string         `json:"to_state,omitempty"`
-	Actor     string          `json:"actor"`
+	ID        int64   `json:"id"`
+	SandboxID string  `json:"sandbox_id"`
+	TenantID  string  `json:"tenant_id"`
+	EventType string  `json:"event_type"`
+	FromState *string `json:"from_state,omitempty"`
+	ToState   *string `json:"to_state,omitempty"`
+	Actor     string  `json:"actor"`
 	// ActorSub is the human/service principal for this action (ADR-0007 phase 1). Empty OK in lab.
 	ActorSub  string          `json:"actor_sub,omitempty"`
 	RequestID *string         `json:"request_id,omitempty"`

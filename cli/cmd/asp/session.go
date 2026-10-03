@@ -222,8 +222,16 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
+	if sb, gerr := c.GetSandbox(context.Background(), st.SandboxID); gerr == nil && sb.IdleReaped() {
+		fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
+		return 1
+	}
 	res, err := c.Exec(context.Background(), st.SandboxID, client.ExecRequest{Cmd: argv, Cwd: *cwd})
 	if err != nil {
+		if idleReapedErr(err) {
+			fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
+			return 1
+		}
 		fmt.Fprintf(stderr, "session exec: sandbox %s: %v\n", st.SandboxID, err)
 		return 1
 	}
@@ -274,6 +282,7 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 		CreatedAt   string          `json:"created_at,omitempty"`
 		Live        *client.Sandbox `json:"live,omitempty"`
 		LiveError   string          `json:"live_error,omitempty"`
+		IdleReaped  bool            `json:"idle_reaped,omitempty"`
 	}
 	out := view{
 		SessionFile: path,
@@ -296,11 +305,37 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	out.Live = &sb
+	out.IdleReaped = sb.IdleReaped()
+	if out.IdleReaped {
+		fmt.Fprintf(stderr, "session status: %s\n", idleReapedText(st.SandboxID, path))
+	}
 	if g.jsonOut {
-		return writeJSON(stdout, out)
+		code := writeJSON(stdout, out)
+		if code != 0 {
+			return code
+		}
+		if out.IdleReaped {
+			return 1
+		}
+		return 0
+	}
+	if out.IdleReaped {
+		fmt.Fprintf(stdout, "id=%s state=%s tenant=%s cp=%s file=%s stop_reason=%s idle_reaped=true\n", sb.ID, sb.State, sb.TenantID, st.CPURL, path, sb.StopReason)
+		return 1
 	}
 	fmt.Fprintf(stdout, "id=%s state=%s tenant=%s cp=%s file=%s\n", sb.ID, sb.State, sb.TenantID, st.CPURL, path)
 	return 0
+}
+
+func idleReapedText(id, path string) string {
+	return fmt.Sprintf("sandbox %s was stopped after idle timeout (reaped). Session file kept (%s). Run: asp session start --force", id, path)
+}
+
+func idleReapedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "idle timeout")
 }
 
 func cmdSessionStop(args []string, stdout, stderr io.Writer) int {

@@ -39,6 +39,12 @@ type Store interface {
 	// (or requested when reRequest is true) and clears the assignment so another node may claim.
 	ReclaimExpiredLeases(now time.Time, reRequest bool) ([]Sandbox, error)
 
+	// TouchSandboxActivity records a successful exec (or equivalent) as last_activity_at=now.
+	TouchSandboxActivity(id string) error
+	// StopIdleSandboxes marks active sandboxes idle longer than idleFor as stopping
+	// (or stopped when never assigned). idleFor <= 0 is a no-op (reaper disabled).
+	StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error)
+
 	RegisterNode(input RegisterNodeInput) (Node, error)
 	EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, error)
 	// RotateNodeCert issues tracking for a new cert: revokes the previous fingerprint and stores the new meta.

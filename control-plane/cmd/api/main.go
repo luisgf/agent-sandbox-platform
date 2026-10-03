@@ -116,6 +116,21 @@ func main() {
 	}
 	authCfg.IdP = idpVal
 	authCfg.IdPRequired = idpCfg.Required
+
+	idleTimeout, err := store.ResolveIdleTimeout(os.Getenv(store.EnvSandboxIdleTimeout), idleTimeoutFlag(os.Args[1:]))
+	if err != nil {
+		slog.Error("idle timeout", "error", err)
+		os.Exit(1)
+	}
+	if idleTimeout > 0 {
+		sweep := store.IdleSweepInterval(os.Getenv(store.EnvSandboxIdleSweep))
+		go srv.RunIdleReaper(ctx, idleTimeout, sweep)
+		slog.Info("sandbox idle reaper enabled", "timeout", idleTimeout.String(), "sweep", sweep.String(),
+			"note", "activity = create, transition to running, successful exec; lease renew is not activity")
+	} else {
+		slog.Info("sandbox idle reaper disabled",
+			"hint", "set ASP_SANDBOX_IDLE_TIMEOUT=2h (or 1h) or -idle-timeout 2h; 0/off disables")
+	}
 	if idpCfg.Enabled() {
 		slog.Info("idp jwt validation ready",
 			"issuer", idpCfg.Issuer,
@@ -216,7 +231,7 @@ func main() {
 
 		slog.Info("control-plane API listening (TLS)", "addr", addr, "store", storeName,
 			"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
-			"mtls_strict", mtlsStrict)
+			"mtls_strict", mtlsStrict, "idle_timeout", idleTimeout.String())
 		if err := server.ListenAndServeTLS(tlsCert, tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("API stopped", "error", err)
 			os.Exit(1)
@@ -229,7 +244,7 @@ func main() {
 	}
 
 	slog.Info("control-plane API listening", "addr", addr, "store", storeName,
-		"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired)
+		"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "idle_timeout", idleTimeout.String())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("API stopped", "error", err)
 		os.Exit(1)
@@ -276,4 +291,24 @@ func requestLog(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		slog.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(started))
 	})
+}
+
+// idleTimeoutFlag returns the value of -idle-timeout / --idle-timeout, or "".
+// Unknown args are ignored; the API process is otherwise env-driven.
+func idleTimeoutFlag(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-idle-timeout" || a == "--idle-timeout" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
+		for _, prefix := range []string{"--idle-timeout=", "-idle-timeout="} {
+			if strings.HasPrefix(a, prefix) {
+				return strings.TrimPrefix(a, prefix)
+			}
+		}
+	}
+	return ""
 }
