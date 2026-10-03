@@ -24,10 +24,13 @@ añadir un protocolo nuevo.
   `ASP_ID_TOKEN` / cache / password|client_credentials (`ASP_IDP_*`,
   `~/.secrets/asp-keycloak-lab.txt`). Ver
   [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).
-- **Sesión reutilizable:** `asp session start|exec|status|stop` guarda id + URL
-  en `~/.cache/asp/session.json` (0600, sin token) para que un harness apunte
-  su bash tool a `asp session exec`. Ver [`ops-asp-session.md`](ops-asp-session.md).
-  No sustituye a `sandbox run`.
+- **Sesión de agente (superficie primaria, [ADR-0009](adr/0009-agent-sessions.md)):**
+  `asp session start|exec|status|stop` guarda id + URL en
+  `~/.cache/asp/session.json` (0600, sin token) para que un harness apunte su
+  bash tool a `asp session exec` durante la vida del agente. Ver
+  [`ops-asp-session.md`](ops-asp-session.md) y
+  [`why-agent-sessions.md`](why-agent-sessions.md). `sandbox run` queda como
+  primitiva de un solo comando (CI/ops), no como integración del bucle.
 - Stderr para id/transiciones de estado; stdout para la salida del comando.
 - Tests con `httptest` (sin servidores vivos) + smoke opcional
   [`scripts/smoke-asp-cli.sh`](../scripts/smoke-asp-cli.sh) /
@@ -39,6 +42,7 @@ añadir un protocolo nuevo.
 Es un **cliente HTTP de demo/ops**, no un SDK multi-lenguaje ni un TUI ni un
 plugin de OpenCode. No streaméa exec byte-a-byte (el CP hoy devuelve JSON
 acumulado). `asp session` es **una** sesión local: no sincroniza el workspace
-(virtiofs/copia) ni apaga sandboxes olvidados. Auth = API key **o** JWT IdP
+(virtiofs/copia). El apagado por idle, si existe, es el reaper del CP
+(`ASP_SANDBOX_IDLE_TIMEOUT`, default off), no un GC del fichero. Auth = API key **o** JWT IdP
 (lab Keycloak password grant / client_credentials); no es el flujo OAuth
 corporativo completo. No gestiona enrollment de nodos.

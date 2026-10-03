@@ -1,12 +1,14 @@
-# Ops — Sesión reutilizable `asp session` (shell de agente)
+# Ops — Sesión de agente `asp session` (shell del harness)
 
-Cómo un harness tipo [OpenCode](https://github.com/sst/opencode) puede apuntar su herramienta de shell a un sandbox **ya creado**, en lugar de ejecutar cada comando en el host o pagar un create→destroy por invocación.
+**Esta es la superficie de integración.** Un agente largo se engancha a una sesión (un sandbox: `owner_sub`, disco del guest, egress, idle) y llama a `exec` durante horas. Create→exec→destroy por comando **no** es el producto. Dirección: [ADR-0009](adr/0009-agent-sessions.md) · [por qué](why-agent-sessions.md).
 
-Contrato one-shot (sigue existiendo): [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). CLI base: [`why-cli-asp.md`](why-cli-asp.md). Identidad del dueño: [ADR-0007](adr/0007-multi-user-identity.md) (`owner_sub` sale del JWT, no del guest).
+Cómo un harness tipo [OpenCode](https://github.com/sst/opencode) apunta su herramienta de shell a ese sandbox ya creado, en lugar de ejecutar cada comando en el host.
+
+La primitiva one-shot (CI / un comando) sigue existiendo y no es esta página: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). CLI base: [`why-cli-asp.md`](why-cli-asp.md). Identidad del dueño: [ADR-0007](adr/0007-multi-user-identity.md) (`owner_sub` sale del JWT, no del guest). El exec API es el dataplane **dentro** de la sesión, no el contrato que el harness debe diseñar.
 
 ## Por qué
 
-`asp sandbox run` es el contrato correcto cuando el agente lanza **un** comando y puede esperar el ciclo completo:
+`asp sandbox run` es la primitiva correcta cuando el proceso **es** un solo comando (CI, ops) y puede esperar el ciclo completo. No es el contrato del bucle del agente ([ADR-0009](adr/0009-agent-sessions.md)):
 
 1. `POST /v1/sandboxes`
 2. poll hasta `running`
@@ -15,7 +17,7 @@ Contrato one-shot (sigue existiendo): [`ops-asp-agent-runner.md`](ops-asp-agent-
 
 Eso aísla cada invocación (el sandbox muere con el proceso), pero un bucle de agente —decenas de llamadas a `bash`— paga arranque de microVM cada vez. En dry-run (FakeVMM) el coste es bajo; con Cloud Hypervisor el boot domina la latencia del tool.
 
-Hace falta un segundo contrato: **una sesión local** que recuerde el id y la URL del control-plane, y un binario que el harness pueda poner en el sitio del shell.
+El contrato del agente es **una sesión**: puntero local al id y a la URL del control-plane, y un binario que el harness pone en el sitio del shell. El one-shot no se elimina; deja de ser la historia principal.
 
 ## Qué ganamos
 
@@ -163,7 +165,9 @@ Cubren el fichero (round-trip, modo `0600`, JSON sin secretos, ausencia) y el CL
 
 ## Referencias
 
-- [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md) — one-shot + IdP
+- [ADR-0009](adr/0009-agent-sessions.md) — dirección: sesión primero
+- [`why-agent-sessions.md`](why-agent-sessions.md)
+- [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md) — primitiva one-shot + IdP
 - [`why-cli-asp.md`](why-cli-asp.md)
 - [`roadmap.md`](roadmap.md) — fase 2f y nota de sesión
 - [ADR-0007](adr/0007-multi-user-identity.md)

@@ -6,6 +6,8 @@ Diseño y esqueleto de referencia para una plataforma de sandboxes de agentes al
 
 ## Para qué sirve
 
+Un agente es un proceso **largo**. La forma primaria de usar el aislamiento es una **sesión** atada a un sandbox (identidad `owner_sub` del IdP, workspace del guest, egress, idle) — no una microVM por comando de shell. Dirección: [ADR-0009](docs/adr/0009-agent-sessions.md) · [por qué](docs/why-agent-sessions.md). `asp sandbox run` queda como primitiva interna (CI / un comando).
+
 - Aislar workloads de agentes (código no confiable) con frontera **microVM** (Cloud Hypervisor por defecto; `FakeVMM` en dry-run/CI).
 - Orquestar el ciclo de vida multi-tenant vía API (`control-plane`) y reconciliación en el nodo (`node-agent --reconcile`).
 - Ejecutar comandos y (según evolución) archivos a través de `pod-daemon` por vsock — sin exponer el hipervisor al cliente.
@@ -36,10 +38,10 @@ Narrativa completa (threat model, trust boundaries, identidad, leases): [`docs/a
 | Node-agent | CH spawn / FakeVMM; reconciler; hybrid vsock exec; host-vsock 26501/26502; TAP auto; egress proxy+DNS; nft soft\|enforce; SSH confirm; guest SSH auto |
 | pod-daemon | HTTP JSON unix/vsock/tcp; `ASP_HOST_CID=2` |
 | Guest image | Dockerfile + systemd/OpenRC + `vsock-ssh-agent-proxy` |
-| CLI | `asp` (`make asp`) — `sandbox run`, `session start/exec/stop`, `auth login` (IdP Bearer) |
+| CLI | `asp` (`make asp`) — `session start/exec/stop` (agente), `sandbox run` (primitiva), `auth login` (IdP Bearer) |
 | Pack | `make pack` → tarball de release |
 
-**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado.
+**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado; **share del workspace** (virtiofs/copia) y **plugin OpenCode** — la sesión es la dirección, esos gaps siguen abiertos ([ADR-0009](docs/adr/0009-agent-sessions.md)).
 
 ## Cómo funciona (mapa rápido)
 
@@ -73,14 +75,15 @@ Cliente / asp ──HTTPS+API key──► Control plane
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | Arquitectura, threat model, flujos |
 | [`docs/diagram.svg`](docs/diagram.svg) / [`.mmd`](docs/diagram.mmd) | Diagrama |
-| [`docs/roadmap.md`](docs/roadmap.md) | Fases 0–2f + gaps |
+| [`docs/roadmap.md`](docs/roadmap.md) | Fases 0–2f + gaps; sesión primero ([ADR-0009](docs/adr/0009-agent-sessions.md)) |
+| [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md) | Por qué la sesión es el producto y el one-shot no |
 | [`docs/mvp-smoke.md`](docs/mvp-smoke.md) | Smoke dry-run (sin KVM) |
 | [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) | Ops CH + KVM real |
 | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) | Lab Keycloak IdP (realm asp) + systemd CP — secretos fuera de git |
-| [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) | Runner agente: `asp auth` + Bearer automático + one-liner |
-| [`docs/ops-asp-session.md`](docs/ops-asp-session.md) | Sesión reutilizable: `asp session` para el shell de un harness (OpenCode) |
-| [`docs/adr/`](docs/adr/) | Decisiones (0001–0008) |
-| [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI, multi-user, network-flow attribution) |
+| [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) | Primitiva one-shot + `asp auth` / Bearer (no es la superficie del agente) |
+| [`docs/ops-asp-session.md`](docs/ops-asp-session.md) | CLI de la sesión: `asp session` para el shell del harness (OpenCode) |
+| [`docs/adr/`](docs/adr/) | Decisiones (0001–0009) |
+| [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI, sesiones, multi-user, network-flow attribution) |
 | [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) | Puertos vsock |
 
 ### ADRs
@@ -93,6 +96,7 @@ Cliente / asp ──HTTPS+API key──► Control plane
 6. [Fase 2e nft + SSH guest](docs/adr/0006-fase-2e-nft-ssh-guest.md)
 7. [Identidad multi-usuario / IdP](docs/adr/0007-multi-user-identity.md) — fases 1–5 (schema + JWT IdP + RBAC + SSH scoped + workload user_sub/act); ver [`docs/why-multi-user-identity.md`](docs/why-multi-user-identity.md) · lab Keycloak: [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md)
 8. [Atribución de flujos de red → owner_sub](docs/adr/0008-network-flow-attribution.md) — **evaluación** (no implementada); ver [`docs/why-network-flow-attribution.md`](docs/why-network-flow-attribution.md)
+9. [Sesiones de agente](docs/adr/0009-agent-sessions.md) — **aceptada como dirección**: la sesión es la forma primaria de aislamiento; el one-shot es primitiva interna. Ver [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md)
 
 ## Mapa de componentes
 
@@ -138,22 +142,7 @@ export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 # Opcional nft soft: --egress-proxy-listen=:8888 --nft-egress-redirect --nft-egress-mode=soft
 ```
 
-One-liner de agente/ops (dry-run local):
-
-```bash
-./build/asp sandbox run --node-id=dev-node --cmd 'echo hello'
-```
-
-Lab IdP (ncc1701d, CP `127.0.0.1:18112` — secretos en el host):
-
-```bash
-export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
-./build/asp sandbox run --tenant=default --cmd 'echo hello'
-```
-
-Detalle del contrato one-shot para agentes: [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md).
-
-Sesión reutilizable (el shell del harness llama a `asp session exec` en vez de al host; **no** sincroniza el workspace):
+Sesión de agente (forma primaria; dry-run local). El harness engancha el shell a `session exec` durante horas; **no** hay sync del workspace del host:
 
 ```bash
 ./build/asp session start --node-id=dev-node
@@ -161,7 +150,22 @@ Sesión reutilizable (el shell del harness llama a `asp session exec` en vez de 
 ./build/asp session stop
 ```
 
-Contrato, alternativas y límites: [`docs/ops-asp-session.md`](docs/ops-asp-session.md).
+Dirección y límites: [ADR-0009](docs/adr/0009-agent-sessions.md) · [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md) · contrato CLI [`docs/ops-asp-session.md`](docs/ops-asp-session.md).
+
+Primitiva one-shot (CI / un solo comando, no el bucle del agente):
+
+```bash
+./build/asp sandbox run --node-id=dev-node --cmd 'echo hello'
+```
+
+Lab IdP (ncc1701d, CP `127.0.0.1:18112` — secretos en el host), misma primitiva o `session start` con `--tenant=default`:
+
+```bash
+export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
+./build/asp sandbox run --tenant=default --cmd 'echo hello'
+```
+
+Auth del Bearer y por qué el one-shot no es la integración: [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md).
 
 Detalle de precondiciones, resultados esperados y fallos: [`docs/mvp-smoke.md`](docs/mvp-smoke.md).  
 Host con KVM: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).

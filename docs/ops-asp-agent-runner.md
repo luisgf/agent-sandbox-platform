@@ -1,19 +1,23 @@
-# Ops — Runner transparente para agentes (`asp` + IdP)
+# Ops — Primitiva one-shot y auth IdP (`asp sandbox run`)
 
-Cómo un agente (o un one-liner de ops) ejecuta un comando en sandbox **sin** gestionar a mano create → wait → exec → destroy **ni** el Bearer JWT de Keycloak.
+**No es la superficie de integración del agente.** Un agente largo usa una [sesión](ops-asp-session.md) ([ADR-0009](adr/0009-agent-sessions.md) · [por qué](why-agent-sessions.md)): un sandbox, muchos `exec`, stop o idle. Esta página es la primitiva create→exec→destroy (CI, un comando de ops) y cómo el CLI obtiene el Bearer sin copiarlo a mano.
+
+Cómo esa primitiva (o cualquier otro subcomando `asp`) corre **sin** gestionar el JWT de Keycloak a mano.
 
 Diseño IdP: [ADR-0007](adr/0007-multi-user-identity.md) · lab Keycloak: [ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md) · CLI base: [why-cli-asp.md](why-cli-asp.md).
 
-Sesión reutilizable (varios `exec` en el mismo sandbox, p. ej. tool bash de OpenCode): [ops-asp-session.md](ops-asp-session.md). El one-shot de esta página **no** desaparece.
+El one-shot **no** desaparece. Deja de ser el contrato que un harness debe llamar por tool.
 
 ## Por qué
 
 Con `ASP_IDP_REQUIRED=1` en el CP lab (`127.0.0.1:18112`), cualquier `POST /v1/sandboxes` sin `Authorization: Bearer <JWT>` responde **401**. El ciclo de vida ya lo encapsula `asp sandbox run`, pero el token seguía siendo un paso manual (`curl` password-grant + `export`).
 
-Los agentes necesitan un contrato mínimo:
+El contrato mínimo de **auth** (vale igual para `session` y para `sandbox run`):
 
 1. Variables de entorno (URL del CP + dónde están los secretos del IdP).
-2. Un comando: `asp sandbox run --cmd '…'`.
+2. El CLI adjunta el Bearer solo.
+
+El comando de un agente largo no es `asp sandbox run` por tool; es `asp session start` una vez y `asp session exec` después. `sandbox run --cmd '…'` queda para un solo comando.
 
 ## Qué ganamos
 
@@ -22,7 +26,7 @@ Los agentes necesitan un contrato mínimo:
 | `asp auth login` | Password grant o `client_credentials` → cache `~/.cache/asp/id_token.json` (0600) |
 | Auto-Bearer | `asp sandbox *` resuelve token (env → cache → fetch → API key) y envía `Authorization` |
 | Secretos fuera de git | `~/.secrets/asp-keycloak-lab.txt` + env `ASP_IDP_*`; **nunca** en el repo |
-| One-liner agente | Ver § uso abajo |
+| One-liner one-shot | Sigue en § uso; es la primitiva, no el bucle del agente |
 
 ## Qué no ganamos (límites)
 
@@ -60,7 +64,9 @@ CLIENT_ID / CLIENT_SECRET / USER / PASSWORD / ISSUER / (opcional TOKEN_URL, JWKS
 
 ---
 
-## Uso para agentes (one-liner)
+## Uso de la primitiva (one-liner)
+
+Para el bucle del harness, para aquí y usa [`ops-asp-session.md`](ops-asp-session.md). Lo de abajo es un comando que crea y destruye la VM.
 
 ### En ncc1701d (CP lab ya activo)
 
@@ -152,19 +158,21 @@ make smoke-asp
 3. ¿Agente en CI? Preferir secret store → env `ASP_IDP_*`; no copiar `asp-keycloak-lab.txt` al repo ni a logs.
 4. ¿Promoción Entra/Okta? Nuevo grant; no reutilizar password grant ni el usuario `asp-lab`.
 
-## Sesión vs one-shot
+## Sesión (producto) vs one-shot (esta página)
 
-| | `asp sandbox run` | `asp session` |
+| | `asp session` | `asp sandbox run` |
 |---|---|---|
-| Ciclo de vida | create → exec → destroy en un proceso | `start` deja el sandbox; `exec` lo reutiliza; `stop` lo destruye |
-| Estado en disco | ninguno | `~/.cache/asp/session.json` (0600), sin secretos |
-| Cuándo | un comando, CI, máximo aislamiento | bucle de tools del agente |
-| Workspace del host | no entra al guest | **igual: no entra** (sin virtiofs/copia) |
+| Rol | **superficie del agente** ([ADR-0009](adr/0009-agent-sessions.md)) | primitiva interna: CI, un comando |
+| Ciclo de vida | `start` deja el sandbox; `exec` lo reutiliza horas; `stop` o idle reap | create → exec → destroy en un proceso |
+| Estado en disco | `~/.cache/asp/session.json` (0600), sin secretos | ninguno |
+| Workspace del host | **no entra** al guest (sin virtiofs/copia) | igual: no entra |
 
-Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.md).
+Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.md) · [why-agent-sessions.md](why-agent-sessions.md).
 
 ## Referencias
 
+- [adr/0009-agent-sessions.md](adr/0009-agent-sessions.md)
+- [why-agent-sessions.md](why-agent-sessions.md)
 - [ops-asp-session.md](ops-asp-session.md)
 - [ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md)
 - [why-cli-asp.md](why-cli-asp.md)

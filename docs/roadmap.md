@@ -4,6 +4,8 @@ Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecim
 
 Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada).
 
+**Dirección de producto (agentes):** el aislamiento se usa en una **sesión** larga (un sandbox: `owner_sub`, workspace del guest, egress, idle), no con create→exec→destroy por comando de shell. [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md). `asp sandbox run` sigue siendo la primitiva de CI/ops.
+
 ## Fase 0 — Esqueleto
 
 - Contratos de componentes, ADRs iniciales y esquema SQL.
@@ -195,15 +197,17 @@ Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
 - **Hecho.**
 
-### Sesión reutilizable (`asp session`) — post-2f
+### Sesión de agente (`asp session`) — post-2f, dirección primaria
 
-Contrato adicional para harnesses (OpenCode y similares) que quieren un shell **dentro** del sandbox sin create/destroy por tool:
+[ADR-0009](adr/0009-agent-sessions.md) fija esto como **la** forma en que un agente usa el aislamiento (sesión larga; el exec es el dataplane, no la integración). El one-shot de la fase 2f no es el producto. El código de abajo ya estaba; el ADR no añade virtiofs ni plugin.
+
+Contrato para harnesses (OpenCode y similares) que enganchan el shell **dentro** del sandbox sin create/destroy por tool:
 
 - `asp session start|exec|status|stop`
 - Estado local `~/.cache/asp/session.json` (0600): id + URL del CP, sin token
 - `exec` reutiliza `POST /v1/sandboxes/{id}/exec`; exit code del guest
 
-**Qué entregó / por qué importaba:** el one-shot sigue para CI; la sesión evita pagar el boot en cada llamada del agente.
+**Qué entregó / por qué importaba:** el one-shot queda para CI; la sesión es el camino del agente y evita pagar el boot en cada tool. Narrativa: [`why-agent-sessions.md`](why-agent-sessions.md).
 
 **Límites honestos:** un solo fichero local; no es plugin de OpenCode; **no** hay sync de workspace (virtiofs/copia); sin GC si se olvida `stop`; exec sigue siendo JSON acumulado.
 
@@ -271,4 +275,5 @@ Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`)
 - Prometer que SoftFail nft/TAP equivale a enforce en producción.
 - Tratar UID Linux del guest como identidad humana (rechazado en ADR-0007).
 - Tratar marks/headers puestos por el guest como atribución de red (rechazado en ADR-0008; evaluación).
+- Tratar create→exec→destroy por comando de shell como la superficie de integración del agente (rechazado como producto en [ADR-0009](adr/0009-agent-sessions.md); `asp sandbox run` se conserva como primitiva de CI/ops).
 - Declarar SSH multi-user-safe **sin** `ASP_SSH_AGENT_SOCK_TEMPLATE` (bridge global legacy); con template + confirm multi-user, el aislamiento es por path — keys siguen siendo responsabilidad de ops (ADR-0007 fase 3u.4).
