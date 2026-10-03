@@ -50,7 +50,21 @@ type Sandbox struct {
 	// share. The node-agent starts virtiofsd when this is set. A guest image
 	// with workspace-virtiofs.service mounts the tag at boot; an older image
 	// still needs mount -t virtiofs.
-	WorkspaceHostPath string    `json:"workspace_host_path,omitempty"`
+	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
+	// LocalNet is the full-tunnel opt-in (ADR-0010). Default false.
+	// When true, this sandbox's default route is the local-agent tunnel,
+	// never the node public proxy — including while the tunnel is down.
+	LocalNet bool `json:"local_net"`
+	// LocalNetState is off | pending | up | withdrawn.
+	LocalNetState string `json:"local_net_state"`
+	// LocalNetAttachedAt is the last transition to up. Not a secret.
+	LocalNetAttachedAt *time.Time `json:"local_net_attached_at,omitempty"`
+	// LocalNetGrantExpiresAt is the current grant deadline. The grant itself is not stored.
+	LocalNetGrantExpiresAt *time.Time `json:"local_net_grant_expires_at,omitempty"`
+	// LocalNetClientPublic is the agent's WireGuard public key (not a secret).
+	LocalNetClientPublic string `json:"local_net_client_public,omitempty"`
+	// LocalNetGrantHash is sha256 hex of the live grant. Never serialized.
+	LocalNetGrantHash string    `json:"-"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
@@ -133,6 +147,9 @@ type CreateSandboxInput struct {
 	// WorkspaceHostPath is an absolute host directory to share (optional).
 	// The control plane stores it; it does not mount it.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
+	// LocalNet opts this sandbox into the full-tunnel default route (ADR-0010).
+	// Nil or false keeps the node public egress. There is no per-CIDR field in v1.
+	LocalNet *bool `json:"local_net,omitempty"`
 }
 
 // RegisterNodeInput is the payload for node-agent registration.

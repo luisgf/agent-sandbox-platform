@@ -13,6 +13,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/client"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/cmdline"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/session"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/term"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/wait"
@@ -32,13 +33,16 @@ func sessionCmd(args []string, stdout, stderr io.Writer) int {
 		return cmdSessionStatus(args[1:], stdout, stderr)
 	case "stop", "destroy", "rm":
 		return cmdSessionStop(args[1:], stdout, stderr)
+	case "local-net":
+		return cmdSessionLocalNet(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprintln(stderr, `asp session — reusable sandbox for a local agent shell tool
 
-  asp session start [--name NAME] [--workspace /path] [flags]
+  asp session start [--name NAME] [--workspace /path] [--local-net] [flags]
   asp session exec  [--name NAME] (--cmd '…' | -- argv…)
   asp session status [--name NAME] [--json]
   asp session stop  [--name NAME]
+  asp session local-net up|down [--name NAME]
 
 Named sessions: ~/.cache/asp/sessions/<name>.json (default name "default").
 Override the directory with --session-dir / ASP_SESSION_DIR.
@@ -130,7 +134,13 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
 	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest image mounts tag workspace on /workspace; older images need mount -t virtiofs)")
 	force := fs.Bool("force", false, "destroy any sandbox recorded in the session file, then start a new one")
+	localNet := fs.Bool("local-net", false, "send this session's default route through a tunnel the local agent opens (default off)")
+	localAllow := fs.String("local-net-allow", "", "rejected in v1 (no per-CIDR config)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if flagWasSet(fs, "local-net-allow") || strings.TrimSpace(*localAllow) != "" {
+		fmt.Fprintf(stderr, "session start: --local-net-allow is not supported in v1 (full tunnel only; ADR-0010)\n")
 		return 2
 	}
 	ws, err := cleanWorkspaceFlag(*workspace)
@@ -175,6 +185,11 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	var lnPtr *bool
+	if *localNet {
+		v := true
+		lnPtr = &v
+	}
 	sb, err := c.CreateSandbox(ctx, client.CreateInput{
 		TenantID:          g.tenant,
 		ImageRef:          *image,
@@ -183,6 +198,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 		VMMProfile:        *vmm,
 		NodeID:            *node,
 		WorkspaceHostPath: ws,
+		LocalNet:          lnPtr,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "session start: create: %v\n", err)
@@ -216,6 +232,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 		TenantID:  sb.TenantID,
 		ImageRef:  sb.ImageRef,
 		Workspace: ws,
+		LocalNet:  *localNet,
 		CreatedAt: time.Now().UTC(),
 	}
 	if st.TenantID == "" {
@@ -501,10 +518,16 @@ func cmdSessionStop(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
+	if st.LocalNet {
+		if _, derr := c.DetachLocalNet(context.Background(), st.SandboxID); derr != nil {
+			fmt.Fprintf(stderr, "session stop: local-net detach %s: %v (continuing destroy)\n", st.SandboxID, derr)
+		}
+	}
 	if err := destroyRecorded(context.Background(), c, st, stderr); err != nil {
 		fmt.Fprintf(stderr, "session stop: destroy %s: %v (state file kept: %s)\n", st.SandboxID, err, path)
 		return 1
 	}
+	localnet.Remove(path)
 	if err := session.Clear(path); err != nil {
 		fmt.Fprintf(stderr, "session stop: clear %s: %v\n", path, err)
 		return 1
@@ -527,4 +550,163 @@ func destroyRecorded(ctx context.Context, c *client.Client, st session.State, st
 	}
 	fmt.Fprintf(stderr, "asp: destroyed sandbox %s state=%s\n", sb.ID, sb.State)
 	return nil
+}
+
+func cmdSessionLocalNet(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "session local-net subcommand required (up|down)")
+		return 2
+	}
+	switch args[0] {
+	case "up":
+		return cmdSessionLocalNetUp(args[1:], stdout, stderr)
+	case "down":
+		return cmdSessionLocalNetDown(args[1:], stdout, stderr)
+	case "-h", "--help", "help":
+		fmt.Fprintln(stderr, `asp session local-net — full-tunnel handshake (ADR-0010)
+
+  asp session local-net up   [--name NAME]
+  asp session local-net down [--name NAME]
+
+The session must have been started with --local-net. up writes a WireGuard
+private key mode 0600 next to the session file (not inside it) and heartbeats
+the control plane. down detaches: the node blackholes egress and does not
+fall back to the public proxy. Kernel WireGuard is not brought up here unless
+wg(8) is installed; the handshake still completes.`)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown local-net subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+func cmdSessionLocalNetUp(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("session local-net up", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	path, st, c, code := loadSessionClient(fs, loc, &g, stderr)
+	if code != 0 {
+		return code
+	}
+	if !st.LocalNet {
+		fmt.Fprintf(stderr, "session local-net up: session %s was not started with --local-net\n", path)
+		return 1
+	}
+	ctx := context.Background()
+	grant, err := c.IssueLocalNetGrant(ctx, st.SandboxID)
+	if err != nil {
+		fmt.Fprintf(stderr, "session local-net up: grant: %v\n", err)
+		return 1
+	}
+	keyPath := localnet.KeyPath(path)
+	priv, rerr := localnet.ReadPrivate(keyPath)
+	var pub string
+	if rerr != nil {
+		mat, gerr := localnet.Generate()
+		if gerr != nil {
+			fmt.Fprintf(stderr, "session local-net up: keygen: %v\n", gerr)
+			return 1
+		}
+		if werr := localnet.WritePrivate(keyPath, mat.Private); werr != nil {
+			fmt.Fprintf(stderr, "session local-net up: write key: %v\n", werr)
+			return 1
+		}
+		priv = mat.Private
+		pub = mat.Public
+	} else {
+		derived, derr := localnet.PublicFromPrivate(priv)
+		if derr != nil {
+			fmt.Fprintf(stderr, "session local-net up: stored key: %v\n", derr)
+			return 1
+		}
+		pub = derived
+	}
+	sb, err := c.HeartbeatLocalNet(ctx, st.SandboxID, grant.Grant, pub)
+	if err != nil {
+		fmt.Fprintf(stderr, "session local-net up: heartbeat: %v\n", err)
+		return 1
+	}
+	wg := localnet.WireGuardInstalled()
+	note := "Handshake only. Private key is in the .local-net.key file (mode 0600), not the session JSON. This command does not configure a kernel WireGuard device."
+	if !wg {
+		note += " wg(8) is not on PATH; install wireguard-tools on the host before expecting packets."
+	} else {
+		note += " wg(8) is on PATH but was not invoked."
+	}
+	plan := localnet.Plan{
+		Iface:           grant.Iface,
+		ClientPublicKey: pub,
+		Dial:            grant.Dial,
+		Transport:       grant.Transport,
+		WireGuardTools:  wg,
+		Userspace:       true,
+		Note:            note,
+	}
+	if err := localnet.WritePlan(localnet.PlanPath(path), plan); err != nil {
+		fmt.Fprintf(stderr, "session local-net up: plan: %v\n", err)
+		return 1
+	}
+	if err := localnet.WriteConf(localnet.ConfPath(path), priv, grant.Iface, grant.Dial); err != nil {
+		fmt.Fprintf(stderr, "session local-net up: conf: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "asp: local-net up sandbox=%s state=%s iface=%s key=%s wg=%v\n", sb.ID, sb.LocalNetState, grant.Iface, keyPath, wg)
+	fmt.Fprintf(stderr, "asp: local-net public key %s\n", pub)
+	if !wg {
+		fmt.Fprintf(stderr, "asp: wireguard tools not found; userspace plan only (%s)\n", localnet.PlanPath(path))
+	}
+	fmt.Fprintln(stdout, pub)
+	return 0
+}
+
+func cmdSessionLocalNetDown(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("session local-net down", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	path, st, c, code := loadSessionClient(fs, loc, &g, stderr)
+	if code != 0 {
+		return code
+	}
+	sb, err := c.DetachLocalNet(context.Background(), st.SandboxID)
+	if err != nil {
+		fmt.Fprintf(stderr, "session local-net down: %v\n", err)
+		return 1
+	}
+	localnet.Remove(path)
+	fmt.Fprintf(stderr, "asp: local-net down sandbox=%s state=%s public_fallback=false\n", sb.ID, sb.LocalNetState)
+	fmt.Fprintln(stdout, sb.LocalNetState)
+	return 0
+}
+
+func loadSessionClient(fs *flag.FlagSet, loc sessionLoc, g *globalFlags, stderr io.Writer) (string, session.State, *client.Client, int) {
+	path, err := resolveSessionPath(fs, loc)
+	if err != nil {
+		fmt.Fprintf(stderr, "session local-net: %v\n", err)
+		return "", session.State{}, nil, 2
+	}
+	st, err := session.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "session local-net: %v\n", err)
+		return "", session.State{}, nil, 1
+	}
+	if !cpURLWasSet(fs) {
+		g.cpURL = st.CPURL
+	}
+	c, code := mustClient(*g, stderr)
+	if c == nil {
+		return "", session.State{}, nil, code
+	}
+	return path, st, c, 0
 }

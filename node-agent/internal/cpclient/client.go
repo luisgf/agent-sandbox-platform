@@ -198,6 +198,13 @@ type Sandbox struct {
 	// the session did not ask for a share. The reconciler starts virtiofsd
 	// for a non-empty path; the guest mounts tag "workspace" itself.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
+	// LocalNet selects the full-tunnel default route (ADR-0010). When true the
+	// node must not install the public proxy default for this sandbox.
+	LocalNet bool `json:"local_net"`
+	// LocalNetState is off | pending | up | withdrawn.
+	LocalNetState string `json:"local_net_state"`
+	// LocalNetClientPublic is the local agent's WG public key once up.
+	LocalNetClientPublic string `json:"local_net_client_public,omitempty"`
 }
 
 type workResponse struct {

@@ -75,6 +75,9 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
+	ln, lnState := localNetFromInput(input)
+	sb.LocalNet = ln
+	sb.LocalNetState = lnState
 	if sb.VMMProfile == "" {
 		sb.VMMProfile = "cloud-hypervisor"
 	}
@@ -113,6 +116,16 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		ActorSub:  actorSub,
 		Payload:   json.RawMessage(`{}`),
 	})
+	if out.LocalNet {
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: out.ID,
+			TenantID:  out.TenantID,
+			EventType: "sandbox.local_net_requested",
+			Actor:     "api",
+			ActorSub:  actorSub,
+			Payload:   mustJSON(map[string]any{"local_net": true, "local_net_state": out.LocalNetState}),
+		})
+	}
 
 	if AutoProvisionEnabled() {
 		// Sync provisioner stub: requested → starting → running.
@@ -321,6 +334,10 @@ func (m *MemoryStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 		switch {
 		case assigned && (sb.State == SandboxRequested || sb.State == SandboxStarting || sb.State == SandboxStopping):
 			out = append(out, cloneSandbox(sb))
+		case assigned && sb.LocalNet && sb.State == SandboxRunning:
+			// Running full-tunnel sessions stay visible so the node can move
+			// pending → up → withdrawn without ever restoring public egress.
+			out = append(out, cloneSandbox(sb))
 		case unassigned && sb.State == SandboxRequested:
 			out = append(out, cloneSandbox(sb))
 		}
@@ -346,6 +363,9 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 	sb.State = state
 	sb.StateVersion++
 	sb.UpdatedAt = now
+	if state == SandboxFailed || state == SandboxStopped || state == SandboxStopping {
+		withdrawLocalNetFields(&sb)
+	}
 	if state == SandboxRunning || state == SandboxStarting {
 		until := leaseUntil(now)
 		sb.NodeLeaseUntil = &until
@@ -470,6 +490,7 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 	if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
 		from := string(sb.State)
 		sb.State = SandboxStopped
+		withdrawLocalNetFields(&sb)
 		sb.StateVersion++
 		sb.UpdatedAt = time.Now().UTC()
 		m.sandboxes[id] = sb
@@ -494,6 +515,7 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 	}
 	from := string(sb.State)
 	sb.State = SandboxStopping
+	withdrawLocalNetFields(&sb)
 	sb.StateVersion++
 	sb.UpdatedAt = time.Now().UTC()
 	m.sandboxes[id] = sb
@@ -557,6 +579,7 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 			target = SandboxStopped
 		}
 		sb.State = target
+		withdrawLocalNetFields(&sb)
 		sb.StopReason = StopReasonIdle
 		sb.NodeLeaseUntil = nil
 		sb.StateVersion++
@@ -1154,3 +1177,146 @@ func cloneInt(p *int) *int {
 }
 
 var _ Store = (*MemoryStore)(nil)
+
+// IssueLocalNetGrant mints a one-shot grant for the local agent. The clear
+// value is returned and not stored. State stays pending until HeartbeatLocalNet.
+func (m *MemoryStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl time.Duration) (string, time.Time, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", time.Time{}, fmt.Errorf("%w: id required", ErrInvalidInput)
+	}
+	if ttl <= 0 {
+		ttl = LocalNetGrantTTL
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	clear, hash, err := newLocalNetGrant()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	exp := now.Add(ttl)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sb, ok := m.sandboxes[id]
+	if !ok {
+		return "", time.Time{}, ErrNotFound
+	}
+	if !sb.LocalNet {
+		return "", time.Time{}, fmt.Errorf("%w: local_net is off; attach does not enable it", ErrConflict)
+	}
+	if localNetTerminal(sb.State) {
+		return "", time.Time{}, fmt.Errorf("%w: sandbox not active", ErrConflict)
+	}
+	_ = dial
+	sb.LocalNetGrantHash = hash
+	sb.LocalNetGrantExpiresAt = &exp
+	sb.UpdatedAt = now
+	m.sandboxes[id] = sb
+	return clear, exp, nil
+}
+
+// HeartbeatLocalNet marks the tunnel up when the grant matches. It does not
+// move last_activity_at. An expired grant withdraws to blackhole (not public egress).
+func (m *MemoryStore) HeartbeatLocalNet(id, grant, clientPub string, now time.Time) (Sandbox, error) {
+	grant = strings.TrimSpace(grant)
+	if strings.TrimSpace(id) == "" {
+		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
+	}
+	if grant == "" {
+		return Sandbox{}, fmt.Errorf("%w: grant required", ErrInvalidInput)
+	}
+	if err := ValidateWGPublicKey(clientPub); err != nil {
+		return Sandbox{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	sb, ok := m.sandboxes[id]
+	if !ok {
+		m.mu.Unlock()
+		return Sandbox{}, ErrNotFound
+	}
+	activity := sb.LastActivityAt
+	if !sb.LocalNet {
+		m.mu.Unlock()
+		return Sandbox{}, fmt.Errorf("%w: local_net is off", ErrConflict)
+	}
+	if localNetTerminal(sb.State) {
+		m.mu.Unlock()
+		return Sandbox{}, fmt.Errorf("%w: sandbox not active", ErrConflict)
+	}
+	if sb.LocalNetGrantHash == "" || sb.LocalNetGrantExpiresAt == nil || !now.Before(*sb.LocalNetGrantExpiresAt) {
+		withdrawLocalNetFields(&sb)
+		sb.LastActivityAt = activity
+		sb.UpdatedAt = now
+		m.sandboxes[id] = sb
+		tenant := sb.TenantID
+		m.mu.Unlock()
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: id,
+			TenantID:  tenant,
+			EventType: "sandbox.local_net_withdrawn",
+			Actor:     "local-agent",
+			Payload:   mustJSON(map[string]any{"reason": "grant_expired", "public_egress": false}),
+		})
+		return Sandbox{}, fmt.Errorf("%w: local_net grant expired", ErrUnauthorized)
+	}
+	if hashLocalNetGrant(grant) != sb.LocalNetGrantHash {
+		m.mu.Unlock()
+		return Sandbox{}, ErrUnauthorized
+	}
+	sb.LocalNetState = LocalNetUp
+	sb.LocalNetClientPublic = strings.TrimSpace(clientPub)
+	attached := now
+	sb.LocalNetAttachedAt = &attached
+	sb.LastActivityAt = activity
+	sb.UpdatedAt = now
+	m.sandboxes[id] = sb
+	out := cloneSandbox(sb)
+	tenant := sb.TenantID
+	m.mu.Unlock()
+	_ = m.EmitEvent(EmitEventInput{
+		SandboxID: id,
+		TenantID:  tenant,
+		EventType: "sandbox.local_net_up",
+		Actor:     "local-agent",
+		Payload:   mustJSON(map[string]any{"local_net_state": LocalNetUp, "public_egress": false}),
+	})
+	return out, nil
+}
+
+// WithdrawLocalNet drops the tunnel. local_net stays true so egress stays
+// blackholed instead of returning to the node proxy.
+func (m *MemoryStore) WithdrawLocalNet(id string) (Sandbox, error) {
+	if strings.TrimSpace(id) == "" {
+		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	sb, ok := m.sandboxes[id]
+	if !ok {
+		m.mu.Unlock()
+		return Sandbox{}, ErrNotFound
+	}
+	prev := sb.LocalNetState
+	activity := sb.LastActivityAt
+	if sb.LocalNet {
+		withdrawLocalNetFields(&sb)
+	}
+	sb.LastActivityAt = activity
+	sb.UpdatedAt = time.Now().UTC()
+	m.sandboxes[id] = sb
+	out := cloneSandbox(sb)
+	tenant := sb.TenantID
+	m.mu.Unlock()
+	if sb.LocalNet && prev != LocalNetWithdrawn {
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: id,
+			TenantID:  tenant,
+			EventType: "sandbox.local_net_withdrawn",
+			Actor:     "api",
+			Payload:   mustJSON(map[string]any{"reason": "detach", "public_egress": false}),
+		})
+	}
+	return out, nil
+}

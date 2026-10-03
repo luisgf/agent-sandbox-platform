@@ -532,3 +532,121 @@ func (w *chunkWriter) String() string {
 func ioWrite(w interface{ Write([]byte) (int, error) }, s string) (int, error) {
 	return w.Write([]byte(s))
 }
+
+func TestSessionLocalNetFlagAndHandshake(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_API_KEY", "")
+
+	var gotLocal *bool
+	var heartbeats int
+	var detaches int
+	pubSeen := ""
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		var in client.CreateInput
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		gotLocal = in.LocalNet
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(client.Sandbox{
+			ID: "ln-1", TenantID: in.TenantID, State: "running", ImageRef: in.ImageRef,
+			LocalNet: true, LocalNetState: "pending",
+		})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/grant", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-ASP-Caller") == "guest" {
+			http.Error(w, "guest", http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"grant": "grant-clear-not-for-disk", "dial": "", "expires_at": "2026-10-03T18:00:00Z",
+			"tunnel_iface": "wg-asp-ln-1", "transport": "wireguard-skeleton",
+		})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		heartbeats++
+		var body struct {
+			Grant string `json:"grant"`
+			Pub   string `json:"client_public_key"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Grant != "grant-clear-not-for-disk" || body.Pub == "" {
+			t.Errorf("heartbeat body grant=%q pub=%q", body.Grant, body.Pub)
+		}
+		pubSeen = body.Pub
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "ln-1", State: "running", LocalNet: true, LocalNetState: "up"})
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/local-net/attach", func(w http.ResponseWriter, r *http.Request) {
+		detaches++
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "ln-1", State: "running", LocalNet: true, LocalNetState: "withdrawn"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	sess := filepath.Join(dir, "s.json")
+	var stdout, stderr strings.Builder
+	code := run([]string{"session", "start", "--cp-url", srv.URL, "--session-file", sess, "--tenant", "acme", "--image", "img", "--local-net", "--timeout", "2s"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("start %d %s", code, stderr.String())
+	}
+	if gotLocal == nil || !*gotLocal {
+		t.Fatalf("create local_net=%v", gotLocal)
+	}
+	st, err := session.Load(sess)
+	if err != nil || !st.LocalNet {
+		t.Fatalf("session state %+v %v", st, err)
+	}
+	raw, _ := os.ReadFile(sess)
+	if strings.Contains(string(raw), "grant-clear") || strings.Contains(strings.ToLower(string(raw)), "private") {
+		t.Fatalf("session json leaked secret:\n%s", raw)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"session", "local-net", "up", "--cp-url", srv.URL, "--session-file", sess}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("up %d %s", code, stderr.String())
+	}
+	if heartbeats != 1 {
+		t.Fatalf("heartbeats=%d", heartbeats)
+	}
+	keyPath := sess + ".local-net.key"
+	fi, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key mode %o", fi.Mode().Perm())
+	}
+	keyRaw, _ := os.ReadFile(keyPath)
+	if strings.TrimSpace(string(keyRaw)) == "" {
+		t.Fatal("empty key")
+	}
+	sessRaw, _ := os.ReadFile(sess)
+	if strings.Contains(string(sessRaw), strings.TrimSpace(string(keyRaw))) {
+		t.Fatal("private key stored in session json")
+	}
+	if strings.TrimSpace(stdout.String()) != pubSeen {
+		t.Fatalf("stdout pub %q heartbeat %q", stdout.String(), pubSeen)
+	}
+
+	stdout.Reset()
+	code = run([]string{"session", "local-net", "down", "--session-file", sess}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("down %d %s", code, stderr.String())
+	}
+	if detaches != 1 || strings.TrimSpace(stdout.String()) != "withdrawn" {
+		t.Fatalf("detaches=%d stdout=%q", detaches, stdout.String())
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatalf("key still present: %v", err)
+	}
+
+	// Unknown allow-list flag is rejected, not an implicit opt-in.
+	code = run([]string{"session", "start", "--session-file", filepath.Join(dir, "no.json"), "--local-net-allow", "192.168.0.0/16"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("allow flag exit=%d", code)
+	}
+}

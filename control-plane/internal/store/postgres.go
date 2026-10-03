@@ -72,6 +72,7 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	now := time.Now().UTC()
 	ownerSub := strings.TrimSpace(input.OwnerSub)
 	ownerEmail := strings.TrimSpace(input.OwnerEmail)
+	lnOn, lnState := localNetFromInput(input)
 	actorSub := strings.TrimSpace(input.ActorSub)
 	if actorSub == "" {
 		actorSub = ownerSub
@@ -87,10 +88,11 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		INSERT INTO sandboxes (
 			id, tenant_id, node_id, state, vmm_profile, image_ref,
 			cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-			owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
-		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7,$7,$8,$9,$7,'',$10)`,
+			owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
+		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'')`,
 		id, input.TenantID, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB, now,
-		ownerSub, ownerEmail, input.WorkspaceHostPath,
+		ownerSub, ownerEmail, input.WorkspaceHostPath, lnOn, lnState, "",
 	)
 	if err != nil {
 		return Sandbox{}, fmt.Errorf("insert sandbox: %w", err)
@@ -106,6 +108,18 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		Payload:   json.RawMessage(`{}`),
 	}); err != nil {
 		return Sandbox{}, err
+	}
+	if lnOn {
+		if err := emitEventTx(ctx, tx, EmitEventInput{
+			SandboxID: id,
+			TenantID:  input.TenantID,
+			EventType: "sandbox.local_net_requested",
+			Actor:     "api",
+			ActorSub:  actorSub,
+			Payload:   mustJSON(map[string]any{"local_net": true, "local_net_state": lnState}),
+		}); err != nil {
+			return Sandbox{}, err
+		}
 	}
 
 	if AutoProvisionEnabled() {
@@ -180,7 +194,8 @@ func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
+		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
 		FROM sandboxes WHERE id=$1`, id)
 	sb, err := scanSandbox(row)
 	if err != nil {
@@ -200,13 +215,15 @@ func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
+			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
 			FROM sandboxes ORDER BY created_at DESC`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 			       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
+			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
 			FROM sandboxes WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	}
 	if err != nil {
@@ -343,9 +360,11 @@ func (p *PostgresStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
+		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
 		FROM sandboxes
 		WHERE (node_id = $1 AND state IN ('requested','starting','stopping'))
+		   OR (node_id = $1 AND local_net = true AND state = 'running')
 		   OR ((node_id IS NULL OR node_id = '') AND state = 'requested')
 		ORDER BY created_at ASC`, nodeID)
 	if err != nil {
@@ -390,7 +409,14 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 	tag, err := tx.Exec(ctx, `
 		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3, node_lease_until=$4,
 		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE last_activity_at END,
-		    stop_reason=CASE WHEN $2='running' THEN '' ELSE stop_reason END
+		    stop_reason=CASE WHEN $2='running' THEN '' ELSE stop_reason END,
+		    local_net_state=CASE
+		      WHEN $2 IN ('failed','stopped','stopping') AND local_net THEN 'withdrawn'
+		      WHEN $2 IN ('failed','stopped','stopping') AND NOT local_net THEN 'off'
+		      ELSE local_net_state END,
+		    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_client_public END,
+		    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_grant_hash END,
+		    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping') THEN NULL ELSE local_net_grant_expires_at END
 		WHERE id=$1`, id, string(state), now, until)
 	if err != nil {
 		return Sandbox{}, err
@@ -457,7 +483,8 @@ func (p *PostgresStore) ReclaimExpiredLeases(now time.Time, reRequest bool) ([]S
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
+		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
 		FROM sandboxes
 		WHERE state IN ('starting','running')
 		  AND (node_lease_until IS NULL OR node_lease_until <= $1)`, now)
@@ -564,7 +591,11 @@ func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error
 	}
 
 	tag, err := tx.Exec(ctx, `
-		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3
+		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3,
+		    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
+		    local_net_client_public='',
+		    local_net_grant_hash='',
+		    local_net_grant_expires_at=NULL
 		WHERE id=$1`, id, string(target), now)
 	if err != nil {
 		return Sandbox{}, err
@@ -619,7 +650,8 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path
+		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
 		FROM sandboxes
 		WHERE state IN ('requested','scheduled','starting','running','paused')
 		  AND last_activity_at <= $1`, cutoff)
@@ -655,7 +687,11 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 		tag, err := tx.Exec(ctx, `
 			UPDATE sandboxes
 			SET state=$2, stop_reason=$3, node_lease_until=NULL,
-			    state_version=state_version+1, updated_at=$4
+			    state_version=state_version+1, updated_at=$4,
+			    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
+			    local_net_client_public='',
+			    local_net_grant_hash='',
+			    local_net_grant_expires_at=NULL
 			WHERE id=$1 AND state=$5 AND last_activity_at <= $6`,
 			sb.ID, string(target), StopReasonIdle, now, from, cutoff)
 		if err != nil {
@@ -1191,6 +1227,8 @@ func scanSandbox(row scannable) (Sandbox, error) {
 		&sb.CPUMillis, &sb.MemoryMiB, &sb.StateVersion, &sb.NodeLeaseUntil,
 		&sb.CreatedAt, &sb.UpdatedAt, &sb.OwnerSub, &sb.OwnerEmail, &sb.LastActivityAt, &sb.StopReason,
 		&sb.WorkspaceHostPath,
+		&sb.LocalNet, &sb.LocalNetState, &sb.LocalNetAttachedAt, &sb.LocalNetGrantExpiresAt,
+		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic,
 	)
 	if err != nil {
 		return Sandbox{}, err

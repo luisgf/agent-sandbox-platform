@@ -1,0 +1,167 @@
+package api
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
+)
+
+func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
+	mem := store.NewMemoryStore()
+	s := &Server{Store: mem}
+	mux := testMux(s)
+
+	// Default: omitted field is off, public path (state off).
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(
+		`{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":64}`))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("default create %d %s", rr.Code, rr.Body.String())
+	}
+	var off store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &off); err != nil {
+		t.Fatal(err)
+	}
+	if off.LocalNet || off.LocalNetState != store.LocalNetOff {
+		t.Fatalf("default local_net=%v state=%s", off.LocalNet, off.LocalNetState)
+	}
+
+	// Policy / CIDR is 400, not a silent full tunnel.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(
+		`{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":64,"local_net":true,"local_net_policy":{"prefixes":["192.168.1.0/24"]}}`))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("policy want 400 got %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Guest cannot set the flag.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(
+		`{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":64,"local_net":true}`))
+	req.Header.Set("X-ASP-Caller", "guest")
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("guest create %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Authenticated (lab) create with the flag.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(
+		`{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":64,"local_net":true,"owner_sub":"human-1"}`))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("flag on %d %s", rr.Code, rr.Body.String())
+	}
+	var on store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &on); err != nil {
+		t.Fatal(err)
+	}
+	if !on.LocalNet || on.LocalNetState != store.LocalNetPending {
+		t.Fatalf("flag on got %+v", on)
+	}
+	before := on.LastActivityAt
+
+	// Guest exec cannot flip it.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+on.ID+"/exec", bytes.NewBufferString(
+		`{"cmd":["true"],"local_net":false}`))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("guest exec %d %s", rr.Code, rr.Body.String())
+	}
+
+	pub := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+on.ID+"/local-net/grant", nil)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("grant %d %s", rr.Code, rr.Body.String())
+	}
+	var g struct {
+		Grant string `json:"grant"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &g); err != nil || g.Grant == "" {
+		t.Fatalf("grant body %s", rr.Body.String())
+	}
+	// Grant must not be stored in the clear.
+	stored, err := mem.GetSandbox(on.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored.LocalNetGrantHash, g.Grant) || stored.LocalNetGrantHash == "" {
+		t.Fatalf("grant hash=%q clear=%q", stored.LocalNetGrantHash, g.Grant)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+on.ID+"/local-net/heartbeat", bytes.NewBufferString(
+		`{"grant":"`+g.Grant+`","client_public_key":"`+pub+`"}`))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("heartbeat %d %s", rr.Code, rr.Body.String())
+	}
+	var up store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &up); err != nil {
+		t.Fatal(err)
+	}
+	if up.LocalNetState != store.LocalNetUp || !up.LocalNet {
+		t.Fatalf("up=%+v", up)
+	}
+	if up.LastActivityAt.After(before.Add(time.Second)) && !up.LastActivityAt.Equal(before) {
+		// heartbeat must not refresh idle. Equal is required; a clock tick of the same stored value is ok.
+	}
+	if !up.LastActivityAt.Equal(before) {
+		t.Fatalf("heartbeat moved activity %s -> %s", before, up.LastActivityAt)
+	}
+
+	// Disconnect: detach withdraws and does not clear the flag (no public fallback).
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sandboxes/"+on.ID+"/local-net/attach", nil)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detach %d %s", rr.Code, rr.Body.String())
+	}
+	var down store.Sandbox
+	if err := json.Unmarshal(rr.Body.Bytes(), &down); err != nil {
+		t.Fatal(err)
+	}
+	if !down.LocalNet || down.LocalNetState != store.LocalNetWithdrawn {
+		t.Fatalf("disconnect=%+v", down)
+	}
+
+	// Idle reap also withdraws and does not count as a reason to restore public egress.
+	on2, err := mem.CreateSandbox(store.CreateSandboxInput{
+		TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64,
+		LocalNet: boolPtr(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.SetLastActivityForTest(on2.ID, time.Now().Add(-3*time.Hour))
+	reaped, err := mem.StopIdleSandboxes(time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, sb := range reaped {
+		if sb.ID == on2.ID {
+			found = true
+			if !sb.LocalNet || sb.LocalNetState != store.LocalNetWithdrawn || sb.StopReason != store.StopReasonIdle {
+				t.Fatalf("idle=%+v", sb)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("idle did not reap %s (%d)", on2.ID, len(reaped))
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }

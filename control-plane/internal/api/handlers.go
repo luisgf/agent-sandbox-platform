@@ -116,8 +116,28 @@ type execResponse struct {
 // a forged body owner_sub that disagrees is rejected. Token email fills owner_email when present.
 // Phase 3: create requires admin or operator role from IdP groups/roles claims.
 func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	keys, err := jsonObjectKeys(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if k := forbiddenLocalNetKey(keys); k != "" {
+		writeError(w, http.StatusBadRequest, "local_net does not accept "+k+" in v1")
+		return
+	}
+	if guestCaller(r) {
+		if _, ok := keys["local_net"]; ok {
+			writeError(w, http.StatusForbidden, "guest cannot set local_net")
+			return
+		}
+	}
 	var input store.CreateSandboxInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := json.Unmarshal(body, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -442,8 +462,26 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	keys, err := jsonObjectKeys(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if _, ok := keys["local_net"]; ok || guestCaller(r) && forbiddenLocalNetKey(keys) != "" {
+		writeError(w, http.StatusForbidden, "guest cannot set local_net")
+		return
+	}
+	if k := forbiddenLocalNetKey(keys); k != "" {
+		writeError(w, http.StatusForbidden, "guest cannot set local_net")
+		return
+	}
 	var req execRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -530,7 +568,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
 		return
 	}
@@ -550,7 +588,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.TouchSandboxActivity(sb.ID)
 		return
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var out execResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		writeError(w, http.StatusBadGateway, "invalid node-agent exec response")
@@ -1153,8 +1191,22 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	keys, err := jsonObjectKeys(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if _, ok := keys["local_net"]; ok || forbiddenLocalNetKey(keys) != "" {
+		writeError(w, http.StatusForbidden, "guest cannot set local_net")
+		return
+	}
 	var req statusRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

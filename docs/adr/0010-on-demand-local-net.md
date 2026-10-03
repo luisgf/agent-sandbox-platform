@@ -1,6 +1,6 @@
 # ADR-0010: Red local bajo demanda (túnel completo iniciado por el agente local)
 
-- **Estado:** Propuesta — **no implementada**
+- **Estado:** Contrato de esta revisión vigente. **Corte mínimo implementado** (2026-10-03) — ver [Estado de implementación](#estado-de-implementación). No es un dataplane WireGuard demostrado.
 - **Fecha:** 2026-10-03
 - **Revisión:** 2026-10-03. La primera redacción (commit `1858dd2`) fijaba v1 como allowlist de CIDR **y** puertos, y prohibía instalar `0.0.0.0/0` y `::/0` hacia el portátil. **Esta revisión sustituye ese contrato.** v1 es todo o nada: con el flag, la ruta por defecto del sandbox sale por el agente local; sin el flag, no hay túnel. Pedir prefijos al usuario no es v1.
 - **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft; egress del nodo cuando el flag está apagado), [0008](0008-network-flow-attribution.md) (flujo → `owner_sub`, evaluación), [0009](0009-agent-sessions.md) (la sesión es el objeto; egress de esa microVM), [0007](0007-multi-user-identity.md) (`owner_sub`), [`../why-on-demand-local-net.md`](../why-on-demand-local-net.md), [`../roadmap.md`](../roadmap.md)
@@ -374,7 +374,7 @@ el create ya selló local_net=false, y el exec no tiene campo para cambiarlo
 
 ### Límites honestos / no-goals
 
-- **No implementado** con este ADR. Sin flags en el binario, sin migración, sin peer WG.
+- El **contrato** de arriba es la decisión. El corte mínimo (flag, columna, handshake, plan blackhole) está anotado en «Estado de implementación». Un peer WireGuard de kernel **no** está demostrado.
 - **v1 no** pide ni acepta CIDR, puertos ni excepciones. Todo o nada.
 - **v1 no** publica servicios del guest hacia la LAN (nada de DNAT inverso, nada de «entra a mi sandbox desde el NAS»).
 - **v1 no** hace puente L2, mDNS, SSDP ni LLMNR. Mover la default no descubre vecinos.
@@ -414,6 +414,26 @@ Lista cerrada para el primer corte, cuando exista. Si una de estas entra en el P
 6. Un segundo sandbox del mismo usuario no reutiliza el peer del primero. Un Bearer de otro `owner_sub` no obtiene grant. El guest no puede cambiar el flag vía exec ni headers.
 7. El JSON de sesión sigue sin secretos de túnel.
 8. Un `HTTP_PROXY` hacia el proxy del nodo, con el flag on, no obtiene egress por ADR-0002.
+
+## Estado de implementación
+
+Corte que sí está en el árbol (FakeVMM / tests; no demuestra un paquete):
+
+| Pieza | Qué hace |
+|---|---|
+| API + store | `local_net` bool default false, `local_net_state` `off\|pending\|up\|withdrawn`. Migración `010_sandbox_local_net.sql`. 400 si el body trae `local_net_policy`, `prefixes`, `cidrs`, `ports`, `routes` o `exceptions` |
+| Quién lo enciende | Solo el create autenticado (lab sin IdP incluido) y `asp session start --local-net`. Header `X-ASP-Caller: guest` (o `X-ASP-Guest: 1`) con el campo, y `local_net` dentro de exec o status, responden **403**. El guest no lo cambia |
+| Handshake | `POST .../local-net/grant` (el grant en claro no se guarda; solo sha256 y `expires_at`), `POST .../local-net/heartbeat` pasa a `up` y **no** mueve `last_activity_at`, `DELETE .../local-net/attach` pasa a `withdrawn`. Otro `owner_sub` con JWT no recibe grant |
+| CLI | `asp session local-net up\|down`. La clave privada WireGuard (X25519, encoding WG) se escribe modo 0600 junto al JSON (`*.local-net.key`), no dentro del JSON ni en git. `up` es el attach de este corte (grant + heartbeat). `down`, `session stop` y el idle reap retiran el túnel |
+| Nodo | Si `local_net` es false, el plan es el egress público de siempre. Si es true, `pending` y `withdrawn` son **blackhole** de `0.0.0.0/0` y `::/0` en una tabla de esa sesión; `up` apunta la default al iface `wg-asp-{short}`. El plan no redirige ese sandbox a `:8888` ni a `asp_egress`. Al stop se borra el plan |
+
+Qué **no** hace este corte (sigue siendo límite honesto):
+
+- No instala un dispositivo WireGuard de kernel ni hace NAT en el portátil. `wg(8)` no se ejecuta. Si no está en el PATH, el plan lo dice. Hace falta `wireguard-tools` y `CAP_NET_ADMIN` en el nodo y en el cliente para un túnel real; este repo no lo prueba.
+- No hay temporizador de keepalive de N ventanas. La caída es explícita: `down`, stop, idle, o un grant caducado en el heartbeat (eso sí pasa a `withdrawn`, no al proxy).
+- FakeVMM guarda el flag y el plan en memoria. No hay forwarding ni DNS de casa.
+- No hay relay de bytes en el control plane, ni excepciones por CIDR, ni fallback al proxy.
+- `dial` sale de `ASP_LOCAL_NET_DIAL` (vacío si no está). Sin un endpoint alcanzable el estado puede quedar `pending` y el egress hundido.
 
 ## Referencias cruzadas
 

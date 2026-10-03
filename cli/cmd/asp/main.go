@@ -59,7 +59,7 @@ Usage:
   asp sandbox exec <id> (--cmd '…' | -- argv…)
   asp sandbox delete <id>
   asp sandbox run (--cmd '…' | -- argv…) [flags]
-  asp session start|exec|status|stop [--name] [--workspace] [flags]
+  asp session start|exec|status|stop|local-net [--name] [--local-net] [flags]
   asp auth login|logout|status [flags]
   asp version
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
@@ -268,7 +269,7 @@ func TestReconcilerTapAutoAndSSHLink(t *testing.T) {
 }
 
 type recordingGuestHost struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	attaches []string
 	detaches []string
 }
@@ -370,5 +371,69 @@ func TestReconcilerSkipsHybridWhenPodDaemonUnix(t *testing.T) {
 	gh.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("dry-run should skip hybrid attach, got %d", n)
+	}
+}
+
+func TestReconcilerLocalNetDisconnectDoesNotUsePublicProxy(t *testing.T) {
+	var mu sync.Mutex
+	state := "requested"
+	lnState := "pending"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		sb := map[string]any{
+			"id": "ln", "state": state, "image_ref": "img", "cpu_millis": 500, "memory_mib": 128,
+			"local_net": true, "local_net_state": lnState, "owner_sub": "owner-a",
+		}
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": []any{sb}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+			state = "starting"
+			_ = json.NewEncoder(w).Encode(sb)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
+			var body struct {
+				State string `json:"state"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			state = body.State
+			sb["state"] = state
+			_ = json.NewEncoder(w).Encode(sb)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cp := cpclient.New(srv.URL, srv.Client())
+	rec := New(cp, "n1", vmm.NewFakeVMM(nil), nil, time.Hour)
+	rec.tick(context.Background())
+	mem := rec.LocalNet.(*localnet.Memory)
+	plan, ok := mem.Current("ln")
+	if !ok || plan.Kind != localnet.KindBlackhole || plan.UsePublicProxy {
+		t.Fatalf("pending plan=%+v ok=%v", plan, ok)
+	}
+	mu.Lock()
+	state = "running"
+	lnState = "up"
+	mu.Unlock()
+	rec.tick(context.Background())
+	plan, _ = mem.Current("ln")
+	if plan.Kind != localnet.KindTunnel || plan.UsePublicProxy {
+		t.Fatalf("up plan=%+v", plan)
+	}
+	mu.Lock()
+	lnState = "withdrawn"
+	mu.Unlock()
+	rec.tick(context.Background())
+	plan, _ = mem.Current("ln")
+	if plan.Kind != localnet.KindBlackhole || plan.UsePublicProxy || !plan.BlockNodeProxy {
+		t.Fatalf("disconnect plan=%+v", plan)
+	}
+	for _, c := range localnet.Commands(plan) {
+		if strings.Contains(c, "8888") || strings.Contains(c, "asp_egress") {
+			t.Fatalf("public fallback command %s", c)
+		}
 	}
 }

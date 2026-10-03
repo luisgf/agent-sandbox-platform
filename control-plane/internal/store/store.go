@@ -70,4 +70,13 @@ type Store interface {
 
 	PutAttestation(input PutAttestationInput) (AttestationRecord, error)
 	GetAttestation(sandboxID string) (AttestationRecord, error)
+
+	// IssueLocalNetGrant returns a clear grant once (only the hash is stored).
+	// Refuses when local_net is false. Does not refresh last_activity_at.
+	IssueLocalNetGrant(id, dial string, now time.Time, ttl time.Duration) (grant string, expires time.Time, err error)
+	// HeartbeatLocalNet moves pending/withdrawn to up. Expired grant withdraws
+	// (blackhole) and returns ErrUnauthorized. Does not refresh last_activity_at.
+	HeartbeatLocalNet(id, grant, clientPublic string, now time.Time) (Sandbox, error)
+	// WithdrawLocalNet detaches. local_net stays true; state becomes withdrawn.
+	WithdrawLocalNet(id string) (Sandbox, error)
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
@@ -87,6 +88,10 @@ type Reconciler struct {
 	// the daemon and removes the socket.
 	FSLauncher func(ctx context.Context, sandboxID, hostPath, socketPath string) (func(), error)
 
+	// LocalNet records the per-sandbox egress plan. Nil becomes an in-memory
+	// applier (FakeVMM): it does not install kernel routes or WireGuard.
+	LocalNet localnet.Applier
+
 	mu      sync.Mutex
 	handles map[string]Handle
 	nextCID uint32 // next guest CID to assign (starts at 3)
@@ -112,6 +117,7 @@ func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Lo
 		VsockPort:  poddaemon.DefaultGuestPort,
 		handles:    make(map[string]Handle),
 		nextCID:    3,
+		LocalNet:   localnet.NewMemory(),
 	}
 }
 
@@ -144,7 +150,10 @@ func (r *Reconciler) tick(ctx context.Context) {
 	}
 	for _, sb := range work {
 		switch sb.State {
-		case "requested", "starting":
+		case "requested", "starting", "running":
+			if sb.State == "running" && !sb.LocalNet {
+				continue
+			}
 			if err := r.ensureRunning(ctx, sb); err != nil {
 				r.Logger.Warn("ensure running failed", "sandbox_id", sb.ID, "error", err)
 			}
@@ -182,6 +191,10 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	_, have := r.handles[sb.ID]
 	r.mu.Unlock()
 	if have && sb.State == "starting" {
+		if err := r.applyLocalNet(sb); err != nil {
+			_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "local-net: "+err.Error())
+			return fmt.Errorf("local-net: %w", err)
+		}
 		// Already started locally; just report running if CP still says starting.
 		if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "reconciler"); err != nil {
 			return err
@@ -189,7 +202,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		return nil
 	}
 	if have {
-		return nil
+		return r.applyLocalNet(sb)
 	}
 
 	// Claim if still requested (or soft-assigned to us).
@@ -252,7 +265,21 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	}
 	cfg.WorkspaceFSSocket = fsSock
 
+	if err := r.applyLocalNet(sb); err != nil {
+		if stopFS != nil {
+			stopFS()
+		}
+		r.detachGuestHost(sb.ID)
+		if r.TapAuto {
+			_ = r.tapMgr().Delete(cfg.TapDevice)
+		}
+		r.releaseCID(cfg.VsockCID)
+		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "local-net: "+err.Error())
+		return fmt.Errorf("local-net: %w", err)
+	}
+
 	if err := r.Engine.Start(ctx, cfg); err != nil {
+		_ = r.localApplier().Clear(sb.ID)
 		if stopFS != nil {
 			stopFS()
 		}
@@ -335,11 +362,44 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 			}
 		}
 	}
+	if r.LocalNet != nil {
+		_ = r.LocalNet.Clear(sb.ID)
+	}
 
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "stopped", "vmm deleted"); err != nil {
 		return fmt.Errorf("report stopped: %w", err)
 	}
 	r.Logger.Info("sandbox stopped", "sandbox_id", sb.ID)
+	return nil
+}
+
+func (r *Reconciler) localApplier() localnet.Applier {
+	if r.LocalNet != nil {
+		return r.LocalNet
+	}
+	r.LocalNet = localnet.NewMemory()
+	return r.LocalNet
+}
+
+// applyLocalNet installs the ADR-0010 plan. local_net=false records the
+// public path and does not add a tunnel. local_net=true never records the
+// public proxy: pending/withdrawn are blackholes, up is the tunnel iface.
+// This in-memory plan is what FakeVMM proves. Kernel WireGuard is not applied
+// here (see localnet.Commands); the host needs wireguard tools and CAP_NET_ADMIN.
+func (r *Reconciler) applyLocalNet(sb cpclient.Sandbox) error {
+	plan := localnet.Decide(sb.ID, sb.OwnerSub, sb.LocalNet, sb.LocalNetState)
+	if err := r.localApplier().Apply(plan); err != nil {
+		return err
+	}
+	r.Logger.Info("local-net plan",
+		"sandbox_id", sb.ID,
+		"owner_sub", sb.OwnerSub,
+		"local_net", sb.LocalNet,
+		"state", sb.LocalNetState,
+		"kind", plan.Kind,
+		"public_proxy", plan.UsePublicProxy,
+		"iface", plan.Iface,
+	)
 	return nil
 }
 

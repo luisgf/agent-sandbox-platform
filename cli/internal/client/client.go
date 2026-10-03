@@ -31,6 +31,8 @@ type Sandbox struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	// WorkspaceHostPath is the host directory stored on the sandbox spec, if any.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
+	LocalNet          bool   `json:"local_net"`
+	LocalNetState     string `json:"local_net_state"`
 }
 
 // StopReasonIdle matches control-plane store.StopReasonIdle.
@@ -51,6 +53,8 @@ type CreateInput struct {
 	NodeID     string `json:"node_id,omitempty"`
 	// WorkspaceHostPath is an absolute host directory to record on the sandbox spec.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
+	// LocalNet opts into the full-tunnel default route. Nil omits the field (off).
+	LocalNet *bool `json:"local_net,omitempty"`
 }
 
 // ExecRequest is POST /v1/sandboxes/{id}/exec body.
@@ -453,3 +457,34 @@ func readStdin(stdin io.Reader, buf []byte, stop <-chan struct{}) (int, error) {
 }
 
 var errStdinStopped = fmt.Errorf("stdin stopped")
+
+// LocalNetGrant is the one-shot tunnel grant. Do not write it into the session file.
+type LocalNetGrant struct {
+	Grant     string `json:"grant"`
+	Dial      string `json:"dial"`
+	ExpiresAt string `json:"expires_at"`
+	Iface     string `json:"tunnel_iface"`
+	Transport string `json:"transport"`
+}
+
+// IssueLocalNetGrant asks the control plane for a short-lived grant.
+func (c *Client) IssueLocalNetGrant(ctx context.Context, id string) (LocalNetGrant, error) {
+	var out LocalNetGrant
+	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/local-net/grant", map[string]any{}, http.StatusOK, &out)
+	return out, err
+}
+
+// HeartbeatLocalNet marks the tunnel up. clientPublic is a WireGuard public key.
+func (c *Client) HeartbeatLocalNet(ctx context.Context, id, grant, clientPublic string) (Sandbox, error) {
+	var out Sandbox
+	body := map[string]string{"grant": grant, "client_public_key": clientPublic}
+	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/local-net/heartbeat", body, http.StatusOK, &out)
+	return out, err
+}
+
+// DetachLocalNet withdraws the tunnel. The control plane must not restore public egress.
+func (c *Client) DetachLocalNet(ctx context.Context, id string) (Sandbox, error) {
+	var out Sandbox
+	err := c.doJSON(ctx, http.MethodDelete, "/v1/sandboxes/"+url.PathEscape(id)+"/local-net/attach", nil, http.StatusOK, &out)
+	return out, err
+}

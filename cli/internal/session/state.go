@@ -32,7 +32,10 @@ type State struct {
 	TenantID  string `json:"tenant_id,omitempty"`
 	ImageRef  string `json:"image_ref,omitempty"`
 	// Workspace is the host directory requested at start. It is not a mount.
-	Workspace string    `json:"workspace,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	// LocalNet records that this session opted into the full tunnel.
+	// It is not authority and must not carry a WireGuard key or grant.
+	LocalNet  bool      `json:"local_net,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
