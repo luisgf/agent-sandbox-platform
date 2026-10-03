@@ -36,7 +36,7 @@ Narrativa completa (threat model, trust boundaries, identidad, leases): [`docs/a
 | Node-agent | CH spawn / FakeVMM; reconciler; hybrid vsock exec; host-vsock 26501/26502; TAP auto; egress proxy+DNS; nft soft\|enforce; SSH confirm; guest SSH auto |
 | pod-daemon | HTTP JSON unix/vsock/tcp; `ASP_HOST_CID=2` |
 | Guest image | Dockerfile + systemd/OpenRC + `vsock-ssh-agent-proxy` |
-| CLI | `asp` (`make asp`) — `sandbox run` + `auth login` (IdP Bearer) |
+| CLI | `asp` (`make asp`) — `sandbox run`, `session start/exec/stop`, `auth login` (IdP Bearer) |
 | Pack | `make pack` → tarball de release |
 
 **Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado.
@@ -77,6 +77,7 @@ Cliente / asp ──HTTPS+API key──► Control plane
 | [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) | Ops CH + KVM real |
 | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) | Lab Keycloak IdP (realm asp) + systemd CP — secretos fuera de git |
 | [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) | Runner agente: `asp auth` + Bearer automático + one-liner |
+| [`docs/ops-asp-session.md`](docs/ops-asp-session.md) | Sesión reutilizable: `asp session` para el shell de un harness (OpenCode) |
 | [`docs/adr/`](docs/adr/) | Decisiones (0001–0008) |
 | [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI, multi-user, network-flow attribution) |
 | [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) | Puertos vsock |
@@ -149,7 +150,17 @@ export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
 ./build/asp sandbox run --tenant=default --cmd 'echo hello'
 ```
 
-Detalle del contrato para agentes: [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md).
+Detalle del contrato one-shot para agentes: [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md).
+
+Sesión reutilizable (el shell del harness llama a `asp session exec` en vez de al host; **no** sincroniza el workspace):
+
+```bash
+./build/asp session start --node-id=dev-node
+./build/asp session exec --cmd 'echo hello'
+./build/asp session stop
+```
+
+Contrato, alternativas y límites: [`docs/ops-asp-session.md`](docs/ops-asp-session.md).
 
 Detalle de precondiciones, resultados esperados y fallos: [`docs/mvp-smoke.md`](docs/mvp-smoke.md).  
 Host con KVM: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).

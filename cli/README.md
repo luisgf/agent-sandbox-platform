@@ -13,9 +13,10 @@ export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
 ./build/asp sandbox run --tenant=default --cmd 'echo hello'
 ```
 
-Subcomandos: `sandbox create|get|list|exec|delete|run`, `auth login|logout|status`.
+Subcomandos: `sandbox create|get|list|exec|delete|run`, `session start|exec|status|stop`, `auth login|logout|status`.
 
 Documentación: [`docs/why-cli-asp.md`](../docs/why-cli-asp.md),
 [`docs/ops-asp-agent-runner.md`](../docs/ops-asp-agent-runner.md),
+[`docs/ops-asp-session.md`](../docs/ops-asp-session.md) (sesión reutilizable; no sync de workspace),
 quickstart dry-run [`docs/mvp-smoke.md`](../docs/mvp-smoke.md) §8,
 lab Keycloak [`docs/ops-idp-keycloak-lab.md`](../docs/ops-idp-keycloak-lab.md).

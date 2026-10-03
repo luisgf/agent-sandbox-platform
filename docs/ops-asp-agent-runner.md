@@ -4,6 +4,8 @@ Cómo un agente (o un one-liner de ops) ejecuta un comando en sandbox **sin** ge
 
 Diseño IdP: [ADR-0007](adr/0007-multi-user-identity.md) · lab Keycloak: [ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md) · CLI base: [why-cli-asp.md](why-cli-asp.md).
 
+Sesión reutilizable (varios `exec` en el mismo sandbox, p. ej. tool bash de OpenCode): [ops-asp-session.md](ops-asp-session.md). El one-shot de esta página **no** desaparece.
+
 ## Por qué
 
 Con `ASP_IDP_REQUIRED=1` en el CP lab (`127.0.0.1:18112`), cualquier `POST /v1/sandboxes` sin `Authorization: Bearer <JWT>` responde **401**. El ciclo de vida ya lo encapsula `asp sandbox run`, pero el token seguía siendo un paso manual (`curl` password-grant + `export`).
@@ -150,8 +152,20 @@ make smoke-asp
 3. ¿Agente en CI? Preferir secret store → env `ASP_IDP_*`; no copiar `asp-keycloak-lab.txt` al repo ni a logs.
 4. ¿Promoción Entra/Okta? Nuevo grant; no reutilizar password grant ni el usuario `asp-lab`.
 
+## Sesión vs one-shot
+
+| | `asp sandbox run` | `asp session` |
+|---|---|---|
+| Ciclo de vida | create → exec → destroy en un proceso | `start` deja el sandbox; `exec` lo reutiliza; `stop` lo destruye |
+| Estado en disco | ninguno | `~/.cache/asp/session.json` (0600), sin secretos |
+| Cuándo | un comando, CI, máximo aislamiento | bucle de tools del agente |
+| Workspace del host | no entra al guest | **igual: no entra** (sin virtiofs/copia) |
+
+Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.md).
+
 ## Referencias
 
+- [ops-asp-session.md](ops-asp-session.md)
 - [ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md)
 - [why-cli-asp.md](why-cli-asp.md)
 - [adr/0007-multi-user-identity.md](adr/0007-multi-user-identity.md)

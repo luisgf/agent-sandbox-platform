@@ -38,6 +38,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "sandbox":
 		return sandboxCmd(args[1:], stdout, stderr)
+	case "session":
+		return sessionCmd(args[1:], stdout, stderr)
 	case "auth":
 		return authCmd(args[1:], stdout, stderr)
 	default:
@@ -57,11 +59,13 @@ Usage:
   asp sandbox exec <id> (--cmd '…' | -- argv…)
   asp sandbox delete <id>
   asp sandbox run (--cmd '…' | -- argv…) [flags]
+  asp session start|exec|status|stop [flags]
   asp auth login|logout|status [flags]
   asp version
 
 Global env:
   ASP_CP_URL              control-plane base URL (default http://127.0.0.1:8080)
+  ASP_SESSION_FILE        session state (default ~/.cache/asp/session.json, mode 0600)
   ASP_API_KEY             Bearer API key (also --api-key) — lab without IdP
   ASP_ID_TOKEN            IdP access token (also --id-token); preferred Bearer
   ASP_IDP_REQUIRED        if 1/true, require IdP token (auto-fetch when possible)
@@ -72,6 +76,11 @@ Global env:
 Agent one-liner (lab IdP on ncc1701d — see docs/ops-asp-agent-runner.md):
   export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
   asp sandbox run --tenant=default --cmd 'echo hello'
+
+Reusable shell session (OpenCode bash tool — see docs/ops-asp-session.md):
+  asp session start --tenant=default
+  asp session exec --cmd 'echo hello'
+  asp session stop
 
 Demo (local dry-run stack — docs/mvp-smoke.md):
   asp sandbox run --node-id=dev-node --cmd 'echo hello'
@@ -431,7 +440,6 @@ func writeJSON(w io.Writer, v any) int {
 	}
 	return 0
 }
-
 
 func authCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {

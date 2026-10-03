@@ -195,6 +195,22 @@ Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
 - **Hecho.**
 
+### Sesión reutilizable (`asp session`) — post-2f
+
+Contrato adicional para harnesses (OpenCode y similares) que quieren un shell **dentro** del sandbox sin create/destroy por tool:
+
+- `asp session start|exec|status|stop`
+- Estado local `~/.cache/asp/session.json` (0600): id + URL del CP, sin token
+- `exec` reutiliza `POST /v1/sandboxes/{id}/exec`; exit code del guest
+
+**Qué entregó / por qué importaba:** el one-shot sigue para CI; la sesión evita pagar el boot en cada llamada del agente.
+
+**Límites honestos:** un solo fichero local; no es plugin de OpenCode; **no** hay sync de workspace (virtiofs/copia); sin GC si se olvida `stop`; exec sigue siendo JSON acumulado.
+
+Docs: [`ops-asp-session.md`](ops-asp-session.md).
+
+- **Hecho** (CLI + tests `httptest`; no exige ncc1701d).
+
 ## Readiness corporativa — Identidad multi-usuario (diseño)
 
 Gap post-2f (cerrado en código 3u.1–3u.5): faltaba sujeto humano, RBAC fino y `user_sub` en tokens de workload. **Implementado** en CP/node-agent; queda **ops**: JWKS IdP corporativo, memberships, socks SSH por usuario. Sin template, el bridge SSH global sigue siendo inseguro multi-user.
