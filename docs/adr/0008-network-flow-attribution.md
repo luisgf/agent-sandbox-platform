@@ -175,7 +175,7 @@ Requisito: nft enforce + deny default (ADR-0002/0006). Sin enforce, el guest dia
 
 ## Relación con ADR-0010 (red local)
 
-ADR-0010 no implementa este ADR ni al revés. Si algún día existe el túnel a la LAN del usuario, esos flujos son otro `path` (`local_net`, no el proxy `:8888`) pero la identidad estable sigue siendo `owner_sub` de este ADR: lookup host-side, headers del guest ignorados. El default route del nodo no se desvía. Propuesta, sin código: [0010](0010-on-demand-local-net.md).
+ADR-0010 no implementa este ADR ni al revés. Con `local_net` apagado el egress sigue el proxy de este diseño. Con `local_net` encendido (propuesta, sin código: [0010](0010-on-demand-local-net.md)) la ruta por defecto de **esa** microVM sale por el túnel del agente local —Internet público y DNS incluidos— y el proxy `:8888` no ve esos flujos. Siguen siendo otro `path` (`local_net`) y la identidad estable sigue siendo `owner_sub`: lookup host-side, headers del guest ignorados. La ruta por defecto **del nodo** (la máquina, y los sandboxes sin el flag) no se sustituye.
 
 ## Referencias cruzadas
 

@@ -97,7 +97,7 @@ Cliente / asp ──HTTPS+API key──► Control plane
 7. [Identidad multi-usuario / IdP](docs/adr/0007-multi-user-identity.md) — fases 1–5 (schema + JWT IdP + RBAC + SSH scoped + workload user_sub/act); ver [`docs/why-multi-user-identity.md`](docs/why-multi-user-identity.md) · lab Keycloak: [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md)
 8. [Atribución de flujos de red → owner_sub](docs/adr/0008-network-flow-attribution.md) — **evaluación** (no implementada); ver [`docs/why-network-flow-attribution.md`](docs/why-network-flow-attribution.md)
 9. [Sesiones de agente](docs/adr/0009-agent-sessions.md) — **aceptada como dirección**: la sesión es la forma primaria de aislamiento; el one-shot es primitiva interna. Ver [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md)
-10. [Red local bajo demanda](docs/adr/0010-on-demand-local-net.md) — **propuesta** (no implementada): el sandbox remoto llega a prefijos de la LAN del usuario solo con `--local-net`, por un túnel que abre el agente local. Ver [`docs/why-on-demand-local-net.md`](docs/why-on-demand-local-net.md)
+10. [Red local bajo demanda](docs/adr/0010-on-demand-local-net.md) — **propuesta** (no implementada): apagada por defecto; con `--local-net` todo el egress de esa sesión (default `0.0.0.0/0` y `::/0` si existe, DNS incluido) sale por el túnel que abre el agente local. Sin CIDR en v1. Ver [`docs/why-on-demand-local-net.md`](docs/why-on-demand-local-net.md)
 
 ## Mapa de componentes
 

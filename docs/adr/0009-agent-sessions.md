@@ -28,7 +28,7 @@ Un harness real choca con tres cosas del primer corte. Un único `session.json` 
 - Mount automático en rootfs **ya desplegados**. La imagen nueva sí lo trae; la que esté corriendo no cambia hasta reconstruirla.
 - Idle por sesión. El umbral sigue siendo el del proceso (`ASP_SANDBOX_IDLE_TIMEOUT`, lab `2h`, default off). Además de un exec que termina, un `POST .../exec/stdin` con éxito también toca `last_activity_at`. Un PTY callado no.
 - ADR-0008 (atribución de flujos).
-- ADR-0010 (red local bajo demanda). La sesión de hoy no abre túnel hacia la LAN del usuario. `local_net` nacería apagado; `--local-net` sería un opt-in del `start`, no un efecto de tener sesión. El JSON de sesión seguiría sin secretos.
+- ADR-0010 (red local bajo demanda). La sesión de hoy no abre túnel. `local_net` nacería apagado; `--local-net` en el `start` (no un efecto de tener sesión) mandaría la ruta por defecto de esa microVM por el agente local, sin lista de CIDR. El guest no podría encenderlo. El JSON de sesión seguiría sin secretos.
 - SIGWINCH, byte pipe opaco, EOF real sobre PTY en raw mode, sandbox de usuario para virtiofsd.
 
 El resto de este ADR describe la dirección original. Donde diga «no hay sesiones con nombre», «el exec no es stream», «no hay PTY» o «no hay virtiofs», léase con esta sección y con [`why-virtiofs-pty.md`](../why-virtiofs-pty.md): el dispositivo y el PTY ya están, con los límites de arriba. El texto posterior no se reescribe entero para no borrar el razonamiento.
@@ -252,7 +252,7 @@ Estos límites están en el código de hoy. Aceptar la dirección **no** los cie
 | **`--local`** | No llama al CP. No es stop |
 | **RBAC** | Quien tenga derecho a exec puede usar el id si lo conoce. Eso no transfiere `owner_sub`. El puntero no es una capability: cada `exec` lleva su propio Bearer |
 | **Egress atribuido al humano en el wire** | Sigue abierto (ADR-0008). La sesión fija *qué sandbox* es el del agente; no etiqueta todavía cada flujo |
-| **LAN del usuario** | No hay túnel. ADR-0010 lo propone apagado por defecto (`--local-net`). No está en `asp session start` hoy |
+| **LAN del usuario** | No hay túnel. ADR-0010 lo propone apagado por defecto; `--local-net` sería túnel completo de esa sesión (no una allowlist de CIDR). No está en `asp session start` hoy |
 
 ## Criterio para trabajo futuro (sin hacerlo aquí)
 
