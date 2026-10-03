@@ -2,7 +2,7 @@
 
 - **Estado:** Propuesta / **Aceptada como dirección**
 - **Fecha:** 2026-10-03
-- **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [`../why-agent-sessions.md`](../why-agent-sessions.md), [`../why-cli-asp.md`](../why-cli-asp.md), [`../roadmap.md`](../roadmap.md)
+- **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide; no implementada), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [`../why-agent-sessions.md`](../why-agent-sessions.md), [`../why-cli-asp.md`](../why-cli-asp.md), [`../roadmap.md`](../roadmap.md)
 - **No es:** un plugin de OpenCode. El segundo seguimiento (misma fecha) sí arranca virtiofsd y añade PTY/stdin al exec. Un tercer corte monta el tag en la imagen (`workspace-virtiofs.service`); un rootfs viejo no. Sigue sin SSH.
 
 ## Seguimiento implementado (2026-10-03)
@@ -28,6 +28,7 @@ Un harness real choca con tres cosas del primer corte. Un único `session.json` 
 - Mount automático en rootfs **ya desplegados**. La imagen nueva sí lo trae; la que esté corriendo no cambia hasta reconstruirla.
 - Idle por sesión. El umbral sigue siendo el del proceso (`ASP_SANDBOX_IDLE_TIMEOUT`, lab `2h`, default off). Además de un exec que termina, un `POST .../exec/stdin` con éxito también toca `last_activity_at`. Un PTY callado no.
 - ADR-0008 (atribución de flujos).
+- ADR-0010 (red local bajo demanda). La sesión de hoy no abre túnel hacia la LAN del usuario. `local_net` nacería apagado; `--local-net` sería un opt-in del `start`, no un efecto de tener sesión. El JSON de sesión seguiría sin secretos.
 - SIGWINCH, byte pipe opaco, EOF real sobre PTY en raw mode, sandbox de usuario para virtiofsd.
 
 El resto de este ADR describe la dirección original. Donde diga «no hay sesiones con nombre», «el exec no es stream», «no hay PTY» o «no hay virtiofs», léase con esta sección y con [`why-virtiofs-pty.md`](../why-virtiofs-pty.md): el dispositivo y el PTY ya están, con los límites de arriba. El texto posterior no se reescribe entero para no borrar el razonamiento.
@@ -73,7 +74,7 @@ La sesión queda definida por cuatro cosas, no por un fichero:
 
 1. **Identidad.** `owner_sub` (y el tenant) que el control-plane estampa al crear el sandbox, a partir del Bearer del IdP (ADR-0007). `actor_sub` de un exec posterior es quién llamó *ese* comando; el dueño estable de la sesión es `owner_sub`. El guest no elige ninguno de los dos.
 2. **Workspace.** El filesystem **del guest** de ese sandbox mientras la sesión vive: ficheros, procesos y `/tmp` persisten entre tools. Eso es el workspace de la sesión **hoy**. El árbol del proyecto en el host **no** forma parte de la sesión: no hay virtiofs ni copia (ver límites). `--cwd` solo cambia el directorio dentro del guest si esa ruta existe.
-3. **Egress.** La política de red de ese sandbox (allowlist del tenant, TAP, modo nft) durante toda la sesión. No se renegocia por comando. La atribución de flujos a `owner_sub` sigue siendo ADR-0008 (evaluación, no implementada): la sesión no la crea.
+3. **Egress.** La política de red de ese sandbox (allowlist del tenant, TAP, modo nft) durante toda la sesión. No se renegocia por comando. La atribución de flujos a `owner_sub` sigue siendo ADR-0008 (evaluación, no implementada): la sesión no la crea. Llegar a la LAN del usuario **no** forma parte de este egress: es ADR-0010, default off, y solo si un corte futuro acepta el opt-in. Esta sesión no lo enciende.
 4. **Idle timeout.** `ASP_SANDBOX_IDLE_TIMEOUT` en el CP, umbral **global del proceso**, no un knob por sesión. La sesión termina por `asp session stop` **o** por el reaper (`stop_reason=idle_timeout`). Si el umbral está apagado, no hay fin implícito.
 
 **El harness se engancha a la sesión**, no a `asp sandbox run`. Durante la vida del agente, su shell y el resto de tools que deban estar aislados corren **dentro del guest**. Hoy ese enganche es externo a este repo: sustituir el shell del tool por `asp session exec` (wrapper documentado en [`ops-asp-session.md`](../ops-asp-session.md)). No hay plugin de OpenCode in-tree.
@@ -251,6 +252,7 @@ Estos límites están en el código de hoy. Aceptar la dirección **no** los cie
 | **`--local`** | No llama al CP. No es stop |
 | **RBAC** | Quien tenga derecho a exec puede usar el id si lo conoce. Eso no transfiere `owner_sub`. El puntero no es una capability: cada `exec` lleva su propio Bearer |
 | **Egress atribuido al humano en el wire** | Sigue abierto (ADR-0008). La sesión fija *qué sandbox* es el del agente; no etiqueta todavía cada flujo |
+| **LAN del usuario** | No hay túnel. ADR-0010 lo propone apagado por defecto (`--local-net`). No está en `asp session start` hoy |
 
 ## Criterio para trabajo futuro (sin hacerlo aquí)
 

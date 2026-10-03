@@ -163,6 +163,8 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 **Atribución de flujos → humano (futuro):** hoy el proxy puede ver `X-ASP-Sandbox-ID` (forgeable) y no propaga `owner_sub`. Diseño en evaluación — [ADR-0008](adr/0008-network-flow-attribution.md), [`why-network-flow-attribution.md`](why-network-flow-attribution.md): lookup host-side (IP/TAP o `ct mark`) → `sandbox_id` → `owner_sub`; forced egress corporativo con identidad inyectada en el host. **No implementado.**
 
+**LAN del usuario (propuesta, no implementada):** el sandbox no llega a prefijos tipo `192.168.1.0/24`. [ADR-0010](adr/0010-on-demand-local-net.md) describe un túnel saliente, solo con `local_net` explícito, sin mover la ruta por defecto ni abrir el router de casa. Ver [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
+
 ## Modelo de datos (control plane)
 
 Tablas / entidades principales (migraciones `001`–`007`):

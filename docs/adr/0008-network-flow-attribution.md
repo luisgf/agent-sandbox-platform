@@ -2,7 +2,7 @@
 
 - **Estado:** Propuesta / **Aceptada para evaluación** — **no implementada**
 - **Fecha:** 2026-10
-- **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft), [0006](0006-fase-2e-nft-ssh-guest.md) (nft redirect), [0007](0007-multi-user-identity.md) (`owner_sub` / `actor_sub`), [`../why-network-flow-attribution.md`](../why-network-flow-attribution.md), [`../architecture.md`](../architecture.md) § Red, [`../roadmap.md`](../roadmap.md)
+- **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft), [0006](0006-fase-2e-nft-ssh-guest.md) (nft redirect), [0007](0007-multi-user-identity.md) (`owner_sub` / `actor_sub`), [0010](0010-on-demand-local-net.md) (otro path de red, misma identidad), [`../why-network-flow-attribution.md`](../why-network-flow-attribution.md), [`../architecture.md`](../architecture.md) § Red, [`../roadmap.md`](../roadmap.md)
 - **Extiende:** la frontera de egress de ADR-0002 con **sujeto humano** en el plano de red (no solo en create/exec/OIDC)
 
 ## Contexto
@@ -173,6 +173,10 @@ Requisito: nft enforce + deny default (ADR-0002/0006). Sin enforce, el guest dia
 3. Con `--nft-egress-mode=enforce`, intento de bypass al proxy sigue atribuyéndose (redirect) o se deniega — no hay “fuga sin etiqueta”.
 4. Documentado: SoftFail / dry-run **no** demuestran atribución en hardware.
 
+## Relación con ADR-0010 (red local)
+
+ADR-0010 no implementa este ADR ni al revés. Si algún día existe el túnel a la LAN del usuario, esos flujos son otro `path` (`local_net`, no el proxy `:8888`) pero la identidad estable sigue siendo `owner_sub` de este ADR: lookup host-side, headers del guest ignorados. El default route del nodo no se desvía. Propuesta, sin código: [0010](0010-on-demand-local-net.md).
+
 ## Referencias cruzadas
 
 - Red / proxy / nft: [0002](0002-networking.md), [0006](0006-fase-2e-nft-ssh-guest.md)
@@ -180,3 +184,4 @@ Requisito: nft enforce + deny default (ADR-0002/0006). Sin enforce, el guest dia
 - Por qué / qué ganamos: [`../why-network-flow-attribution.md`](../why-network-flow-attribution.md)
 - Arquitectura § Red: [`../architecture.md`](../architecture.md)
 - Roadmap (ítem futuro): [`../roadmap.md`](../roadmap.md)
+- Red local (propuesta, path distinto): [0010](0010-on-demand-local-net.md)

@@ -2,7 +2,7 @@
 
 Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecimiento post-MVP (2b–2f). Cada fase hecha incluye qué entregó, por qué importaba y gaps residuales.
 
-Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada).
+Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada). Red local bajo demanda (túnel saliente, default off): [ADR-0010](adr/0010-on-demand-local-net.md) (propuesta, no implementada).
 
 **Dirección de producto (agentes):** el aislamiento se usa en una **sesión** larga (un sandbox: `owner_sub`, workspace del guest, egress, idle), no con create→exec→destroy por comando de shell. [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md). `asp sandbox run` sigue siendo la primitiva de CI/ops.
 
@@ -253,6 +253,23 @@ Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`)
 
 **Estado:** propuesta / aceptada para evaluación (2026-10). **Sin código** de atribución aún. Criterio futuro: dos sandboxes, distinto `owner_sub`, mismo destino → audit distinto sin headers del guest.
 
+## Futuro — Red local bajo demanda (propuesta)
+
+Gap distinto del egress público: un sandbox en un nodo remoto no puede hablar con la LAN del usuario, y no debe poder hacerlo abriendo el router de casa ni desviando `0.0.0.0/0` por el portátil.
+
+**Decisión de diseño (propuesta):** [ADR-0010](adr/0010-on-demand-local-net.md) · narrativa [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
+
+Default **apagado** (`local_net=false`). Solo `asp session start --local-net` (o el campo equivalente en `POST /v1/sandboxes`) declara prefijos y puertos. El agente local abre un túnel saliente (WireGuard preferido; el nodo no escucha en la LAN). La ruta por defecto sigue en el egress del nodo. Si el portátil duerme, el nodo retira las rutas y blackholea esos CIDR. El túnel muere con la sesión o el idle. Identidad: `owner_sub`. El guest no elige rutas.
+
+| Subfase (prevista) | Entrega | Estado |
+|---|---|---|
+| **3l.0** | ADR + why + enlaces roadmap/README/0008/0009 | ✅ **Hecho** (docs only) |
+| **3l.1** | Campo y validación `local_net` / policy en el CP (default false, 400 fail closed) | ⏳ No implementado |
+| **3l.2** | Túnel por sandbox + blackhole + filtro de puertos en el node-agent | ⏳ No implementado |
+| **3l.3** | Agente local (`asp local-net attach`) y teardown al dormir / stop / idle | ⏳ No implementado |
+
+**Estado:** propuesta (2026-10-03). **Sin código.** No es requisito de ADR-0008; el log, cuando exista, usa el mismo `owner_sub`.
+
 ## Fase 3 — Multi-nodo y fiabilidad
 
 
@@ -266,6 +283,7 @@ Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`)
 - Pools precalentados; perfil Firecracker; workspace persistente cifrado.
 - IPv6 / ampliación de nft; posibles NetworkPolicy-like rules por sandbox en el nodo.
 - Atribución de flujos → `owner_sub` (si 3n.* se acepta tras evaluación): ver ADR-0008.
+- Red local bajo demanda (si 3l.* se acepta): ver ADR-0010. No adelantar `0.0.0.0/0` ni inbound a la LAN.
 
 ## Fuera de alcance inicial
 
@@ -277,4 +295,5 @@ Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`)
 - Tratar UID Linux del guest como identidad humana (rechazado en ADR-0007).
 - Tratar marks/headers puestos por el guest como atribución de red (rechazado en ADR-0008; evaluación).
 - Tratar create→exec→destroy por comando de shell como la superficie de integración del agente (rechazado como producto en [ADR-0009](adr/0009-agent-sessions.md); `asp sandbox run` se conserva como primitiva de CI/ops).
+- Abrir la LAN del usuario por defecto, por port forward, o con `0.0.0.0/0` hacia el portátil (rechazado en [ADR-0010](adr/0010-on-demand-local-net.md); solo opt-in futuro, no implementado).
 - Declarar SSH multi-user-safe **sin** `ASP_SSH_AGENT_SOCK_TEMPLATE` (bridge global legacy); con template + confirm multi-user, el aislamiento es por path — keys siguen siendo responsabilidad de ops (ADR-0007 fase 3u.4).
