@@ -2,7 +2,7 @@
 
 Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecimiento post-MVP (2b–2f). Cada fase hecha incluye qué entregó, por qué importaba y gaps residuales.
 
-Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada). Red local bajo demanda (túnel completo de la sesión, default off, sin CIDR en v1): [ADR-0010](adr/0010-on-demand-local-net.md) (corte mínimo: flag, handshake y blackhole; sin dispositivo WireGuard real).
+Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada). Red local bajo demanda (túnel completo de la sesión, default off, sin CIDR en v1): [ADR-0010](adr/0010-on-demand-local-net.md) (comandos `ip`/`wg` por sesión; sin lab de paquetes).
 
 **Dirección de producto (agentes):** el aislamiento se usa en una **sesión** larga (un sandbox: `owner_sub`, workspace del guest, egress, idle), no con create→exec→destroy por comando de shell. [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md). `asp sandbox run` sigue siendo la primitiva de CI/ops.
 
@@ -266,9 +266,9 @@ Default **apagado** (`local_net=false`). Solo `asp session start --local-net` (o
 | **3l.0** | ADR + why + enlaces roadmap/README/0008/0009 | ✅ **Hecho** (docs only) |
 | **3l.1** | Campo `local_net` bool en el CP (default false; 400 si el body trae policy, CIDR o puertos) | ✅ Corte mínimo (memoria + migración 010) |
 | **3l.2** | Túnel por sandbox: default de esa sesión por el túnel; blackhole si no está up; sin redirect al proxy ni al DNS sink; sin filtro de CIDR | ✅ Plan en el node-agent (memoria). No hay `ip`/`wg` en CI |
-| **3l.3** | Agente local (`asp session local-net up/down`, el attach de este corte) y teardown al stop / idle / detach | ✅ Handshake. Sin keepalive de sueño ni NAT |
+| **3l.3** | Agente local (`asp session local-net up/down`) y teardown al stop / idle / detach | ✅ `ip`+`wg` si hay tools y CAP_NET_ADMIN. Sin keepalive de sueño ni NAT demostrado |
 
-**Estado:** corte mínimo (2026-10-03). El dataplane de kernel no está. No es requisito de ADR-0008; el log, cuando exista, usa el mismo `owner_sub`. Ops: [`ops-local-net.md`](ops-local-net.md).
+**Estado:** comandos del dispositivo cableados (2026-10-03). Hace falta `wireguard-tools` y `CAP_NET_ADMIN`. No hay lab de paquetes. No es requisito de ADR-0008; el log, cuando exista, usa el mismo `owner_sub`. Ops: [`ops-local-net.md`](ops-local-net.md).
 
 ## Fase 3 — Multi-nodo y fiabilidad
 
@@ -295,5 +295,5 @@ Default **apagado** (`local_net=false`). Solo `asp session start --local-net` (o
 - Tratar UID Linux del guest como identidad humana (rechazado en ADR-0007).
 - Tratar marks/headers puestos por el guest como atribución de red (rechazado en ADR-0008; evaluación).
 - Tratar create→exec→destroy por comando de shell como la superficie de integración del agente (rechazado como producto en [ADR-0009](adr/0009-agent-sessions.md); `asp sandbox run` se conserva como primitiva de CI/ops).
-- Abrir la LAN del usuario por defecto o por port forward (rechazado en [ADR-0010](adr/0010-on-demand-local-net.md)). El túnel completo hacia el portátil es solo el opt-in `--local-net` (corte mínimo, sin dispositivo real); sin ese flag, y si el agente cae, no hay `0.0.0.0/0` ni vuelta silenciosa al proxy del nodo.
+- Abrir la LAN del usuario por defecto o por port forward (rechazado en [ADR-0010](adr/0010-on-demand-local-net.md)). El túnel completo hacia el portátil es solo el opt-in `--local-net` (comandos WireGuard cableados, sin paquetes demostrados); sin ese flag, y si el agente cae, no hay `0.0.0.0/0` ni vuelta silenciosa al proxy del nodo.
 - Declarar SSH multi-user-safe **sin** `ASP_SSH_AGENT_SOCK_TEMPLATE` (bridge global legacy); con template + confirm multi-user, el aislamiento es por path — keys siguen siendo responsabilidad de ops (ADR-0007 fase 3u.4).

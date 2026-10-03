@@ -63,6 +63,8 @@ type Sandbox struct {
 	LocalNetGrantExpiresAt *time.Time `json:"local_net_grant_expires_at,omitempty"`
 	// LocalNetClientPublic is the agent's WireGuard public key (not a secret).
 	LocalNetClientPublic string `json:"local_net_client_public,omitempty"`
+	// LocalNetNodePublic is the node WireGuard public key for this sandbox (not a secret).
+	LocalNetNodePublic string `json:"local_net_node_public,omitempty"`
 	// LocalNetGrantHash is sha256 hex of the live grant. Never serialized.
 	LocalNetGrantHash string    `json:"-"`
 	CreatedAt         time.Time `json:"created_at"`

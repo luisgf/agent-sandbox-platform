@@ -19,6 +19,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/execproxy"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostvsock"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
@@ -410,6 +411,16 @@ func main() {
 			os.Exit(1)
 		}
 		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
+		keyDir := os.Getenv("ASP_LOCAL_NET_KEY_DIR")
+		if keyDir == "" {
+			if cfg.DryRun {
+				keyDir = filepath.Join(os.TempDir(), "asp-local-net-keys")
+			} else {
+				keyDir = "/var/lib/asp/local-net"
+			}
+		}
+		rec.LocalNet = localnet.NewHost(keyDir)
+		slog.Info("local-net host applier", "key_dir", keyDir, "note", "needs wireguard-tools and CAP_NET_ADMIN; does not change the host default route")
 		rec.VsockDir = cfg.CHSocketDir
 		if cfg.PodDaemonPort > 0 {
 			rec.VsockPort = uint32(cfg.PodDaemonPort)

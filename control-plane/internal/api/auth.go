@@ -92,7 +92,7 @@ func isNodeAgentPath(path string) bool {
 	if strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/work") {
 		return true
 	}
-	if strings.HasPrefix(path, "/v1/sandboxes/") && (strings.HasSuffix(path, "/claim") || strings.HasSuffix(path, "/status") || strings.HasSuffix(path, "/attest") || strings.HasSuffix(path, "/renew-lease")) {
+	if strings.HasPrefix(path, "/v1/sandboxes/") && (strings.HasSuffix(path, "/claim") || strings.HasSuffix(path, "/status") || strings.HasSuffix(path, "/attest") || strings.HasSuffix(path, "/renew-lease") || strings.HasSuffix(path, "/local-net/node-public")) {
 		return true
 	}
 	return false
@@ -112,7 +112,7 @@ func isUserFacingSandboxPath(path string) bool {
 		return false
 	}
 	// node-internal suffixes
-	for _, suf := range []string{"/claim", "/status", "/attest", "/renew-lease"} {
+	for _, suf := range []string{"/claim", "/status", "/attest", "/renew-lease", "/local-net/node-public"} {
 		if strings.HasSuffix(path, suf) {
 			return false
 		}

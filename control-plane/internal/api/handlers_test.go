@@ -25,6 +25,7 @@ func testMux(s *Server) http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes/{id}/events", s.ListSandboxEvents)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.Exec)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/grant", s.IssueLocalNetGrant)
+	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/node-public", s.RegisterLocalNetNode)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/heartbeat", s.HeartbeatLocalNet)
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}/local-net/attach", s.DetachLocalNet)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec/stdin", s.ExecStdin)

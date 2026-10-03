@@ -191,7 +191,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	_, have := r.handles[sb.ID]
 	r.mu.Unlock()
 	if have && sb.State == "starting" {
-		if err := r.applyLocalNet(sb); err != nil {
+		if err := r.applyLocalNet(ctx, sb); err != nil {
 			_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "local-net: "+err.Error())
 			return fmt.Errorf("local-net: %w", err)
 		}
@@ -202,7 +202,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		return nil
 	}
 	if have {
-		return r.applyLocalNet(sb)
+		return r.applyLocalNet(ctx, sb)
 	}
 
 	// Claim if still requested (or soft-assigned to us).
@@ -265,7 +265,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	}
 	cfg.WorkspaceFSSocket = fsSock
 
-	if err := r.applyLocalNet(sb); err != nil {
+	if err := r.applyLocalNet(ctx, sb); err != nil {
 		if stopFS != nil {
 			stopFS()
 		}
@@ -383,11 +383,25 @@ func (r *Reconciler) localApplier() localnet.Applier {
 
 // applyLocalNet installs the ADR-0010 plan. local_net=false records the
 // public path and does not add a tunnel. local_net=true never records the
-// public proxy: pending/withdrawn are blackholes, up is the tunnel iface.
-// This in-memory plan is what FakeVMM proves. Kernel WireGuard is not applied
-// here (see localnet.Commands); the host needs wireguard tools and CAP_NET_ADMIN.
-func (r *Reconciler) applyLocalNet(sb cpclient.Sandbox) error {
+// public proxy: pending/withdrawn are blackholes, up creates wg-asp-* and
+// points that sandbox's policy table at it. Host.Apply runs ip/wg.
+// Memory (tests, FakeVMM default) only records the plan.
+func (r *Reconciler) applyLocalNet(ctx context.Context, sb cpclient.Sandbox) error {
 	plan := localnet.Decide(sb.ID, sb.OwnerSub, sb.LocalNet, sb.LocalNetState)
+	plan.PeerPublic = strings.TrimSpace(sb.LocalNetClientPublic)
+	if sb.LocalNet {
+		if ks, ok := r.LocalNet.(localnet.NodeKeyer); ok {
+			pub, _, _, err := ks.EnsureNodeKey(sb.ID)
+			if err != nil {
+				return err
+			}
+			if r.CP != nil && pub != "" {
+				if err := r.CP.PublishLocalNetNode(ctx, sb.ID, pub); err != nil {
+					r.Logger.Warn("local-net node public", "sandbox_id", sb.ID, "error", err)
+				}
+			}
+		}
+	}
 	if err := r.localApplier().Apply(plan); err != nil {
 		return err
 	}

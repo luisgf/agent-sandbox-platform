@@ -460,11 +460,15 @@ var errStdinStopped = fmt.Errorf("stdin stopped")
 
 // LocalNetGrant is the one-shot tunnel grant. Do not write it into the session file.
 type LocalNetGrant struct {
-	Grant     string `json:"grant"`
-	Dial      string `json:"dial"`
-	ExpiresAt string `json:"expires_at"`
-	Iface     string `json:"tunnel_iface"`
-	Transport string `json:"transport"`
+	Grant            string `json:"grant"`
+	Dial             string `json:"dial"`
+	ExpiresAt        string `json:"expires_at"`
+	Iface            string `json:"tunnel_iface"`
+	Transport        string `json:"transport"`
+	NodePublicKey    string `json:"node_public_key"`
+	ListenPort       int    `json:"listen_port"`
+	NodeTunnelAddr   string `json:"node_tunnel_addr"`
+	ClientTunnelAddr string `json:"client_tunnel_addr"`
 }
 
 // IssueLocalNetGrant asks the control plane for a short-lived grant.

@@ -48,7 +48,7 @@ En el lab, el control plane exige Bearer de Keycloak (realm `asp`, cliente `asp-
 
 Cuando el trabajo está en la LAN de quien lanza el agente, `asp session start --local-net` pide que la ruta por defecto **de esa sesión** (`0.0.0.0/0`, y `::/0` si existe) salga por un túnel que abre el agente local. No hay lista de CIDR en v1. Si el agente no está, el plan es blackhole: no se vuelve en silencio al proxy del nodo.
 
-**Hoy eso es plano de control y CLI.** El flag, el grant, el heartbeat y el plan de blackhole están. **No hay dispositivo WireGuard**, ni `wg` aplicado, ni NAT. El esqueleto de config no se instala solo. Sin `wireguard-tools` y sin privilegios de red no hay paquetes. Ops: [`docs/ops-local-net.md`](docs/ops-local-net.md).
+El nodo crea `wg-asp-{id8}` con `ip link add type wireguard` y `wg set` cuando el grant está `up`, y mete la default **de esa sesión** en una tabla de policy routing (`iif` del TAP). No toca la default del host. `local-net down`, `session stop` y el idle reap borran el iface del nodo y vuelven al blackhole, no al proxy `:8888`. El CLI aplica el extremo del portátil si hay `wireguard-tools` y `CAP_NET_ADMIN`; si no, imprime los comandos. La clave privada queda en modo 0600 y no se commitea. **Un lab con paquetes reales no está demostrado.** Hace falta `wireguard-tools` y `CAP_NET_ADMIN` en el nodo y en el portátil. Ops: [`docs/ops-local-net.md`](docs/ops-local-net.md).
 
 ### Parada por inactividad
 
@@ -68,7 +68,7 @@ Sin `virtiofsd` en el nodo, un start con `--workspace` falla: no se arranca una 
 
 ## Cómo encaja
 
-La sesión es lo que usa el humano o el harness. El control plane guarda el estado deseado. El nodo lo materializa en una microVM. La red local, si se pidió, es un camino **aparte** y, en este corte, solo un handshake.
+La sesión es lo que usa el humano o el harness. El control plane guarda el estado deseado. El nodo lo materializa en una microVM. La red local, si se pidió, es un dispositivo WireGuard de esa sesión, no la default del host. Los comandos están cableados; un lab con tráfico real no se ha probado.
 
 ```mermaid
 flowchart TB
@@ -76,7 +76,7 @@ flowchart TB
     H["Harness estilo OpenCode"]
     CLI["asp session<br/>start · exec · stop"]
     IDP["IdP<br/>Keycloak en el lab"]
-    LN["local-net opcional<br/>grant y heartbeat<br/>sin iface WireGuard"]
+    LN["local-net opcional<br/>wg-asp por sesión<br/>sin default del host"]
   end
 
   subgraph control["Control plane"]
@@ -98,14 +98,14 @@ flowchart TB
   H -->|"sustituye el shell del tool"| CLI
   IDP -.->|"JWT Bearer"| CLI
   CLI -->|"HTTPS"| CP
-  LN -.->|"solo handshake"| CP
+  LN -.->|"WireGuard saliente<br/>si hay CAP_NET_ADMIN"| CP
   CP -->|"mTLS, estado deseado"| NA
   NA --> CH
   CH --> vm
   NA -->|"si --workspace"| VFS
   VFS -.->|"mount en imagen nueva<br/>no en el rootfs de ncc1701d"| vm
   vm --> EG
-  CP -.->|"local_net pending: blackhole deseado<br/>no dataplane"| NA
+  CP -.->|"pending/withdrawn: blackhole<br/>up: iface wg de esa sesión"| NA
 ```
 
 Diagrama de componentes ya versionado (cliente, control plane, nodo, guest, egress; no dibuja la sesión ni local-net): [`docs/diagram.svg`](docs/diagram.svg). Fuente editable: [`docs/diagram.mmd`](docs/diagram.mmd). Regenerar el SVG: `./scripts/gen-diagram.sh`. Narrativa de fronteras de confianza: [`docs/architecture.md`](docs/architecture.md).
@@ -145,7 +145,7 @@ El resto del detalle vive fuera de esta página. Esta tabla solo abre la puerta.
 | [0007](docs/adr/0007-multi-user-identity.md) | Identidad multi-usuario / IdP |
 | [0008](docs/adr/0008-network-flow-attribution.md) | Flujos de red → `owner_sub` (evaluación, no implementada) |
 | [0009](docs/adr/0009-agent-sessions.md) | La sesión es el uso primario del aislamiento |
-| [0010](docs/adr/0010-on-demand-local-net.md) | Red local: túnel completo, opt-in; corte mínimo sin WireGuard de kernel |
+| [0010](docs/adr/0010-on-demand-local-net.md) | Red local: túnel completo, opt-in; comandos WireGuard cableados, sin lab de paquetes |
 
 ## Límites que el código sí tiene
 
@@ -156,7 +156,7 @@ El resto del detalle vive fuera de esta página. Esta tabla solo abre la puerta.
 | Attest | Firma software (`ASP_ATTEST_KEY`). No es TPM/SEV. |
 | Leases | TTL en el control plane y `FenceProvider` stub. No es STONITH BMC. |
 | Idle | Apagado por defecto. No barre el fichero local de la sesión. |
-| local-net | Handshake y plan de blackhole. Sin dispositivo WireGuard ni NAT. |
+| local-net | `ip`/`wg` por sesión si hay `wireguard-tools` y `CAP_NET_ADMIN`. Sin prueba de paquetes. No cambia la default del host. |
 | virtiofs | El nodo pone el dispositivo si hay binario. El auto-mount está en el **build** de la imagen. El rootfs de ncc1701d no se ha reconstruido. |
 | OpenCode | No hay plugin. Hay un wrapper de ejemplo. |
 | Atribución de flujos | ADR-0008, no implementada. |

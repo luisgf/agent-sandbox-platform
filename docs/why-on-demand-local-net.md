@@ -1,6 +1,6 @@
 # Por qué / Qué ganamos — Red local bajo demanda
 
-Ver también ADR: [`adr/0010-on-demand-local-net.md`](adr/0010-on-demand-local-net.md) (contrato vigente; **corte mínimo** en código, sin dataplane WireGuard real). Cómo encenderlo: [`ops-local-net.md`](ops-local-net.md).  
+Ver también ADR: [`adr/0010-on-demand-local-net.md`](adr/0010-on-demand-local-net.md) (contrato vigente; comandos WireGuard por sesión cableados, sin lab de paquetes). Cómo encenderlo: [`ops-local-net.md`](ops-local-net.md).  
 El egress del nodo, cuando el flag está apagado: [`adr/0002-networking.md`](adr/0002-networking.md).  
 La sesión que acota la vida del túnel: [`adr/0009-agent-sessions.md`](adr/0009-agent-sessions.md).  
 La identidad del flujo sigue siendo `owner_sub`: [`adr/0008-network-flow-attribution.md`](adr/0008-network-flow-attribution.md), [`adr/0007-multi-user-identity.md`](adr/0007-multi-user-identity.md).
@@ -55,7 +55,7 @@ allowlist de ADR-0002 aplica            LAN, Internet público y DNS van juntos
 
 ## Qué no ganamos (límites honestos)
 
-- **El corte mínimo sí está:** flag, columna, handshake y plan de blackhole en el nodo. **No** hay peer WireGuard de kernel, ni NAT real en el agente local, ni un paquete de prueba. Ver el ADR, sección «Estado de implementación», y [`ops-local-net.md`](ops-local-net.md).
+- **Los comandos del dispositivo sí están:** el nodo crea `wg-asp-…` y la tabla de esa sesión; el CLI aplica el extremo local si hay `wireguard-tools` y `CAP_NET_ADMIN`. **No** hay un paquete de prueba ni un NAT demostrado. Ver el ADR, sección «Estado de implementación», y [`ops-local-net.md`](ops-local-net.md).
 - **El portátil ve y hace NAT de todo el tráfico de la VM** mientras el túnel está `up`, no solo de un `/24`. Internet público incluido. Las queries DNS que no vayan cifradas se ven en esa máquina. La IP de origen hacia fuera es la del usuario (o la de la VPN que el usuario ya tenga), no la del nodo. Ese es el coste de no pedir CIDRs.
 - Con el flag puesto, un guest comprometido **puede** hablar con cualquier destino unicast que el portátil alcance, mientras el túnel esté `up`. No hay filtro de puertos en v1. No es inocuo. Es exactamente lo que el opt-in compra.
 - **Si el agente se desconecta, el egress para.** La sesión puede seguir `running` y no tener red. No sale a escondidas por el proxy del nodo. Esta propuesta **no** documenta un modo fallback: lo rechaza en silencio y tampoco lo ofrece con otro nombre. Añadir `--local-net-fallback=node` sería otro diseño, no una lectura amable de este.

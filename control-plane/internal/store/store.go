@@ -79,4 +79,7 @@ type Store interface {
 	HeartbeatLocalNet(id, grant, clientPublic string, now time.Time) (Sandbox, error)
 	// WithdrawLocalNet detaches. local_net stays true; state becomes withdrawn.
 	WithdrawLocalNet(id string) (Sandbox, error)
+	// SetLocalNetNodePublic records the node device public key. It does not
+	// change local_net or the state, and it does not refresh last_activity_at.
+	SetLocalNetNodePublic(id, publicKey string) (Sandbox, error)
 }

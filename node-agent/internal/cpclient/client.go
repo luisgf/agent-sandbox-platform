@@ -288,6 +288,28 @@ func (c *Client) ReportStatus(ctx context.Context, sandboxID, state, detail stri
 	return out, nil
 }
 
+// PublishLocalNetNode registers this sandbox's WireGuard public key.
+// The private key is not sent. Failure to publish does not change egress by itself.
+func (c *Client) PublishLocalNetNode(ctx context.Context, sandboxID, publicKey string) error {
+	body, _ := json.Marshal(map[string]string{"public_key": publicKey})
+	url := fmt.Sprintf("%s/v1/sandboxes/%s/local-net/node-public", c.BaseURL, sandboxID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("local-net node-public %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+	}
+	return nil
+}
+
 func (c *Client) RenewLease(ctx context.Context, sandboxID, nodeID string) (Sandbox, error) {
 	var out Sandbox
 	body, _ := json.Marshal(map[string]string{"node_id": nodeID})

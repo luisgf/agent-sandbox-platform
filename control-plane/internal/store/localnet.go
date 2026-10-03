@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 )
@@ -81,3 +82,51 @@ func ValidateWGPublicKey(s string) error {
 	}
 	return nil
 }
+
+// LocalNetShortID is the 8-char suffix used for iface, table and tunnel addresses.
+// Keep in sync with node-agent/internal/localnet and cli/internal/localnet.
+func LocalNetShortID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	if id == "" {
+		id = "sandbox"
+	}
+	return id
+}
+
+func fnv32a(s string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum32()
+}
+
+// LocalNetListenPort is the UDP port the node device binds. Stable per sandbox.
+func LocalNetListenPort(id string) int {
+	return 47000 + int(fnv32a("udp"+LocalNetShortID(id))%8000)
+}
+
+// LocalNetTableID is a policy-routing table that is never the main table.
+func LocalNetTableID(id string) int {
+	return 10000 + int(fnv32a(LocalNetShortID(id))%20000)
+}
+
+// LocalNetTunnel returns the node and client interface CIDRs inside 10.188.0.0/16.
+// The client address is the second usable host of a /30. Neither is installed on
+// the host main default route.
+func LocalNetTunnel(id string) (nodeCIDR, clientCIDR string) {
+	slot := fnv32a("tun"+LocalNetShortID(id)) % 16384
+	base := slot * 4
+	a := (base >> 8) & 0xff
+	b := base & 0xff
+	nodeCIDR = fmt.Sprintf("10.188.%d.%d/30", a, b+1)
+	clientCIDR = fmt.Sprintf("10.188.%d.%d/30", a, b+2)
+	return nodeCIDR, clientCIDR
+}
+
+// LocalNetIface is the per-sandbox WireGuard device name (15 chars max).
+func LocalNetIface(id string) string { return "wg-asp-" + LocalNetShortID(id) }
+
+// LocalNetTap is the TAP whose ingress selects this sandbox's routing table.
+func LocalNetTap(id string) string { return "asp-" + LocalNetShortID(id) }

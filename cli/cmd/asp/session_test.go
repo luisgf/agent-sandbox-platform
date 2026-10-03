@@ -650,3 +650,121 @@ func TestSessionLocalNetFlagAndHandshake(t *testing.T) {
 		t.Fatalf("allow flag exit=%d", code)
 	}
 }
+
+func TestLocalNetUpAppliesMockWireGuardAndDownDeletesIt(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_API_KEY", "")
+	t.Setenv("ASP_LOCAL_NET_APPLY", "1")
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "argv.log")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"n=$0; n=${n##*/}\n" +
+		"printf '%s' \"$n\" >> \"$ASP_MOCK_LOG\"\n" +
+		"for a in \"$@\"; do printf ' %s' \"$a\" >> \"$ASP_MOCK_LOG\"; done\n" +
+		"printf '\\n' >> \"$ASP_MOCK_LOG\"\n" +
+		"exit 0\n"
+	for _, name := range []string{"ip", "wg"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ASP_MOCK_LOG", logPath)
+	t.Setenv("PATH", bin)
+
+	nodePub := "ERERERERERERERERERERERERERERERERERERERERERE="
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/grant", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"grant": "grant-clear-not-for-disk", "dial": "203.0.113.10:51024",
+			"expires_at": "2026-10-03T18:00:00Z", "tunnel_iface": "wg-asp-ln-1",
+			"transport": "wireguard", "node_public_key": nodePub, "listen_port": 51024,
+			"node_tunnel_addr": "10.188.17.97/30", "client_tunnel_addr": "10.188.17.98/30",
+		})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "ln-1", State: "running", LocalNet: true, LocalNetState: "up"})
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/local-net/attach", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "ln-1", State: "running", LocalNet: true, LocalNetState: "withdrawn"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	sess := filepath.Join(dir, "s.json")
+	st := session.State{SandboxID: "ln-1", CPURL: srv.URL, LocalNet: true}
+	if err := session.Save(sess, st); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	code := run([]string{"session", "local-net", "up", "--cp-url", srv.URL, "--session-file", sess}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("up %d %s", code, stderr.String())
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(log)
+	for _, want := range []string{
+		"ip link add dev wg-asp-ln-1 type wireguard",
+		"ip address add 10.188.17.98/30 dev wg-asp-ln-1",
+		"wg set wg-asp-ln-1 private-key ",
+		"peer " + nodePub,
+		"allowed-ips 0.0.0.0/0,::/0",
+		"endpoint 203.0.113.10:51024",
+		"ip link set wg-asp-ln-1 up",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q\nlog:\n%s\nstderr:\n%s", want, text, stderr.String())
+		}
+	}
+	if strings.Contains(text, "8888") || strings.Contains(text, "asp_egress") || strings.Contains(text, " route ") {
+		t.Fatalf("client argv hijacks or proxies:\n%s", text)
+	}
+	keyRaw, _ := os.ReadFile(sess + ".local-net.key")
+	if strings.Contains(text, strings.TrimSpace(string(keyRaw))) {
+		t.Fatal("private key in argv")
+	}
+	sessRaw, _ := os.ReadFile(sess)
+	if strings.Contains(string(sessRaw), strings.TrimSpace(string(keyRaw))) || strings.Contains(string(sessRaw), "grant-clear") {
+		t.Fatal("secret in session json")
+	}
+	cfi, err := os.Stat(sess + ".local-net.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfi.Mode().Perm() != 0o600 {
+		t.Fatalf("conf mode %o", cfi.Mode().Perm())
+	}
+
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	code = run([]string{"session", "local-net", "down", "--session-file", sess}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("down %d %s", code, stderr.String())
+	}
+	text = string(mustReadFile(t, logPath))
+	if !strings.Contains(text, "ip link delete dev wg-asp-ln-1") {
+		t.Fatalf("down log:\n%s", text)
+	}
+	if strings.Contains(text, "8888") {
+		t.Fatalf("down proxy:\n%s", text)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

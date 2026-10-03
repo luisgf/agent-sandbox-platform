@@ -164,4 +164,67 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 	}
 }
 
+func TestLocalNetGrantCarriesNodeDevice(t *testing.T) {
+	mem := store.NewMemoryStore()
+	s := &Server{Store: mem}
+	mux := testMux(s)
+	nodePub := "ERERERERERERERERERERERERERERERERERERERERERE="
+	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+		TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64,
+		LocalNet: boolPtr(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/node-public", bytes.NewBufferString(`{"public_key":"`+nodePub+`"}`))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("node-public %d %s", rr.Code, rr.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/node-public", bytes.NewBufferString(`{"public_key":"`+nodePub+`","prefixes":["10.0.0.0/8"]}`))
+	req.Header.Set("X-ASP-Caller", "guest")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("guest node-public %d", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/grant", nil)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("grant %d %s", rr.Code, rr.Body.String())
+	}
+	var g map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &g); err != nil {
+		t.Fatal(err)
+	}
+	if g["node_public_key"] != nodePub || g["transport"] != "wireguard" {
+		t.Fatalf("grant=%v", g)
+	}
+	if g["tunnel_iface"] != "wg-asp-"+sb.ID[:8] {
+		t.Fatalf("iface=%v id=%s", g["tunnel_iface"], sb.ID)
+	}
+	if int(g["listen_port"].(float64)) != store.LocalNetListenPort(sb.ID) {
+		t.Fatalf("port grant=%v want=%d", g["listen_port"], store.LocalNetListenPort(sb.ID))
+	}
+	nodeCIDR, clientCIDR := store.LocalNetTunnel(sb.ID)
+	if g["node_tunnel_addr"] != nodeCIDR || g["client_tunnel_addr"] != clientCIDR {
+		t.Fatalf("addrs %+v want %s %s", g, nodeCIDR, clientCIDR)
+	}
+	if strings.Contains(rr.Body.String(), "8888") {
+		t.Fatal("grant mentions proxy")
+	}
+}
+
+func TestLocalNetParamsVector(t *testing.T) {
+	if store.LocalNetListenPort("abcdef012345") != 51024 || store.LocalNetTableID("abcdef012345") != 13853 {
+		t.Fatalf("port=%d table=%d", store.LocalNetListenPort("abcdef012345"), store.LocalNetTableID("abcdef012345"))
+	}
+	n, c := store.LocalNetTunnel("abcdef012345")
+	if n != "10.188.17.97/30" || c != "10.188.17.98/30" {
+		t.Fatalf("n=%s c=%s", n, c)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }

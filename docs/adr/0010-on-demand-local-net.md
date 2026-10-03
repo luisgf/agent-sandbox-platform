@@ -1,6 +1,6 @@
 # ADR-0010: Red local bajo demanda (túnel completo iniciado por el agente local)
 
-- **Estado:** Contrato de esta revisión vigente. **Corte mínimo implementado** (2026-10-03) — ver [Estado de implementación](#estado-de-implementación). No es un dataplane WireGuard demostrado.
+- **Estado:** Contrato de esta revisión vigente. Los comandos `ip`/`wg` del dispositivo por sesión están cableados (2026-10-03) — ver [Estado de implementación](#estado-de-implementación). Un lab con paquetes no está demostrado.
 - **Fecha:** 2026-10-03
 - **Revisión:** 2026-10-03. La primera redacción (commit `1858dd2`) fijaba v1 como allowlist de CIDR **y** puertos, y prohibía instalar `0.0.0.0/0` y `::/0` hacia el portátil. **Esta revisión sustituye ese contrato.** v1 es todo o nada: con el flag, la ruta por defecto del sandbox sale por el agente local; sin el flag, no hay túnel. Pedir prefijos al usuario no es v1.
 - **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft; egress del nodo cuando el flag está apagado), [0008](0008-network-flow-attribution.md) (flujo → `owner_sub`, evaluación), [0009](0009-agent-sessions.md) (la sesión es el objeto; egress de esa microVM), [0007](0007-multi-user-identity.md) (`owner_sub`), [`../why-on-demand-local-net.md`](../why-on-demand-local-net.md), [`../roadmap.md`](../roadmap.md)
@@ -374,7 +374,7 @@ el create ya selló local_net=false, y el exec no tiene campo para cambiarlo
 
 ### Límites honestos / no-goals
 
-- El **contrato** de arriba es la decisión. El corte mínimo (flag, columna, handshake, plan blackhole) está anotado en «Estado de implementación». Un peer WireGuard de kernel **no** está demostrado.
+- El **contrato** de arriba es la decisión. El flag, el handshake y los comandos del dispositivo están anotados en «Estado de implementación». Un peer con tráfico real **no** está demostrado.
 - **v1 no** pide ni acepta CIDR, puertos ni excepciones. Todo o nada.
 - **v1 no** publica servicios del guest hacia la LAN (nada de DNAT inverso, nada de «entra a mi sandbox desde el NAS»).
 - **v1 no** hace puente L2, mDNS, SSDP ni LLMNR. Mover la default no descubre vecinos.
@@ -421,19 +421,27 @@ Corte que sí está en el árbol (FakeVMM / tests; no demuestra un paquete):
 
 | Pieza | Qué hace |
 |---|---|
-| API + store | `local_net` bool default false, `local_net_state` `off\|pending\|up\|withdrawn`. Migración `010_sandbox_local_net.sql`. 400 si el body trae `local_net_policy`, `prefixes`, `cidrs`, `ports`, `routes` o `exceptions` |
+| API + store | `local_net` bool default false, `local_net_state` `off\|pending\|up\|withdrawn`. Migraciones `010_sandbox_local_net.sql` y `011_sandbox_local_net_node_public.sql` (clave pública del nodo, no el secreto). 400 si el body trae `local_net_policy`, `prefixes`, `cidrs`, `ports`, `routes` o `exceptions` |
 | Quién lo enciende | Solo el create autenticado (lab sin IdP incluido) y `asp session start --local-net`. Header `X-ASP-Caller: guest` (o `X-ASP-Guest: 1`) con el campo, y `local_net` dentro de exec o status, responden **403**. El guest no lo cambia |
 | Handshake | `POST .../local-net/grant` (el grant en claro no se guarda; solo sha256 y `expires_at`), `POST .../local-net/heartbeat` pasa a `up` y **no** mueve `last_activity_at`, `DELETE .../local-net/attach` pasa a `withdrawn`. Otro `owner_sub` con JWT no recibe grant |
-| CLI | `asp session local-net up\|down`. La clave privada WireGuard (X25519, encoding WG) se escribe modo 0600 junto al JSON (`*.local-net.key`), no dentro del JSON ni en git. `up` es el attach de este corte (grant + heartbeat). `down`, `session stop` y el idle reap retiran el túnel |
-| Nodo | Si `local_net` es false, el plan es el egress público de siempre. Si es true, `pending` y `withdrawn` son **blackhole** de `0.0.0.0/0` y `::/0` en una tabla de esa sesión; `up` apunta la default al iface `wg-asp-{short}`. El plan no redirige ese sandbox a `:8888` ni a `asp_egress`. Al stop se borra el plan |
+| CLI | `asp session local-net up\|down`. Clave privada modo 0600 junto al JSON, nunca dentro ni en git. Con `wireguard-tools` y `CAP_NET_ADMIN`, `up` ejecuta `ip`+`wg` sin tocar la default del host; si no, imprime el argv. `down` y `session stop` borran el iface local |
+| Nodo | Si `local_net` es false, no hay dispositivo nuevo. Si es true, el applier de host ejecuta `ip`/`wg`: `pending` y `withdrawn` borran `wg-asp-{short}` y blackholean la tabla de esa sesión; `up` crea el dispositivo (peer = agente local) y pone la default solo en esa tabla (`iif` del TAP). Nada apunta a `:8888`. Stop e idle reap borran iface y regla. Hace falta `CAP_NET_ADMIN` |
 
-Qué **no** hace este corte (sigue siendo límite honesto):
+Qué hace el corte de dispositivo (comandos reales, sin lab de paquetes):
 
-- No instala un dispositivo WireGuard de kernel ni hace NAT en el portátil. `wg(8)` no se ejecuta. Si no está en el PATH, el plan lo dice. Hace falta `wireguard-tools` y `CAP_NET_ADMIN` en el nodo y en el cliente para un túnel real; este repo no lo prueba.
-- No hay temporizador de keepalive de N ventanas. La caída es explícita: `down`, stop, idle, o un grant caducado en el heartbeat (eso sí pasa a `withdrawn`, no al proxy).
-- FakeVMM guarda el flag y el plan en memoria. No hay forwarding ni DNS de casa.
+- Con `local_net_state=up` y la clave pública del cliente, el node-agent ejecuta `ip link add type wireguard` y `wg set` sobre `wg-asp-{id8}`. El peer es el agente local. La default de **esa** sesión va en una tabla aparte, elegida con `ip rule … iif` del TAP. No hay `ip route replace default` sin `table`.
+- `pending` y `withdrawn` borran ese iface y reinstalan blackhole en la misma tabla. `session stop` y el idle reap (`stopping`) llaman a `Clear`, que borra iface, regla y tabla. Nada de eso apunta a `:8888`.
+- `asp session local-net up` aplica el extremo cliente con los mismos binarios cuando hay `wireguard-tools` y `CAP_NET_ADMIN`. Si no, imprime el argv. `down` y `session stop` hacen `ip link delete`. La clave privada sigue en modo 0600, fuera del JSON y de git.
+- El nodo publica solo la clave pública (`local_net_node_public`). La privada no sale del directorio de claves del nodo.
+- CI sustituye `wg` e `ip` por scripts en el `PATH`. No hace falta el módulo del kernel.
+
+Qué **sigue** sin estar demostrado (límite honesto):
+
+- No hay un lab que haya pasado un paquete (LAN, Internet o DNS) por el túnel, ni un NAT comprobado. Si `nft` no está en el portátil, el MASQUERADE no se instala.
+- No hay temporizador de keepalive de N ventanas en el nodo. El cliente pone `persistent-keepalive 25` en su `wg set`. La caída de control plane sigue siendo explícita: `down`, stop, idle, o un grant caducado (eso pasa a `withdrawn`, no al proxy). El idle reap no borra el iface del portátil; borra el del nodo. El del portátil cae con `down` o `stop`.
+- FakeVMM en los tests del reconciler guarda el plan en memoria y no ejecuta `ip`. El applier de producción sí. No hay forwarding ni DNS de casa probados.
 - No hay relay de bytes en el control plane, ni excepciones por CIDR, ni fallback al proxy.
-- `dial` sale de `ASP_LOCAL_NET_DIAL` (vacío si no está). Sin un endpoint alcanzable el estado puede quedar `pending` y el egress hundido.
+- `dial` sale de `ASP_LOCAL_NET_DIAL` (vacío si no está). Sin endpoint el cliente no tiene a quién marcar y el egress sigue hundido.
 
 ## Referencias cruzadas
 

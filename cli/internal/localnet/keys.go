@@ -118,9 +118,28 @@ func WritePlan(path string, plan Plan) error {
 	return os.Chmod(path, 0o600)
 }
 
-// WriteConf writes a wg snippet the operator can apply. Not executed here.
-func WriteConf(path, private, iface, dial string) error {
-	body := fmt.Sprintf("# skeleton — not applied automatically\n# iface %s\n# dial %s\n[Interface]\nPrivateKey = %s\n", iface, dial, private)
+// WriteConf writes a wg-quick-shaped file mode 0600. asp does not run wg-quick:
+// wg-quick would install 0.0.0.0/0 in the host main table. The applied path is
+// `ip link` + `wg set` (see device.go) and only when tools and CAP_NET_ADMIN exist.
+func WriteConf(path, private, iface, address, nodePublic, endpoint string) error {
+	body := fmt.Sprintf(`# local-net client. Private key. Mode 0600. Do not commit.
+# Do not run wg-quick: Table=off is a reminder, not what we execute.
+# Host main default route is not modified. AllowedIPs is cryptokey only.
+# iface %s
+[Interface]
+PrivateKey = %s
+Address = %s
+Table = off
+
+[Peer]
+PublicKey = %s
+Endpoint = %s
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+`, iface, private, address, nodePublic, endpoint)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		return err
 	}

@@ -25,3 +25,7 @@ vendor/
 
 # Release tarball lives outside or regenerated via make pack
 *.tar.gz
+
+# local-net client config holds a private key
+*.local-net.conf
+*.local-net.key

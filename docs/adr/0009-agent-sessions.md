@@ -252,7 +252,7 @@ Estos límites están en el código de hoy. Aceptar la dirección **no** los cie
 | **`--local`** | No llama al CP. No es stop |
 | **RBAC** | Quien tenga derecho a exec puede usar el id si lo conoce. Eso no transfiere `owner_sub`. El puntero no es una capability: cada `exec` lleva su propio Bearer |
 | **Egress atribuido al humano en el wire** | Sigue abierto (ADR-0008). La sesión fija *qué sandbox* es el del agente; no etiqueta todavía cada flujo |
-| **LAN del usuario** | ADR-0010, default off. `asp session start --local-net` pide el túnel completo de esa sesión (no una allowlist de CIDR). El corte mínimo guarda el flag y el handshake; no hay dispositivo WireGuard demostrado |
+| **LAN del usuario** | ADR-0010, default off. `asp session start --local-net` pide el túnel completo de esa sesión (no una allowlist de CIDR). El nodo y el CLI lanzan `wg` si hay tools y `CAP_NET_ADMIN`; un lab de paquetes no está demostrado |
 
 ## Criterio para trabajo futuro (sin hacerlo aquí)
 

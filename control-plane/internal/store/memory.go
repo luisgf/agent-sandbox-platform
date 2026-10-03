@@ -1320,3 +1320,27 @@ func (m *MemoryStore) WithdrawLocalNet(id string) (Sandbox, error) {
 	}
 	return out, nil
 }
+
+// SetLocalNetNodePublic stores the node device public key. The private key
+// stays on the node. This does not move local_net_state or last_activity_at.
+func (m *MemoryStore) SetLocalNetNodePublic(id, publicKey string) (Sandbox, error) {
+	if strings.TrimSpace(id) == "" {
+		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
+	}
+	if err := ValidateWGPublicKey(publicKey); err != nil {
+		return Sandbox{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sb, ok := m.sandboxes[id]
+	if !ok {
+		return Sandbox{}, ErrNotFound
+	}
+	if !sb.LocalNet {
+		return Sandbox{}, fmt.Errorf("%w: local_net is off", ErrConflict)
+	}
+	sb.LocalNetNodePublic = strings.TrimSpace(publicKey)
+	sb.UpdatedAt = time.Now().UTC()
+	m.sandboxes[id] = sb
+	return cloneSandbox(sb), nil
+}

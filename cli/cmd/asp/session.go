@@ -522,6 +522,9 @@ func cmdSessionStop(args []string, stdout, stderr io.Writer) int {
 		if _, derr := c.DetachLocalNet(context.Background(), st.SandboxID); derr != nil {
 			fmt.Fprintf(stderr, "session stop: local-net detach %s: %v (continuing destroy)\n", st.SandboxID, derr)
 		}
+		if terr := localnet.TearDown(localnet.Iface(st.SandboxID)); terr != nil {
+			fmt.Fprintf(stderr, "session stop: local-net device %s: %v (continuing destroy)\n", localnet.Iface(st.SandboxID), terr)
+		}
 	}
 	if err := destroyRecorded(context.Background(), c, st, stderr); err != nil {
 		fmt.Fprintf(stderr, "session stop: destroy %s: %v (state file kept: %s)\n", st.SandboxID, err, path)
@@ -570,9 +573,10 @@ func cmdSessionLocalNet(args []string, stdout, stderr io.Writer) int {
 
 The session must have been started with --local-net. up writes a WireGuard
 private key mode 0600 next to the session file (not inside it) and heartbeats
-the control plane. down detaches: the node blackholes egress and does not
-fall back to the public proxy. Kernel WireGuard is not brought up here unless
-wg(8) is installed; the handshake still completes.`)
+the control plane. When wireguard-tools and CAP_NET_ADMIN are present, up
+creates the client device with ip+wg and does not install a host default route.
+Otherwise it prints the exact commands. down deletes that device and detaches:
+the node blackholes egress and does not fall back to the public proxy.`)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown local-net subcommand %q\n", args[0])
@@ -632,35 +636,51 @@ func cmdSessionLocalNetUp(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "session local-net up: heartbeat: %v\n", err)
 		return 1
 	}
+	iface := grant.Iface
+	if iface == "" {
+		iface = localnet.Iface(st.SandboxID)
+	}
+	endpoint := localnet.Endpoint(grant.Dial, grant.ListenPort)
+	dev := localnet.ClientDevice{
+		Iface:      iface,
+		KeyPath:    keyPath,
+		NodePublic: grant.NodePublicKey,
+		Endpoint:   endpoint,
+		Address:    grant.ClientTunnelAddr,
+	}
+	applied, aerr := localnet.BringUp(stderr, dev)
+	if aerr != nil {
+		fmt.Fprintf(stderr, "session local-net up: device: %v\n", aerr)
+		return 1
+	}
 	wg := localnet.WireGuardInstalled()
-	note := "Handshake only. Private key is in the .local-net.key file (mode 0600), not the session JSON. This command does not configure a kernel WireGuard device."
-	if !wg {
-		note += " wg(8) is not on PATH; install wireguard-tools on the host before expecting packets."
+	note := "Private key is in the .local-net.key file (mode 0600), not the session JSON. Commands do not install a host default route and do not target :8888."
+	if applied {
+		note += " Client WireGuard device was created with ip+wg. Live packet flow was not proven in this process."
+	} else if !wg {
+		note += " wg(8) is not on PATH. Install wireguard-tools and CAP_NET_ADMIN, then re-run up. Commands were printed, not applied."
 	} else {
-		note += " wg(8) is on PATH but was not invoked."
+		note += " Device was not applied (missing CAP_NET_ADMIN or node public key). Commands were printed."
 	}
 	plan := localnet.Plan{
-		Iface:           grant.Iface,
+		Iface:           iface,
 		ClientPublicKey: pub,
-		Dial:            grant.Dial,
+		Dial:            endpoint,
 		Transport:       grant.Transport,
 		WireGuardTools:  wg,
-		Userspace:       true,
+		Userspace:       !applied,
 		Note:            note,
 	}
 	if err := localnet.WritePlan(localnet.PlanPath(path), plan); err != nil {
 		fmt.Fprintf(stderr, "session local-net up: plan: %v\n", err)
 		return 1
 	}
-	if err := localnet.WriteConf(localnet.ConfPath(path), priv, grant.Iface, grant.Dial); err != nil {
+	if err := localnet.WriteConf(localnet.ConfPath(path), priv, iface, grant.ClientTunnelAddr, grant.NodePublicKey, endpoint); err != nil {
 		fmt.Fprintf(stderr, "session local-net up: conf: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stderr, "asp: local-net up sandbox=%s state=%s iface=%s key=%s wg=%v\n", sb.ID, sb.LocalNetState, grant.Iface, keyPath, wg)
+	fmt.Fprintf(stderr, "asp: local-net up sandbox=%s state=%s iface=%s key=%s applied=%v\n", sb.ID, sb.LocalNetState, iface, keyPath, applied)
 	fmt.Fprintf(stderr, "asp: local-net public key %s\n", pub)
-	if !wg {
-		fmt.Fprintf(stderr, "asp: wireguard tools not found; userspace plan only (%s)\n", localnet.PlanPath(path))
-	}
 	fmt.Fprintln(stdout, pub)
 	return 0
 }
@@ -678,6 +698,10 @@ func cmdSessionLocalNetDown(args []string, stdout, stderr io.Writer) int {
 	path, st, c, code := loadSessionClient(fs, loc, &g, stderr)
 	if code != 0 {
 		return code
+	}
+	if terr := localnet.TearDown(localnet.Iface(st.SandboxID)); terr != nil {
+		fmt.Fprintf(stderr, "session local-net down: device: %v\n", terr)
+		return 1
 	}
 	sb, err := c.DetachLocalNet(context.Background(), st.SandboxID)
 	if err != nil {

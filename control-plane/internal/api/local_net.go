@@ -84,8 +84,17 @@ type localNetGrantResponse struct {
 	Dial      string    `json:"dial"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Iface     string    `json:"tunnel_iface"`
-	// Transport documents that this slice does not bring the kernel device up.
-	Transport string `json:"transport"`
+	// Transport is "wireguard": the node and the local CLI apply a device
+	// when wireguard-tools and CAP_NET_ADMIN exist. Packet flow is not proven here.
+	Transport        string `json:"transport"`
+	NodePublicKey    string `json:"node_public_key"`
+	ListenPort       int    `json:"listen_port"`
+	NodeTunnelAddr   string `json:"node_tunnel_addr"`
+	ClientTunnelAddr string `json:"client_tunnel_addr"`
+}
+
+type localNetNodePublicRequest struct {
+	PublicKey string `json:"public_key"`
 }
 
 type localNetHeartbeatRequest struct {
@@ -125,12 +134,17 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		writeLocalNetErr(w, err)
 		return
 	}
+	nodeCIDR, clientCIDR := store.LocalNetTunnel(id)
 	writeJSON(w, http.StatusOK, localNetGrantResponse{
-		Grant:     grant,
-		Dial:      dial,
-		ExpiresAt: exp,
-		Iface:     tunnelIface(id),
-		Transport: "wireguard-skeleton",
+		Grant:            grant,
+		Dial:             dial,
+		ExpiresAt:        exp,
+		Iface:            store.LocalNetIface(id),
+		Transport:        "wireguard",
+		NodePublicKey:    sb.LocalNetNodePublic,
+		ListenPort:       store.LocalNetListenPort(id),
+		NodeTunnelAddr:   nodeCIDR,
+		ClientTunnelAddr: clientCIDR,
 	})
 }
 
@@ -240,13 +254,48 @@ func writeLocalNetErr(w http.ResponseWriter, err error) {
 	}
 }
 
-func tunnelIface(id string) string {
-	id = strings.TrimSpace(id)
-	if len(id) > 8 {
-		id = id[:8]
+func tunnelIface(id string) string { return store.LocalNetIface(id) }
+
+// RegisterLocalNetNode is POST /v1/sandboxes/{id}/local-net/node-public.
+// The node-agent publishes the device public key. The guest cannot call it.
+// It does not turn local_net on and it does not move the tunnel state.
+func (s *Server) RegisterLocalNetNode(w http.ResponseWriter, r *http.Request) {
+	if guestCaller(r) {
+		writeError(w, http.StatusForbidden, "guest cannot set local_net")
+		return
 	}
+	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
-		id = "sandbox"
+		writeError(w, http.StatusBadRequest, "sandbox id required")
+		return
 	}
-	return "wg-asp-" + id
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	keys, err := jsonObjectKeys(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if k := forbiddenLocalNetKey(keys); k != "" {
+		writeError(w, http.StatusBadRequest, "local_net does not accept "+k+" in v1")
+		return
+	}
+	if _, ok := keys["local_net"]; ok {
+		writeError(w, http.StatusForbidden, "guest cannot set local_net")
+		return
+	}
+	var req localNetNodePublicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	out, err := s.Store.SetLocalNetNodePublic(id, req.PublicKey)
+	if err != nil {
+		writeLocalNetErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
