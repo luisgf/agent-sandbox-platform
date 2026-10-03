@@ -98,3 +98,36 @@ func (c *Client) Exec(ctx context.Context, in ExecRequest) (ExecResponse, error)
 	}
 	return out, nil
 }
+
+// ErrStreamUnsupported means the guest pod-daemon has no NDJSON exec.
+var ErrStreamUnsupported = fmt.Errorf("pod-daemon exec stream not supported")
+
+// OpenExecStream POSTs /v1/exec?stream=1 and returns the response on success.
+// The caller must Close the body. A 404 is ErrStreamUnsupported so the proxy
+// can fall back to the buffered JSON exec.
+func (c *Client) OpenExecStream(ctx context.Context, in ExecRequest) (*http.Response, error) {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://pod-daemon/v1/exec?stream=1", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return nil, ErrStreamUnsupported
+	}
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		return nil, fmt.Errorf("exec stream status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+	}
+	return resp, nil
+}

@@ -741,6 +741,12 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 Smokes dry-run (sin KVM): `make smoke`.
 
+## Workspace del host (virtiofs) — límite honesto
+
+`asp session start --workspace /ruta` persiste `workspace_host_path` y el reconciler lo anota en la config de la VM. **Este host con KVM no monta ese directorio.** No se arranca `virtiofsd` y `vm.create` no incluye el dispositivo `fs` (el socket vacío haría fallar el boot). El tag previsto es `workspace` y el mount del guest sería `/workspace`, el día que alguien opere virtiofsd fuera de este repo y rellene el socket. Hasta entonces el exec ve solo el disco del guest. FakeVMM registra la ruta en dry-run; tampoco crea el árbol dentro de una VM. Detalle: [`ops-asp-session.md`](ops-asp-session.md).
+
+El stream de exec (NDJSON, `POST /v1/exec?stream=1` en el pod-daemon) sí viaja por el mismo vsock **26500**. No es un PTY. La imagen guest tiene que incluir el pod-daemon que entiende el query; si no, el node-agent degrada a un JSON final reescrito como un solo burst.
+
 ## Referencias rápidas
 
 - Cliente CH: `node-agent/internal/vmm/cloudhypervisor.go`

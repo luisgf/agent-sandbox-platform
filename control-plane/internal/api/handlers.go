@@ -483,13 +483,20 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		"cwd":              req.Cwd,
 		"egress_allowlist": egressPol,
 	})
+	stream := wantsExecStream(r)
 	url := agentURL + "/v1/internal/exec"
+	if stream {
+		url += "?stream=1"
+	}
 	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if stream {
+		httpReq.Header.Set("Accept", "application/x-ndjson")
+	}
 	client := s.Client
 	if client == nil {
 		client = http.DefaultClient
@@ -500,11 +507,28 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
 		return
 	}
+	if stream && isNDJSON(resp.Header.Get("Content-Type")) {
+		if err := proxyExecStream(w, resp.Body); err != nil {
+			// Headers may already be flushed. Do not touch activity: the proxy did not finish.
+			return
+		}
+		_ = s.Store.EmitEvent(store.EmitEventInput{
+			SandboxID: sb.ID,
+			TenantID:  sb.TenantID,
+			EventType: "sandbox.exec",
+			Actor:     "api",
+			ActorSub:  actorSub,
+			Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "stream": true}),
+		})
+		_ = s.Store.TouchSandboxActivity(sb.ID)
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var out execResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		writeError(w, http.StatusBadGateway, "invalid node-agent exec response")
@@ -519,8 +543,78 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "exit_code": out.ExitCode}),
 	})
 	// Successful exec is activity (including non-zero guest exit). Proxy failures return above.
+	// Streaming exec counts only after the NDJSON body is copied (see above).
 	_ = s.Store.TouchSandboxActivity(sb.ID)
+	if stream {
+		// Upstream spoke buffered JSON (old node-agent). Re-emit one NDJSON burst
+		// so clients that asked for a stream still see the same event shape.
+		writeExecNDJSON(w, out)
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// wantsExecStream is true when the client asked for NDJSON chunks on the
+// existing POST /exec (query stream=1 or Accept: application/x-ndjson).
+// Omitting both keeps the buffered JSON body used by smokes.
+func wantsExecStream(r *http.Request) bool {
+	switch strings.TrimSpace(strings.ToLower(r.URL.Query().Get("stream"))) {
+	case "1", "true", "yes":
+		return true
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "application/x-ndjson")
+}
+
+func isNDJSON(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "application/x-ndjson") || strings.Contains(ct, "ndjson")
+}
+
+func proxyExecStream(w http.ResponseWriter, body io.Reader) error {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func writeExecNDJSON(w http.ResponseWriter, out execResponse) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	enc := json.NewEncoder(w)
+	if out.Stdout != "" {
+		_ = enc.Encode(map[string]any{"type": "stdout", "data": out.Stdout})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	if out.Stderr != "" {
+		_ = enc.Encode(map[string]any{"type": "stderr", "data": out.Stderr})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	_ = enc.Encode(map[string]any{"type": "exit", "exit_code": out.ExitCode})
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 func checkBootstrapToken(r *http.Request) bool {

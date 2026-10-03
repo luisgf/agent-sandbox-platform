@@ -41,7 +41,7 @@ Narrativa completa (threat model, trust boundaries, identidad, leases): [`docs/a
 | CLI | `asp` (`make asp`) — `session start/exec/stop` (agente), `sandbox run` (primitiva), `auth login` (IdP Bearer) |
 | Pack | `make pack` → tarball de release |
 
-**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado; **share del workspace** (virtiofs/copia) y **plugin OpenCode** — la sesión es la dirección, esos gaps siguen abiertos ([ADR-0009](docs/adr/0009-agent-sessions.md)).
+**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado; **mount real del workspace en KVM** (el spec `workspace_host_path` / `--workspace` sí está; virtiofsd no) y **plugin OpenCode** — la sesión con nombre y el exec NDJSON ya están ([ADR-0009](docs/adr/0009-agent-sessions.md)).
 
 ## Cómo funciona (mapa rápido)
 

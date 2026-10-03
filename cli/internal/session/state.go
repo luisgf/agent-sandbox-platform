@@ -1,5 +1,7 @@
-// Package session persists one local ASP sandbox session for reuse across CLI invocations.
-// The file holds sandbox id and control-plane URL only — never tokens or API keys.
+// Package session persists local ASP sandbox sessions for reuse across CLI invocations.
+// Each file holds sandbox id and control-plane URL only — never tokens or API keys.
+// Named sessions live under a directory (default ~/.cache/asp/sessions/<name>.json).
+// ASP_SESSION_FILE / an explicit path still selects one file and ignores the name.
 package session
 
 import (
@@ -8,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -15,17 +18,69 @@ import (
 // ErrNoSession means the state file is absent.
 var ErrNoSession = errors.New("no active asp session")
 
+// DefaultName is used when the caller omits --name.
+const DefaultName = "default"
+
+// namePattern is a single path segment. Rejects "..", slashes, and empty.
+var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
 // State is the on-disk session record (mode 0600).
 type State struct {
-	SandboxID string    `json:"sandbox_id"`
-	CPURL     string    `json:"cp_url"`
-	TenantID  string    `json:"tenant_id,omitempty"`
-	ImageRef  string    `json:"image_ref,omitempty"`
+	Name      string `json:"name,omitempty"`
+	SandboxID string `json:"sandbox_id"`
+	CPURL     string `json:"cp_url"`
+	TenantID  string `json:"tenant_id,omitempty"`
+	ImageRef  string `json:"image_ref,omitempty"`
+	// Workspace is the host directory requested at start. It is not a mount.
+	Workspace string    `json:"workspace,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ValidateName returns DefaultName when name is empty, or an error if it is
+// not a safe single path segment.
+func ValidateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return DefaultName, nil
+	}
+	if !namePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid session name %q (use letters, digits, '.', '_' or '-'; max 64)", name)
+	}
+	return name, nil
+}
+
+// DefaultDir returns ~/.cache/asp/sessions, or ASP_SESSION_DIR when set.
+// Empty string if the home directory cannot be resolved and no override is set.
+func DefaultDir() string {
+	if p := strings.TrimSpace(os.Getenv("ASP_SESSION_DIR")); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "asp", "sessions")
+}
+
+// NamedPath joins dir and "<name>.json". Empty dir falls back to DefaultDir.
+func NamedPath(dir, name string) (string, error) {
+	name, err := ValidateName(name)
+	if err != nil {
+		return "", err
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = DefaultDir()
+	}
+	if dir == "" {
+		return "", fmt.Errorf("cannot resolve session dir (set --session-dir or ASP_SESSION_DIR)")
+	}
+	return filepath.Join(dir, name+".json"), nil
 }
 
 // DefaultPath returns ~/.cache/asp/session.json, or ASP_SESSION_FILE when set.
 // Empty string if the home directory cannot be resolved and no override is set.
+// Prefer NamedPath. DefaultPath remains the explicit single-file override.
 func DefaultPath() string {
 	if p := strings.TrimSpace(os.Getenv("ASP_SESSION_FILE")); p != "" {
 		return p

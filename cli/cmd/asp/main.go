@@ -59,13 +59,14 @@ Usage:
   asp sandbox exec <id> (--cmd '…' | -- argv…)
   asp sandbox delete <id>
   asp sandbox run (--cmd '…' | -- argv…) [flags]
-  asp session start|exec|status|stop [flags]
+  asp session start|exec|status|stop [--name] [--workspace] [flags]
   asp auth login|logout|status [flags]
   asp version
 
 Global env:
   ASP_CP_URL              control-plane base URL (default http://127.0.0.1:8080)
-  ASP_SESSION_FILE        session state (default ~/.cache/asp/session.json, mode 0600)
+  ASP_SESSION_DIR         named sessions dir (default ~/.cache/asp/sessions, mode 0700)
+  ASP_SESSION_FILE        optional single-file override (ignores --name)
   ASP_API_KEY             Bearer API key (also --api-key) — lab without IdP
   ASP_ID_TOKEN            IdP access token (also --id-token); preferred Bearer
   ASP_IDP_REQUIRED        if 1/true, require IdP token (auto-fetch when possible)

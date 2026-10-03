@@ -214,7 +214,7 @@ make asp
 ```
 
 3. `asp sandbox run` (create → wait `running` → exec → destroy) es la primitiva de CI/un comando, no la integración del bucle. Auth Bearer: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).
-4. El exec (`POST /v1/sandboxes/{id}/exec`) es el dataplane dentro de la sesión: JSON acumulado, no PTY. El workspace del host no entra al guest.
+4. El exec (`POST /v1/sandboxes/{id}/exec`) es el dataplane dentro de la sesión: NDJSON si `?stream=1`, JSON acumulado si no. No es un PTY. `--workspace` queda en el spec; en KVM el host no entra al guest.
 5. Detalle CLI: [`why-cli-asp.md`](why-cli-asp.md).
 
 Los agentes **no** necesitan hablar con CH ni con nft; solo con el control plane.

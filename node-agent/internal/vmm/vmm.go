@@ -2,6 +2,15 @@ package vmm
 
 import "context"
 
+// Workspace share constants. The guest mount is a convention for when a
+// virtiofs device actually exists. Today the reconciler records the host
+// path and leaves WorkspaceFSSocket empty, so Cloud Hypervisor does not
+// get an fs device.
+const (
+	WorkspaceVirtiofsTag = "workspace"
+	WorkspaceGuestMount  = "/workspace"
+)
+
 type MicroVMConfig struct {
 	ID          string
 	KernelPath  string
@@ -13,6 +22,12 @@ type MicroVMConfig struct {
 	VsockPath   string
 	TapDevice   string
 	ExtraParams []string
+	// WorkspaceHostPath is the host directory requested by the sandbox spec.
+	// FakeVMM stores it. It is not a mount by itself.
+	WorkspaceHostPath string
+	// WorkspaceFSSocket is a virtiofsd socket. Empty means do not add an fs
+	// device to Cloud Hypervisor (the reconciler never fills this).
+	WorkspaceFSSocket string
 }
 
 // MicroVM is the lifecycle interface used by the node-agent reconciler.

@@ -191,7 +191,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 **Qué entregó / por qué importaba:** one-liner create→wait→exec→destroy sin reimplementar poll en cada script; exit code del guest al shell.
 
-**Gaps residuales:** no es SDK multi-lenguaje ni TUI; exec no streaméa byte-a-byte (JSON acumulado del CP).
+**Gaps residuales:** no es SDK multi-lenguaje ni TUI. `sandbox run` sigue en JSON acumulado; `asp session exec` puede streamear NDJSON (no es PTY).
 
 Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
@@ -199,17 +199,18 @@ Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
 ### Sesión de agente (`asp session`) — post-2f, dirección primaria
 
-[ADR-0009](adr/0009-agent-sessions.md) fija esto como **la** forma en que un agente usa el aislamiento (sesión larga; el exec es el dataplane, no la integración). El one-shot de la fase 2f no es el producto. El código de abajo ya estaba; el ADR no añade virtiofs ni plugin.
+[ADR-0009](adr/0009-agent-sessions.md) fija esto como **la** forma en que un agente usa el aislamiento (sesión larga; el exec es el dataplane, no la integración). El one-shot de la fase 2f no es el producto.
 
 Contrato para harnesses (OpenCode y similares) que enganchan el shell **dentro** del sandbox sin create/destroy por tool:
 
-- `asp session start|exec|status|stop`
-- Estado local `~/.cache/asp/session.json` (0600): id + URL del CP, sin token
-- `exec` reutiliza `POST /v1/sandboxes/{id}/exec`; exit code del guest
+- `asp session start|exec|status|stop --name` (default `default`)
+- Estado local `~/.cache/asp/sessions/<nombre>.json` (0600): id + URL del CP, sin token. `ASP_SESSION_DIR`. `--session-file` sigue como override
+- `exec` reutiliza `POST /v1/sandboxes/{id}/exec`. Por defecto NDJSON (`?stream=1`); `--buffered` conserva el JSON acumulado de los smokes
+- `--workspace` guarda `workspace_host_path` en el spec. FakeVMM lo registra. CH **no** monta virtiofs (no hay virtiofsd)
 
 **Qué entregó / por qué importaba:** el one-shot queda para CI; la sesión es el camino del agente y evita pagar el boot en cada tool. Narrativa: [`why-agent-sessions.md`](why-agent-sessions.md).
 
-**Límites honestos:** un solo fichero local; no es plugin de OpenCode; **no** hay sync de workspace (virtiofs/copia); sin GC si se olvida `stop`; exec sigue siendo JSON acumulado.
+**Límites honestos:** no es plugin de OpenCode (hay wrapper de ejemplo); el workspace en KVM no está montado; sin PTY; sin GC si se olvida `stop` y el reaper está apagado; el idle sigue siendo global (solo el exec refresca el reloj después del start).
 
 Docs: [`ops-asp-session.md`](ops-asp-session.md).
 

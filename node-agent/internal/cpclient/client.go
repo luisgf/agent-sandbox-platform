@@ -194,6 +194,9 @@ type Sandbox struct {
 	// OwnerSub is the IdP subject of the sandbox creator (ADR-0007). Used to
 	// expand ASP_SSH_AGENT_SOCK_TEMPLATE for per-user SSH agent upstreams.
 	OwnerSub string `json:"owner_sub,omitempty"`
+	// WorkspaceHostPath is the host directory from the sandbox spec. Empty if
+	// the session did not ask for a share. Not a live mount.
+	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 }
 
 type workResponse struct {

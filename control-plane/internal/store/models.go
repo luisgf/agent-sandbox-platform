@@ -44,9 +44,14 @@ type Sandbox struct {
 	// Lease renew and heartbeats do not move it. Idle reaping compares it to the threshold.
 	LastActivityAt time.Time `json:"last_activity_at"`
 	// StopReason is set by the idle reaper (idle_timeout). Empty otherwise.
-	StopReason string    `json:"stop_reason,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	StopReason string `json:"stop_reason,omitempty"`
+	// WorkspaceHostPath is the host directory the session asked to share into
+	// the guest (tag "workspace", mount /workspace). Empty means no share.
+	// Persisted so the node-agent spec can see it. This is not proof the
+	// guest can read the directory: Cloud Hypervisor does not start virtiofsd.
+	WorkspaceHostPath string    `json:"workspace_host_path,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type Node struct {
@@ -124,6 +129,9 @@ type CreateSandboxInput struct {
 	OwnerEmail string `json:"owner_email,omitempty"`
 	// ActorSub is who performs create now (header X-ASP-Actor-Sub preferred; body ok; falls back to OwnerSub).
 	ActorSub string `json:"actor_sub,omitempty"`
+	// WorkspaceHostPath is an absolute host directory to share (optional).
+	// The control plane stores it; it does not mount it.
+	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 }
 
 // RegisterNodeInput is the payload for node-agent registration.

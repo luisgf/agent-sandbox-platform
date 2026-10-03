@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,13 +34,15 @@ func sessionCmd(args []string, stdout, stderr io.Writer) int {
 	case "-h", "--help", "help":
 		fmt.Fprintln(stderr, `asp session — reusable sandbox for a local agent shell tool
 
-  asp session start [flags]          create, wait until running, save ~/.cache/asp/session.json
-  asp session exec (--cmd '…' | -- argv…)
-  asp session status [--json]
-  asp session stop                   destroy sandbox and clear the state file
+  asp session start [--name NAME] [--workspace /path] [flags]
+  asp session exec  [--name NAME] (--cmd '…' | -- argv…)
+  asp session status [--name NAME] [--json]
+  asp session stop  [--name NAME]
 
-One local session file (override --session-file / ASP_SESSION_FILE). Not an OpenCode plugin.
-See docs/ops-asp-session.md.`)
+Named sessions: ~/.cache/asp/sessions/<name>.json (default name "default").
+Override the directory with --session-dir / ASP_SESSION_DIR.
+--session-file / ASP_SESSION_FILE still selects one explicit file and ignores --name.
+Not an OpenCode plugin. See docs/ops-asp-session.md.`)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown session subcommand %q\n", args[0])
@@ -46,20 +50,58 @@ See docs/ops-asp-session.md.`)
 	}
 }
 
-func addSessionFileFlag(fs *flag.FlagSet, dest *string) {
-	def := session.DefaultPath()
-	fs.StringVar(dest, "session-file", def, "session state path (env ASP_SESSION_FILE)")
+type sessionLoc struct {
+	file string
+	dir  string
+	name string
 }
 
-func resolveSessionPath(flagPath string) (string, error) {
-	p := strings.TrimSpace(flagPath)
-	if p == "" {
-		p = session.DefaultPath()
+func addSessionLocFlags(fs *flag.FlagSet, loc *sessionLoc) {
+	fs.StringVar(&loc.file, "session-file", "", "explicit session JSON; overrides --name (env ASP_SESSION_FILE if this flag is omitted)")
+	fs.StringVar(&loc.dir, "session-dir", session.DefaultDir(), "directory of named sessions (env ASP_SESSION_DIR)")
+	fs.StringVar(&loc.name, "name", session.DefaultName, "session name (file <session-dir>/<name>.json)")
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func resolveSessionPath(fs *flag.FlagSet, loc sessionLoc) (string, error) {
+	if flagWasSet(fs, "session-file") {
+		p := strings.TrimSpace(loc.file)
+		if p == "" {
+			return "", fmt.Errorf("session path is empty")
+		}
+		return p, nil
 	}
-	if p == "" {
-		return "", fmt.Errorf("cannot resolve session path (set --session-file or ASP_SESSION_FILE)")
+	if p := strings.TrimSpace(os.Getenv("ASP_SESSION_FILE")); p != "" {
+		return p, nil
 	}
-	return p, nil
+	return session.NamedPath(loc.dir, loc.name)
+}
+
+func cleanWorkspaceFlag(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("--workspace must be an absolute path")
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		return "", fmt.Errorf("--workspace: %w", err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("--workspace %s is not a directory", p)
+	}
+	return filepath.Clean(p), nil
 }
 
 // cpURLWasSet reports whether the user passed --cp-url on this command.
@@ -78,18 +120,29 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	var sessionPath string
-	addSessionFileFlag(fs, &sessionPath)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
 	image := fs.String("image", "debian:bookworm-slim", "image_ref")
 	cpu := fs.Int("cpu-millis", 1000, "cpu_millis")
 	mem := fs.Int("memory-mib", 512, "memory_mib")
 	node := fs.String("node-id", "", "optional node pin")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
+	workspace := fs.String("workspace", "", "absolute host directory to record as the session workspace (guest mount /workspace when virtiofs exists; CH does not start virtiofsd)")
 	force := fs.Bool("force", false, "destroy any sandbox recorded in the session file, then start a new one")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	path, err := resolveSessionPath(sessionPath)
+	ws, err := cleanWorkspaceFlag(*workspace)
+	if err != nil {
+		fmt.Fprintf(stderr, "session start: %v\n", err)
+		return 2
+	}
+	name, nerr := session.ValidateName(loc.name)
+	if nerr != nil {
+		fmt.Fprintf(stderr, "session start: %v\n", nerr)
+		return 2
+	}
+	path, err := resolveSessionPath(fs, loc)
 	if err != nil {
 		fmt.Fprintf(stderr, "session start: %v\n", err)
 		return 2
@@ -122,12 +175,13 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	}
 
 	sb, err := c.CreateSandbox(ctx, client.CreateInput{
-		TenantID:   g.tenant,
-		ImageRef:   *image,
-		CPUMillis:  *cpu,
-		MemoryMiB:  *mem,
-		VMMProfile: *vmm,
-		NodeID:     *node,
+		TenantID:          g.tenant,
+		ImageRef:          *image,
+		CPUMillis:         *cpu,
+		MemoryMiB:         *mem,
+		VMMProfile:        *vmm,
+		NodeID:            *node,
+		WorkspaceHostPath: ws,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "session start: create: %v\n", err)
@@ -155,10 +209,12 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	}
 
 	st := session.State{
+		Name:      name,
 		SandboxID: sb.ID,
 		CPURL:     c.BaseURL,
 		TenantID:  sb.TenantID,
 		ImageRef:  sb.ImageRef,
+		Workspace: ws,
 		CreatedAt: time.Now().UTC(),
 	}
 	if st.TenantID == "" {
@@ -185,10 +241,11 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	var sessionPath string
-	addSessionFileFlag(fs, &sessionPath)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
+	buffered := fs.Bool("buffered", false, "wait for the full JSON exec body instead of streaming NDJSON")
 	if err := fs.Parse(before); err != nil {
 		return 2
 	}
@@ -201,7 +258,7 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "session exec: %v\n", err)
 		return 2
 	}
-	path, err := resolveSessionPath(sessionPath)
+	path, err := resolveSessionPath(fs, loc)
 	if err != nil {
 		fmt.Fprintf(stderr, "session exec: %v\n", err)
 		return 2
@@ -226,7 +283,25 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
 		return 1
 	}
-	res, err := c.Exec(context.Background(), st.SandboxID, client.ExecRequest{Cmd: argv, Cwd: *cwd})
+	req := client.ExecRequest{Cmd: argv, Cwd: *cwd}
+	// --json and --buffered keep the accumulated JSON path (smokes, one blob).
+	// Default prints stdout/stderr as NDJSON chunks arrive.
+	if g.jsonOut || *buffered {
+		res, err := c.Exec(context.Background(), st.SandboxID, req)
+		if err != nil {
+			if idleReapedErr(err) {
+				fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
+				return 1
+			}
+			fmt.Fprintf(stderr, "session exec: sandbox %s: %v\n", st.SandboxID, err)
+			return 1
+		}
+		if code := writeExec(stdout, stderr, res, g.jsonOut); code != 0 {
+			return code
+		}
+		return res.ExitCode
+	}
+	code, err = c.ExecStream(context.Background(), st.SandboxID, req, stdout, stderr)
 	if err != nil {
 		if idleReapedErr(err) {
 			fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
@@ -235,10 +310,7 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "session exec: sandbox %s: %v\n", st.SandboxID, err)
 		return 1
 	}
-	if code := writeExec(stdout, stderr, res, g.jsonOut); code != 0 {
-		return code
-	}
-	return res.ExitCode
+	return code
 }
 
 func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
@@ -246,12 +318,12 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	var sessionPath string
-	addSessionFileFlag(fs, &sessionPath)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	path, err := resolveSessionPath(sessionPath)
+	path, err := resolveSessionPath(fs, loc)
 	if err != nil {
 		fmt.Fprintf(stderr, "session status: %v\n", err)
 		return 2
@@ -274,22 +346,26 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	sb, err := c.GetSandbox(context.Background(), st.SandboxID)
 	type view struct {
+		Name        string          `json:"name,omitempty"`
 		SessionFile string          `json:"session_file"`
 		SandboxID   string          `json:"sandbox_id"`
 		CPURL       string          `json:"cp_url"`
 		TenantID    string          `json:"tenant_id,omitempty"`
 		ImageRef    string          `json:"image_ref,omitempty"`
+		Workspace   string          `json:"workspace,omitempty"`
 		CreatedAt   string          `json:"created_at,omitempty"`
 		Live        *client.Sandbox `json:"live,omitempty"`
 		LiveError   string          `json:"live_error,omitempty"`
 		IdleReaped  bool            `json:"idle_reaped,omitempty"`
 	}
 	out := view{
+		Name:        st.Name,
 		SessionFile: path,
 		SandboxID:   st.SandboxID,
 		CPURL:       st.CPURL,
 		TenantID:    st.TenantID,
 		ImageRef:    st.ImageRef,
+		Workspace:   st.Workspace,
 	}
 	if !st.CreatedAt.IsZero() {
 		out.CreatedAt = st.CreatedAt.UTC().Format(time.RFC3339)
@@ -299,7 +375,7 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 		if g.jsonOut {
 			_ = writeJSON(stdout, out)
 		} else {
-			fmt.Fprintf(stdout, "id=%s file=%s cp=%s live_error=%s\n", st.SandboxID, path, st.CPURL, err.Error())
+			fmt.Fprintf(stdout, "id=%s name=%s file=%s cp=%s live_error=%s\n", st.SandboxID, st.Name, path, st.CPURL, err.Error())
 		}
 		fmt.Fprintf(stderr, "session status: get %s: %v\n", st.SandboxID, err)
 		return 1
@@ -320,10 +396,10 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if out.IdleReaped {
-		fmt.Fprintf(stdout, "id=%s state=%s tenant=%s cp=%s file=%s stop_reason=%s idle_reaped=true\n", sb.ID, sb.State, sb.TenantID, st.CPURL, path, sb.StopReason)
+		fmt.Fprintf(stdout, "id=%s name=%s state=%s tenant=%s cp=%s file=%s workspace=%s stop_reason=%s idle_reaped=true\n", sb.ID, st.Name, sb.State, sb.TenantID, st.CPURL, path, st.Workspace, sb.StopReason)
 		return 1
 	}
-	fmt.Fprintf(stdout, "id=%s state=%s tenant=%s cp=%s file=%s\n", sb.ID, sb.State, sb.TenantID, st.CPURL, path)
+	fmt.Fprintf(stdout, "id=%s name=%s state=%s tenant=%s cp=%s file=%s workspace=%s\n", sb.ID, st.Name, sb.State, sb.TenantID, st.CPURL, path, st.Workspace)
 	return 0
 }
 
@@ -343,13 +419,13 @@ func cmdSessionStop(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	var sessionPath string
-	addSessionFileFlag(fs, &sessionPath)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
 	localOnly := fs.Bool("local", false, "clear the state file only; do not call DELETE (sandbox may keep running)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	path, err := resolveSessionPath(sessionPath)
+	path, err := resolveSessionPath(fs, loc)
 	if err != nil {
 		fmt.Fprintf(stderr, "session stop: %v\n", err)
 		return 2

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -156,6 +157,13 @@ type chVsockConfig struct {
 	Socket string `json:"socket"`
 }
 
+// chFsConfig is the Cloud Hypervisor virtio-fs device (socket = virtiofsd).
+// Only emitted when MicroVMConfig.WorkspaceFSSocket is set.
+type chFsConfig struct {
+	Tag    string `json:"tag"`
+	Socket string `json:"socket"`
+}
+
 type chVMConfig struct {
 	CPUs    chCpusConfig    `json:"cpus"`
 	Memory  chMemoryConfig  `json:"memory"`
@@ -163,6 +171,7 @@ type chVMConfig struct {
 	Disks   []chDiskConfig  `json:"disks,omitempty"`
 	Net     []chNetConfig   `json:"net,omitempty"`
 	Vsock   *chVsockConfig  `json:"vsock,omitempty"`
+	Fs      []chFsConfig    `json:"fs,omitempty"`
 }
 
 func (c *CloudHypervisor) Ping(ctx context.Context) error {
@@ -231,6 +240,20 @@ func (c *CloudHypervisor) createVMWith(ctx context.Context, client *http.Client,
 	}
 	if config.VsockCID != 0 && config.VsockPath != "" {
 		body.Vsock = &chVsockConfig{CID: config.VsockCID, Socket: config.VsockPath}
+	}
+	// virtiofs is opt-in via an already-running virtiofsd socket. The
+	// reconciler does not start virtiofsd and does not set this field, so a
+	// workspace_host_path alone does not change the CH payload. Adding an fs
+	// device without a socket would make vm.create fail.
+	if sock := strings.TrimSpace(config.WorkspaceFSSocket); sock != "" {
+		body.Fs = []chFsConfig{{Tag: WorkspaceVirtiofsTag, Socket: sock}}
+	} else if strings.TrimSpace(config.WorkspaceHostPath) != "" {
+		c.logger().Warn("workspace host path recorded; Cloud Hypervisor virtiofs not attached (no virtiofsd socket)",
+			"id", config.ID,
+			"host", config.WorkspaceHostPath,
+			"guest_mount", WorkspaceGuestMount,
+			"tag", WorkspaceVirtiofsTag,
+		)
 	}
 	resp, err := c.do(ctx, client, http.MethodPut, chPathVMCreate, body)
 	if err != nil {

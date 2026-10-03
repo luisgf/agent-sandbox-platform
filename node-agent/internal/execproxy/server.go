@@ -3,9 +3,12 @@ package execproxy
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
@@ -113,6 +116,10 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, msg)
 		return
 	}
+	if wantsStream(r) {
+		s.handleExecStream(w, r, client, body)
+		return
+	}
 	out, err := client.Exec(r.Context(), poddaemon.ExecRequest{
 		Cmd: body.Cmd,
 		Env: body.Env,
@@ -196,6 +203,104 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func wantsStream(r *http.Request) bool {
+	switch strings.TrimSpace(strings.ToLower(r.URL.Query().Get("stream"))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/x-ndjson")
+}
+
+func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request, client *poddaemon.Client, body execBody) {
+	in := poddaemon.ExecRequest{Cmd: body.Cmd, Env: body.Env, Cwd: body.Cwd}
+	resp, err := client.OpenExecStream(r.Context(), in)
+	if err != nil {
+		if errors.Is(err, poddaemon.ErrStreamUnsupported) {
+			s.writeBufferedAsNDJSON(w, r, client, in, body.SandboxID)
+			return
+		}
+		if s.Logger != nil {
+			s.Logger.Error("pod-daemon exec stream", "error", err, "sandbox_id", body.SandboxID)
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(ct, "application/json") && !strings.Contains(ct, "ndjson") {
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if rerr != nil {
+			writeErr(w, http.StatusBadGateway, rerr.Error())
+			return
+		}
+		var out poddaemon.ExecResponse
+		if jerr := json.Unmarshal(raw, &out); jerr != nil {
+			writeErr(w, http.StatusBadGateway, "invalid pod-daemon exec response")
+			return
+		}
+		writeNDJSONResult(w, out)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if rerr == io.EOF {
+			return
+		}
+		if rerr != nil {
+			if s.Logger != nil {
+				s.Logger.Error("pod-daemon exec stream copy", "error", rerr, "sandbox_id", body.SandboxID)
+			}
+			return
+		}
+	}
+}
+
+func (s *Server) writeBufferedAsNDJSON(w http.ResponseWriter, r *http.Request, client *poddaemon.Client, in poddaemon.ExecRequest, sandboxID string) {
+	out, err := client.Exec(r.Context(), in)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("pod-daemon exec", "error", err, "sandbox_id", sandboxID)
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeNDJSONResult(w, out)
+}
+
+func writeNDJSONResult(w http.ResponseWriter, out poddaemon.ExecResponse) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	enc := json.NewEncoder(w)
+	if out.Stdout != "" {
+		_ = enc.Encode(map[string]any{"type": "stdout", "data": out.Stdout})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	if out.Stderr != "" {
+		_ = enc.Encode(map[string]any{"type": "stderr", "data": out.Stderr})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	_ = enc.Encode(map[string]any{"type": "exit", "exit_code": out.ExitCode})
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 // ListenAndServe binds addr (e.g. 127.0.0.1:9100) and serves until ctx-like shutdown via returned server.

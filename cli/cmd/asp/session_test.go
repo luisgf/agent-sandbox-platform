@@ -121,6 +121,7 @@ func TestSessionStartExecStop(t *testing.T) {
 	stderr.Reset()
 	code = run([]string{
 		"session", "exec",
+		"--buffered",
 		"--session-file", sessFile,
 		"--id-token", "jwt-session",
 		"--cwd", "/work",
@@ -182,6 +183,7 @@ func TestSessionExecRequiresSession(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := run([]string{
 		"session", "exec",
+		"--buffered",
 		"--session-file", sessFile,
 		"--cmd", "true",
 	}, &stdout, &stderr)
@@ -214,6 +216,7 @@ func TestSessionExecDashDash(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := run([]string{
 		"session", "exec",
+		"--buffered",
 		"--session-file", sessFile,
 		"--", "echo", "a b", "--flag",
 	}, &stdout, &stderr)
@@ -323,11 +326,209 @@ func TestSessionStatusAndExecIdleReaped(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	code = run([]string{"session", "exec", "--session-file", sessFile, "--cmd", "true"}, &stdout, &stderr)
+	code = run([]string{"session", "exec", "--buffered", "--session-file", sessFile, "--cmd", "true"}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "idle timeout") {
 		t.Fatalf("exec exit=%d stderr=%q", code, stderr.String())
 	}
 	if execs.Load() != 0 {
 		t.Fatalf("exec should not be proxied when already reaped, execs=%d", execs.Load())
 	}
+}
+
+func TestNamedSessionsAreIndependent(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_SESSION_FILE", "")
+	dir := t.TempDir()
+	var mu sync.Mutex
+	ids := map[string]string{}
+	mux := http.NewServeMux()
+	var n atomic.Int32
+	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		var in client.CreateInput
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		id := fmtID(n.Add(1))
+		mu.Lock()
+		ids[id] = in.WorkspaceHostPath
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: id, State: "running", TenantID: in.TenantID, ImageRef: in.ImageRef, WorkspaceHostPath: in.WorkspaceHostPath})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") == "1" {
+			t.Errorf("buffered exec should not set stream, raw=%s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(client.ExecResult{Stdout: r.PathValue("id") + "\n", ExitCode: 0})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ws := t.TempDir()
+	var stdout, stderr strings.Builder
+	code := run([]string{
+		"session", "start", "--name", "alpha", "--session-dir", dir,
+		"--cp-url", srv.URL, "--timeout", "2s", "--workspace", ws,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("alpha start exit=%d stderr=%q", code, stderr.String())
+	}
+	alphaID := strings.TrimSpace(stdout.String())
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{
+		"session", "start", "--name", "beta", "--session-dir", dir,
+		"--cp-url", srv.URL, "--timeout", "2s",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("beta start exit=%d stderr=%q", code, stderr.String())
+	}
+	betaID := strings.TrimSpace(stdout.String())
+	if alphaID == "" || betaID == "" || alphaID == betaID {
+		t.Fatalf("ids alpha=%q beta=%q", alphaID, betaID)
+	}
+	st, err := session.Load(filepath.Join(dir, "alpha.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Name != "alpha" || st.SandboxID != alphaID || st.Workspace != ws {
+		t.Fatalf("alpha state=%+v", st)
+	}
+	if _, err := session.Load(filepath.Join(dir, "default.json")); !errors.Is(err, session.ErrNoSession) {
+		t.Fatalf("default should be absent: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{
+		"session", "exec", "--buffered", "--name", "beta", "--session-dir", dir, "--cmd", "true",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("beta exec exit=%d stderr=%q", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != betaID {
+		t.Fatalf("exec stdout=%q want %s", stdout.String(), betaID)
+	}
+	mu.Lock()
+	gotWS := ids[alphaID]
+	mu.Unlock()
+	if gotWS != ws {
+		t.Fatalf("create workspace=%q want %s", gotWS, ws)
+	}
+}
+
+func fmtID(n int32) string { return "sb-" + string(rune('0'+n)) }
+
+func TestSessionExecStreamsAsChunksArrive(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_SESSION_FILE", "")
+	dir := t.TempDir()
+	if err := session.Save(filepath.Join(dir, "default.json"), session.State{
+		Name: "default", SandboxID: "live", CPURL: "placeholder",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "live", State: "running"})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") != "1" {
+			t.Errorf("query=%s", r.URL.RawQuery)
+		}
+		if acc := r.Header.Get("Accept"); !strings.Contains(acc, "application/x-ndjson") {
+			t.Errorf("accept=%q", acc)
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fl, _ := w.(http.Flusher)
+		_, _ = ioWrite(w, "{\"type\":\"stdout\",\"data\":\"one\\n\"}\n")
+		if fl != nil {
+			fl.Flush()
+		}
+		close(started)
+		<-release
+		_, _ = ioWrite(w, "{\"type\":\"stderr\",\"data\":\"err\\n\"}\n")
+		_, _ = ioWrite(w, "{\"type\":\"exit\",\"exit_code\":4}\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	st, err := session.Load(filepath.Join(dir, "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.CPURL = srv.URL
+	if err := session.Save(filepath.Join(dir, "default.json"), st); err != nil {
+		t.Fatal(err)
+	}
+
+	out := &chunkWriter{got: make(chan string, 4)}
+	errOut := &chunkWriter{got: make(chan string, 4)}
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{
+			"session", "exec", "--session-dir", dir, "--cmd", "echo one",
+		}, out, errOut)
+	}()
+	select {
+	case <-started:
+	case code := <-done:
+		t.Fatalf("exec returned %d before first chunk", code)
+	}
+	select {
+	case chunk := <-out.got:
+		if !strings.Contains(chunk, "one") {
+			t.Fatalf("first stdout chunk=%q", chunk)
+		}
+	case code := <-done:
+		t.Fatalf("exec returned %d before stdout chunk", code)
+	}
+	close(release)
+	code := <-done
+	if code != 4 {
+		t.Fatalf("exit=%d", code)
+	}
+	select {
+	case chunk := <-errOut.got:
+		if !strings.Contains(chunk, "err") {
+			t.Fatalf("stderr chunk=%q", chunk)
+		}
+	default:
+		// stderr may already have been consumed if the channel filled; read buffer.
+		if !strings.Contains(errOut.String(), "err") {
+			t.Fatalf("stderr=%q", errOut.String())
+		}
+	}
+}
+
+type chunkWriter struct {
+	mu  sync.Mutex
+	buf strings.Builder
+	got chan string
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.buf.Write(p)
+	if w.got != nil {
+		select {
+		case w.got <- string(p):
+		default:
+		}
+	}
+	return n, err
+}
+
+func (w *chunkWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func ioWrite(w interface{ Write([]byte) (int, error) }, s string) (int, error) {
+	return w.Write([]byte(s))
 }

@@ -3,7 +3,33 @@
 - **Estado:** Propuesta / **Aceptada como dirección**
 - **Fecha:** 2026-10-03
 - **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [`../why-agent-sessions.md`](../why-agent-sessions.md), [`../why-cli-asp.md`](../why-cli-asp.md), [`../roadmap.md`](../roadmap.md)
-- **No es:** un rediseño del dataplane exec, un plugin de OpenCode, ni virtiofs
+- **No es:** un plugin de OpenCode, un PTY, ni virtiofs funcionando en KVM. El seguimiento de abajo sí cambia el dataplane (NDJSON) y el spec del workspace; no finge el mount.
+
+## Seguimiento implementado (2026-10-03)
+
+La decisión de arriba sigue en pie: la sesión es el objeto primario y `asp sandbox run` es la primitiva interna. Este seguimiento cierra tres huecos que el texto original listaba como ausentes, y deja escrito lo que **no** se cerró.
+
+### Por qué
+
+Un harness real choca con tres cosas del primer corte. Un único `session.json` mezcla agentes en el mismo `$HOME`. El JSON acumulado esconde la salida hasta el `exit`, así que un tool largo parece colgado. Y llamar «workspace» al disco del guest invita a creer que el checkout del host ya está dentro.
+
+### Qué ganamos
+
+| Pieza | Qué hay en el código | Qué no hay que leer de más |
+|---|---|---|
+| Sesiones con nombre | `~/.cache/asp/sessions/<nombre>.json` (`ASP_SESSION_DIR` / `--session-dir`, `--name`, default `default`). `start`, `exec`, `status`, `stop`. `--session-file` / `ASP_SESSION_FILE` sigue siendo un path explícito, ya no el default. | El nombre no es una capability ni viaja al CP. Sigue sin token. |
+| Exec en stream | Mismo `POST /v1/sandboxes/{id}/exec`. Con `?stream=1` (o `Accept: application/x-ndjson`) la respuesta es NDJSON y el CP hace flush al copiar el cuerpo del node-agent. El node-agent habla `?stream=1` con el pod-daemon. El pod-daemon, si ve el query, responde chunked. Sin query, el JSON `{stdout,stderr,exit_code}` no cambia: lo usan `asp sandbox run` y `asp session exec --buffered`. El CLI de sesión imprime cada chunk al llegar. Un exec stream copiado entero cuenta como actividad, igual que el JSON. | No es PTY, ni stdin, ni websocket. Un pod-daemon antiguo (404 en `?stream=1`) se degrada a un burst NDJSON al final. |
+| Workspace en el spec | `asp session start --workspace /ruta` → `workspace_host_path` en el create (migración `009`). El reconciler lo pone en `MicroVMConfig`. FakeVMM lo guarda. Tag previsto `workspace`, mount previsto `/workspace`. | **Cloud Hypervisor no monta nada.** El reconciler no arranca virtiofsd y deja `WorkspaceFSSocket` vacío. `vm.create` omite `fs` en ese caso (un socket ausente rompería el boot). El campo en el CH client solo se rellena si alguien pone el socket; nadie en este repo lo pone. |
+
+### Sigue abierto
+
+- PTY, stdin interactivo, TTY.
+- Plugin de OpenCode dentro del repo. El contrato es el wrapper de [`ops-asp-session.md`](../ops-asp-session.md) (`--name` + exec en stream).
+- virtiofsd por sandbox y el `mount -t virtiofs` en el guest. Hasta entonces `--workspace` es un spec honesto, no un directorio visible.
+- Idle por sesión. El umbral sigue siendo el del proceso (`ASP_SANDBOX_IDLE_TIMEOUT`, lab `2h`, default off). No hay heartbeat nuevo: después del `start`, **solo el exec proxyado bien** refresca `last_activity_at`.
+- ADR-0008 (atribución de flujos).
+
+El resto de este ADR describe la dirección original. Donde diga «no hay sesiones con nombre», «el exec no es stream» o «no hay virtiofs», léase con esta sección: lo primero y lo segundo ya están en la forma de arriba; lo tercero está solo como spec.
 
 ## Contexto
 
@@ -172,13 +198,13 @@ Tampoco es la idea principal:
 | **One-shot por comando como producto** (`asp sandbox run` en cada tool) | Aislamiento máximo entre tools; cero estado local; fácil de testear | Boot por tool; el agente no acumula workspace; empuja a ejecutar en el host | **Rechazada como superficie.** Conservada como primitiva de CI/ops |
 | **Solo plugin OpenCode que hable HTTP** | Tools nativos, sin wrapper `sh -c` | Duplica auth, wait y cliente en el lenguaje del harness; este repo no lo mantiene; un plugin mal hecho puede volver al one-shot | **Diferida.** Cuando exista, debe implementar *esta* sesión (start una vez, exec muchas), no un ciclo nuevo |
 | **SSH / PTY largo al guest** | Shell de verdad, stdin, stream | Otra superficie de auth; no reutiliza el exec proxy que ya autoriza con el mismo Bearer; el confirm SSH (ADR-0003/0007) no es un canal de tools | **Diferida.** No sustituye al exec como dataplane de la sesión |
-| **Directorio de sesiones con nombre** | Agentes paralelos sin pisarse el JSON | Más CLI, más formas de adjuntar el id equivocado | **Diferida.** Hoy el aislamiento entre agentes locales es un path (`ASP_SESSION_FILE`) |
+| **Directorio de sesiones con nombre** | Agentes paralelos sin pisarse el JSON | Más CLI, más formas de adjuntar el id equivocado | **Hecho en el seguimiento** (`--name`, `ASP_SESSION_DIR`). `ASP_SESSION_FILE` queda como override de un solo fichero |
 | **Guardar el JWT en `session.json`** | El exec no depende de `asp auth` | Un puntero robado es un token | **Rechazada.** El fichero solo tiene id y URL |
 | **Un sandbox por tenant (o por `owner_sub`) compartido por todos sus agentes** | Menos VMs | Mezcla workspace, procesos y egress de corridas distintas; un agente ve el trabajo del otro | **Rechazada.** 1 sesión ↔ 1 sandbox |
 | **Job/Pod de Kubernetes por comando** | Ecosistema conocido | ADR-0004: el sandbox no es un Pod. Además repite el anti-patrón de boot por tool | **Rechazada** |
 | **GC solo en el CLI** (borrar el JSON «apaga» la sesión) | No toca el CP | La VM vive en el nodo. Borrar el puntero no libera CPU/RAM (`--local` ya documenta ese pie) | **Rechazada como autoridad.** El reaper es del CP. El CLI informa `idle_reaped` y no finge haber parado la VM |
 | **Idle por sesión, distinto del umbral global** | Un agente interactivo y un batch no comparten `2h` | Otro campo, otra política, otra mentira si el default sigue off | **Fuera de este ADR.** Hoy un umbral de proceso |
-| **Stream/PTY como condición para declarar la sesión «de verdad»** | Encaja con TUI y con tools que leen stdin | Bloquea la dirección en un dataplane que el CP no tiene (JSON acumulado) | **Rechazada como bloqueo.** La sesión es el ciclo de vida; el exec burdo es el dataplane honesto de hoy |
+| **Stream/PTY como condición para declarar la sesión «de verdad»** | Encaja con TUI y con tools que leen stdin | El PTY sigue sin existir; el stream no debía bloquear la dirección | **El PTY sigue diferido.** El NDJSON del seguimiento no es la condición de la sesión: es el dataplane de stdout/stderr. El JSON acumulado sigue válido |
 
 ## Consecuencias
 
@@ -204,7 +230,7 @@ Tampoco es la idea principal:
 ### Qué no cambia este ADR (alcance)
 
 - No renombra rutas HTTP ni el binario `asp`.
-- No añade virtiofs, plugin, PTY, sesiones con nombre ni idle por sesión.
+- El seguimiento de 2026-10-03 añade sesiones con nombre, NDJSON y el spec de workspace. No añade plugin, PTY, virtiofsd en KVM ni idle por sesión.
 - No mueve la autoridad de `owner_sub` al cliente.
 - No implementa ADR-0008.
 - El cambio que acompaña a este texto es de **documentación**: el código de `asp session` y del reaper ya estaba.
@@ -215,10 +241,10 @@ Estos límites están en el código de hoy. Aceptar la dirección **no** los cie
 
 | Gap | Realidad |
 |---|---|
-| **Workspace compartido con el host** | No hay virtiofs ni copia del árbol. El workspace de la sesión es el disco del guest. Editar en el host no se refleja en la VM, ni al revés. Virtiofs de SSH agent sigue siendo ops manual (fase 2e); eso no es el workspace del proyecto |
+| **Workspace compartido con el host** | El spec existe (`workspace_host_path`, `--workspace`, FakeVMM lo registra). **KVM no lo monta:** no hay virtiofsd y CH no recibe `fs`. El disco del guest sigue siendo el único filesystem que el exec ve. Virtiofs del SSH agent sigue siendo otra cosa (fase 2e) |
 | **Plugin de OpenCode** | No existe en este repo. No registra tools ni habla el protocolo del harness. El enganche es un binario que el harness hace `exec`. Hay que cablearlo fuera |
-| **Un fichero local** | Una sesión por path. Sin nombres. El fichero es local al `$HOME` del CLI; otro host no lo ve. El CP sí sigue teniendo el sandbox. Modo `0600`, directorio `0700` |
-| **Exec no es PTY ni stream** | El CP responde JSON acumulado al terminar el proceso. El CLI imprime entonces. No hay byte-a-byte ni stdin interactivo. Exit code del guest cuando el proxy respondió; errores del CLI (red, 500) son exit 1, no el código del guest |
+| **Directorio local, no un registro del CP** | Hay nombres (`sessions/<nombre>.json`). Sigue siendo local al `$HOME` del CLI; otro host no lo ve. El CP no conoce el nombre. Modo `0600`, directorio `0700`. `--session-file` sigue existiendo como override |
+| **Exec no es PTY** | Hay stream NDJSON (stdout/stderr) en el mismo POST, y el JSON acumulado sigue para smokes (`--buffered`, `sandbox run`). No hay stdin ni TTY. Exit code del guest cuando llegó el evento `exit` o el JSON; errores del CLI son exit 1 |
 | **Idle apagado por defecto** | Sin `ASP_SANDBOX_IDLE_TIMEOUT` (o con `0` / `off` / `false` / `disabled`) el reaper no corre. Una sesión sin `stop` vive hasta que alguien la borre. El lab systemd usa `2h`; intervalo `ASP_SANDBOX_IDLE_SWEEP` default `1m`. No hay timeout distinto por sesión. Filas viejas al aplicar la migración `008` empiezan el reloj en `now()`, no en el `created_at` histórico |
 | **Dry-run ≠ aislamiento** | Tests de sesión = `httptest`. `make smoke-asp` cubre `sandbox run`, no esta sesión, contra FakeVMM. KVM + CH es el único aislamiento real |
 | **`--local`** | No llama al CP. No es stop |

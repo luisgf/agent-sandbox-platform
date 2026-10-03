@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -391,6 +392,10 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 		TapDevice:  tap.DeviceName(sb.ID),
 		VsockCID:   cid,
 		VsockPath:  vsockPath,
+		// Record the requested host directory for FakeVMM / dry-run.
+		// WorkspaceFSSocket stays empty: this process does not spawn virtiofsd,
+		// so Cloud Hypervisor will not receive an fs device.
+		WorkspaceHostPath: strings.TrimSpace(sb.WorkspaceHostPath),
 	}
 }
 

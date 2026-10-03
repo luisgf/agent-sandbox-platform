@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +48,7 @@ func (m *MemoryStore) SetProvisionNodeID(id string) {
 }
 
 func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
-	if err := validateCreateSandbox(input); err != nil {
+	if err := prepareCreateSandbox(&input); err != nil {
 		return Sandbox{}, err
 	}
 	now := time.Now().UTC()
@@ -58,20 +59,21 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		actorSub = ownerSub
 	}
 	sb := Sandbox{
-		ID:             newID(),
-		TenantID:       input.TenantID,
-		NodeID:         nil,
-		State:          SandboxRequested,
-		VMMProfile:     input.VMMProfile,
-		ImageRef:       input.ImageRef,
-		CPUMillis:      input.CPUMillis,
-		MemoryMiB:      input.MemoryMiB,
-		StateVersion:   1,
-		OwnerSub:       ownerSub,
-		OwnerEmail:     ownerEmail,
-		LastActivityAt: now,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                newID(),
+		TenantID:          input.TenantID,
+		NodeID:            nil,
+		State:             SandboxRequested,
+		VMMProfile:        input.VMMProfile,
+		ImageRef:          input.ImageRef,
+		CPUMillis:         input.CPUMillis,
+		MemoryMiB:         input.MemoryMiB,
+		StateVersion:      1,
+		OwnerSub:          ownerSub,
+		OwnerEmail:        ownerEmail,
+		LastActivityAt:    now,
+		WorkspaceHostPath: input.WorkspaceHostPath,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if sb.VMMProfile == "" {
 		sb.VMMProfile = "cloud-hypervisor"
@@ -929,6 +931,32 @@ func (m *MemoryStore) TouchAPIKey(id string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+func prepareCreateSandbox(input *CreateSandboxInput) error {
+	ws, err := cleanWorkspaceHostPath(input.WorkspaceHostPath)
+	if err != nil {
+		return err
+	}
+	input.WorkspaceHostPath = ws
+	return validateCreateSandbox(*input)
+}
+
+func cleanWorkspaceHostPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", nil
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return "", fmt.Errorf("%w: workspace_host_path contains NUL", ErrInvalidInput)
+	}
+	if len(p) > 4096 {
+		return "", fmt.Errorf("%w: workspace_host_path too long", ErrInvalidInput)
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%w: workspace_host_path must be absolute", ErrInvalidInput)
+	}
+	return filepath.Clean(p), nil
 }
 
 func validateCreateSandbox(input CreateSandboxInput) error {
