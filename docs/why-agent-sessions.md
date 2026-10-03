@@ -28,7 +28,7 @@ Tres fricciones del primer corte ya no se pueden dejar en «después» si el har
 - **Un objeto claro:** la sesión. Un agente, un sandbox, mientras dure el trabajo. Varios agentes locales = varios nombres (`--name`), no un fichero compartido.
 - **Identidad estable:** `owner_sub` lo pone el CP desde el JWT del IdP al hacer `start`. No viaja en el JSON de sesión y el guest no lo elige.
 - **Disco del guest** entre execs (ficheros, procesos, `/tmp`). Eso sigue siendo el workspace que de verdad persiste.
-- **Directorio del host por virtiofs:** `asp session start --workspace /ruta/absoluta` guarda `workspace_host_path`. El nodo arranca `virtiofsd` y CH recibe el tag `workspace`. El guest lo monta en `/workspace` con `mount -t virtiofs` (no es automático). Detalle: [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
+- **Directorio del host por virtiofs:** `asp session start --workspace /ruta/absoluta` guarda `workspace_host_path`. El nodo arranca `virtiofsd` y CH recibe el tag `workspace`. La imagen nueva lo monta en `/workspace` al boot; una imagen anterior sigue con `mount -t virtiofs` a mano. Detalle: [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
 - **Egress de esa microVM** durante toda la sesión, no rearmado por comando.
 - **Fin explícito o por idle:** `asp session stop`, o el reaper del CP si `ASP_SANDBOX_IDLE_TIMEOUT` está encendido (lab: `2h`; el binario por defecto lo tiene **apagado**). El reloj inicial lo pone el `start` (create y paso a `running`). Después, **solo un exec que el CP proxyó bien** lo refresca — JSON acumulado o stream NDJSON terminado. `status`, `GET`, heartbeat y renew **no**.
 - **Salida mientras el comando corre:** `asp session exec` (sin `--buffered`) imprime stdout/stderr según llegan líneas NDJSON. `--buffered` y `--json` conservan el cuerpo JSON de siempre, que es el que usan los smokes.
@@ -39,12 +39,12 @@ Tres fricciones del primer corte ya no se pueden dejar en «después» si el har
 start --name (una vez) → tools horas vía exec (stream) → stop --name  |  idle reap
          ▲                              │
          owner_sub, egress, disco guest ┘
-         workspace_host_path → virtiofsd + tag workspace (mount manual)
+         workspace_host_path → virtiofsd + tag workspace (auto-mount en imagen nueva)
 ```
 
 ## Qué no ganamos (límites honestos)
 
-- **El guest no monta solo el workspace.** El nodo sí lanza `virtiofsd` y el `fs` va en `vm.create` cuando la ruta no está vacía. Sin el `mount -t virtiofs workspace /workspace` el exec no ve el directorio. Sin binario en el nodo el start falla. FakeVMM no bootea un guest.
+- **Un rootfs viejo no monta solo el workspace.** El nodo sí lanza `virtiofsd` y el `fs` va en `vm.create` cuando la ruta no está vacía. La unidad `workspace-virtiofs.service` está en la imagen de este corte; sin ella el exec no ve el directorio hasta el `mount` manual o un rebuild. Sin binario en el nodo el start falla. FakeVMM no bootea un guest.
 - **No hay plugin de OpenCode.** Hay un wrapper de ejemplo en [`ops-asp-session.md`](ops-asp-session.md) (`--name` + exec en streaming). Hay que cablearlo fuera de este repo.
 - **El PTY no es un SSH.** `asp session exec` pide un PTY y reenvía stdin (TTY local en raw, o un pipe). Siguen fuera: SIGWINCH, bytes opacos, y un EOF de verdad si el programa del guest está en raw mode (`--no-pty` para un pipe). Un pod-daemon viejo no emite `ready` y el stdin no viaja.
 - **Si el guest es un pod-daemon viejo** (sin `?stream=1`), el node-agent convierte el JSON final en un único burst NDJSON. Eso no es byte a byte; el camino vivo es el pod-daemon nuevo (chunked).

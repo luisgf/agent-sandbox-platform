@@ -31,7 +31,7 @@ El contrato del agente es **una sesión con nombre**: un JSON local (id + URL de
 | `asp session stop --name` | `DELETE` + borra ese fichero. 404 (ya destruido) limpia el fichero igual. Otro error HTTP **conserva** el fichero para reintentar. |
 | Auth | Igual que el resto del CLI: Bearer IdP automático (`asp auth` / `ASP_ID_TOKEN` / cache). No se copia al fichero de sesión. |
 | `--force` en start | Si ya hay sesión **con ese nombre**, intenta destruir el sandbox anotado y empieza otro. Sin `--force`, start falla y no crea un segundo sandbox a ciegas. |
-| `--workspace /ruta` | Ruta **absoluta** de un directorio que debe existir en la máquina del CLI y, en el arranque real, en el nodo. Viaja como `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` y Cloud Hypervisor recibe `fs` con tag `workspace`. El guest **no** lo monta solo: hay que `mount -t virtiofs workspace /workspace`. |
+| `--workspace /ruta` | Ruta **absoluta** de un directorio que debe existir en la máquina del CLI y, en el arranque real, en el nodo. Viaja como `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` y Cloud Hypervisor recibe `fs` con tag `workspace`. Una imagen guest construida con este corte lo monta sola en `/workspace` (`workspace-virtiofs.service`). Una imagen anterior sigue necesitando el `mount` a mano. |
 | `--local` en stop | Borra solo el fichero. El sandbox **sigue vivo** en el CP. Escape de ops, no el camino normal. |
 
 Dos nombres son dos sandboxes. No comparten disco ni egress.
@@ -42,7 +42,7 @@ Dos nombres son dos sandboxes. No comparten disco ni egress.
 |---|---|
 | No es un plugin de OpenCode | No registra tools ni habla el protocolo del harness. Es un binario que el harness **exec**. El wrapper de abajo es un ejemplo, no se instala solo. |
 | El nombre es local | Otro host, otro contenedor o un `HOME` distinto no ve el directorio. El CP sí sigue teniendo el sandbox. El nombre no es un id global. |
-| El guest no auto-monta | El dispositivo sí se crea cuando hay workspace y `virtiofsd` está en el nodo. El tag es `workspace`. El punto de montaje convenido es `/workspace`, pero la imagen no ejecuta el `mount`. Sin ese comando el exec sigue viendo solo el disco del guest. |
+| Imagen vieja no auto-monta | El dispositivo sí se crea cuando hay workspace y `virtiofsd` está en el nodo. El tag es `workspace` y el punto de montaje es `/workspace`. La imagen **nueva** lo monta al boot (`workspace-virtiofs.service`, oneshot, sale 0 si el tag no está). Una imagen construida antes de esa unidad no ejecuta el `mount`: el exec sigue viendo solo el disco del guest hasta el comando manual, o hasta reconstruir el rootfs. |
 | La ruta es la del nodo | El CLI comprueba que el path exista en **su** máquina. Si el node-agent corre en otro host, la cadena guardada puede no existir allí. El CP no hace `stat`. |
 | PTY con límites | `asp session exec` (sin `--buffered`) pide PTY en el guest salvo `--no-pty`. Si stdout local es una TTY, el CLI pasa a raw y reenvía stdin. Un pipe también se reenvía. El protocolo sigue siendo NDJSON (`ready`, `stdout`, `stderr`, `exit`) más `POST .../exec/stdin`. No es un SSH ni un websocket. Ver la sección de virtiofs y PTY. |
 | Guest viejo | Si el pod-daemon responde 404 a `?stream=1`, el node-agent hace el exec JSON y lo reescribe como un solo burst NDJSON al final. No es streaming real. Hace falta el pod-daemon de este cambio dentro de la imagen. |
@@ -51,7 +51,7 @@ Dos nombres son dos sandboxes. No comparten disco ni egress.
 | No aísla herramientas entre sí | Todos los `exec` de esa sesión comparten un guest. Eso es la ventaja y el riesgo. |
 | Auth sigue siendo por invocación | Cada `exec` resuelve el Bearer de nuevo. Si el token caduca, el siguiente comando falla con 401. El sandbox no se entera. |
 | `owner_sub` | Lo pone el CP desde el JWT ([ADR-0007](adr/0007-multi-user-identity.md)). La sesión no acepta un owner de mentira en el JSON local. |
-| Dry-run ≠ KVM | Tests de sesión y de stream = `httptest`. El pod-daemon se cubre con `cargo test`. No hace falta ncc1701d para eso. Aislamiento real solo con CH + KVM, y aun así **sin** el share del workspace. |
+| Dry-run ≠ KVM | Tests de sesión y de stream = `httptest`. El pod-daemon se cubre con `cargo test`. El auto-mount se cubre leyendo la unidad y el helper (sale 0 si `mount` falla). No hace falta ncc1701d para eso. Aislamiento real y el share de verdad solo con CH + KVM y un rootfs que lleve la unidad. |
 
 ## Alternativas que descartamos (y la consecuencia)
 
@@ -110,7 +110,9 @@ export ASP_CP_URL=http://127.0.0.1:8080   # dry-run local; lab: http://127.0.0.1
 asp session start --name opencode --workspace /ruta/absoluta/del/repo \
   --tenant=tenant-demo --node-id=dev-node --timeout=120s
 # stdout: <sandbox id>
-# En el guest, después: mkdir -p /workspace && mount -t virtiofs workspace /workspace
+# Imagen nueva: /workspace ya está montado al boot (tag workspace).
+# Imagen anterior a workspace-virtiofs.service, dentro del guest:
+#   mkdir -p /workspace && mount -t virtiofs workspace /workspace
 
 asp session exec --name opencode --cmd 'echo hello-from-session'
 asp session exec --name opencode -- echo hello --flag
@@ -161,7 +163,7 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 | `--name` | Nombre de la sesión. Default `default`. Un segmento `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. |
 | `ASP_SESSION_DIR` / `--session-dir` | Directorio de los `<nombre>.json`. Default `~/.cache/asp/sessions`. |
 | `ASP_SESSION_FILE` / `--session-file` | Path de un solo JSON. Si está, **ignora** el nombre para elegir fichero. Ya no es el default. |
-| `--workspace` | Solo `start`. Directorio absoluto. El nodo lo exporta con virtiofsd si el binario existe. El guest monta el tag a mano. |
+| `--workspace` | Solo `start`. Directorio absoluto. El nodo lo exporta con virtiofsd si el binario existe. La imagen nueva monta el tag al boot; la vieja, a mano. |
 | `--buffered` | Solo `exec`. JSON acumulado, sin PTY y sin stream. Un stdin que no sea TTY se manda en el campo `stdin` (hasta 1 MiB). |
 | `ASP_CP_URL` / `--cp-url` | En `start`, la URL que se guarda. En `exec`/`status`/`stop`, si **no** pasas `--cp-url`, se usa la URL guardada. |
 | Resto `ASP_IDP_*`, `ASP_ID_TOKEN`, `ASP_API_KEY` | Igual que [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). |
@@ -189,7 +191,7 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
 | `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. La actividad **no** se refresca. |
 | `state file kept` | `DELETE` falló (no 404). El JSON sigue para reintentar `stop`. |
-| El guest no ve `/workspace` | El dispositivo puede estar y el mount no. Dentro del guest: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `VIRTIOFSD_BIN`). |
+| El guest no ve `/workspace` | Imagen nueva: `systemctl status workspace-virtiofs` en el guest. Si el tag no estaba, la unidad sale 0 y no hay mount (sandbox sin workspace, o `virtiofsd` no arrancó). Imagen vieja, sin esa unidad: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `VIRTIOFSD_BIN`). |
 | Salida de golpe al final | `--buffered`, `--json`, o un pod-daemon que no habla `?stream=1` (el node-agent emite un burst). |
 
 
@@ -206,14 +208,14 @@ El spec `workspace_host_path` sin daemon era una etiqueta: el guest no veía el 
 | `virtiofsd` por sandbox | Solo si `workspace_host_path` no está vacío. Socket `virtiofs-{id}.sock` bajo el directorio de sockets del nodo (`--ch-socket-dir`, default `/run/asp`). Argumentos: `--socket-path`, `--shared-dir`, `--cache never`, `--sandbox none`. Binario: `--virtiofsd-bin` o `VIRTIOFSD_BIN` (default `virtiofsd`, CLI Rust). |
 | `vm.create` | `fs: [{ "tag": "workspace", "socket": "…" }]`. Sin workspace, o con socket vacío, el campo `fs` no va en el JSON. |
 | Fallo cerrado | Workspace pedido y `virtiofsd` ausente, o el directorio no existe en **el nodo**: el sandbox pasa a `failed` y no se llama al VMM. Sin workspace, no se busca el binario. |
-| Mount del guest | No es automático. Dentro de la VM: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. |
+| Mount del guest | Automático en la imagen de este corte: `workspace-virtiofs.service` ejecuta `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`. Si el tag no está, el helper sale 0 y el boot sigue. Imágenes ya desplegadas (p. ej. la de ncc1701d) **no** lo hacen hasta reconstruir el rootfs; ahí sigue valiendo el comando a mano. |
 | PTY | `asp session exec` manda `"pty":true` con `rows`/`cols` de la TTY local (si las hay). El pod-daemon abre `/dev/ptmx`, hace `setsid` + `TIOCSCTTY` y el slave es stdin/stdout/stderr. El primer evento del stream es `{"type":"ready","exec_id":"…"}`. |
 | Stdin | `POST /v1/sandboxes/{id}/exec/stdin` con `{"exec_id","data","close","rows","cols"}`. El CP lo proxya a `POST /v1/internal/exec/stdin` y eso al guest `POST /v1/exec/stdin`. Un `close` en pipe cierra el write end (EOF real). En PTY escribe dos Ctrl-D (modo canónico). Cada POST de stdin refresca `last_activity_at`. |
 | JSON acumulado | `POST /exec` sin `?stream=1` sigue devolviendo `{stdout,stderr,exit_code}`. `--buffered` / `--json` no piden PTY. Si hay stdin por pipe, viaja en el campo `stdin`. |
 
 ### Qué no ganamos
 
-- El guest no monta solo. Hasta el `mount`, `/workspace` no existe.
+- El auto-mount vive en la **imagen**, no en el nodo. Un rootfs anterior no tiene `workspace-virtiofs.service`: hasta reconstruirlo, `/workspace` no aparece solo. Sin tag (no hubo `--workspace`) la unidad no falla el boot; el directorio se crea vacío y no es el checkout del host.
 - `--sandbox none` no mete a virtiofsd en un user namespace. La superficie es el directorio pedido y los privilegios del node-agent.
 - Hace falta el `virtiofsd` Rust en el nodo. El helper C viejo (`-o source=`) no vale. Sin KVM estos tests no arrancan la VM: comprueban socket y tag.
 - El PTY mezcla stderr en el master. No hay evento `stderr` separado en ese modo.

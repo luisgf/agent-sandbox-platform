@@ -47,8 +47,9 @@ type Sandbox struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	// WorkspaceHostPath is the host directory the session asked to share into
 	// the guest (virtiofs tag "workspace", mount /workspace). Empty means no
-	// share. The node-agent starts virtiofsd when this is set; the guest
-	// image still has to mount the tag.
+	// share. The node-agent starts virtiofsd when this is set. A guest image
+	// with workspace-virtiofs.service mounts the tag at boot; an older image
+	// still needs mount -t virtiofs.
 	WorkspaceHostPath string    `json:"workspace_host_path,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

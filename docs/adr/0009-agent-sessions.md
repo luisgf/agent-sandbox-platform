@@ -3,7 +3,7 @@
 - **Estado:** Propuesta / **Aceptada como dirección**
 - **Fecha:** 2026-10-03
 - **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [`../why-agent-sessions.md`](../why-agent-sessions.md), [`../why-cli-asp.md`](../why-cli-asp.md), [`../roadmap.md`](../roadmap.md)
-- **No es:** un plugin de OpenCode. El segundo seguimiento (misma fecha) sí arranca virtiofsd y añade PTY/stdin al exec. El guest sigue sin auto-montar, y no hay SSH.
+- **No es:** un plugin de OpenCode. El segundo seguimiento (misma fecha) sí arranca virtiofsd y añade PTY/stdin al exec. Un tercer corte monta el tag en la imagen (`workspace-virtiofs.service`); un rootfs viejo no. Sigue sin SSH.
 
 ## Seguimiento implementado (2026-10-03)
 
@@ -20,12 +20,12 @@ Un harness real choca con tres cosas del primer corte. Un único `session.json` 
 | Sesiones con nombre | `~/.cache/asp/sessions/<nombre>.json` (`ASP_SESSION_DIR` / `--session-dir`, `--name`, default `default`). `start`, `exec`, `status`, `stop`. `--session-file` / `ASP_SESSION_FILE` sigue siendo un path explícito, ya no el default. | El nombre no es una capability ni viaja al CP. Sigue sin token. |
 | Exec en stream | Mismo `POST /v1/sandboxes/{id}/exec`. Con `?stream=1` (o `Accept: application/x-ndjson`) la respuesta es NDJSON. Sin query, el JSON `{stdout,stderr,exit_code}` no cambia. | Un pod-daemon antiguo (404 en `?stream=1`) se degrada a un burst NDJSON al final. |
 | PTY y stdin | `asp session exec` pide `"pty":true` salvo `--no-pty` o `--buffered`. El guest abre un PTY si el JSON lo dice. El stream emite `ready` con `exec_id` y el stdin va por `POST /v1/sandboxes/{id}/exec/stdin` (CP → node-agent → pod-daemon). Stdin de pipe con `--no-pty` cierra el pipe. Cada stdin bien proxyado refresca la actividad. | No es SSH ni websocket. En PTY el stderr va por el master. El `close` del PTY son dos Ctrl-D, no EOF de raw mode. No hay SIGWINCH. Timeout del proceso = `--exec-timeout-secs` del pod-daemon (default 30s). Bytes en string JSON. |
-| Workspace virtiofs | `workspace_host_path` no vacío → el reconciler lanza `virtiofsd` (Rust) con socket `virtiofs-{id}.sock` y rellena `WorkspaceFSSocket`. `vm.create` lleva `fs` tag `workspace`. Mount del guest, a mano: `mount -t virtiofs workspace /workspace`. | Sin path no hay daemon ni `fs` (FakeVMM igual). Sin binario el sandbox queda `failed`. El guest no monta solo. `--sandbox none`. Los tests no bootean KVM: afirman socket y tag. |
+| Workspace virtiofs | `workspace_host_path` no vacío → el reconciler lanza `virtiofsd` (Rust) con socket `virtiofs-{id}.sock` y rellena `WorkspaceFSSocket`. `vm.create` lleva `fs` tag `workspace`. La imagen nueva monta `/workspace` al boot (`workspace-virtiofs.service`). | Sin path no hay daemon ni `fs` (FakeVMM igual). Sin binario el sandbox queda `failed`. Imagen vieja: mount a mano. `--sandbox none`. Los tests no bootean KVM: afirman socket, tag, y que el helper sale 0 sin tag. |
 
 ### Sigue abierto
 
 - Plugin de OpenCode dentro del repo. El contrato es el wrapper de [`ops-asp-session.md`](../ops-asp-session.md).
-- Mount automático en la imagen (`/workspace`). Hoy es un comando de ops.
+- Mount automático en rootfs **ya desplegados**. La imagen nueva sí lo trae; la que esté corriendo no cambia hasta reconstruirla.
 - Idle por sesión. El umbral sigue siendo el del proceso (`ASP_SANDBOX_IDLE_TIMEOUT`, lab `2h`, default off). Además de un exec que termina, un `POST .../exec/stdin` con éxito también toca `last_activity_at`. Un PTY callado no.
 - ADR-0008 (atribución de flujos).
 - SIGWINCH, byte pipe opaco, EOF real sobre PTY en raw mode, sandbox de usuario para virtiofsd.
@@ -242,7 +242,7 @@ Estos límites están en el código de hoy. Aceptar la dirección **no** los cie
 
 | Gap | Realidad |
 |---|---|
-| **Workspace compartido con el host** | El nodo arranca virtiofsd y CH recibe `fs` tag `workspace` cuando el path no está vacío. **El guest no monta solo** (`mount -t virtiofs workspace /workspace`). Sin binario, el start falla. Virtiofs del SSH agent sigue siendo otra cosa (fase 2e) |
+| **Workspace compartido con el host** | El nodo arranca virtiofsd y CH recibe `fs` tag `workspace` cuando el path no está vacío. La imagen nueva monta sola; un rootfs anterior no (`mount -t virtiofs workspace /workspace` hasta reconstruir). Sin binario, el start falla. Virtiofs del SSH agent sigue siendo otra cosa (fase 2e) |
 | **Plugin de OpenCode** | No existe en este repo. No registra tools ni habla el protocolo del harness. El enganche es un binario que el harness hace `exec`. Hay que cablearlo fuera |
 | **Directorio local, no un registro del CP** | Hay nombres (`sessions/<nombre>.json`). Sigue siendo local al `$HOME` del CLI; otro host no lo ve. El CP no conoce el nombre. Modo `0600`, directorio `0700`. `--session-file` sigue existiendo como override |
 | **Exec PTY acotado** | Hay PTY y stdin en el stream (`ready` + `POST .../exec/stdin`). El JSON acumulado sigue para smokes (`--buffered`, `sandbox run`) y no pide PTY. Límites: stderr mezclado, Ctrl-D, sin SIGWINCH, timeout del pod-daemon. Errores del CLI son exit 1 |

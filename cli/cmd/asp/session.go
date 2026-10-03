@@ -128,7 +128,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	mem := fs.Int("memory-mib", 512, "memory_mib")
 	node := fs.String("node-id", "", "optional node pin")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
-	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest must mount tag workspace on /workspace)")
+	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest image mounts tag workspace on /workspace; older images need mount -t virtiofs)")
 	force := fs.Bool("force", false, "destroy any sandbox recorded in the session file, then start a new one")
 	if err := fs.Parse(args); err != nil {
 		return 2

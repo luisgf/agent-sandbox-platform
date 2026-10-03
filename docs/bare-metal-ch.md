@@ -745,14 +745,14 @@ Smokes dry-run (sin KVM): `make smoke`.
 
 `asp session start --workspace /ruta` persiste `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` (binario Rust, `--virtiofsd-bin` / `VIRTIOFSD_BIN`) con un socket por sandbox y `vm.create` incluye `fs` tag `workspace`. Sin el binario el sandbox pasa a `failed`. Sin workspace no hay `fs`.
 
-El guest **no** monta solo. Dentro de la VM:
+La imagen guest de este corte monta sola: `workspace-virtiofs.service` hace `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`, y sale 0 si el tag no está (el boot no se para). Hay que **reconstruir** el rootfs (`./scripts/build-guest-rootfs.sh`) para que una imagen ya desplegada lo lleve. Hasta entonces, dentro de la VM:
 
 ```sh
 mkdir -p /workspace
 mount -t virtiofs workspace /workspace
 ```
 
-Hasta ese mount el exec ve el disco del guest. FakeVMM no bootea; los tests solo afirman socket y tag. Detalle: [`ops-asp-session.md`](ops-asp-session.md), [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
+Sin ese mount (imagen vieja) el exec ve el disco del guest. FakeVMM no bootea; los tests afirman socket, tag, y que el helper sale 0 si `mount` falla. Detalle: [`ops-asp-session.md`](ops-asp-session.md), [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
 
 El exec con PTY también viaja por el vsock **26500** (`POST /v1/exec?stream=1` y `POST /v1/exec/stdin`). La imagen tiene que llevar el pod-daemon de este corte; si no, no hay `ready` y el node-agent degrada a un JSON final reescrito como un solo burst. El proceso del guest sigue sujeto a `--exec-timeout-secs` (default 30).
 

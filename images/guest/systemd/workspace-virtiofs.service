@@ -1,0 +1,18 @@
+[Unit]
+Description=ASP guest virtiofs workspace mount (/workspace)
+Documentation=https://github.com/luisgf/bots
+After=local-fs.target
+Before=pod-daemon.service
+# WantedBy, not RequiredBy: a missing tag must not fail the boot transaction.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Root: mount(2) needs CAP_SYS_ADMIN. The helper exits 0 when the tag is absent.
+ExecStart=/usr/local/share/asp/mount-virtiofs-workspace.sh
+TimeoutStartSec=15
+# Non-zero from a broken helper is still non-fatal: nothing Requires= this unit.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

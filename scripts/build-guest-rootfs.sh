@@ -23,15 +23,18 @@ docker export "$CID" | tar -C "$TMP" -xf -
 
 # Ensure runtime dirs exist for systemd / pod-daemon / ssh-agent-vsock
 mkdir -p "$TMP/run/agent-sandbox" "$TMP/etc/systemd/system"
-for unit in pod-daemon.service ssh-agent-vsock.service; do
+for unit in pod-daemon.service ssh-agent-vsock.service workspace-virtiofs.service; do
   if [[ -f "$ROOT/images/guest/systemd/$unit" ]]; then
     cp "$ROOT/images/guest/systemd/$unit" "$TMP/etc/systemd/system/"
   fi
 done
-if [[ -f "$ROOT/images/guest/helpers/ssh-agent-vsock-socat.sh" ]]; then
-  mkdir -p "$TMP/usr/local/share/asp"
-  cp "$ROOT/images/guest/helpers/ssh-agent-vsock-socat.sh" "$TMP/usr/local/share/asp/"
-fi
+mkdir -p "$TMP/usr/local/share/asp"
+for helper in ssh-agent-vsock-socat.sh mount-virtiofs-workspace.sh; do
+  if [[ -f "$ROOT/images/guest/helpers/$helper" ]]; then
+    cp "$ROOT/images/guest/helpers/$helper" "$TMP/usr/local/share/asp/"
+    chmod 0755 "$TMP/usr/local/share/asp/$helper"
+  fi
+done
 
 echo "==> create sparse ext4 image (${SIZE_MB}M) at $OUT"
 rm -f "$OUT"
@@ -48,6 +51,8 @@ if mount -o loop "$OUT" "$MNT" 2>/dev/null; then
       "$MNT/etc/systemd/system/multi-user.target.wants/pod-daemon.service" 2>/dev/null || true
     ln -sfn /etc/systemd/system/ssh-agent-vsock.service \
       "$MNT/etc/systemd/system/multi-user.target.wants/ssh-agent-vsock.service" 2>/dev/null || true
+    ln -sfn /etc/systemd/system/workspace-virtiofs.service \
+      "$MNT/etc/systemd/system/multi-user.target.wants/workspace-virtiofs.service" 2>/dev/null || true
   fi
   sync
   umount "$MNT"

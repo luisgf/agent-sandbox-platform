@@ -19,15 +19,31 @@ Hacía falta el daemon de verdad y un protocolo de stdin que los `httptest` pued
 - **El JSON de siempre sigue.** `sandbox run` y `--buffered` no cambian de forma. El campo opcional `stdin` mete un blob en ese camino.
 - **Tests sin ncc1701d.** Socket y tag en el config de FakeVMM; `httptest` del protocolo `ready` + `/exec/stdin`; `cargo test` con un PTY de verdad contra `/bin/sh -c cat`.
 
+## Auto-mount en la imagen
+
+El dispositivo lo pone el nodo. El `mount` lo pone el guest, y solo si la imagen lo trae.
+
+**Por qué.** Dejar el `mount` como comando de ops hacía que el exec viera el disco del guest aunque `vm.create` ya llevara `fs`. El harness no tiene un paso fiable para entrar y montar antes del primer tool. Meter el mount en el nodo no se puede: el namespace es el de la VM.
+
+**Qué hay.** `images/guest/systemd/workspace-virtiofs.service` (oneshot, `WantedBy=multi-user.target`, antes de `pod-daemon`). El helper `images/guest/helpers/mount-virtiofs-workspace.sh`:
+
+1. `mkdir -p /workspace`
+2. `mount -t virtiofs workspace /workspace` (unos reintentos cortos, por si el driver aparece un poco después de `local-fs`)
+3. Sale **0** si el tag no está o el `mount` falla. Un sandbox sin workspace tiene que arrancar igual. La unidad no es `RequiredBy` de ningún target: no bloquea el boot. `TimeoutStartSec=15`.
+
+`scripts/build-guest-rootfs.sh` copia la unidad y el helper y la habilita en `multi-user.target.wants`. El `Dockerfile` de `images/guest` hace lo mismo. Ejemplo OpenRC: `images/guest/openrc/workspace-virtiofs`.
+
+**Imágenes viejas.** Un rootfs ya arrancado (el de ncc1701d u otro construido antes de esta unidad) no la tiene. Hasta reconstruirlo con `./scripts/build-guest-rootfs.sh` y apuntar `/opt/sandbox/rootfs.img` al nuevo fichero, dentro del guest sigue haciendo falta:
+
+```sh
+mkdir -p /workspace
+mount -t virtiofs workspace /workspace
+```
+
 ## Qué no ganamos
 
-- El guest **no** ejecuta el mount. Hay que hacerlo dentro:
-
-  ```sh
-  mkdir -p /workspace
-  mount -t virtiofs workspace /workspace
-  ```
-
+- Sin tag (no hubo `--workspace`, o `virtiofsd` no está y el start ni siquiera llegó a `running`) `/workspace` es un directorio vacío del disco del guest. El helper no falla el boot por eso.
+- El rootfs que **ya** está arrancado no se reescribe. Hasta `build-guest-rootfs.sh` y un symlink nuevo, el comando manual sigue siendo el camino.
 - `virtiofsd` va con `--sandbox none` y `--cache never`. No hay user namespace. El binario esperado es el Rust (`--socket-path` / `--shared-dir`), no el helper C.
 - El PTY no es un terminal de producto: stderr mezclado, sin SIGWINCH desde el CLI, sin bytes opacos, y el proceso muere a los `--exec-timeout-secs` del pod-daemon (default 30). Una sesión interactiva larga exige subir ese timeout en la imagen.
 - El reaper no entiende «hay un PTY abierto» salvo por los POST de stdin que sí refrescan actividad, y por el final del stream.

@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+# Example OpenRC script: virtiofs tag workspace → /workspace.
+# A missing tag is success so sandboxes without a share still boot.
+name="workspace-virtiofs"
+description="ASP guest virtiofs workspace mount (/workspace)"
+
+depend() {
+    need localmount
+    before pod-daemon
+}
+
+start() {
+    /usr/local/share/asp/mount-virtiofs-workspace.sh
+    return 0
+}

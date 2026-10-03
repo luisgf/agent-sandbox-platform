@@ -37,11 +37,11 @@ Narrativa completa (threat model, trust boundaries, identidad, leases): [`docs/a
 | Control plane | sandboxes/nodes/events; API keys; enrollment PKI; exec proxy; egress; OIDC; attest; leases; cert rotate/revoke; `ASP_MTLS_STRICT` |
 | Node-agent | CH spawn / FakeVMM; reconciler; hybrid vsock exec; host-vsock 26501/26502; TAP auto; egress proxy+DNS; nft soft\|enforce; SSH confirm; guest SSH auto |
 | pod-daemon | HTTP JSON unix/vsock/tcp; `ASP_HOST_CID=2` |
-| Guest image | Dockerfile + systemd/OpenRC + `vsock-ssh-agent-proxy` |
+| Guest image | Dockerfile + systemd/OpenRC + `vsock-ssh-agent-proxy` + auto-mount virtiofs `workspace` |
 | CLI | `asp` (`make asp`) — `session start/exec/stop` (agente), `sandbox run` (primitiva), `auth login` (IdP Bearer) |
 | Pack | `make pack` → tarball de release |
 
-**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado; **mount real del workspace en KVM** (el spec `workspace_host_path` / `--workspace` sí está; virtiofsd no) y **plugin OpenCode** — la sesión con nombre y el exec NDJSON ya están ([ADR-0009](docs/adr/0009-agent-sessions.md)).
+**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado; **prueba KVM del share** (el nodo sí arranca virtiofsd y la imagen nueva monta `/workspace`; CI no bootea la VM) y **plugin OpenCode** — la sesión con nombre y el exec NDJSON ya están ([ADR-0009](docs/adr/0009-agent-sessions.md)).
 
 ## Cómo funciona (mapa rápido)
 

@@ -14,7 +14,7 @@ El `Dockerfile`:
 
 - Compila `pod-daemon` (Rust release).
 - Instala el binario en `/usr/local/bin/pod-daemon`.
-- Incluye unidades systemd `pod-daemon.service` + **`ssh-agent-vsock.service`** y ejemplos OpenRC.
+- Incluye unidades systemd `pod-daemon.service`, **`ssh-agent-vsock.service`** y **`workspace-virtiofs.service`**, más ejemplos OpenRC.
 - Binario **`vsock-ssh-agent-proxy`**: unix `/run/agent-sandbox/ssh-agent.sock` ← vsock CID 2:26501.
 - **CMD por defecto:** `--listen vsock --vsock-port 26500` (path productivo CH).
 - Usuario `sandboxd` (uid 10001); `ASP_HOST_CID=2`; `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock`.
@@ -33,7 +33,19 @@ En producción: firmar el rootfs, pin de versión CH/kernel, y sin herramientas 
 | SSH agent | AF_VSOCK CID **2** port **26501** → unix `/run/agent-sandbox/ssh-agent.sock` | node-agent `--host-vsock` + guest `ssh-agent-vsock.service` |
 | OIDC identity | AF_VSOCK CID **2** port **26502** | node-agent `--host-vsock` |
 
-**Elección:** proxy vsock en guest (no virtiofs). Ver [`docs/why-2e-ssh-guest-mount.md`](../../docs/why-2e-ssh-guest-mount.md).
+**Elección (SSH):** proxy vsock en guest (no virtiofs del socket). Ver [`docs/why-2e-ssh-guest-mount.md`](../../docs/why-2e-ssh-guest-mount.md).
+
+## Workspace del host
+
+`workspace-virtiofs.service` monta el tag virtiofs `workspace` en `/workspace` al boot. El helper sale 0 si el tag no está, así un sandbox sin `workspace_host_path` arranca igual. No bloquea el boot.
+
+Una imagen construida antes de esa unidad no monta sola. Hasta reconstruir el rootfs:
+
+```sh
+mkdir -p /workspace && mount -t virtiofs workspace /workspace
+```
+
+Detalle: [`docs/why-virtiofs-pty.md`](../../docs/why-virtiofs-pty.md), [`docs/ops-asp-session.md`](../../docs/ops-asp-session.md).
 
 Lab sin KVM: `ASP_SSH_AGENT_UPSTREAM=unix:/path/to/host-vsock-26501.sock`.
 
