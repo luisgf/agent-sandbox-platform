@@ -1,191 +1,202 @@
 # Agent Sandbox Platform
 
-Diseño y esqueleto de referencia para una plataforma de sandboxes de agentes al estilo de un IDE agente: **VMM FOSS + plano de control propio**. Cada sandbox corre dentro de una microVM y se administra con un daemon invitado (`pod-daemon`) y un canal host–guest explícito (vsock).
+Plataforma **FOSS** de sandboxes para agentes. Aísla el trabajo del agente del host: un plano de control propio, un node-agent en el nodo, y una **microVM** (Cloud Hypervisor por defecto; `FakeVMM` en dry-run y CI). El objeto de uso es una **sesión** larga, no una VM por comando. La identidad del dueño sale de un **IdP**. El egress del guest es deny-by-default.
 
-> **Proyecto independiente.** No está afiliado, patrocinado ni respaldado por Cursor, Anysphere, anyrun ni sus compañías o productos relacionados. Está inspirado en ese tipo de sandboxes; el código y el threat model son propios.
+> Proyecto independiente. No está afiliado, patrocinado ni respaldado por Cursor, Anysphere, anyrun ni productos relacionados. El diseño se inspira en ese tipo de sandboxes; el código y el threat model son propios.
+
+## Qué es y qué hace
+
+Cinco piezas, y solo esas, forman el sistema de hoy:
+
+| Pieza | Qué hace |
+|---|---|
+| **Control plane** (`control-plane/`, Go) | API multi-tenant: sandboxes, nodos, exec, egress, leases, attest software. El `owner_sub` lo pone el JWT del IdP, no el guest ni un campo del cliente. |
+| **Node agent** (`node-agent/`, Go) | Único proceso que habla con el VMM. Reconcilia el estado deseado, abre TAP, aplica nft (`soft` o `enforce`) y los puentes vsock. |
+| **microVM** | Cloud Hypervisor + rootfs Debian. Dentro, `pod-daemon` (Rust) ejecuta comandos por vsock. El cliente no ve el socket del hipervisor. |
+| **Sesión** (`asp session`) | Un sandbox para un agente que dura horas: mismo disco del guest, mismo egress, mismo dueño, muchos `exec`. `asp sandbox run` queda como primitiva de un solo comando (CI / ops). |
+| **Egress** | Sin opt-in de red local: TAP, forward proxy HTTP(S), DNS sink y nft. Las credenciales largas no entran al guest (SSH agent en el host, tokens OIDC cortos). |
+
+Dry-run (`--dry-run` / `FakeVMM`) ejercita el plano de control **sin KVM**. No es aislamiento real.
 
 ## Para qué sirve
 
-Un agente es un proceso **largo**. La forma primaria de usar el aislamiento es una **sesión** atada a un sandbox (identidad `owner_sub` del IdP, workspace del guest, egress, idle) — no una microVM por comando de shell. Dirección: [ADR-0009](docs/adr/0009-agent-sessions.md) · [por qué](docs/why-agent-sessions.md). `asp sandbox run` queda como primitiva interna (CI / un comando).
+Para que el código que escribe o ejecuta un agente **no corra en el host**.
 
-- Aislar workloads de agentes (código no confiable) con frontera **microVM** (Cloud Hypervisor por defecto; `FakeVMM` en dry-run/CI).
-- Orquestar el ciclo de vida multi-tenant vía API (`control-plane`) y reconciliación en el nodo (`node-agent --reconcile`).
-- Ejecutar comandos y (según evolución) archivos a través de `pod-daemon` por vsock — sin exponer el hipervisor al cliente.
-- Controlar **egress deny-by-default** con forward proxy HTTP(S) + DNS sink + nft redirect (`soft|enforce`).
-- Mantener **credenciales fuera del guest**: SSH agent host-held (vsock 26501) y tokens OIDC de corta vida (26502 / identity proxy).
+La frontera primaria es la microVM. El harness habla solo con el control plane. No recibe la clave SSH del operador, ni el socket de Cloud Hypervisor, ni una red abierta. Un comando que el modelo lanza entra por `asp session exec` y sale dentro del guest. Si el agente es largo, esa frontera se mantiene entre tools: el disco del guest, el egress y el `owner_sub` siguen siendo los de la misma sesión.
 
-## Qué no es
+No sustituye a Kubernetes (los sandboxes no son Pods), no atestigua con TPM/SEV y no es un SDK multi-lenguaje. La CLI `asp` es el contrato de ops y de integración.
 
-- Un RuntimeClass de Kubernetes ni “microVMs como Pods” (ver [ADR-0004](docs/adr/0004-k8s-scope.md)).
-- Attestation TPM/SEV de hardware (hoy: firma software de `BootStatement`; interfaz lista para plug-ins).
-- STONITH BMC de producción (hay leases + `FenceProvider` stub/webhook; BMC real es ops).
-- Un SDK multi-lenguaje: la CLI `asp` es demo/ops sobre el HTTP API existente.
-- Magia SoftFail: sin root/`nft`/KVM, CI demuestra el plano de control, **no** bypass-proof ni aislamiento real.
+## Casos de uso
 
-## Diagrama de arquitectura
+### Harness estilo OpenCode, vía `asp session`
 
-![Arquitectura Agent Sandbox Platform](docs/diagram.svg)
+Un agente llama al shell decenas de veces. Pagar un boot de microVM por tool hace que el harness acabe ejecutando en el host. La sesión evita eso:
 
-Vista editable: [`docs/diagram.mmd`](docs/diagram.mmd). Regenerar SVG: `./scripts/gen-diagram.sh`.
-
-Narrativa completa (threat model, trust boundaries, identidad, leases): [`docs/architecture.md`](docs/architecture.md).
-
-## Estado del MVP — **solution complete** (+ hardening 2b–2f)
-
-| Área | Contenido |
-|---|---|
-| Control plane | sandboxes/nodes/events; API keys; enrollment PKI; exec proxy; egress; OIDC; attest; leases; cert rotate/revoke; `ASP_MTLS_STRICT` |
-| Node-agent | CH spawn / FakeVMM; reconciler; hybrid vsock exec; host-vsock 26501/26502; TAP auto; egress proxy+DNS; nft soft\|enforce; SSH confirm; guest SSH auto |
-| pod-daemon | HTTP JSON unix/vsock/tcp; `ASP_HOST_CID=2` |
-| Guest image | Dockerfile + systemd/OpenRC + `vsock-ssh-agent-proxy` + auto-mount virtiofs `workspace` |
-| CLI | `asp` (`make asp`) — `session start/exec/stop` (agente), `sandbox run` (primitiva), `auth login` (IdP Bearer) |
-| Pack | `make pack` → tarball de release |
-
-**Aún no:** bypass-proof nft en hardware (CI = soft/dry-run); TPM/SEV; Windows guests; virtiofs SSH automatizado; **prueba KVM del share** (el nodo sí arranca virtiofsd y la imagen nueva monta `/workspace`; CI no bootea la VM) y **plugin OpenCode** — la sesión con nombre y el exec NDJSON ya están ([ADR-0009](docs/adr/0009-agent-sessions.md)).
-
-## Cómo funciona (mapa rápido)
-
-```text
-Cliente / asp ──HTTPS+API key──► Control plane
-                                    │ mTLS desired state
-                                    ▼
-                              Node agent ──Start/Stop──► Cloud Hypervisor / FakeVMM
-                                    │                         │
-                     exec 26500 ◄───┼──── hybrid vsock ───────┤
-                     SSH  26501 ◄───┼──── guest→host ─────────┤
-                     OIDC 26502 ◄───┼─────────────────────────┘
-                                    │
-                              TAP → nft asp_egress → proxy :8888 → Internet (allowlist)
+```bash
+asp session start --name opencode --node-id=dev-node --workspace /ruta/absoluta/del/repo
+asp session exec --name opencode --cmd 'echo hello'
+asp session stop --name opencode
 ```
 
-## Límites (honestos, no negociables en docs)
+El harness **no** es un plugin de este repo. Se sustituye el shell del tool por un wrapper que llama a `asp session exec --name …`. El JSON local (`~/.cache/asp/sessions/<nombre>.json`) guarda id y URL, **sin** token. Contrato y wrapper: [`docs/ops-asp-session.md`](docs/ops-asp-session.md).
 
-| Tema | Realidad en código |
+### Lab IdP (Keycloak)
+
+En el lab, el control plane exige Bearer de Keycloak (realm `asp`, cliente `asp-api`). El grupo del token decide el rol; el `sub` queda como `owner_sub` del sandbox. Secretos fuera de git. No es Entra ni Okta, y el CP de ese lab escucha en loopback. Guía: [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md).
+
+### Red local bajo demanda (túnel completo, opt-in)
+
+Cuando el trabajo está en la LAN de quien lanza el agente, `asp session start --local-net` pide que la ruta por defecto **de esa sesión** (`0.0.0.0/0`, y `::/0` si existe) salga por un túnel que abre el agente local. No hay lista de CIDR en v1. Si el agente no está, el plan es blackhole: no se vuelve en silencio al proxy del nodo.
+
+**Hoy eso es plano de control y CLI.** El flag, el grant, el heartbeat y el plan de blackhole están. **No hay dispositivo WireGuard**, ni `wg` aplicado, ni NAT. El esqueleto de config no se instala solo. Sin `wireguard-tools` y sin privilegios de red no hay paquetes. Ops: [`docs/ops-local-net.md`](docs/ops-local-net.md).
+
+### Parada por inactividad
+
+`ASP_SANDBOX_IDLE_TIMEOUT` apaga un sandbox olvidado. El binario lo trae **apagado** (los smokes no deben morir solos). El unit de lab usa `2h`. Cuentan como actividad el create, el paso a `running` y un exec que el control plane proxyó bien. `status`, el heartbeat del nodo y el heartbeat de local-net **no** refrescan el reloj. El reaper no borra el JSON de `asp session`: el siguiente `exec` lo dice y sale 1.
+
+### Workspace por virtiofs
+
+`asp session start --workspace /ruta/absoluta` hace que el node-agent arranque `virtiofsd` (tag `workspace`) y que Cloud Hypervisor reciba el `fs`. El árbol del host no se copia al crear la sesión: el guest lo ve montado.
+
+El **auto-mount está en el build de la imagen** (`workspace-virtiofs.service` y el helper, copiados por `scripts/build-guest-rootfs.sh` y por el Dockerfile). **El rootfs que ya corre en ncc1701d no se ha reconstruido.** Hasta apuntar `/opt/sandbox/rootfs.img` a una imagen nueva, dentro de ese guest sigue haciendo falta:
+
+```sh
+mkdir -p /workspace && mount -t virtiofs workspace /workspace
+```
+
+Sin `virtiofsd` en el nodo, un start con `--workspace` falla: no se arranca una VM que finja el directorio. CI no bootea la VM; no hay prueba KVM del share. Detalle: [`docs/why-virtiofs-pty.md`](docs/why-virtiofs-pty.md).
+
+## Cómo encaja
+
+La sesión es lo que usa el humano o el harness. El control plane guarda el estado deseado. El nodo lo materializa en una microVM. La red local, si se pidió, es un camino **aparte** y, en este corte, solo un handshake.
+
+```mermaid
+flowchart TB
+  subgraph user["Máquina de quien lanza el agente"]
+    H["Harness estilo OpenCode"]
+    CLI["asp session<br/>start · exec · stop"]
+    IDP["IdP<br/>Keycloak en el lab"]
+    LN["local-net opcional<br/>grant y heartbeat<br/>sin iface WireGuard"]
+  end
+
+  subgraph control["Control plane"]
+    CP["API<br/>owner_sub · egress · idle · leases"]
+  end
+
+  subgraph node["Nodo"]
+    NA["node-agent<br/>reconciler · TAP · nft"]
+    CH["Cloud Hypervisor<br/>FakeVMM si dry-run"]
+    subgraph vm["microVM"]
+      PD["pod-daemon"]
+      WK["workload del agente"]
+      WK --> PD
+    end
+    VFS["virtiofsd<br/>tag workspace"]
+    EG["Egress del nodo<br/>proxy · DNS sink · nft"]
+  end
+
+  H -->|"sustituye el shell del tool"| CLI
+  IDP -.->|"JWT Bearer"| CLI
+  CLI -->|"HTTPS"| CP
+  LN -.->|"solo handshake"| CP
+  CP -->|"mTLS, estado deseado"| NA
+  NA --> CH
+  CH --> vm
+  NA -->|"si --workspace"| VFS
+  VFS -.->|"mount en imagen nueva<br/>no en el rootfs de ncc1701d"| vm
+  vm --> EG
+  CP -.->|"local_net pending: blackhole deseado<br/>no dataplane"| NA
+```
+
+Diagrama de componentes ya versionado (cliente, control plane, nodo, guest, egress; no dibuja la sesión ni local-net): [`docs/diagram.svg`](docs/diagram.svg). Fuente editable: [`docs/diagram.mmd`](docs/diagram.mmd). Regenerar el SVG: `./scripts/gen-diagram.sh`. Narrativa de fronteras de confianza: [`docs/architecture.md`](docs/architecture.md).
+
+Puertos vsock dentro del nodo (no cruzan la WAN y no terminan el túnel local): **26500** exec host→guest, **26501** SSH agent guest→host, **26502** OIDC guest→host. Notas: [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md).
+
+## Mapa de la documentación
+
+El resto del detalle vive fuera de esta página. Esta tabla solo abre la puerta.
+
+| Si buscas… | Empieza aquí |
 |---|---|
-| Dry-run | `--dry-run` = FakeVMM; útil para CI; no es KVM |
-| nft | `--nft-egress-mode=soft` SoftFail sin root; `enforce` exige privilegios |
-| Attest | Software ECDSA (`ASP_ATTEST_KEY`) ≠ TPM/SEV |
-| Leases | TTL software + FenceProvider opcional ≠ STONITH BMC |
-| Idle stop | `ASP_SANDBOX_IDLE_TIMEOUT` apagado por defecto (smokes); lab systemd usa `2h`. Actividad = create, paso a `running`, exec OK. No es un GC del fichero `asp session` |
-| K8s | Opcional solo para desplegar el CP; sandboxes no son Pods |
-
-## Mapa de documentación
-
-| Doc | Contenido |
-|---|---|
-| [`docs/architecture.md`](docs/architecture.md) | Arquitectura, threat model, flujos |
-| [`docs/diagram.svg`](docs/diagram.svg) / [`.mmd`](docs/diagram.mmd) | Diagrama |
-| [`docs/roadmap.md`](docs/roadmap.md) | Fases 0–2f + gaps; sesión primero ([ADR-0009](docs/adr/0009-agent-sessions.md)) |
-| [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md) | Por qué la sesión es el producto y el one-shot no |
-| [`docs/mvp-smoke.md`](docs/mvp-smoke.md) | Smoke dry-run (sin KVM) |
-| [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) | Ops CH + KVM real |
-| [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) | Lab Keycloak IdP (realm asp) + systemd CP — secretos fuera de git |
-| [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) | Primitiva one-shot + `asp auth` / Bearer (no es la superficie del agente) |
-| [`docs/ops-asp-session.md`](docs/ops-asp-session.md) | CLI de la sesión: `asp session` para el shell del harness (OpenCode) |
-| [`docs/ops-local-net.md`](docs/ops-local-net.md) | Opt-in `--local-net`: handshake y límites (sin WireGuard de kernel) |
-| [`docs/adr/`](docs/adr/) | Decisiones (0001–0010) |
-| [`docs/why-*.md`](docs/) | Por qué / qué ganamos (2d, 2e, CLI, sesiones, multi-user, network-flow attribution, red local bajo demanda) |
-| [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) | Puertos vsock |
+| Threat model, capas, flujos | [`docs/architecture.md`](docs/architecture.md) |
+| Decisiones (sin repetirlas aquí) | [`docs/adr/`](docs/adr/) — índice debajo |
+| Fases hechas y gaps | [`docs/roadmap.md`](docs/roadmap.md) |
+| Smoke sin KVM | [`docs/mvp-smoke.md`](docs/mvp-smoke.md) |
+| Cloud Hypervisor en bare metal | [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) |
+| Sesión y wrapper del harness | [`docs/ops-asp-session.md`](docs/ops-asp-session.md) · [por qué](docs/why-agent-sessions.md) |
+| Un solo comando (`asp sandbox run`) | [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) |
+| Keycloak de lab | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) |
+| `--local-net` | [`docs/ops-local-net.md`](docs/ops-local-net.md) · [por qué](docs/why-on-demand-local-net.md) |
+| virtiofs y PTY del exec | [`docs/why-virtiofs-pty.md`](docs/why-virtiofs-pty.md) |
+| Notas `why-*` (2d, 2e, CLI, identidad, flujos) | [`docs/`](docs/) |
 
 ### ADRs
 
-1. [VMM: Cloud Hypervisor](docs/adr/0001-vmm-choice.md)
-2. [Red y egress](docs/adr/0002-networking.md)
-3. [Identidad SSH/OIDC](docs/adr/0003-identity.md)
-4. [Alcance de Kubernetes](docs/adr/0004-k8s-scope.md)
-5. [Fase 2d hardening](docs/adr/0005-fase-2d-hardening.md)
-6. [Fase 2e nft + SSH guest](docs/adr/0006-fase-2e-nft-ssh-guest.md)
-7. [Identidad multi-usuario / IdP](docs/adr/0007-multi-user-identity.md) — fases 1–5 (schema + JWT IdP + RBAC + SSH scoped + workload user_sub/act); ver [`docs/why-multi-user-identity.md`](docs/why-multi-user-identity.md) · lab Keycloak: [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md)
-8. [Atribución de flujos de red → owner_sub](docs/adr/0008-network-flow-attribution.md) — **evaluación** (no implementada); ver [`docs/why-network-flow-attribution.md`](docs/why-network-flow-attribution.md)
-9. [Sesiones de agente](docs/adr/0009-agent-sessions.md) — **aceptada como dirección**: la sesión es la forma primaria de aislamiento; el one-shot es primitiva interna. Ver [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md)
-10. [Red local bajo demanda](docs/adr/0010-on-demand-local-net.md) — contrato vigente, **corte mínimo** (flag + handshake + blackhole; sin WireGuard de kernel): apagada por defecto; con `--local-net` la default de esa sesión (`0.0.0.0/0` y `::/0` si existe) iría por el túnel del agente local. Sin CIDR en v1. Si el agente cae, no hay vuelta al proxy. Ver [`docs/why-on-demand-local-net.md`](docs/why-on-demand-local-net.md) · ops [`docs/ops-local-net.md`](docs/ops-local-net.md)
+Índice. El texto normativo está en cada archivo.
 
-## Mapa de componentes
-
-| Ruta | Responsabilidad |
+| ADR | Tema |
 |---|---|
-| [`control-plane/`](control-plane/) | API HTTP/TLS, tenancy, PKI, OIDC, attest, leases |
-| [`node-agent/`](node-agent/) | VMM, reconciler, egress/nft, host-vsock, TAP |
-| [`pod-daemon/`](pod-daemon/) | API en el guest (exec) |
-| [`images/guest/`](images/guest/) | Rootfs Debian + helpers SSH |
-| [`cli/`](cli/) | Demo CLI `asp` |
-| [`docs/`](docs/) | Arquitectura, ADRs, ops |
-| [`scripts/`](scripts/) | Smokes, pack, nft, rootfs, diagrama |
+| [0001](docs/adr/0001-vmm-choice.md) | VMM: Cloud Hypervisor |
+| [0002](docs/adr/0002-networking.md) | Red y egress del nodo |
+| [0003](docs/adr/0003-identity.md) | SSH agent e OIDC fuera del guest |
+| [0004](docs/adr/0004-k8s-scope.md) | Kubernetes solo para desplegar el control plane |
+| [0005](docs/adr/0005-fase-2d-hardening.md) | Hardening 2d |
+| [0006](docs/adr/0006-fase-2e-nft-ssh-guest.md) | nft y SSH en el guest |
+| [0007](docs/adr/0007-multi-user-identity.md) | Identidad multi-usuario / IdP |
+| [0008](docs/adr/0008-network-flow-attribution.md) | Flujos de red → `owner_sub` (evaluación, no implementada) |
+| [0009](docs/adr/0009-agent-sessions.md) | La sesión es el uso primario del aislamiento |
+| [0010](docs/adr/0010-on-demand-local-net.md) | Red local: túnel completo, opt-in; corte mínimo sin WireGuard de kernel |
 
-## Quickstart (dry-run)
+## Límites que el código sí tiene
 
-Requisitos: Go 1.22+, Rust/Cargo. Docker opcional (Postgres / guest rootfs). **No hace falta KVM.**
+| Tema | Realidad |
+|---|---|
+| Dry-run | `FakeVMM`. No es KVM. |
+| nft | `soft` tolera la falta de root. `enforce` exige privilegios. CI no demuestra bypass-proof. |
+| Attest | Firma software (`ASP_ATTEST_KEY`). No es TPM/SEV. |
+| Leases | TTL en el control plane y `FenceProvider` stub. No es STONITH BMC. |
+| Idle | Apagado por defecto. No barre el fichero local de la sesión. |
+| local-net | Handshake y plan de blackhole. Sin dispositivo WireGuard ni NAT. |
+| virtiofs | El nodo pone el dispositivo si hay binario. El auto-mount está en el **build** de la imagen. El rootfs de ncc1701d no se ha reconstruido. |
+| OpenCode | No hay plugin. Hay un wrapper de ejemplo. |
+| Atribución de flujos | ADR-0008, no implementada. |
+| K8s | Opcional para el API. Los sandboxes no son Pods. |
+
+## Arranque mínimo (dry-run)
+
+Go 1.22+ y Rust/Cargo. Docker solo si quieres Postgres o construir el rootfs. No hace falta KVM. Procedimiento y fallos: [`docs/mvp-smoke.md`](docs/mvp-smoke.md). Host con KVM: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
 
 ```bash
 make test
-make smoke          # smokes enroll/identity/reconcile
-make asp            # → build/asp
-make smoke-asp      # CLI e2e dry-run
+make smoke       # enroll / identity / reconcile
+make asp         # → build/asp
+make smoke-asp   # CLI e2e dry-run (sandbox run, no la sesión)
 ```
 
-Arranque manual mínimo (tres terminales):
+Tres procesos, en seco:
 
 ```bash
 export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 (cd control-plane && go run ./cmd/api)
-
 (cd pod-daemon && cargo run -- --listen unix --unix-socket /tmp/pod-daemon.sock)
-
 (cd node-agent && go run ./cmd/node-agent \
   --control-plane-url=http://127.0.0.1:8080 --node-id=dev-node \
   --dry-run --enroll --bootstrap-token=dev-node-bootstrap \
   --cert-dir=/tmp/asp-node-certs --agent-listen=127.0.0.1:9100 \
-  --pod-daemon-sock=/tmp/pod-daemon.sock \
-  --reconcile \
-  --host-vsock --host-vsock-dir=/tmp/asp-hv \
-  --ssh-agent-bridge=/tmp/asp-ssh-agent.sock \
-  --guest-ssh-agent-auto \
-  --identity-listen=/tmp/asp-identity.sock)
-# Opcional nft soft: --egress-proxy-listen=:8888 --nft-egress-redirect --nft-egress-mode=soft
+  --pod-daemon-sock=/tmp/pod-daemon.sock --reconcile \
+  --host-vsock --host-vsock-dir=/tmp/asp-hv)
 ```
 
-Sesión de agente (forma primaria; dry-run local). El harness engancha el shell a `session exec` durante horas; **no** hay sync del workspace del host:
+Postgres opcional: `docker compose up -d postgres` y `DATABASE_URL=postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable`. Sin esa variable el control plane usa memoria y pierde el estado al salir.
 
-```bash
-./build/asp session start --node-id=dev-node
-./build/asp session exec --cmd 'echo hello'
-./build/asp session stop
-```
+## Mapa del árbol
 
-Dirección y límites: [ADR-0009](docs/adr/0009-agent-sessions.md) · [`docs/why-agent-sessions.md`](docs/why-agent-sessions.md) · contrato CLI [`docs/ops-asp-session.md`](docs/ops-asp-session.md).
-
-Primitiva one-shot (CI / un solo comando, no el bucle del agente):
-
-```bash
-./build/asp sandbox run --node-id=dev-node --cmd 'echo hello'
-```
-
-Lab IdP (ncc1701d, CP `127.0.0.1:18112` — secretos en el host), misma primitiva o `session start` con `--tenant=default`:
-
-```bash
-export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
-./build/asp sandbox run --tenant=default --cmd 'echo hello'
-```
-
-Auth del Bearer y por qué el one-shot no es la integración: [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md).
-
-Detalle de precondiciones, resultados esperados y fallos: [`docs/mvp-smoke.md`](docs/mvp-smoke.md).  
-Host con KVM: [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
-
-### Postgres opcional
-
-```bash
-docker compose up -d postgres
-export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
-(cd control-plane && DATABASE_URL="$DATABASE_URL" go test ./... -count=1)
-```
-
-## Vsock ports
-
-| Port | Direction | Role |
-|---|---|---|
-| 26500 | host→guest | pod-daemon HTTP |
-| 26501 | guest→host | SSH agent |
-| 26502 | guest→host | OIDC identity |
-
-Detalle: [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md).
+| Ruta | Responsabilidad |
+|---|---|
+| [`control-plane/`](control-plane/) | API, tenancy, PKI, OIDC, attest, leases, local-net |
+| [`node-agent/`](node-agent/) | VMM, reconciler, egress/nft, vsock, TAP, virtiofsd |
+| [`pod-daemon/`](pod-daemon/) | Exec en el guest |
+| [`images/guest/`](images/guest/) | Rootfs Debian, unidad virtiofs, helpers SSH |
+| [`cli/`](cli/) | `asp` |
+| [`docs/`](docs/) | Arquitectura, ADRs, ops |
+| [`scripts/`](scripts/) | Smokes, pack, nft, rootfs, diagrama |
