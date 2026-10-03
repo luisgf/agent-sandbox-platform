@@ -10,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -56,6 +58,15 @@ type ExecRequest struct {
 	Cmd []string          `json:"cmd"`
 	Env map[string]string `json:"env,omitempty"`
 	Cwd string            `json:"cwd,omitempty"`
+	// PTY asks the guest to allocate a pseudoterminal. Streaming only.
+	PTY bool `json:"pty,omitempty"`
+	// Rows and Cols are the initial PTY size (0 = guest default 24x80).
+	Rows int `json:"rows,omitempty"`
+	Cols int `json:"cols,omitempty"`
+	// Stdin is one-shot input for the buffered JSON exec.
+	Stdin string `json:"stdin,omitempty"`
+	// StdinStream keeps a pipe open when PTY is false so piped stdin can EOF.
+	StdinStream bool `json:"stdin_stream,omitempty"`
 }
 
 // ExecResult is the exec response from the control plane.
@@ -160,6 +171,7 @@ type streamEvent struct {
 	Stream   string `json:"stream"`
 	Data     string `json:"data"`
 	ExitCode *int   `json:"exit_code"`
+	ExecID   string `json:"exec_id"`
 }
 
 func (e streamEvent) kind() string {
@@ -173,6 +185,16 @@ func (e streamEvent) kind() string {
 // It returns the guest exit code. A buffered JSON response (old control plane)
 // is still accepted and written only after the body is complete.
 func (c *Client) ExecStream(ctx context.Context, id string, req ExecRequest, stdout, stderr io.Writer) (int, error) {
+	return c.ExecStreamIO(ctx, id, req, stdout, stderr, nil)
+}
+
+// ExecStreamIO is ExecStream plus an optional stdin reader. When stdin is
+// non-nil the guest must emit {"type":"ready","exec_id":"..."} (PTY or
+// stdin_stream). Bytes are posted to /exec/stdin. EOF sends close:true.
+// A *os.File stdin is polled so restoring the terminal does not block the
+// process after the guest exits. The stream request itself has no client
+// timeout; each stdin POST uses the client's normal timeout.
+func (c *Client) ExecStreamIO(ctx context.Context, id string, req ExecRequest, stdout, stderr io.Writer, stdin io.Reader) (int, error) {
 	b, err := json.Marshal(req)
 	if err != nil {
 		return 0, err
@@ -187,10 +209,13 @@ func (c *Client) ExecStream(ctx context.Context, id string, req ExecRequest, std
 	if ah := c.authHeader(); ah != "" {
 		httpReq.Header.Set("Authorization", ah)
 	}
-	hc := c.HTTPClient
-	if hc == nil {
-		hc = http.DefaultClient
+	base := c.HTTPClient
+	if base == nil {
+		base = http.DefaultClient
 	}
+	hc := *base
+	// A PTY or a long stream must not die at the JSON client's 60s cap.
+	hc.Timeout = 0
 	resp, err := hc.Do(httpReq)
 	if err != nil {
 		return 0, err
@@ -231,6 +256,17 @@ func (c *Client) ExecStream(ctx context.Context, id string, req ExecRequest, std
 	sc.Buffer(make([]byte, 0, 64*1024), 4<<20)
 	sawExit := false
 	exitCode := 0
+	var pumpStop chan struct{}
+	var pumpErr chan error
+	if stdin != nil {
+		pumpStop = make(chan struct{})
+		pumpErr = make(chan error, 1)
+	}
+	defer func() {
+		if pumpStop != nil {
+			close(pumpStop)
+		}
+	}()
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
@@ -241,6 +277,15 @@ func (c *Client) ExecStream(ctx context.Context, id string, req ExecRequest, std
 			return 0, fmt.Errorf("exec stream: %w", err)
 		}
 		switch ev.kind() {
+		case "ready":
+			if stdin != nil && ev.ExecID != "" && pumpErr != nil {
+				execID := ev.ExecID
+				ch := pumpErr
+				go func() {
+					ch <- c.pumpExecStdin(ctx, id, execID, stdin, pumpStop)
+				}()
+				pumpErr = nil // single start; ch keeps the buffered channel
+			}
 		case "stdout":
 			if stdout != nil && ev.Data != "" {
 				if _, err := io.WriteString(stdout, ev.Data); err != nil {
@@ -332,3 +377,79 @@ type HTTPError struct {
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("control-plane HTTP %d: %s", e.StatusCode, e.Message)
 }
+
+func (c *Client) pumpExecStdin(ctx context.Context, sandboxID, execID string, stdin io.Reader, stop <-chan struct{}) error {
+	send := func(data string, closeStdin bool) error {
+		body := map[string]any{"exec_id": execID}
+		if data != "" {
+			body["data"] = data
+		}
+		if closeStdin {
+			body["close"] = true
+		}
+		path := "/v1/sandboxes/" + url.PathEscape(sandboxID) + "/exec/stdin"
+		return c.doJSON(ctx, http.MethodPost, path, body, http.StatusOK, nil)
+	}
+	buf := make([]byte, 1024)
+	for {
+		if stop != nil {
+			select {
+			case <-stop:
+				return nil
+			default:
+			}
+		}
+		n, err := readStdin(stdin, buf, stop)
+		if n > 0 {
+			if serr := send(string(buf[:n]), false); serr != nil {
+				return serr
+			}
+		}
+		if err == io.EOF {
+			return send("", true)
+		}
+		if err == errStdinStopped {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// readStdin reads one chunk. *os.File is non-blocking so stop unblocks a TTY.
+// A nil error and n==0 means "try again" (EAGAIN). io.EOF means the writer closed.
+func readStdin(stdin io.Reader, buf []byte, stop <-chan struct{}) (int, error) {
+	f, ok := stdin.(*os.File)
+	if !ok {
+		return stdin.Read(buf)
+	}
+	fd := int(f.Fd())
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		return stdin.Read(buf)
+	}
+	defer syscall.SetNonblock(fd, false)
+	for {
+		if stop != nil {
+			select {
+			case <-stop:
+				return 0, errStdinStopped
+			default:
+			}
+		}
+		n, err := syscall.Read(fd, buf)
+		if n > 0 {
+			return n, nil
+		}
+		if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+			time.Sleep(15 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		return 0, io.EOF
+	}
+}
+
+var errStdinStopped = fmt.Errorf("stdin stopped")

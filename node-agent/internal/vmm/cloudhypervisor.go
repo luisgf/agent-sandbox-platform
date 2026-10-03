@@ -241,12 +241,12 @@ func (c *CloudHypervisor) createVMWith(ctx context.Context, client *http.Client,
 	if config.VsockCID != 0 && config.VsockPath != "" {
 		body.Vsock = &chVsockConfig{CID: config.VsockCID, Socket: config.VsockPath}
 	}
-	// virtiofs is opt-in via an already-running virtiofsd socket. The
-	// reconciler does not start virtiofsd and does not set this field, so a
-	// workspace_host_path alone does not change the CH payload. Adding an fs
-	// device without a socket would make vm.create fail.
-	if sock := strings.TrimSpace(config.WorkspaceFSSocket); sock != "" {
-		body.Fs = []chFsConfig{{Tag: WorkspaceVirtiofsTag, Socket: sock}}
+	// virtiofs is attached only when a virtiofsd socket is already listening.
+	// The reconciler starts that daemon when workspace_host_path is set and
+	// puts the socket here. An fs device without a socket would fail vm.create,
+	// so an empty socket omits fs even if a host path was recorded.
+	if tag, sock, ok := WorkspaceFS(config); ok {
+		body.Fs = []chFsConfig{{Tag: tag, Socket: sock}}
 	} else if strings.TrimSpace(config.WorkspaceHostPath) != "" {
 		c.logger().Warn("workspace host path recorded; Cloud Hypervisor virtiofs not attached (no virtiofsd socket)",
 			"id", config.ID,

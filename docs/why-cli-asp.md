@@ -41,9 +41,9 @@ añadir un protocolo nuevo.
 ## Límites honestos
 
 Es un **cliente HTTP de demo/ops**, no un SDK multi-lenguaje ni un TUI ni un
-plugin de OpenCode. `asp session exec` streaméa stdout/stderr en NDJSON
-(no es un PTY ni un pipe de bytes). `--workspace` guarda la ruta en el spec;
-Cloud Hypervisor no monta virtiofs. El apagado por idle, si existe, es el reaper del CP
+plugin de OpenCode. `asp session exec` pide un PTY y reenvía stdin, pero el
+cuerpo sigue siendo NDJSON (no bytes opacos, no SIGWINCH). `--workspace` hace
+que el nodo exporte virtiofs; el guest monta el tag a mano. El apagado por idle, si existe, es el reaper del CP
 (`ASP_SANDBOX_IDLE_TIMEOUT`, default off), no un GC del fichero. Auth = API key **o** JWT IdP
 (lab Keycloak password grant / client_credentials); no es el flujo OAuth
 corporativo completo. No gestiona enrollment de nodos.

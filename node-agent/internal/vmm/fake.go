@@ -91,6 +91,14 @@ func (f *FakeVMM) Pause(context.Context, string) error {
 	return nil
 }
 
+// RunningConfig returns the config passed to Start for id.
+func (f *FakeVMM) RunningConfig(id string) (MicroVMConfig, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cfg, ok := f.Running[id]
+	return cfg, ok
+}
+
 func (f *FakeVMM) record(op string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

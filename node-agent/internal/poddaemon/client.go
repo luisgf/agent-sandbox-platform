@@ -17,6 +17,28 @@ type ExecRequest struct {
 	Cmd []string          `json:"cmd"`
 	Env map[string]string `json:"env,omitempty"`
 	Cwd string            `json:"cwd,omitempty"`
+	// PTY asks the guest to run the command on a pseudoterminal.
+	PTY bool `json:"pty,omitempty"`
+	// Rows and Cols are the initial PTY size. Zero means the guest default (24x80).
+	Rows int `json:"rows,omitempty"`
+	Cols int `json:"cols,omitempty"`
+	// Stdin is one-shot input for the buffered JSON exec. Ignored by the stream
+	// path; streaming stdin uses POST /v1/exec/stdin after the ready event.
+	Stdin string `json:"stdin,omitempty"`
+	// StdinStream keeps a pipe open on the non-PTY stream path so the client
+	// can POST stdin and then close it (real EOF). PTY sessions do not need it.
+	StdinStream bool `json:"stdin_stream,omitempty"`
+}
+
+// StdinMessage is POST /v1/exec/stdin. Data is a JSON string (not an opaque
+// byte pipe). Close delivers EOF: the write end of a pipe, or Ctrl-D on a
+// canonical PTY. Rows/Cols resize a PTY when both are non-zero.
+type StdinMessage struct {
+	ExecID string `json:"exec_id"`
+	Data   string `json:"data,omitempty"`
+	Close  bool   `json:"close,omitempty"`
+	Rows   int    `json:"rows,omitempty"`
+	Cols   int    `json:"cols,omitempty"`
 }
 
 // ExecResponse is the sync MVP result from pod-daemon.
@@ -130,4 +152,27 @@ func (c *Client) OpenExecStream(ctx context.Context, in ExecRequest) (*http.Resp
 		return nil, fmt.Errorf("exec stream status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
 	}
 	return resp, nil
+}
+
+// WriteStdin delivers bytes or EOF to a streaming exec identified by ExecID.
+func (c *Client) WriteStdin(ctx context.Context, in StdinMessage) error {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://pod-daemon/v1/exec/stdin", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("exec stdin status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+	}
+	return nil
 }

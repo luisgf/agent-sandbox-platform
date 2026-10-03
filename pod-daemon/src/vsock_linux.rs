@@ -4,6 +4,7 @@
 use std::io::{self, Read, Write};
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::thread;
 use std::time::Duration;
 
 const AF_VSOCK: i32 = 40;
@@ -173,9 +174,12 @@ pub fn serve(port: u32, exec_timeout: Duration) -> io::Result<()> {
     loop {
         match listener.accept() {
             Ok(stream) => {
-                if let Err(err) = crate::http_serve::handle_connection(stream, exec_timeout) {
-                    eprintln!("connection error: {err}");
-                }
+                let timeout = exec_timeout;
+                thread::spawn(move || {
+                    if let Err(err) = crate::http_serve::handle_connection(stream, timeout) {
+                        eprintln!("connection error: {err}");
+                    }
+                });
             }
             Err(error) => eprintln!("accept error: {error}"),
         }

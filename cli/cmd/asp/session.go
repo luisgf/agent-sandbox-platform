@@ -14,6 +14,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/client"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/cmdline"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/session"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/term"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/wait"
 )
 
@@ -127,7 +128,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	mem := fs.Int("memory-mib", 512, "memory_mib")
 	node := fs.String("node-id", "", "optional node pin")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
-	workspace := fs.String("workspace", "", "absolute host directory to record as the session workspace (guest mount /workspace when virtiofs exists; CH does not start virtiofsd)")
+	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest must mount tag workspace on /workspace)")
 	force := fs.Bool("force", false, "destroy any sandbox recorded in the session file, then start a new one")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -246,6 +247,7 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
 	buffered := fs.Bool("buffered", false, "wait for the full JSON exec body instead of streaming NDJSON")
+	noPTY := fs.Bool("no-pty", false, "stream without a guest PTY (piped stdin gets a real EOF instead of Ctrl-D)")
 	if err := fs.Parse(before); err != nil {
 		return 2
 	}
@@ -284,9 +286,20 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	req := client.ExecRequest{Cmd: argv, Cwd: *cwd}
+	stdinR, raw := sessionStdin(stdout)
 	// --json and --buffered keep the accumulated JSON path (smokes, one blob).
-	// Default prints stdout/stderr as NDJSON chunks arrive.
+	// Default prints stdout/stderr as NDJSON chunks arrive and asks the guest
+	// for a PTY unless --no-pty. Local TTY stdin is forwarded only when this
+	// process's stdout is the real terminal (tests pass a buffer).
 	if g.jsonOut || *buffered {
+		if stdinR != nil && !term.IsTerminal(int(os.Stdin.Fd())) {
+			buf, rerr := io.ReadAll(io.LimitReader(stdinR, 1<<20))
+			if rerr != nil {
+				fmt.Fprintf(stderr, "session exec: stdin: %v\n", rerr)
+				return 1
+			}
+			req.Stdin = string(buf)
+		}
 		res, err := c.Exec(context.Background(), st.SandboxID, req)
 		if err != nil {
 			if idleReapedErr(err) {
@@ -301,7 +314,23 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		}
 		return res.ExitCode
 	}
-	code, err = c.ExecStream(context.Background(), st.SandboxID, req, stdout, stderr)
+	if !*noPTY {
+		req.PTY = true
+		if rows, cols, serr := term.Size(int(os.Stdout.Fd())); serr == nil && rows > 0 && cols > 0 {
+			req.Rows, req.Cols = rows, cols
+		}
+	} else if stdinR != nil {
+		req.StdinStream = true
+	}
+	if raw {
+		restore, rerr := term.MakeRaw(int(os.Stdin.Fd()))
+		if rerr != nil {
+			fmt.Fprintf(stderr, "session exec: raw tty: %v\n", rerr)
+			return 1
+		}
+		defer restore()
+	}
+	code, err = c.ExecStreamIO(context.Background(), st.SandboxID, req, stdout, stderr, stdinR)
 	if err != nil {
 		if idleReapedErr(err) {
 			fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
@@ -311,6 +340,23 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return code
+}
+
+// sessionStdin forwards process stdin only for a real CLI invocation.
+// Tests pass a bytes.Buffer or similar as stdout, which must not consume
+// the test runner's stdin. A terminal is forwarded raw when stdout is also
+// a terminal; a pipe or file is forwarded as-is (including when stdout is
+// redirected).
+func sessionStdin(stdout io.Writer) (io.Reader, bool) {
+	if stdout != os.Stdout {
+		return nil, false
+	}
+	inTerm := term.IsTerminal(int(os.Stdin.Fd()))
+	outTerm := term.IsTerminal(int(os.Stdout.Fd()))
+	if inTerm && !outTerm {
+		return nil, false
+	}
+	return os.Stdin, inTerm && outTerm
 }
 
 func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {

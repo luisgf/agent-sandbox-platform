@@ -741,11 +741,20 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 Smokes dry-run (sin KVM): `make smoke`.
 
-## Workspace del host (virtiofs) — límite honesto
+## Workspace del host (virtiofs)
 
-`asp session start --workspace /ruta` persiste `workspace_host_path` y el reconciler lo anota en la config de la VM. **Este host con KVM no monta ese directorio.** No se arranca `virtiofsd` y `vm.create` no incluye el dispositivo `fs` (el socket vacío haría fallar el boot). El tag previsto es `workspace` y el mount del guest sería `/workspace`, el día que alguien opere virtiofsd fuera de este repo y rellene el socket. Hasta entonces el exec ve solo el disco del guest. FakeVMM registra la ruta en dry-run; tampoco crea el árbol dentro de una VM. Detalle: [`ops-asp-session.md`](ops-asp-session.md).
+`asp session start --workspace /ruta` persiste `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` (binario Rust, `--virtiofsd-bin` / `VIRTIOFSD_BIN`) con un socket por sandbox y `vm.create` incluye `fs` tag `workspace`. Sin el binario el sandbox pasa a `failed`. Sin workspace no hay `fs`.
 
-El stream de exec (NDJSON, `POST /v1/exec?stream=1` en el pod-daemon) sí viaja por el mismo vsock **26500**. No es un PTY. La imagen guest tiene que incluir el pod-daemon que entiende el query; si no, el node-agent degrada a un JSON final reescrito como un solo burst.
+El guest **no** monta solo. Dentro de la VM:
+
+```sh
+mkdir -p /workspace
+mount -t virtiofs workspace /workspace
+```
+
+Hasta ese mount el exec ve el disco del guest. FakeVMM no bootea; los tests solo afirman socket y tag. Detalle: [`ops-asp-session.md`](ops-asp-session.md), [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
+
+El exec con PTY también viaja por el vsock **26500** (`POST /v1/exec?stream=1` y `POST /v1/exec/stdin`). La imagen tiene que llevar el pod-daemon de este corte; si no, no hay `ready` y el node-agent degrada a un JSON final reescrito como un solo burst. El proceso del guest sigue sujeto a `--exec-timeout-secs` (default 30).
 
 ## Referencias rápidas
 

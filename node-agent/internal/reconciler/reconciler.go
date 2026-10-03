@@ -3,6 +3,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
 
@@ -32,6 +34,7 @@ type Handle struct {
 	VsockPath string
 	TapName   string
 	SSHSock   string // per-sandbox symlink path under VsockDir (virtiofs docs)
+	stopFS    func() // stops virtiofsd when a workspace was mounted
 }
 
 // Reconciler polls control-plane work, claims sandboxes, and starts/stops VMs.
@@ -75,6 +78,14 @@ type Reconciler struct {
 	// muxer path ({vsock}_26501 / {vsock}_26502). Required for SSH agent +
 	// identity under Cloud Hypervisor hybrid vsock.
 	GuestHost GuestHostAcceptor
+
+	// VirtiofsdBin is the virtiofsd executable. Empty means "virtiofsd" on PATH.
+	// Used only when the sandbox spec has a workspace_host_path.
+	VirtiofsdBin string
+	// FSLauncher overrides virtiofs.Start (unit tests). Nil uses the real daemon.
+	// Signature: sandbox ID, host directory, socket path. The stop func kills
+	// the daemon and removes the socket.
+	FSLauncher func(ctx context.Context, sandboxID, hostPath, socketPath string) (func(), error)
 
 	mu      sync.Mutex
 	handles map[string]Handle
@@ -226,7 +237,25 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		return fmt.Errorf("guest-host attach: %w", err)
 	}
 
+	fsSock, stopFS, err := r.startWorkspace(ctx, sb)
+	if err != nil {
+		r.detachGuestHost(sb.ID)
+		if r.SSHRegistry != nil {
+			r.SSHRegistry.Unset(sb.ID)
+		}
+		if r.TapAuto {
+			_ = r.tapMgr().Delete(cfg.TapDevice)
+		}
+		r.releaseCID(cfg.VsockCID)
+		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", err.Error())
+		return fmt.Errorf("workspace: %w", err)
+	}
+	cfg.WorkspaceFSSocket = fsSock
+
 	if err := r.Engine.Start(ctx, cfg); err != nil {
+		if stopFS != nil {
+			stopFS()
+		}
 		r.detachGuestHost(sb.ID)
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
@@ -238,7 +267,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 
 	sshSock := r.linkSSHAgent(sb.ID)
 
-	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock}
+	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, stopFS: stopFS}
 	r.mu.Lock()
 	r.handles[sb.ID] = h
 	r.mu.Unlock()
@@ -296,6 +325,9 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		if h.SSHSock != "" {
 			_ = os.Remove(h.SSHSock)
+		}
+		if h.stopFS != nil {
+			h.stopFS()
 		}
 		if r.TapAuto && h.TapName != "" {
 			if err := r.tapMgr().Delete(h.TapName); err != nil {
@@ -392,11 +424,62 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 		TapDevice:  tap.DeviceName(sb.ID),
 		VsockCID:   cid,
 		VsockPath:  vsockPath,
-		// Record the requested host directory for FakeVMM / dry-run.
-		// WorkspaceFSSocket stays empty: this process does not spawn virtiofsd,
-		// so Cloud Hypervisor will not receive an fs device.
+		// Host path only. The virtiofsd socket is filled by startWorkspace
+		// before Engine.Start when this string is non-empty. Empty means no
+		// fs device.
 		WorkspaceHostPath: strings.TrimSpace(sb.WorkspaceHostPath),
 	}
+}
+
+// startWorkspace launches virtiofsd when the spec names a host directory.
+// An empty path returns a zero socket and does not look for the binary, so
+// sandboxes without a workspace still boot (and FakeVMM smokes stay green).
+// A non-empty path fails the start when virtiofsd is missing or the directory
+// is not on this node: we do not pretend the guest can see it.
+func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (string, func(), error) {
+	host := strings.TrimSpace(sb.WorkspaceHostPath)
+	if host == "" {
+		return "", nil, nil
+	}
+	info, err := os.Stat(host)
+	if err != nil {
+		return "", nil, fmt.Errorf("workspace host path: %w", err)
+	}
+	if !info.IsDir() {
+		return "", nil, fmt.Errorf("workspace host path %s is not a directory", host)
+	}
+	vsockDir := r.VsockDir
+	if vsockDir == "" {
+		vsockDir = "/run/asp"
+	}
+	if err := os.MkdirAll(vsockDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("workspace socket dir: %w", err)
+	}
+	sock := filepath.Join(vsockDir, "virtiofs-"+sb.ID+".sock")
+	var stop func()
+	if r.FSLauncher != nil {
+		stop, err = r.FSLauncher(ctx, sb.ID, host, sock)
+	} else {
+		stop, err = virtiofs.Start(ctx, virtiofs.Config{
+			Binary:     r.VirtiofsdBin,
+			SocketPath: sock,
+			SharedDir:  host,
+		})
+	}
+	if err != nil {
+		if errors.Is(err, virtiofs.ErrNotFound) {
+			return "", nil, fmt.Errorf("workspace set but virtiofsd is not installed on this node: %w", err)
+		}
+		return "", nil, err
+	}
+	r.Logger.Info("virtiofsd started",
+		"sandbox_id", sb.ID,
+		"socket", sock,
+		"host", host,
+		"tag", vmm.WorkspaceVirtiofsTag,
+		"guest_mount", vmm.WorkspaceGuestMount,
+	)
+	return sock, stop, nil
 }
 
 func (r *Reconciler) allocCID() uint32 {

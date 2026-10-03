@@ -46,9 +46,9 @@ type Sandbox struct {
 	// StopReason is set by the idle reaper (idle_timeout). Empty otherwise.
 	StopReason string `json:"stop_reason,omitempty"`
 	// WorkspaceHostPath is the host directory the session asked to share into
-	// the guest (tag "workspace", mount /workspace). Empty means no share.
-	// Persisted so the node-agent spec can see it. This is not proof the
-	// guest can read the directory: Cloud Hypervisor does not start virtiofsd.
+	// the guest (virtiofs tag "workspace", mount /workspace). Empty means no
+	// share. The node-agent starts virtiofsd when this is set; the guest
+	// image still has to mount the tag.
 	WorkspaceHostPath string    `json:"workspace_host_path,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

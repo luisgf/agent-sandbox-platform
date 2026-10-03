@@ -1,11 +1,16 @@
 //! Shared HTTP/1.1 JSON handler for unix / TCP / vsock transports.
 
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::exec_session::{self, StdinSlot};
+use crate::pty::{self, PtyCommand};
 
 #[derive(Debug, Deserialize)]
 struct ExecRequest {
@@ -14,6 +19,32 @@ struct ExecRequest {
     env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     cwd: Option<String>,
+    /// Run under a PTY. Stderr is merged into the master (no separate stderr events).
+    #[serde(default)]
+    pty: bool,
+    #[serde(default)]
+    rows: u16,
+    #[serde(default)]
+    cols: u16,
+    /// One-shot stdin for the buffered JSON exec.
+    #[serde(default)]
+    stdin: Option<String>,
+    /// Non-PTY stream: keep a pipe open and accept POST /v1/exec/stdin.
+    #[serde(default)]
+    stdin_stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct StdinRequest {
+    exec_id: String,
+    #[serde(default)]
+    data: String,
+    #[serde(default)]
+    close: bool,
+    #[serde(default)]
+    rows: u16,
+    #[serde(default)]
+    cols: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +98,7 @@ pub fn handle_connection<S: Read + Write>(mut stream: S, exec_timeout: Duration)
     let (path_only, stream_exec) = path_and_stream(&path);
     match (method.as_str(), path_only) {
         ("GET", "/healthz") => write_response(&mut stream, 200, r#"{"status":"ok"}"#),
+        ("POST", "/v1/exec/stdin") => handle_stdin(&mut stream, &body),
         ("POST", "/v1/exec") if stream_exec => {
             let req: ExecRequest = match serde_json::from_slice(&body) {
                 Ok(r) => r,
@@ -140,11 +172,7 @@ fn path_and_stream(raw: &str) -> (&str, bool) {
     (path, stream)
 }
 
-fn spawn_command(req: &ExecRequest) -> io::Result<std::process::Child> {
-    let program = &req.cmd[0];
-    let args = &req.cmd[1..];
-    let mut command = Command::new(program);
-    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+fn apply_cwd_env(command: &mut Command, req: &ExecRequest) {
     if let Some(cwd) = &req.cwd {
         if !cwd.is_empty() {
             command.current_dir(cwd);
@@ -155,42 +183,128 @@ fn spawn_command(req: &ExecRequest) -> io::Result<std::process::Child> {
             command.env(k, v);
         }
     }
+}
+
+fn spawn_command(req: &ExecRequest) -> io::Result<std::process::Child> {
+    let mut command = Command::new(&req.cmd[0]);
+    command
+        .args(&req.cmd[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_cwd_env(&mut command, req);
     command.spawn()
 }
 
+fn spawn_with_stdin_pipe(req: &ExecRequest) -> io::Result<std::process::Child> {
+    let mut command = Command::new(&req.cmd[0]);
+    command
+        .args(&req.cmd[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_cwd_env(&mut command, req);
+    command.spawn()
+}
+
+struct SessionGuard(Option<String>);
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.take() {
+            exec_session::remove(&id);
+        }
+    }
+}
+
+struct ChildGuard(Option<std::process::Child>);
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// NDJSON over chunked HTTP. Each line is `{"type":"stdout"|"stderr","data":"..."}`
-/// and a final `{"type":"exit","exit_code":N}`. The buffered JSON path is unchanged.
+/// and a final `{"type":"exit","exit_code":N}`. When `pty` or `stdin_stream` is
+/// set, the first line is `{"type":"ready","exec_id":"..."}` and stdin arrives
+/// on POST /v1/exec/stdin. The buffered JSON path is unchanged.
 fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) -> io::Result<()> {
-    let mut child = match spawn_command(req) {
-        Ok(c) => c,
-        Err(e) => {
-            return write_json(
-                out,
-                500,
-                &ErrorBody {
-                    error: e.to_string(),
-                },
-            );
+    let mut session = SessionGuard(None);
+    let mut pty_reader: Option<File> = None;
+    let child = if req.pty {
+        let (child, master) = match pty::spawn(PtyCommand {
+            cmd: req.cmd.clone(),
+            cwd: req.cwd.clone(),
+            env: req.env.clone(),
+            rows: req.rows,
+            cols: req.cols,
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                return write_json(out, 500, &ErrorBody { error: e.to_string() });
+            }
+        };
+        let reader = master.try_clone()?;
+        session.0 = Some(exec_session::register(StdinSlot::Pty(Mutex::new(master))));
+        pty_reader = Some(reader);
+        child
+    } else if req.stdin_stream {
+        let mut child = match spawn_with_stdin_pipe(req) {
+            Ok(c) => c,
+            Err(e) => {
+                return write_json(out, 500, &ErrorBody { error: e.to_string() });
+            }
+        };
+        let stdin = child.stdin.take();
+        session.0 = Some(exec_session::register(StdinSlot::Pipe(Mutex::new(stdin))));
+        child
+    } else {
+        match spawn_command(req) {
+            Ok(c) => c,
+            Err(e) => {
+                return write_json(out, 500, &ErrorBody { error: e.to_string() });
+            }
         }
     };
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let mut guard = ChildGuard(Some(child));
+    let child = guard.0.as_mut().unwrap();
+    let stdout = if pty_reader.is_some() {
+        None
+    } else {
+        child.stdout.take()
+    };
+    let stderr = if pty_reader.is_some() {
+        None
+    } else {
+        child.stderr.take()
+    };
     let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>)>();
     let tx_out = tx.clone();
     let tx_err = tx.clone();
     drop(tx);
-    thread::spawn(move || {
-        if let Some(mut pipe) = stdout {
+    if let Some(mut pipe) = pty_reader {
+        thread::spawn(move || {
             pump_pipe(&mut pipe, "stdout", &tx_out);
-        }
-    });
-    thread::spawn(move || {
-        if let Some(mut pipe) = stderr {
-            pump_pipe(&mut pipe, "stderr", &tx_err);
-        }
-    });
+        });
+        drop(tx_err);
+    } else {
+        thread::spawn(move || {
+            if let Some(mut pipe) = stdout {
+                pump_pipe(&mut pipe, "stdout", &tx_out);
+            }
+        });
+        thread::spawn(move || {
+            if let Some(mut pipe) = stderr {
+                pump_pipe(&mut pipe, "stderr", &tx_err);
+            }
+        });
+    }
 
     write_chunked_headers(out)?;
+    if let Some(id) = session.0.as_ref() {
+        write_ready(out, id)?;
+    }
     let started = Instant::now();
     let mut killed = false;
     loop {
@@ -200,7 +314,9 @@ fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) 
             }
             Err(RecvTimeoutError::Timeout) => {
                 if !killed && started.elapsed() > timeout {
-                    let _ = child.kill();
+                    if let Some(child) = guard.0.as_mut() {
+                        let _ = child.kill();
+                    }
                     killed = true;
                 }
                 if killed && started.elapsed() > timeout + Duration::from_secs(2) {
@@ -210,6 +326,7 @@ fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) 
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    let mut child = guard.0.take().unwrap();
     let status = child.wait()?;
     let code = if killed {
         124
@@ -224,6 +341,52 @@ fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) 
     write_chunk(out, exit_line.as_bytes())?;
     write_chunk_end(out)?;
     Ok(())
+}
+
+fn write_ready<S: Write>(out: &mut S, id: &str) -> io::Result<()> {
+    let line = format!("{{\"type\":\"ready\",\"exec_id\":\"{id}\"}}\n");
+    write_chunk(out, line.as_bytes())
+}
+
+fn handle_stdin<S: Write>(stream: &mut S, body: &[u8]) -> io::Result<()> {
+    let req: StdinRequest = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return write_json(
+                stream,
+                400,
+                &ErrorBody {
+                    error: format!("invalid JSON: {e}"),
+                },
+            );
+        }
+    };
+    if req.exec_id.is_empty() {
+        return write_json(
+            stream,
+            400,
+            &ErrorBody {
+                error: "exec_id required".into(),
+            },
+        );
+    }
+    match exec_session::write(&req.exec_id, req.data.as_bytes(), req.close, req.rows, req.cols) {
+        Ok(()) => write_json(stream, 200, &serde_json::json!({"ok": true})),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => write_json(
+            stream,
+            404,
+            &ErrorBody {
+                error: e.to_string(),
+            },
+        ),
+        Err(e) => write_json(
+            stream,
+            500,
+            &ErrorBody {
+                error: e.to_string(),
+            },
+        ),
+    }
 }
 
 fn pump_pipe<R: Read>(pipe: &mut R, kind: &'static str, tx: &mpsc::Sender<(&'static str, Vec<u8>)>) {
@@ -270,23 +433,18 @@ fn write_chunk_end<S: Write>(stream: &mut S) -> io::Result<()> {
 }
 
 fn run_exec(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
-    let program = &req.cmd[0];
-    let args = &req.cmd[1..];
-    let mut command = Command::new(program);
+    if req.pty {
+        return run_exec_pty_buffered(req, timeout);
+    }
+    if req.stdin.is_some() {
+        return run_exec_buffered_stdin(req, timeout);
+    }
+    let mut command = Command::new(&req.cmd[0]);
     command
-        .args(args)
+        .args(&req.cmd[1..])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(cwd) = &req.cwd {
-        if !cwd.is_empty() {
-            command.current_dir(cwd);
-        }
-    }
-    if let Some(env) = &req.env {
-        for (k, v) in env {
-            command.env(k, v);
-        }
-    }
+    apply_cwd_env(&mut command, req);
 
     let mut child = command.spawn()?;
     let started = Instant::now();
@@ -313,6 +471,115 @@ fn run_exec(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
                     });
                 }
                 std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+fn run_exec_buffered_stdin(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
+    let mut child = spawn_with_stdin_pipe(req)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(data) = &req.stdin {
+            stdin.write_all(data.as_bytes())?;
+        }
+        // drop closes the pipe → EOF
+    }
+    wait_child_buffered(child, timeout)
+}
+
+fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
+    let (mut child, mut master) = pty::spawn(PtyCommand {
+        cmd: req.cmd.clone(),
+        cwd: req.cwd.clone(),
+        env: req.env.clone(),
+        rows: req.rows,
+        cols: req.cols,
+    })?;
+    if let Some(data) = &req.stdin {
+        if !data.is_empty() {
+            master.write_all(data.as_bytes())?;
+        }
+        // Ctrl-D so a canonical reader sees EOF after the buffered bytes.
+        let _ = master.write_all(&[0x04, 0x04]);
+        let _ = master.flush();
+    }
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        loop {
+            match master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut stdout = Vec::new();
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                while let Ok(chunk) = rx.try_recv() {
+                    stdout.extend_from_slice(&chunk);
+                }
+                // give the reader a moment to drain
+                thread::sleep(Duration::from_millis(30));
+                while let Ok(chunk) = rx.try_recv() {
+                    stdout.extend_from_slice(&chunk);
+                }
+                return Ok(ExecResponse {
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::new(),
+                    exit_code: status.code().unwrap_or(128),
+                });
+            }
+            None => {
+                while let Ok(chunk) = rx.try_recv() {
+                    stdout.extend_from_slice(&chunk);
+                }
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    Ok(ExecResponse {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: format!("exec timed out after {}s", timeout.as_secs()),
+        exit_code: 124,
+    })
+}
+
+fn wait_child_buffered(mut child: std::process::Child, timeout: Duration) -> io::Result<ExecResponse> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let stdout = read_pipe(child.stdout.take())?;
+                let stderr = read_pipe(child.stderr.take())?;
+                return Ok(ExecResponse {
+                    stdout,
+                    stderr,
+                    exit_code: status.code().unwrap_or(128),
+                });
+            }
+            None => {
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(ExecResponse {
+                        stdout: String::new(),
+                        stderr: format!("exec timed out after {}s", timeout.as_secs()),
+                        exit_code: 124,
+                    });
+                }
+                thread::sleep(Duration::from_millis(20));
             }
         }
     }
@@ -412,6 +679,122 @@ mod tests {
         assert!(resp.contains("hello-stream"), "{resp}");
         assert!(resp.contains("\"type\":\"exit\""), "{resp}");
         assert!(resp.contains("\"exit_code\":0"), "{resp}");
+    }
+
+    fn serve_threaded() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(stream) = stream {
+                    thread::spawn(move || {
+                        let _ = handle_connection(stream, Duration::from_secs(5));
+                    });
+                }
+            }
+        });
+        addr
+    }
+
+    fn read_headers(r: &mut BufReader<TcpStream>) {
+        loop {
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            if line == "\r\n" || line == "\n" || line.is_empty() {
+                break;
+            }
+        }
+    }
+
+    fn read_chunk(r: &mut BufReader<TcpStream>) -> Vec<u8> {
+        let mut size_line = String::new();
+        r.read_line(&mut size_line).unwrap();
+        let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+        let mut buf = vec![0u8; size];
+        if size > 0 {
+            r.read_exact(&mut buf).unwrap();
+        }
+        let mut crlf = [0u8; 2];
+        if size > 0 {
+            let _ = r.read_exact(&mut crlf);
+        } else {
+            // terminating chunk is "0\r\n\r\n"; one CRLF already consumed as the size line end
+            let mut extra = String::new();
+            let _ = r.read_line(&mut extra);
+        }
+        buf
+    }
+
+    fn next_ndjson(r: &mut BufReader<TcpStream>, carry: &mut Vec<u8>) -> String {
+        loop {
+            if let Some(i) = carry.iter().position(|b| *b == b'\n') {
+                let line = carry.drain(..=i).collect::<Vec<u8>>();
+                return String::from_utf8_lossy(&line).trim().to_string();
+            }
+            let chunk = read_chunk(r);
+            if chunk.is_empty() {
+                return String::new();
+            }
+            carry.extend_from_slice(&chunk);
+        }
+    }
+
+    fn post(addr: std::net::SocketAddr, target: &str, body: &str) -> TcpStream {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let req = format!(
+            "POST {target} HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream
+    }
+
+    #[test]
+    fn exec_buffered_stdin_json() {
+        let addr = serve_threaded();
+        let mut stream = post(addr, "/v1/exec", r#"{"cmd":["/bin/sh","-c","cat"],"stdin":"xyz"}"#);
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).unwrap();
+        let resp = String::from_utf8_lossy(&buf);
+        assert!(resp.contains("\"stdout\":\"xyz\""), "{resp}");
+        assert!(resp.contains("\"exit_code\":0"), "{resp}");
+        assert!(!resp.to_ascii_lowercase().contains("ndjson"), "{resp}");
+    }
+
+    #[test]
+    fn exec_stream_stdin_pipe_and_pty() {
+        let addr = serve_threaded();
+        for (label, body) in [
+            ("pipe", r#"{"cmd":["/bin/sh","-c","cat"],"stdin_stream":true}"#),
+            ("pty", r#"{"cmd":["/bin/sh","-c","cat"],"pty":true,"rows":24,"cols":80}"#),
+        ] {
+            let stream = post(addr, "/v1/exec?stream=1", body);
+            let mut r = BufReader::new(stream);
+            read_headers(&mut r);
+            let mut carry = Vec::new();
+            let ready = next_ndjson(&mut r, &mut carry);
+            assert!(ready.contains("\"type\":\"ready\""), "{label} ready={ready}");
+            let exec_id = ready.split("exec_id\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+            let payload = format!(r#"{{"exec_id":"{exec_id}","data":"hello-{label}\n","close":true}}"#);
+            let mut stdin_stream = post(addr, "/v1/exec/stdin", &payload);
+            let mut ack = Vec::new();
+            stdin_stream.read_to_end(&mut ack).unwrap();
+            let ack_s = String::from_utf8_lossy(&ack);
+            assert!(ack_s.contains("200"), "{label} ack={ack_s}");
+            let mut saw = String::new();
+            for _ in 0..20 {
+                let line = next_ndjson(&mut r, &mut carry);
+                if line.is_empty() {
+                    break;
+                }
+                saw.push_str(&line);
+                if line.contains("\"type\":\"exit\"") {
+                    break;
+                }
+            }
+            assert!(saw.contains(&format!("hello-{label}")), "{label} saw={saw}");
+            assert!(saw.contains("\"exit_code\":0"), "{label} saw={saw}");
+        }
     }
 
     #[test]

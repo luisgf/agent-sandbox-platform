@@ -1,11 +1,11 @@
 package api
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +24,7 @@ func testMux(s *Server) http.Handler {
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", s.DestroySandbox)
 	mux.HandleFunc("GET /v1/sandboxes/{id}/events", s.ListSandboxEvents)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.Exec)
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec/stdin", s.ExecStdin)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/claim", s.ClaimSandbox)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/renew-lease", s.RenewSandboxLease)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/attest", s.StoreAttestation)

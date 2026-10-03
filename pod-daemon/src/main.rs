@@ -1,4 +1,6 @@
+mod exec_session;
 mod grpc;
+mod pty;
 mod http_serve;
 mod http_tcp;
 mod http_unix;

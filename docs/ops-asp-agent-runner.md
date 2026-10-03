@@ -165,7 +165,7 @@ make smoke-asp
 | Rol | **superficie del agente** ([ADR-0009](adr/0009-agent-sessions.md)) | primitiva interna: CI, un comando |
 | Ciclo de vida | `start` deja el sandbox; `exec` lo reutiliza horas; `stop` o idle reap | create → exec → destroy en un proceso |
 | Estado en disco | `~/.cache/asp/sessions/<nombre>.json` (0600), sin secretos | ninguno |
-| Workspace del host | spec `workspace_host_path`; **no entra** al guest en KVM (sin virtiofsd) | igual: no entra |
+| Workspace del host | `virtiofsd` + tag `workspace` si el path no está vacío; el guest monta `/workspace` a mano | el one-shot no pasa `--workspace` |
 
 Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.md) · [why-agent-sessions.md](why-agent-sessions.md).
 

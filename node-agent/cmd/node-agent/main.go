@@ -65,6 +65,7 @@ type config struct {
 	NFTHTTPPorts         string
 	GuestSubnet          string
 	GuestSSHAgentAuto    bool
+	VirtiofsdBin         string
 }
 
 func main() {
@@ -423,6 +424,7 @@ func main() {
 		}
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
+		rec.VirtiofsdBin = cfg.VirtiofsdBin
 		if hvSvc != nil {
 			rec.GuestHost = hvSvc
 			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox",
@@ -503,6 +505,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHAPISocket, "ch-api-socket", os.Getenv("CH_API_SOCKET"), "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir")
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
+	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
 	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "localhost listen addr for internal exec proxy")

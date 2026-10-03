@@ -157,6 +157,7 @@ func main() {
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", srv.DestroySandbox)
 	mux.HandleFunc("GET /v1/sandboxes/{id}/events", srv.ListSandboxEvents)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", srv.Exec)
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec/stdin", srv.ExecStdin)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/claim", srv.ClaimSandbox)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/renew-lease", srv.RenewSandboxLease)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/status", srv.UpdateSandboxStatus)

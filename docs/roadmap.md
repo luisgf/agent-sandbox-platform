@@ -191,7 +191,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 **Qué entregó / por qué importaba:** one-liner create→wait→exec→destroy sin reimplementar poll en cada script; exit code del guest al shell.
 
-**Gaps residuales:** no es SDK multi-lenguaje ni TUI. `sandbox run` sigue en JSON acumulado; `asp session exec` puede streamear NDJSON (no es PTY).
+**Gaps residuales:** no es SDK multi-lenguaje ni TUI. `sandbox run` sigue en JSON acumulado; `asp session exec` streamea NDJSON y puede pedir PTY/stdin (no es SSH; ver límites en ops).
 
 Docs: [`why-cli-asp.md`](why-cli-asp.md).
 
@@ -206,11 +206,11 @@ Contrato para harnesses (OpenCode y similares) que enganchan el shell **dentro**
 - `asp session start|exec|status|stop --name` (default `default`)
 - Estado local `~/.cache/asp/sessions/<nombre>.json` (0600): id + URL del CP, sin token. `ASP_SESSION_DIR`. `--session-file` sigue como override
 - `exec` reutiliza `POST /v1/sandboxes/{id}/exec`. Por defecto NDJSON (`?stream=1`); `--buffered` conserva el JSON acumulado de los smokes
-- `--workspace` guarda `workspace_host_path` en el spec. FakeVMM lo registra. CH **no** monta virtiofs (no hay virtiofsd)
+- `--workspace` guarda `workspace_host_path`. El nodo arranca `virtiofsd` y CH recibe `fs` tag `workspace`. El guest monta a mano. Sin binario el start falla. Sin path no hay `fs`
 
 **Qué entregó / por qué importaba:** el one-shot queda para CI; la sesión es el camino del agente y evita pagar el boot en cada tool. Narrativa: [`why-agent-sessions.md`](why-agent-sessions.md).
 
-**Límites honestos:** no es plugin de OpenCode (hay wrapper de ejemplo); el workspace en KVM no está montado; sin PTY; sin GC si se olvida `stop` y el reaper está apagado; el idle sigue siendo global (solo el exec refresca el reloj después del start).
+**Límites honestos:** no es plugin de OpenCode (hay wrapper de ejemplo); el guest no auto-monta virtiofs; el PTY no es un terminal completo (sin SIGWINCH, stderr mezclado, timeout del pod-daemon); sin GC si se olvida `stop` y el reaper está apagado; el idle sigue siendo global (el exec terminado y el stdin proxyado refrescan el reloj).
 
 Docs: [`ops-asp-session.md`](ops-asp-session.md).
 

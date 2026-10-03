@@ -47,7 +47,21 @@ type execBody struct {
 	Cmd             []string          `json:"cmd"`
 	Env             map[string]string `json:"env,omitempty"`
 	Cwd             string            `json:"cwd,omitempty"`
+	PTY             bool              `json:"pty,omitempty"`
+	Rows            int               `json:"rows,omitempty"`
+	Cols            int               `json:"cols,omitempty"`
+	Stdin           string            `json:"stdin,omitempty"`
+	StdinStream     bool              `json:"stdin_stream,omitempty"`
 	EgressAllowlist *egressPolicyDTO  `json:"egress_allowlist,omitempty"`
+}
+
+type stdinBody struct {
+	SandboxID string `json:"sandbox_id"`
+	ExecID    string `json:"exec_id"`
+	Data      string `json:"data,omitempty"`
+	Close     bool   `json:"close,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
 }
 
 type egressCheckBody struct {
@@ -63,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
 	})
 	mux.HandleFunc("POST /v1/internal/exec", s.handleExec)
+	mux.HandleFunc("POST /v1/internal/exec/stdin", s.handleExecStdin)
 	mux.HandleFunc("POST /v1/internal/egress-check", s.handleEgressCheck)
 	mux.HandleFunc("POST /v1/internal/ssh-agent/approve", s.handleSSHAgentApprove)
 	return mux
@@ -120,11 +135,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		s.handleExecStream(w, r, client, body)
 		return
 	}
-	out, err := client.Exec(r.Context(), poddaemon.ExecRequest{
-		Cmd: body.Cmd,
-		Env: body.Env,
-		Cwd: body.Cwd,
-	})
+	out, err := client.Exec(r.Context(), execRequestFromBody(body))
 	if err != nil {
 		if s.Logger != nil {
 			s.Logger.Error("pod-daemon exec", "error", err, "sandbox_id", body.SandboxID)
@@ -205,6 +216,55 @@ func errString(err error) string {
 	return err.Error()
 }
 
+func execRequestFromBody(body execBody) poddaemon.ExecRequest {
+	return poddaemon.ExecRequest{
+		Cmd:         body.Cmd,
+		Env:         body.Env,
+		Cwd:         body.Cwd,
+		PTY:         body.PTY,
+		Rows:        body.Rows,
+		Cols:        body.Cols,
+		Stdin:       body.Stdin,
+		StdinStream: body.StdinStream,
+	}
+}
+
+func (s *Server) handleExecStdin(w http.ResponseWriter, r *http.Request) {
+	var body stdinBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.ExecID) == "" {
+		writeErr(w, http.StatusBadRequest, "exec_id required")
+		return
+	}
+	client, err := s.clientFor(body.SandboxID)
+	if err != nil || client == nil {
+		msg := "pod-daemon client not configured"
+		if err != nil {
+			msg = err.Error()
+		}
+		writeErr(w, http.StatusServiceUnavailable, msg)
+		return
+	}
+	if err := client.WriteStdin(r.Context(), poddaemon.StdinMessage{
+		ExecID: body.ExecID,
+		Data:   body.Data,
+		Close:  body.Close,
+		Rows:   body.Rows,
+		Cols:   body.Cols,
+	}); err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("pod-daemon exec stdin", "error", err, "sandbox_id", body.SandboxID, "exec_id", body.ExecID)
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
 func wantsStream(r *http.Request) bool {
 	switch strings.TrimSpace(strings.ToLower(r.URL.Query().Get("stream"))) {
 	case "1", "true", "yes":
@@ -214,7 +274,7 @@ func wantsStream(r *http.Request) bool {
 }
 
 func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request, client *poddaemon.Client, body execBody) {
-	in := poddaemon.ExecRequest{Cmd: body.Cmd, Env: body.Env, Cwd: body.Cwd}
+	in := execRequestFromBody(body)
 	resp, err := client.OpenExecStream(r.Context(), in)
 	if err != nil {
 		if errors.Is(err, poddaemon.ErrStreamUnsupported) {

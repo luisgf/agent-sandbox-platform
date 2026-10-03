@@ -68,6 +68,23 @@ type execRequest struct {
 	Cwd string            `json:"cwd,omitempty"`
 	// ActorSub optional; X-ASP-Actor-Sub header wins (ADR-0007 phase 1).
 	ActorSub string `json:"actor_sub,omitempty"`
+	// PTY asks the guest pod-daemon to run the command under a pseudoterminal.
+	PTY bool `json:"pty,omitempty"`
+	// Rows and Cols are the initial PTY window. Zero lets the guest pick 24x80.
+	Rows int `json:"rows,omitempty"`
+	Cols int `json:"cols,omitempty"`
+	// Stdin is one-shot input for the buffered JSON exec.
+	Stdin string `json:"stdin,omitempty"`
+	// StdinStream keeps a guest pipe open on the non-PTY stream path.
+	StdinStream bool `json:"stdin_stream,omitempty"`
+}
+
+type execStdinRequest struct {
+	ExecID string `json:"exec_id"`
+	Data   string `json:"data,omitempty"`
+	Close  bool   `json:"close,omitempty"`
+	Rows   int    `json:"rows,omitempty"`
+	Cols   int    `json:"cols,omitempty"`
 }
 
 // HeaderASPActorSub carries the human/service actor for lab when no IdP JWT is present (ADR-0007).
@@ -481,6 +498,11 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		"cmd":              req.Cmd,
 		"env":              req.Env,
 		"cwd":              req.Cwd,
+		"pty":              req.PTY,
+		"rows":             req.Rows,
+		"cols":             req.Cols,
+		"stdin":            req.Stdin,
+		"stdin_stream":     req.StdinStream,
 		"egress_allowlist": egressPol,
 	})
 	stream := wantsExecStream(r)
@@ -552,6 +574,104 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ExecStdin proxies keystrokes or a pipe close to a streaming exec that
+// already returned {"type":"ready","exec_id":...}. It does not start a command.
+// A successful post refreshes idle activity so a live PTY is not reaped between
+// commands that have not exited yet.
+func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "sandbox id required")
+		return
+	}
+	var req execStdinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(req.ExecID) == "" {
+		writeError(w, http.StatusBadRequest, "exec_id required")
+		return
+	}
+	sb, err := s.Store.GetSandbox(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "sandbox not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
+		if !canExec(p, sb) {
+			forbid(w, "forbidden: exec requires owner, admin, or operator")
+			return
+		}
+	}
+	if msg := idleExecBlock(sb); msg != "" {
+		writeError(w, http.StatusConflict, msg)
+		return
+	}
+	if sb.NodeID == nil || *sb.NodeID == "" {
+		writeError(w, http.StatusConflict, "sandbox has no assigned node")
+		return
+	}
+	node, err := s.Store.GetNode(*sb.NodeID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusConflict, "assigned node not registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	agentURL := strings.TrimRight(node.AgentEndpoint, "/")
+	if agentURL == "" {
+		agentURL = strings.TrimRight(node.Endpoint, "/")
+	}
+	if agentURL == "" || strings.HasPrefix(agentURL, "local://") {
+		writeError(w, http.StatusBadGateway, "node has no agent_endpoint for exec")
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"sandbox_id": sb.ID,
+		"exec_id":    req.ExecID,
+		"data":       req.Data,
+		"close":      req.Close,
+		"rows":       req.Rows,
+		"cols":       req.Cols,
+	})
+	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, agentURL+"/v1/internal/exec/stdin", bytes.NewReader(payload))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	client := s.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+		return
+	}
+	_ = s.Store.TouchSandboxActivity(sb.ID)
+	w.Header().Set("Content-Type", "application/json")
+	if len(bytes.TrimSpace(body)) == 0 {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // wantsExecStream is true when the client asked for NDJSON chunks on the

@@ -195,7 +195,8 @@ type Sandbox struct {
 	// expand ASP_SSH_AGENT_SOCK_TEMPLATE for per-user SSH agent upstreams.
 	OwnerSub string `json:"owner_sub,omitempty"`
 	// WorkspaceHostPath is the host directory from the sandbox spec. Empty if
-	// the session did not ask for a share. Not a live mount.
+	// the session did not ask for a share. The reconciler starts virtiofsd
+	// for a non-empty path; the guest mounts tag "workspace" itself.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 }
 
