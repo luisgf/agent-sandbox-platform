@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/luisgf/agent-sandbox-platform/security/advisories/new
+    about: Isolation escapes, egress bypasses and credential leaks are reported privately, never as public issues.
