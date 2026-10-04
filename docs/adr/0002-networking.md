@@ -27,12 +27,11 @@ Capas concretas (de dentro hacia fuera):
 4. **DNS sink** — `--egress-dns-sink` (p.ej. `:5353`): NXDOMAIN a nombres no allowlisted.
 5. **nft redirect anti-bypass (Fase 2e)** — tabla `asp_egress`: redirige TCP HTTP(S) (puertos configurables) y DNS (redirect|drop) desde el subnet guest hacia el proxy/sink. Modos `soft` | `enforce`.
 
-Allowlist efectiva en el proxy (orden):
+Allowlist efectiva en el proxy (orden). **Actualizado 2026-10:** la cabecera `X-ASP-Allowlist-JSON` la escribe el guest y permitía `allow-all`; ya no se lee. La cache era una sola por nodo (la del último exec de cualquier tenant); ahora es por sandbox, buscada por IP de origen:
 
-1. Header `X-ASP-Allowlist-JSON` (lab/tests)
-2. Cache del último `egress_allowlist` adjunto a exec
-3. Env `ASP_EGRESS_ALLOWLIST_JSON`
-4. Default deny del proceso
+1. Origen en la /30 de un sandbox → su último `egress_allowlist` (deny antes del primer exec)
+2. Origen desconocido → env `ASP_EGRESS_ALLOWLIST_JSON`
+3. Default deny del proceso
 
 El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`) y las adjunta en `POST /v1/sandboxes/{id}/exec`.
 
@@ -83,7 +82,7 @@ El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`) y las 
 | Defaults CP | `ASP_EGRESS_DENY_DEFAULT=1` (prod); memory-dev puede auto-set `ASP_EGRESS_DEFAULT_ALLOW=1` |
 | Smoke | `scripts/smoke-egress-proxy.sh`, `scripts/smoke-identity-egress.sh` |
 
-Subnet por defecto del sketch: **`10.200.0.0/16`** (TAP host tipicamente `10.200.0.1/24` por sandbox en el diseño actual de `--tap-auto`).
+Subnet por defecto del sketch: **`10.200.0.0/16`** (con `--tap-auto`, una /30 por sandbox: TAP `.1`, guest `.2`).
 
 ## Límites honestos / no-goals
 

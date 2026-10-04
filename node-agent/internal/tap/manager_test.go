@@ -2,6 +2,7 @@ package tap
 
 import (
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -52,5 +53,46 @@ func TestHardFail(t *testing.T) {
 	m := &Manager{Runner: rec, SoftFail: false}
 	if err := m.Create("asp-x"); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestSlot(t *testing.T) {
+	sub := netip.MustParsePrefix("10.200.0.0/16")
+	n0, err := Slot(sub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n0.HostCIDR() != "10.200.0.1/30" || n0.Guest.String() != "10.200.0.2" {
+		t.Fatalf("slot 0 = %s guest %s", n0.HostCIDR(), n0.Guest)
+	}
+	n65, err := Slot(sub, 65)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n65.Prefix.String() != "10.200.1.4/30" || n65.HostCIDR() != "10.200.1.5/30" {
+		t.Fatalf("slot 65 = %s host %s", n65.Prefix, n65.HostCIDR())
+	}
+	if n65.KernelIPArg() != "ip=10.200.1.6::10.200.1.5:255.255.255.252::eth0:off" {
+		t.Fatalf("ip arg = %s", n65.KernelIPArg())
+	}
+	if n0.Prefix.Overlaps(n65.Prefix) {
+		t.Fatal("slots overlap")
+	}
+	if _, err := Slot(sub, 1<<14); err == nil {
+		t.Fatal("want exhaustion error past the last /30")
+	}
+	if _, err := Slot(netip.MustParsePrefix("10.0.0.0/30"), 0); err == nil {
+		t.Fatal("want error for a pool smaller than /29")
+	}
+}
+
+func TestCreateWithCIDR(t *testing.T) {
+	rec := &RecordingRunner{}
+	m := &Manager{Runner: rec}
+	if err := m.CreateWithCIDR("asp-test0002", "10.200.0.5/30"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.Calls[2], "addr add 10.200.0.5/30 dev asp-test0002") {
+		t.Fatalf("addr=%s", rec.Calls[2])
 	}
 }

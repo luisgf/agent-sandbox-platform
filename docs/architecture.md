@@ -96,7 +96,7 @@ Proceso privilegiado por nodo (`node-agent/`). Prepara TAP, aplica nft (soft|enf
 
 ### 4. microVM
 
-Debian mínimo (`images/guest/`). Sin socket del runtime del host, sin `NET_ADMIN`, sin secretos persistentes. NIC virtio restringida + vsock. Rootfs inmutable; cambios en overlay efímero u ops explícita.
+Debian mínimo (`images/guest/`). Sin socket del runtime del host, sin `NET_ADMIN`, sin secretos persistentes. NIC virtio restringida + vsock. Cada VM arranca una copia privada del rootfs (`--disk-dir/rootfs-{id}.img`, reflink o copia sparse) que se borra al parar; la imagen base no se escribe nunca.
 
 ### 5. pod-daemon (Rust)
 
@@ -155,10 +155,10 @@ Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_at
 
 Ver ADR-0002 y ADR-0006. Resumen operativo:
 
-1. TAP `asp-{shortid}` + IP host (p.ej. `10.200.0.1/24`).
+1. TAP `asp-{shortid}` con su propia /30 de `--guest-subnet` (TAP `.1`, guest `.2` vía `ip=` en la cmdline). El proxy identifica el sandbox por esa IP de origen.
 2. NAT MASQUERADE ops (`asp_nat`) — conectividad mínima hacia el proxy.
-3. Guest `HTTP_PROXY=http://10.200.0.1:8888`.
-4. `--nft-egress-redirect --nft-egress-mode=enforce` fuerza HTTP(S)+DNS por proxy/sink.
+3. Guest `HTTP_PROXY=http://<gateway>:8888`.
+4. `--nft-egress-redirect --nft-egress-mode=enforce` fuerza HTTP(S)+DNS por proxy/sink y descarta el resto: otros puertos, guest→guest, guest→servicios del host y orígenes falsificados.
 5. En CI: `--nft-egress-mode=soft` (SoftFail sin root).
 
 **Atribución de flujos → humano (futuro):** hoy el proxy puede ver `X-ASP-Sandbox-ID` (forgeable) y no propaga `owner_sub`. Diseño en evaluación — [ADR-0008](adr/0008-network-flow-attribution.md), [`why-network-flow-attribution.md`](why-network-flow-attribution.md): lookup host-side (IP/TAP o `ct mark`) → `sandbox_id` → `owner_sub`; forced egress corporativo con identidad inyectada en el host. **No implementado.**

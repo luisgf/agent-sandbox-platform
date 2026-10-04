@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -67,6 +68,7 @@ type config struct {
 	GuestSubnet          string
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
+	DiskDir              string
 }
 
 func main() {
@@ -432,10 +434,21 @@ func main() {
 		rec.TapAuto = cfg.TapAuto
 		if cfg.TapAuto {
 			rec.Tap = &tap.Manager{Logger: slog.Default(), SoftFail: true}
+			subnet, err := netip.ParsePrefix(strings.TrimSpace(cfg.GuestSubnet))
+			if err != nil {
+				slog.Error("invalid --guest-subnet", "value", cfg.GuestSubnet, "error", err)
+				os.Exit(2)
+			}
+			rec.GuestSubnet = subnet
 		}
+		rec.Egress = policyCache
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
+		if !cfg.DryRun {
+			// Never boot the shared image writable: every VM gets its own copy.
+			rec.DiskDir = cfg.DiskDir
+		}
 		if hvSvc != nil {
 			rec.GuestHost = hvSvc
 			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox",
@@ -517,6 +530,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
 	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
+	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img, deleted on stop); ignored with --dry-run")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
 	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "localhost listen addr for internal exec proxy")
@@ -546,7 +560,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", "soft"), "nft redirect failure mode: soft (SoftFail) | enforce (fail hard)")
 	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
 	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
-	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest CIDR for --egress-nft-redirect / --nft-egress-redirect")
+	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest pool: each TAP gets its own /30 from it; also the nft --egress-nft-redirect match")
 	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
 	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
 	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")

@@ -6,6 +6,14 @@
 #
 # Qué ganamos: force guest TCP HTTP(S) through the node-agent forward proxy and
 # pin/block guest DNS so allowlist cannot be skipped via direct resolvers.
+# Everything else a guest sends is dropped (deny-by-default):
+#   - forward: no other port leaves the node, and no guest reaches another
+#     guest. Only a local-net session's own tunnel (wg-asp-*) is forwarded.
+#   - input: a guest reaches only the proxy and the DNS sink on the host,
+#     never node-agent, sshd or any other host service.
+#   - anti-spoof: a guest may only use the /30 routed to its own TAP, so the
+#     proxy's per-sandbox policy (keyed by source IP) cannot be borrowed.
+# Guest TAPs are matched by name (asp-*); wg-asp-* does not match.
 #
 # Modes:
 #   soft    — SoftFail: missing root/nft/CAP_NET_ADMIN → warn + exit 0 (apply)
@@ -93,22 +101,67 @@ NFT
   fi
 }
 
+render_input_dns() {
+  if [[ "$DNS_ACTION" == "redirect" ]]; then
+    cat <<NFT
+    iifname "asp-*" udp dport ${DNS_SINK_PORT} accept comment "asp_guest_dns_sink"
+    iifname "asp-*" tcp dport ${DNS_SINK_PORT} accept comment "asp_guest_dns_sink"
+NFT
+  fi
+}
+
 render() {
   cat <<NFT
-# agent-sandbox-platform Fase 2e — guest egress redirect (table ${TABLE})
+# agent-sandbox-platform — guest egress, deny-by-default (table ${TABLE})
 # mode=${MODE} dns_action=${DNS_ACTION} http_ports={ ${HTTP_PORTS} }
 table ip ${TABLE} {
+  chain antispoof {
+    type filter hook prerouting priority raw; policy accept;
+    # A guest may only send from the /30 routed back through its own TAP.
+    iifname "asp-*" ip saddr != ${GUEST_SUBNET} drop comment "asp_guest_antispoof"
+    iifname "asp-*" fib saddr . iif oif missing drop comment "asp_guest_antispoof"
+  }
   chain prerouting {
     type nat hook prerouting priority dstnat; policy accept;
     # Force guest HTTP(S) through host egress forward proxy.
     ip saddr ${GUEST_SUBNET} tcp dport { ${HTTP_PORTS} } redirect to :${PROXY_PORT}
 $(render_dns_nat)
   }
+  chain input {
+    type filter hook input priority filter; policy accept;
+    # Guest → host: only the proxy and the DNS sink (after the redirect above).
+    iifname "asp-*" ct state established,related accept
+    iifname "asp-*" tcp dport ${PROXY_PORT} accept comment "asp_guest_proxy"
+$(render_input_dns)
+    iifname "asp-*" drop comment "asp_guest_to_host_drop"
+  }
   chain forward {
     type filter hook forward priority filter; policy accept;
-    # Mark path for audit/ops; SoftFail hosts may only have the NAT chain applied.
-    ip saddr ${GUEST_SUBNET} tcp dport { ${HTTP_PORTS} } meta mark set 0x617370  comment "asp_egress_http"
 $(render_dns_filter)
+    # Local-net session: policy routing already sends this TAP only to its
+    # own wg-asp device (or a blackhole).
+    iifname "asp-*" oifname "wg-asp-*" accept comment "asp_local_net"
+    oifname "asp-*" ct state established,related accept
+    # Anything else from a guest (other ports, other guests) is dropped.
+    iifname "asp-*" drop comment "asp_guest_forward_drop"
+    ip saddr ${GUEST_SUBNET} drop comment "asp_guest_forward_drop"
+    # Nothing outside opens a connection to a guest.
+    oifname "asp-*" drop comment "asp_guest_inbound_drop"
+  }
+}
+table ip6 ${TABLE} {
+  # Guests get no IPv6 address from ASP; still drop link-local access to host
+  # services. Only a local-net session's own tunnel is forwarded.
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname "asp-*" drop comment "asp_guest_to_host_drop"
+  }
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "asp-*" oifname "wg-asp-*" accept comment "asp_local_net"
+    oifname "asp-*" ct state established,related accept
+    iifname "asp-*" drop comment "asp_guest_forward_drop"
+    oifname "asp-*" drop comment "asp_guest_inbound_drop"
   }
 }
 NFT
@@ -131,8 +184,9 @@ case "${ACTION}" in
     need_root_nft apply
     # Idempotent: replace table atomically
     nft delete table ip "${TABLE}" 2>/dev/null || true
+    nft delete table ip6 "${TABLE}" 2>/dev/null || true
     if ! render | nft -f -; then
-      softfail "nft -f failed while applying table ip ${TABLE}"
+      softfail "nft -f failed while applying tables ip/ip6 ${TABLE}"
     fi
     echo "applied table ip ${TABLE}: subnet=${GUEST_SUBNET} http={${HTTP_PORTS}}->:${PROXY_PORT} dns=${DNS_ACTION}/:${DNS_SINK_PORT} mode=${MODE}"
     echo "note: proxy must listen on ${PROXY_PORT}; DNS sink on ${DNS_SINK_IP}:${DNS_SINK_PORT} when dns_action=redirect"
@@ -141,7 +195,8 @@ case "${ACTION}" in
   flush|remove|delete)
     need_root_nft flush
     nft delete table ip "${TABLE}" 2>/dev/null || true
-    echo "flushed table ip ${TABLE} (if present)"
+    nft delete table ip6 "${TABLE}" 2>/dev/null || true
+    echo "flushed tables ip/ip6 ${TABLE} (if present)"
     ;;
   *)
     echo "usage: $0 {dry-run|apply|flush} [--guest-subnet CIDR] [--proxy-ip IP] [--proxy-port PORT]" >&2

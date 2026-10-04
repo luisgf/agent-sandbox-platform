@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -16,17 +17,18 @@ import (
 // (nftables) and point resolv.conf at this sink or the host TAP IP.
 type DNSSink struct {
 	Allowlist *Allowlist
-	Cache     *PolicyCache
-	Logger    *slog.Logger
+	// Cache maps the query's source address to its sandbox's allowlist.
+	Cache  *PolicyCache
+	Logger *slog.Logger
 	// Enforce: when false, still NXDOMAIN non-allowlisted (sink is always deny-default).
 	Enforce bool
 }
 
-func (d *DNSSink) allowlist() *Allowlist {
-	if d.Cache != nil {
-		if al := d.Cache.Get(); al != nil {
-			return al
-		}
+// allowlist picks the policy of the sandbox that sent the query. Sources that
+// are not a known sandbox get the node-wide Allowlist.
+func (d *DNSSink) allowlist(from netip.Addr) *Allowlist {
+	if al, known := d.Cache.ForAddr(from); known {
+		return al
 	}
 	if d.Allowlist != nil {
 		return d.Allowlist
@@ -58,7 +60,7 @@ func (d *DNSSink) ListenAndServe(ctx context.Context, addr string) error {
 				return err
 			}
 		}
-		resp := d.answer(buf[:n])
+		resp := d.answer(buf[:n], addrOf(remote))
 		if len(resp) == 0 {
 			continue
 		}
@@ -66,7 +68,7 @@ func (d *DNSSink) ListenAndServe(ctx context.Context, addr string) error {
 	}
 }
 
-func (d *DNSSink) answer(req []byte) []byte {
+func (d *DNSSink) answer(req []byte, from netip.Addr) []byte {
 	if len(req) < 12 {
 		return nil
 	}
@@ -75,7 +77,7 @@ func (d *DNSSink) answer(req []byte) []byte {
 		return nil
 	}
 	// Only A (1) and AAAA (28) — others get NXDOMAIN-ish empty.
-	al := d.allowlist()
+	al := d.allowlist(from)
 	allowed := al.Check(name) == nil
 	id := binary.BigEndian.Uint16(req[0:2])
 
