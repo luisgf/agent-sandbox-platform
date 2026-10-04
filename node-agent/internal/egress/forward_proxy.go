@@ -18,6 +18,8 @@ import (
 )
 
 const (
+	// AllowlistHeader and SandboxHeader are stripped from proxied requests.
+	// The proxy never reads them: the guest sets its own headers.
 	AllowlistHeader = "X-ASP-Allowlist-JSON"
 	SandboxHeader   = "X-ASP-Sandbox-ID"
 	DefaultMaxBody  = 8 << 20 // 8 MiB
@@ -25,7 +27,7 @@ const (
 	DefaultBurst    = 80
 )
 
-// AllowlistJSON is the wire format for env/header allowlists (mirrors execproxy DTO).
+// AllowlistJSON is the wire format for env allowlists (mirrors execproxy DTO).
 type AllowlistJSON struct {
 	Mode  string `json:"mode"`
 	Rules []struct {
@@ -35,36 +37,12 @@ type AllowlistJSON struct {
 	} `json:"rules"`
 }
 
-// PolicyCache stores the last allowlist attached to an exec (or explicit Set) for proxy use.
-type PolicyCache struct {
-	mu   sync.RWMutex
-	last *Allowlist
-}
-
-func (c *PolicyCache) Set(al *Allowlist) {
-	if c == nil || al == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.last = al
-}
-
-func (c *PolicyCache) Get() *Allowlist {
-	if c == nil {
-		return nil
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.last
-}
-
 // ForwardProxy is an optional HTTP(S) forward proxy that deny-by-default checks allowlists.
 // Guests should set HTTP_PROXY/HTTPS_PROXY to the host TAP IP listening address.
 type ForwardProxy struct {
 	// Default is used when no header/env/cache policy is available.
 	Default *Allowlist
-	// Cache holds the last exec-attached allowlist (optional).
+	// Cache maps the guest source address to its sandbox's allowlist.
 	Cache *PolicyCache
 	// EnvJSON, when non-empty, is parsed once as ASP_EGRESS_ALLOWLIST_JSON fallback.
 	EnvJSON string
@@ -84,19 +62,21 @@ type ForwardProxy struct {
 	envAL   *Allowlist
 }
 
+// resolveAllowlist picks the policy from the connection's source address.
+// Request headers are written by the guest and never select a policy: a
+// guest that could send its own allowlist could allow everything.
 func (p *ForwardProxy) resolveAllowlist(r *http.Request) *Allowlist {
-	if r != nil {
-		if raw := strings.TrimSpace(r.Header.Get(AllowlistHeader)); raw != "" {
-			if al, err := ParseAllowlistJSON(raw); err == nil && al != nil {
-				return al
-			}
-		}
-	}
-	if p.Cache != nil {
-		if al := p.Cache.Get(); al != nil {
+	if r != nil && p.Cache != nil {
+		if al, known := p.Cache.ForAddr(remoteAddr(r.RemoteAddr)); known {
 			return al
 		}
 	}
+	return p.nodeAllowlist()
+}
+
+// nodeAllowlist is the node-wide policy for sources that are not a known
+// sandbox: ASP_EGRESS_ALLOWLIST_JSON, then Default, then deny.
+func (p *ForwardProxy) nodeAllowlist() *Allowlist {
 	p.envOnce.Do(func() {
 		raw := p.EnvJSON
 		if raw == "" {
@@ -169,11 +149,20 @@ func (p *ForwardProxy) allow(al *Allowlist, host string, port int) bool {
 	return al.CheckHostPort(host, port) == nil
 }
 
+// sandboxID names the caller for rate limiting. It comes from the source
+// address, not from a header the guest controls.
 func (p *ForwardProxy) sandboxID(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.Header.Get(SandboxHeader))
+	addr := remoteAddr(r.RemoteAddr)
+	if id := p.Cache.SandboxFor(addr); id != "" {
+		return id
+	}
+	if addr.IsValid() {
+		return addr.String()
+	}
+	return ""
 }
 
 func (p *ForwardProxy) rateKey(sandbox, host string) string {

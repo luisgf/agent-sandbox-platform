@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
@@ -35,6 +37,7 @@ type Handle struct {
 	VsockPath string
 	TapName   string
 	SSHSock   string // per-sandbox symlink path under VsockDir (virtiofs docs)
+	Slot      int    // index of the guest /30 in GuestSubnet; -1 without a TAP
 	stopFS    func() // stops virtiofsd when a workspace was mounted
 }
 
@@ -63,6 +66,12 @@ type Reconciler struct {
 	TapAuto bool
 	// Tap is the TAP manager (created with SoftFail when nil and TapAuto).
 	Tap *tap.Manager
+	// GuestSubnet is the pool each TAP's /30 is carved from (default
+	// tap.DefaultGuestSubnet). Must match the nft --guest-subnet.
+	GuestSubnet netip.Prefix
+	// Egress, when set, learns each sandbox's /30 so the forward proxy and
+	// the DNS sink apply that sandbox's policy to its traffic.
+	Egress *egress.PolicyCache
 
 	// SSHAgentShared is the host bridge socket path (--ssh-agent-bridge).
 	// When set (and no per-sandbox registry path), Start creates
@@ -96,6 +105,9 @@ type Reconciler struct {
 	handles map[string]Handle
 	nextCID uint32 // next guest CID to assign (starts at 3)
 	freeCID []uint32
+	// nextSlot / freeSlot allocate guest /30s like CIDs.
+	nextSlot int
+	freeSlot []int
 }
 
 func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Logger, every time.Duration) *Reconciler {
@@ -216,12 +228,30 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 
 	cfg := r.vmConfig(sb)
 
+	// Each TAP gets its own /30. A shared prefix would send every guest's
+	// replies to one TAP and leave the proxy unable to tell sandboxes apart.
+	slot := -1
 	if r.TapAuto {
-		if err := r.tapMgr().Create(cfg.TapDevice); err != nil {
+		n, gnet, err := r.allocSlot()
+		if err != nil {
+			r.releaseCID(cfg.VsockCID)
+			_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "guest net: "+err.Error())
+			return fmt.Errorf("guest net: %w", err)
+		}
+		slot = n
+		cfg.Cmdline += " " + gnet.KernelIPArg()
+		if err := r.tapMgr().CreateWithCIDR(cfg.TapDevice, gnet.HostCIDR()); err != nil {
+			r.releaseSlot(slot)
 			r.releaseCID(cfg.VsockCID)
 			_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "tap: "+err.Error())
 			return fmt.Errorf("tap create: %w", err)
 		}
+		r.Egress.Bind(sb.ID, gnet.Prefix)
+	}
+	// releaseNet undoes the slot and the proxy binding on a failed start.
+	releaseNet := func() {
+		r.releaseSlot(slot)
+		r.Egress.Forget(sb.ID)
 	}
 
 	// Per-sandbox SSH agent upstream (ADR-0007 phase 4) before hybrid attach
@@ -246,6 +276,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
 		r.releaseCID(cfg.VsockCID)
+		releaseNet()
 		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "guest-host: "+err.Error())
 		return fmt.Errorf("guest-host attach: %w", err)
 	}
@@ -260,6 +291,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
 		r.releaseCID(cfg.VsockCID)
+		releaseNet()
 		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", err.Error())
 		return fmt.Errorf("workspace: %w", err)
 	}
@@ -274,6 +306,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
 		r.releaseCID(cfg.VsockCID)
+		releaseNet()
 		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "local-net: "+err.Error())
 		return fmt.Errorf("local-net: %w", err)
 	}
@@ -288,13 +321,14 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
 		r.releaseCID(cfg.VsockCID)
+		releaseNet()
 		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", err.Error())
 		return fmt.Errorf("vmm start: %w", err)
 	}
 
 	sshSock := r.linkSSHAgent(sb.ID)
 
-	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, stopFS: stopFS}
+	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, stopFS: stopFS}
 	r.mu.Lock()
 	r.handles[sb.ID] = h
 	r.mu.Unlock()
@@ -343,6 +377,7 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 	}
 	if had {
 		r.releaseCID(h.CID)
+		r.releaseSlot(h.Slot)
 		r.detachGuestHost(sb.ID)
 		if r.Registry != nil {
 			r.Registry.Unregister(sb.ID)
@@ -362,6 +397,7 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 			}
 		}
 	}
+	r.Egress.Forget(sb.ID)
 	if r.LocalNet != nil {
 		_ = r.LocalNet.Clear(sb.ID)
 	}
@@ -579,6 +615,45 @@ func (r *Reconciler) releaseCID(cid uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.freeCID = append(r.freeCID, cid)
+}
+
+// allocSlot reserves the next free guest /30.
+func (r *Reconciler) allocSlot() (int, tap.GuestNet, error) {
+	subnet := r.GuestSubnet
+	if !subnet.IsValid() {
+		subnet = netip.MustParsePrefix(tap.DefaultGuestSubnet)
+	}
+	r.mu.Lock()
+	var n int
+	if len(r.freeSlot) > 0 {
+		n = r.freeSlot[len(r.freeSlot)-1]
+		r.freeSlot = r.freeSlot[:len(r.freeSlot)-1]
+	} else {
+		n = r.nextSlot
+		r.nextSlot++
+	}
+	r.mu.Unlock()
+	gnet, err := tap.Slot(subnet, n)
+	if err != nil {
+		// Past the end of the pool: give the index back so the counter
+		// does not keep growing, but never hand it out as free.
+		r.mu.Lock()
+		if n == r.nextSlot-1 {
+			r.nextSlot--
+		}
+		r.mu.Unlock()
+		return -1, tap.GuestNet{}, err
+	}
+	return n, gnet, nil
+}
+
+func (r *Reconciler) releaseSlot(n int) {
+	if n < 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.freeSlot = append(r.freeSlot, n)
 }
 
 func (r *Reconciler) attachGuestHost(sandboxID, muxerPath string) error {

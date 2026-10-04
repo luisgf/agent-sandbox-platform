@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -156,35 +157,84 @@ func TestForwardProxyAllowDeny(t *testing.T) {
 	}
 }
 
-func TestForwardProxyHeaderAllowlist(t *testing.T) {
+// A guest writes its own request headers. An allowlist header must not
+// change the decision, or the guest could allow every host.
+func TestForwardProxyIgnoresGuestAllowlistHeader(t *testing.T) {
 	p := &ForwardProxy{
 		Default: NewAllowlistFromPolicy("deny-default", nil),
 		Enforce: true,
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("via-header"))
-	}))
-	url := "http://" + ln.Addr().String() + "/"
-	req := httptest.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set(AllowlistHeader, `{"mode":"deny-default","rules":[{"host_pattern":"127.0.0.1","enabled":true}]}`)
-	rr := httptest.NewRecorder()
-	p.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("want 200 got %d %s", rr.Code, rr.Body.String())
+	for _, hdr := range []string{
+		`{"mode":"allow-all"}`,
+		`{"mode":"deny-default","rules":[{"host_pattern":"evil.example","enabled":true}]}`,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "http://evil.example/", nil)
+		req.Header.Set(AllowlistHeader, hdr)
+		rr := httptest.NewRecorder()
+		p.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("header %s: want 403 got %d", hdr, rr.Code)
+		}
 	}
 }
 
-func TestPolicyCache(t *testing.T) {
+func TestPolicyCachePerSandbox(t *testing.T) {
 	c := &PolicyCache{}
-	c.Set(NewAllowlist("cached.test"))
-	al := c.Get()
-	if al == nil || al.Check("cached.test") != nil {
-		t.Fatal("cache miss")
+	c.Bind("sb-a", netip.MustParsePrefix("10.200.0.0/30"))
+	c.Bind("sb-b", netip.MustParsePrefix("10.200.0.4/30"))
+	c.Set("sb-a", NewAllowlist("a.test"))
+	c.Set("sb-b", NewAllowlist("b.test"))
+
+	al, known := c.ForAddr(netip.MustParseAddr("10.200.0.2"))
+	if !known || al.Check("a.test") != nil || al.Check("b.test") == nil {
+		t.Fatal("sandbox A must get only its own policy")
+	}
+	al, known = c.ForAddr(netip.MustParseAddr("10.200.0.6"))
+	if !known || al.Check("b.test") != nil || al.Check("a.test") == nil {
+		t.Fatal("sandbox B must get only its own policy")
+	}
+	if _, known := c.ForAddr(netip.MustParseAddr("10.200.0.10")); known {
+		t.Fatal("unbound address must not map to a sandbox")
+	}
+	c.Forget("sb-a")
+	if _, known := c.ForAddr(netip.MustParseAddr("10.200.0.2")); known {
+		t.Fatal("forgotten sandbox still mapped")
+	}
+}
+
+// Before its first exec a sandbox has no policy. It must get deny-default,
+// not the policy another tenant attached last.
+func TestForwardProxySandboxWithoutPolicyDenies(t *testing.T) {
+	c := &PolicyCache{}
+	c.Bind("sb-a", netip.MustParsePrefix("10.200.0.0/30"))
+	c.Bind("sb-b", netip.MustParsePrefix("10.200.0.4/30"))
+	c.Set("sb-a", NewAllowlistFromPolicy("allow-all", nil))
+	p := &ForwardProxy{Default: NewAllowlistFromPolicy("allow-all", nil), Cache: c, Enforce: true}
+
+	req := httptest.NewRequest(http.MethodGet, "http://evil.example/", nil)
+	req.RemoteAddr = "10.200.0.6:40000"
+	rr := httptest.NewRecorder()
+	p.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("sandbox B without policy: want 403 got %d", rr.Code)
+	}
+}
+
+func TestDNSSinkUsesSourceSandboxPolicy(t *testing.T) {
+	c := &PolicyCache{}
+	c.Bind("sb-a", netip.MustParsePrefix("10.200.0.0/30"))
+	c.Bind("sb-b", netip.MustParsePrefix("10.200.0.4/30"))
+	c.Set("sb-a", NewAllowlist("localhost"))
+	d := &DNSSink{Allowlist: NewAllowlistFromPolicy("deny-default", nil), Cache: c}
+
+	if d.allowlist(netip.MustParseAddr("10.200.0.2")).Check("localhost") != nil {
+		t.Fatal("sandbox A should resolve its allowlisted name")
+	}
+	if d.allowlist(netip.MustParseAddr("10.200.0.6")).Check("localhost") == nil {
+		t.Fatal("sandbox B must not inherit sandbox A's allowlist")
+	}
+	if d.allowlist(netip.MustParseAddr("192.0.2.1")).Check("localhost") == nil {
+		t.Fatal("unknown source must get the node-wide deny policy")
 	}
 }
 

@@ -24,7 +24,7 @@ type Server struct {
 	EgressEnforce bool
 	// DefaultAllowlist used when request omits egress_allowlist (and for egress-check).
 	DefaultAllowlist *egress.Allowlist
-	// PolicyCache stores the last allowlist from exec for the HTTP forward proxy.
+	// PolicyCache stores each sandbox's allowlist from its exec for the forward proxy and DNS sink.
 	PolicyCache *egress.PolicyCache
 	// SSHApprover optional one-shot SignRequest approvals (POST /v1/internal/ssh-agent/approve).
 	SSHApprover *sshagent.Approver
@@ -117,10 +117,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.EgressAllowlist != nil {
-		al := s.allowlistFromDTO(body.EgressAllowlist)
-		if s.PolicyCache != nil {
-			s.PolicyCache.Set(al)
-		}
+		// The control plane attaches the tenant policy to every exec; the
+		// proxy applies it only to traffic from this sandbox's prefix.
+		s.PolicyCache.Set(body.SandboxID, s.allowlistFromDTO(body.EgressAllowlist))
 	}
 	client, err := s.clientFor(body.SandboxID)
 	if err != nil || client == nil {
@@ -159,10 +158,8 @@ func (s *Server) handleEgressCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	al := s.DefaultAllowlist
 	if body.EgressAllowlist != nil {
+		// Evaluation only: no sandbox ID, so the proxy policy is not changed.
 		al = s.allowlistFromDTO(body.EgressAllowlist)
-		if s.PolicyCache != nil {
-			s.PolicyCache.Set(al)
-		}
 	}
 	if al == nil {
 		al = egress.NewAllowlistFromPolicy("deny-default", nil)

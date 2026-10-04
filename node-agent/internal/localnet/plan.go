@@ -14,10 +14,11 @@ import (
 type Kind string
 
 const (
-	// guestLAN is the prefix on every sandbox TAP (tap.DefaultHostCIDR is
-	// 10.200.0.1/24). Replies from the tunnel use the session table, not the
-	// main table: an older TAP can still own 10.200.0.0/24 there.
-	guestLAN = "10.200.0.0/24"
+	// guestLAN is the pool every sandbox's /30 comes from
+	// (tap.DefaultGuestSubnet). Replies from this session's tunnel go to this
+	// session's TAP through the session table, whatever /30 the guest has;
+	// the main table is not used.
+	guestLAN = "10.200.0.0/16"
 	// KindPublic is ADR-0002: node proxy, DNS sink, nft asp_egress.
 	KindPublic Kind = "public"
 	// KindBlackhole sinks 0.0.0.0/0 (and ::/0) for this session only.
@@ -192,7 +193,7 @@ func ClearArgv(p Plan) []Cmd {
 
 // returnPriority is the session table id. That priority is before the main
 // table (32766). A rule after main never runs: main already routes
-// 10.200.0.0/24 at whichever TAP was created first.
+// the guest's /30, so the session table must be consulted first.
 func returnPriority(tableID int) string {
 	return strconv.Itoa(tableID)
 }

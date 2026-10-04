@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -432,7 +433,14 @@ func main() {
 		rec.TapAuto = cfg.TapAuto
 		if cfg.TapAuto {
 			rec.Tap = &tap.Manager{Logger: slog.Default(), SoftFail: true}
+			subnet, err := netip.ParsePrefix(strings.TrimSpace(cfg.GuestSubnet))
+			if err != nil {
+				slog.Error("invalid --guest-subnet", "value", cfg.GuestSubnet, "error", err)
+				os.Exit(2)
+			}
+			rec.GuestSubnet = subnet
 		}
+		rec.Egress = policyCache
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
@@ -546,7 +554,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", "soft"), "nft redirect failure mode: soft (SoftFail) | enforce (fail hard)")
 	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
 	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
-	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest CIDR for --egress-nft-redirect / --nft-egress-redirect")
+	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest pool: each TAP gets its own /30 from it; also the nft --egress-nft-redirect match")
 	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
 	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
 	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")

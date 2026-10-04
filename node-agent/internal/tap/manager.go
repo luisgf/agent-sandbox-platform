@@ -8,7 +8,9 @@ import (
 	"strings"
 )
 
-// DefaultHostCIDR is the host-side address applied to each TAP when none is set.
+// DefaultHostCIDR is the host-side address Create applies when HostCIDR is
+// empty. The reconciler gives each TAP its own /30 instead (see Slot): with
+// one shared prefix, the host routes every guest's replies to a single TAP.
 const DefaultHostCIDR = "10.200.0.1/24"
 
 // Runner executes host commands (injectable for tests).
@@ -78,8 +80,16 @@ func DeviceName(sandboxID string) string {
 	return "asp-" + id
 }
 
-// Create brings up a TAP with optional host address.
+// Create brings up a TAP with the manager's host address.
 func (m *Manager) Create(name string) error {
+	return m.CreateWithCIDR(name, "")
+}
+
+// CreateWithCIDR brings up a TAP with hostCIDR on it (empty = HostCIDR).
+func (m *Manager) CreateWithCIDR(name, hostCIDR string) error {
+	if hostCIDR == "" {
+		hostCIDR = m.cidr()
+	}
 	if name == "" {
 		return fmt.Errorf("tap name required")
 	}
@@ -90,7 +100,7 @@ func (m *Manager) Create(name string) error {
 	}{
 		{"ip", []string{"tuntap", "add", "dev", name, "mode", "tap"}},
 		{"ip", []string{"link", "set", name, "up"}},
-		{"ip", []string{"addr", "add", m.cidr(), "dev", name}},
+		{"ip", []string{"addr", "add", hostCIDR, "dev", name}},
 	}
 	for _, step := range steps {
 		if err := r.Run(step.bin, step.args...); err != nil {
@@ -101,7 +111,7 @@ func (m *Manager) Create(name string) error {
 			return err
 		}
 	}
-	m.log().Info("tap created", "tap", name, "cidr", m.cidr())
+	m.log().Info("tap created", "tap", name, "cidr", hostCIDR)
 	return nil
 }
 
