@@ -123,6 +123,10 @@ table ip ${TABLE} {
   }
   chain prerouting {
     type nat hook prerouting priority dstnat; policy accept;
+    # Local-net sessions are not named here. node-agent inserts, at the head
+    # of this chain, "iifname <that TAP> ... return" for TCP 80/443 and DNS,
+    # and deletes those rules on session clear. Re-applying this file removes
+    # them; the running agent puts them back. Other guests keep the redirect.
     # Force guest HTTP(S) through host egress forward proxy.
     ip saddr ${GUEST_SUBNET} tcp dport { ${HTTP_PORTS} } redirect to :${PROXY_PORT}
 $(render_dns_nat)

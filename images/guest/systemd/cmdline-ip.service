@@ -1,0 +1,15 @@
+[Unit]
+Description=ASP guest address from kernel ip= cmdline
+Documentation=https://github.com/luisgf/bots
+After=local-fs.target
+Before=network.target pod-daemon.service
+# The lab kernel has CONFIG_IP_PNP unset, so ip= on the cmdline is ignored.
+# A missing ip= must not fail the boot transaction (the helper exits 0).
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/share/asp/cmdline-ip.sh
+
+[Install]
+WantedBy=multi-user.target

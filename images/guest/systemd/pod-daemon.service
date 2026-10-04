@@ -1,6 +1,6 @@
 [Unit]
 Description=ASP guest pod-daemon (vsock HTTP)
-After=network.target
+After=network.target cmdline-ip.service
 ConditionPathExists=/usr/local/bin/pod-daemon
 
 [Service]

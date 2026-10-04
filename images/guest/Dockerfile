@@ -19,7 +19,7 @@ FROM debian:bookworm-slim
 # systemd-sysv is the package that links /sbin/init -> /lib/systemd/systemd.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-         ca-certificates kmod systemd systemd-sysv \
+         ca-certificates iproute2 kmod systemd systemd-sysv \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o root -g root -m 0755 /var/lib/sandboxd \
     && useradd --system --uid 10001 --home-dir /var/lib/sandboxd --shell /usr/sbin/nologin sandboxd \
@@ -33,17 +33,20 @@ COPY --from=build-go /out/vsock-ssh-agent-proxy /usr/local/bin/vsock-ssh-agent-p
 COPY images/guest/systemd/pod-daemon.service /etc/systemd/system/pod-daemon.service
 COPY images/guest/systemd/ssh-agent-vsock.service /etc/systemd/system/ssh-agent-vsock.service
 COPY images/guest/systemd/workspace-virtiofs.service /etc/systemd/system/workspace-virtiofs.service
+COPY images/guest/systemd/cmdline-ip.service /etc/systemd/system/cmdline-ip.service
 COPY images/guest/modules-load.d/vsock.conf /etc/modules-load.d/vsock.conf
 COPY images/guest/openrc/pod-daemon /etc/init.d/pod-daemon.openrc-example
 COPY images/guest/openrc/ssh-agent-vsock /etc/init.d/ssh-agent-vsock.openrc-example
 COPY images/guest/openrc/workspace-virtiofs /etc/init.d/workspace-virtiofs.openrc-example
 COPY images/guest/helpers/ssh-agent-vsock-socat.sh /usr/local/share/asp/ssh-agent-vsock-socat.sh
 COPY images/guest/helpers/mount-virtiofs-workspace.sh /usr/local/share/asp/mount-virtiofs-workspace.sh
-RUN chmod 0755 /usr/local/share/asp/mount-virtiofs-workspace.sh /usr/local/share/asp/ssh-agent-vsock-socat.sh \
+COPY images/guest/helpers/cmdline-ip.sh /usr/local/share/asp/cmdline-ip.sh
+RUN chmod 0755 /usr/local/share/asp/mount-virtiofs-workspace.sh /usr/local/share/asp/ssh-agent-vsock-socat.sh /usr/local/share/asp/cmdline-ip.sh \
     && mkdir -p /etc/systemd/system/multi-user.target.wants \
     && ln -sfn /etc/systemd/system/pod-daemon.service /etc/systemd/system/multi-user.target.wants/pod-daemon.service \
     && ln -sfn /etc/systemd/system/ssh-agent-vsock.service /etc/systemd/system/multi-user.target.wants/ssh-agent-vsock.service \
-    && ln -sfn /etc/systemd/system/workspace-virtiofs.service /etc/systemd/system/multi-user.target.wants/workspace-virtiofs.service
+    && ln -sfn /etc/systemd/system/workspace-virtiofs.service /etc/systemd/system/multi-user.target.wants/workspace-virtiofs.service \
+    && ln -sfn /etc/systemd/system/cmdline-ip.service /etc/systemd/system/multi-user.target.wants/cmdline-ip.service
 # Default productive listen: AF_VSOCK port 26500 (host dials via CH hybrid CONNECT).
 # SSH agent: ssh-agent-vsock.service (vsock CID2:26501 → /run/agent-sandbox/ssh-agent.sock).
 # Workspace: workspace-virtiofs.service mounts tag workspace on /workspace (exit 0 if absent).
