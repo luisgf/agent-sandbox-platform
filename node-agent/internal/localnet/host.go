@@ -132,6 +132,14 @@ func (h *Host) Apply(p Plan) error {
 	} else if p.Tap != "" && p.Iface != "" {
 		removeTapWGForward(p.Tap, p.Iface)
 	}
+	// Local-net is all-or-nothing, including the blackhole while the tunnel
+	// is down. Return in prerouting so 80/443/DNS are not redirected at the
+	// node proxy. KindPublic never reaches here.
+	if p.BlockNodeProxy {
+		if err := ensureLocalNetExempt(p.Tap); err != nil {
+			return fmt.Errorf("local-net %s: %w", p.SandboxID, err)
+		}
+	}
 	h.mu.Lock()
 	if h.plans == nil {
 		h.plans = map[string]Plan{}
@@ -155,6 +163,7 @@ func (h *Host) Clear(sandboxID string) error {
 		}
 	}
 	removeTapWGForward(p.Tap, p.Iface)
+	removeLocalNetExempt(p.Tap)
 	_ = os.Remove(h.keyPath(sandboxID))
 	h.mu.Lock()
 	delete(h.plans, sandboxID)

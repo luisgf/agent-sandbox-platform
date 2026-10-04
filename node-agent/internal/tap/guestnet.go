@@ -23,7 +23,8 @@ func (n GuestNet) HostCIDR() string {
 }
 
 // KernelIPArg is the kernel ip= parameter that configures the guest's eth0
-// at boot (CONFIG_IP_PNP). Kernels without it ignore the argument.
+// at boot (CONFIG_IP_PNP). Kernels without it ignore the argument; the guest
+// image's cmdline-ip.service applies the same token from /proc/cmdline.
 func (n GuestNet) KernelIPArg() string {
 	return fmt.Sprintf("ip=%s::%s:255.255.255.252::eth0:off", n.Guest, n.Host)
 }
