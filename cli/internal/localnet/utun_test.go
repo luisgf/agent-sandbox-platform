@@ -63,7 +63,13 @@ func TestDarwinRecipeHasNoDefaultRouteAndNoIP(t *testing.T) {
 	if scriptHijacks(body) {
 		t.Fatalf("script hijacks:\n%s", body)
 	}
-	for _, want := range []string{"wireguard-go", "ifconfig", "pfctl", "private-key", "10.200.0.0", "10.188.0.0"} {
+	for _, want := range []string{
+		"wireguard-go", "ifconfig", "pfctl", "private-key", "10.200.0.0", "10.188.0.0",
+		"com.apple/asp-", "nat pass on $UPLINK",
+		"pass in quick on $IFACE inet from 10.200.0.0/16",
+		"pass out quick on $IFACE inet to 10.200.0.0/16",
+		"grep -F -q",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q\n%s", want, body)
 		}
@@ -82,6 +88,9 @@ func TestDarwinRecipeHasNoDefaultRouteAndNoIP(t *testing.T) {
 	}
 	if strings.Contains(down, "add default") || strings.Contains(down, " ip ") {
 		t.Fatalf("down bad:\n%s", down)
+	}
+	if !strings.Contains(down, "com.apple/asp-") {
+		t.Fatalf("down missing anchor flush:\n%s", down)
 	}
 }
 
