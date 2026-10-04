@@ -63,7 +63,16 @@ func (c cmd) line() string { return c.name + " " + strings.Join(c.args, " ") }
 
 // Commands is the exact argv used when the device is applied.
 // It does not route 0.0.0.0/0 in the main table and it does not mention :8888.
+// On Darwin (or ASP_LOCAL_NET_OS=darwin) the argv is wireguard-go, wg, ifconfig
+// and route. BringUp writes one sudo script; it never tells the operator to run ip(8).
 func (d ClientDevice) Commands() []cmd {
+	if targetGOOS() == "darwin" {
+		return d.darwinArgv()
+	}
+	return d.linuxCommands()
+}
+
+func (d ClientDevice) linuxCommands() []cmd {
 	var cmds []cmd
 	if strings.TrimSpace(d.Iface) == "" {
 		return nil
@@ -86,11 +95,34 @@ func (d ClientDevice) Commands() []cmd {
 
 func (d ClientDevice) hijacks() bool {
 	for _, c := range d.Commands() {
-		line := c.line()
-		if strings.Contains(line, "8888") || strings.Contains(line, "asp_egress") {
+		if cmdHijacks(c) {
 			return true
 		}
-		if c.name == "ip" && contains(c.args, "route") && (contains(c.args, "default") || contains(c.args, "0.0.0.0/0")) {
+	}
+	return false
+}
+
+func cmdHijacks(c cmd) bool {
+	line := c.line()
+	if strings.Contains(line, "8888") || strings.Contains(line, "asp_egress") {
+		return true
+	}
+	if c.name == "ip" && contains(c.args, "route") && (contains(c.args, "default") || contains(c.args, "0.0.0.0/0") || contains(c.args, "::/0")) {
+		return true
+	}
+	if c.name != "route" {
+		return false
+	}
+	joined := " " + strings.Join(c.args, " ") + " "
+	if strings.Contains(joined, " get ") {
+		return false
+	}
+	adds := strings.Contains(joined, " add ") || strings.Contains(joined, " change ")
+	if !adds {
+		return false
+	}
+	for _, bad := range []string{" default ", " 0.0.0.0/0 ", " 0.0.0.0/1 ", " 128.0.0.0/1 ", " ::/0 ", " 0.0.0.0 "} {
+		if strings.Contains(joined, bad) {
 			return true
 		}
 	}
@@ -112,6 +144,9 @@ func CanApply() bool {
 	switch strings.TrimSpace(os.Getenv("ASP_LOCAL_NET_APPLY")) {
 	case "0", "false", "no":
 		return false
+	}
+	if targetGOOS() == "darwin" {
+		return canApplyDarwin()
 	}
 	if _, err := exec.LookPath("wg"); err != nil {
 		return false
@@ -151,6 +186,9 @@ func hasNetAdmin() bool {
 // BringUp prints the exact commands and runs them when CanApply is true.
 // The private key is referenced by path, never printed.
 func BringUp(stderr io.Writer, d ClientDevice) (bool, error) {
+	if targetGOOS() == "darwin" {
+		return bringUpDarwin(stderr, d)
+	}
 	if d.hijacks() {
 		return false, fmt.Errorf("refusing local-net client recipe that changes the host default route")
 	}
@@ -184,7 +222,10 @@ func BringUp(stderr io.Writer, d ClientDevice) (bool, error) {
 }
 
 // TearDown deletes the client device. Missing devices are ignored.
-func TearDown(iface string) error {
+func TearDown(stderr io.Writer, iface, sessionPath string) error {
+	if targetGOOS() == "darwin" {
+		return tearDownDarwin(stderr, iface, sessionPath)
+	}
 	iface = strings.TrimSpace(iface)
 	if iface == "" {
 		return nil

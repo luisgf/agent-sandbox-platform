@@ -522,7 +522,7 @@ func cmdSessionStop(args []string, stdout, stderr io.Writer) int {
 		if _, derr := c.DetachLocalNet(context.Background(), st.SandboxID); derr != nil {
 			fmt.Fprintf(stderr, "session stop: local-net detach %s: %v (continuing destroy)\n", st.SandboxID, derr)
 		}
-		if terr := localnet.TearDown(localnet.Iface(st.SandboxID)); terr != nil {
+		if terr := localnet.TearDown(stderr, localnet.Iface(st.SandboxID), path); terr != nil {
 			fmt.Fprintf(stderr, "session stop: local-net device %s: %v (continuing destroy)\n", localnet.Iface(st.SandboxID), terr)
 		}
 	}
@@ -656,7 +656,13 @@ func cmdSessionLocalNetUp(args []string, stdout, stderr io.Writer) int {
 	wg := localnet.WireGuardInstalled()
 	note := "Private key is in the .local-net.key file (mode 0600), not the session JSON. Commands do not install a host default route and do not target :8888."
 	if applied {
-		note += " Client WireGuard device was created with ip+wg. Live packet flow was not proven in this process."
+		if localnet.TargetGOOS() == "darwin" {
+			note += " Client utun was created with wireguard-go. The Mac main-table default route was not changed. Live packet flow was not proven in this process."
+		} else {
+			note += " Client WireGuard device was created with ip+wg. Live packet flow was not proven in this process."
+		}
+	} else if localnet.TargetGOOS() == "darwin" {
+		note += " Darwin utun was not applied. Run the single sudo command printed above. It uses wireguard-go, wg, ifconfig, route and pfctl. It does not install a default route and it does not use ip(8)."
 	} else if !wg {
 		note += " wg(8) is not on PATH. Install wireguard-tools and CAP_NET_ADMIN, then re-run up. Commands were printed, not applied."
 	} else {
@@ -699,7 +705,7 @@ func cmdSessionLocalNetDown(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	if terr := localnet.TearDown(localnet.Iface(st.SandboxID)); terr != nil {
+	if terr := localnet.TearDown(stderr, localnet.Iface(st.SandboxID), path); terr != nil {
 		fmt.Fprintf(stderr, "session local-net down: device: %v\n", terr)
 		return 1
 	}
