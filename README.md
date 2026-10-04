@@ -16,7 +16,7 @@ ASP is a self-hosted, FOSS sandbox platform for coding agents. An agent harness 
 - [Sandbox lifecycle](#sandbox-lifecycle)
 - [Network and identity](#network-and-identity)
 - [Quickstart (dry-run, no KVM)](#quickstart-dry-run-no-kvm)
-- [Using ASP from an agent harness](#using-asp-from-an-agent-harness)
+- [Using ASP with OpenCode](#using-asp-with-opencode)
 - [Configuration cheat sheet](#configuration-cheat-sheet)
 - [Status and known limits](#status-and-known-limits)
 - [Repository layout](#repository-layout)
@@ -244,19 +244,117 @@ Step-by-step walkthrough and troubleshooting: [`docs/mvp-smoke.md`](docs/mvp-smo
 
 ---
 
-## Using ASP from an agent harness
+## Using ASP with OpenCode
 
-ASP does not ship a harness plugin. Instead, replace the harness's shell tool with a tiny wrapper:
+ASP does not ship a harness plugin. The integration point is the shell: [OpenCode](https://opencode.ai) runs every bash tool call as `<shell> -c "<command>"`, and its `shell` config option lets you choose that binary. Point it at a small wrapper and every command the model runs goes to `asp session exec` and executes inside the microVM.
 
-```bash
-#!/bin/sh
-# Every shell call the agent makes runs inside the session's microVM.
-exec asp session exec --name "${ASP_SESSION:-default}" --cmd "$*"
+```mermaid
+flowchart LR
+  M["model"] -->|"bash tool call"| OC["OpenCode"]
+  OC -->|"asp-opencode-shell -c '…'"| W["wrapper"]
+  W -->|"asp session exec -- /bin/sh -c '…'"| CP["control plane"]
+  CP --> VM["microVM<br/>/workspace = your repo"]
+  OC -. "read / edit / write tools<br/>(on the host)" .-> REPO[("repo on host")]
+  REPO <-. "virtiofs" .-> VM
 ```
 
-`exec` streams stdout/stderr as they arrive and exits with the guest command's exit code. Two session names mean two independent sandboxes. Full contract, flags and wrapper example: [`docs/ops-asp-session.md`](docs/ops-asp-session.md).
+### 1. Install the CLI and authenticate
 
-**Optional session features**
+```bash
+make asp && install -m 0755 build/asp ~/.local/bin/asp   # any directory on PATH
+
+export ASP_CP_URL=https://asp.example.internal          # your control plane
+asp auth login                                          # IdP setups
+# or, in a lab without an IdP:  export ASP_API_KEY=…
+```
+
+### 2. Start a session for the repository
+
+Run this from the repository you want the agent to work on. `--workspace` shares it into the guest at `/workspace`.
+
+```bash
+cd ~/src/my-project
+asp session start --name opencode --workspace "$PWD" --timeout=120s
+```
+
+Add `--node-id=dev-node` against the dry-run stack from the [Quickstart](#quickstart-dry-run-no-kvm). Add `--local-net` if the agent must reach your LAN.
+
+### 3. Install the shell wrapper
+
+Save as `~/.local/bin/asp-opencode-shell` and `chmod +x` it:
+
+```sh
+#!/bin/sh
+# OpenCode shell that runs every command inside an ASP session.
+NAME="${ASP_SESSION_NAME:-opencode}"
+HOST_ROOT="${ASP_WORKSPACE_HOST:-}"           # same path you passed to --workspace
+GUEST_ROOT="${ASP_WORKSPACE_GUEST:-/workspace}"
+
+# Map OpenCode's working directory on the host to the same place in the guest.
+cwd="$GUEST_ROOT"
+if [ -n "$HOST_ROOT" ]; then
+  case "$PWD/" in
+    "$HOST_ROOT"/*) cwd="$GUEST_ROOT${PWD#"$HOST_ROOT"}" ;;
+  esac
+fi
+
+if [ "$1" = "-c" ]; then
+  # Tool call. --cmd only splits words, so run through sh to keep pipes, && and redirects.
+  exec asp session exec --name "$NAME" --cwd "$cwd" --no-pty -- /bin/sh -c "$2"
+fi
+
+# No -c: OpenCode's interactive terminal. Open a login shell in the guest with a PTY.
+exec asp session exec --name "$NAME" --cwd "$cwd" -- /bin/bash -l
+```
+
+`--no-pty` keeps stdout and stderr separate for the model. The exit code returned to OpenCode is the guest command's exit code.
+
+### 4. Tell OpenCode to use it
+
+In the project's `opencode.json` (or globally in `~/.config/opencode/opencode.json`). The path must be absolute:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "shell": "/home/you/.local/bin/asp-opencode-shell"
+}
+```
+
+Then launch OpenCode from the same repository, with the wrapper's variables in its environment:
+
+```bash
+export ASP_SESSION_NAME=opencode ASP_WORKSPACE_HOST="$PWD"
+opencode
+```
+
+**Check it:** ask the agent to run `hostname && pwd && ls /workspace`. You should see the guest's hostname and `/workspace`, not your machine.
+
+### 5. Stop the session
+
+```bash
+asp session stop --name opencode
+```
+
+If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when enabled). A later `exec` then fails with `idle timeout`; run `asp session start --force --name opencode` to get a new one.
+
+### What is and is not sandboxed
+
+| | Where it runs |
+|---|---|
+| Bash tool calls (`npm test`, `git`, `curl`, …) | **In the microVM**, with the session's egress policy and host-held SSH agent. |
+| OpenCode's built-in read / edit / write / grep tools | **On the host**, directly on the repository. With `--workspace` the guest sees the same files through virtiofs. |
+| OpenCode itself, the LLM API calls and your credentials | On the host. They never enter the guest. |
+
+**Practical notes**
+
+- One session per agent. Two OpenCode instances with different `ASP_SESSION_NAME` values get two independent sandboxes.
+- The pod-daemon kills a command after its exec timeout (30 s by default, `--exec-timeout-secs` in the guest image). Raise it in the image for long builds or test suites.
+- Guest images built before `workspace-virtiofs.service` don't auto-mount `/workspace`. Run `mkdir -p /workspace && mount -t virtiofs workspace /workspace` once through the wrapper, or rebuild the rootfs.
+- No `--workspace`? The agent still works, but only on the guest's own disk; the host-side edit tools and the shell will see different files.
+
+Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs/ops-asp-session.md). Any other harness that lets you replace its shell works the same way.
+
+### Optional session features
 
 | Flag / setting | What it does | Guide |
 |---|---|---|

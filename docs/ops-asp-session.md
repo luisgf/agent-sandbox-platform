@@ -85,22 +85,46 @@ Diagnóstico (ids, transiciones, errores) va a **stderr**. El id de `start`/`sto
 
 ## Cómo lo apuntaría OpenCode
 
-OpenCode (y harnesses parecidos) suelen lanzar la herramienta bash como `sh -c "<comando del modelo>"` en el host. Para que ese tool entre al sandbox hay que **sustituir el shell del tool**. No hay plugin en este repo.
+OpenCode lanza cada llamada a la herramienta bash como `<shell> -c "<comando del modelo>"` en el host, y la opción `"shell"` de `opencode.json` elige ese binario (ruta absoluta). Para que el tool entre al sandbox hay que **sustituir ese shell** por un wrapper. No hay plugin en este repo. Guía paso a paso (en inglés): [README § Using ASP with OpenCode](../README.md#using-asp-with-opencode).
 
-Wrapper (cópialo fuera de git si lo modificas; este no lleva secretos). Usa el nombre de la sesión y el exec en streaming (el default: no pongas `--buffered` si quieres ver la salida según sale):
+**`--cmd` no es un shell.** Solo separa palabras con comillas simples y dobles; no interpreta `|`, `&&`, `;`, redirecciones ni variables. El modelo genera esas construcciones todo el rato, así que el wrapper debe pasar el comando a `/bin/sh -c` **dentro del guest**. Un wrapper con `--cmd "$*"` rompe cualquier tubería.
 
-```bash
+Wrapper (cópialo fuera de git si lo modificas; este no lleva secretos). Usa el exec en streaming (el default: no pongas `--buffered` si quieres ver la salida según sale) y `--no-pty` para que stdout y stderr lleguen separados al modelo:
+
+```sh
 #!/bin/sh
-# asp-session-shell.sh — la sesión "opencode" ya tiene que estar arrancada.
+# asp-opencode-shell — la sesión ya tiene que estar arrancada:
 #   asp session start --name opencode --workspace /ruta/absoluta/del/repo …
-# Caso típico del tool:  asp-session-shell.sh -c "echo hello"
+# Caso típico del tool:  asp-opencode-shell -c "ls | grep x && echo ok"
 NAME="${ASP_SESSION_NAME:-opencode}"
-if [ "$1" = "-c" ]; then
-  shift
-  exec asp session exec --name "$NAME" --cmd "$*"
+HOST_ROOT="${ASP_WORKSPACE_HOST:-}"           # la misma ruta que se pasó a --workspace
+GUEST_ROOT="${ASP_WORKSPACE_GUEST:-/workspace}"
+
+# Traduce el directorio de trabajo de OpenCode en el host al mismo sitio en el guest.
+cwd="$GUEST_ROOT"
+if [ -n "$HOST_ROOT" ]; then
+  case "$PWD/" in
+    "$HOST_ROOT"/*) cwd="$GUEST_ROOT${PWD#"$HOST_ROOT"}" ;;
+  esac
 fi
-exec asp session exec --name "$NAME" -- "$@"
+
+if [ "$1" = "-c" ]; then
+  # Llamada del tool: sh dentro del guest para conservar tuberías, && y redirecciones.
+  exec asp session exec --name "$NAME" --cwd "$cwd" --no-pty -- /bin/sh -c "$2"
+fi
+
+# Sin -c: terminal interactivo de OpenCode. Login shell en el guest con PTY.
+exec asp session exec --name "$NAME" --cwd "$cwd" -- /bin/bash -l
 ```
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "shell": "/home/tu-usuario/.local/bin/asp-opencode-shell"
+}
+```
+
+Lanza OpenCode desde el repo con `ASP_SESSION_NAME` y `ASP_WORKSPACE_HOST="$PWD"` en el entorno. Las herramientas de lectura y edición de OpenCode **no** pasan por el wrapper: tocan el repo en el host, y el guest ve los mismos ficheros por virtiofs.
 
 Secuencia de operador / agente:
 
@@ -129,7 +153,7 @@ Si el harness no puede cambiar el binario del shell y solo puede prefijar un com
 asp session exec --name opencode --cmd '<comando>'
 ```
 
-`--cmd` es **un** argumento. Sin comillas, el resto de argv pisa a `--cmd`. Ante la duda, usa `--`.
+`--cmd` es **un** argumento y no pasa por un shell (ver arriba). Sin comillas, el resto de argv pisa a `--cmd`. Para tuberías o `&&`: `asp session exec --name opencode -- /bin/sh -c '<comando>'`.
 
 `session exec` **sin** fichero para ese nombre termina con exit 1 y el texto `no active session` en stderr. No crea un sandbox implícito.
 
