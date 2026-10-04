@@ -104,6 +104,19 @@ func (h *Host) Apply(p Plan) error {
 		_ = pub
 	}
 	cmds := Argv(p)
+	// Reconcile runs every couple of seconds. Deleting a live tunnel device
+	// drops the handshake, so the laptop can never finish a TCP exchange.
+	// Blackhole/withdraw still deletes. A missing device takes the full recipe.
+	if p.Kind == KindTunnel && ifaceUp(p.Iface) {
+		kept := make([]Cmd, 0, len(cmds))
+		for _, c := range cmds {
+			if c.Name == "ip" && len(c.Args) >= 2 && c.Args[0] == "link" && c.Args[1] == "delete" {
+				continue
+			}
+			kept = append(kept, c)
+		}
+		cmds = kept
+	}
 	if HijacksHost(cmds) {
 		return fmt.Errorf("refusing local-net recipe that hijacks the host default or the public proxy")
 	}
@@ -178,4 +191,13 @@ func runCmd(c Cmd, soft bool) error {
 		msg = err.Error()
 	}
 	return fmt.Errorf("%s %s: %s", c.Name, strings.Join(c.Args, " "), msg)
+}
+
+func ifaceUp(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	cmd := exec.Command("ip", "link", "show", "dev", name)
+	return cmd.Run() == nil
 }
