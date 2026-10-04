@@ -20,53 +20,12 @@ import (
 // Two sandboxes on one node must get different /30s: a shared prefix routes
 // both guests' replies to one TAP and makes their egress indistinguishable.
 func TestReconcilerGivesEachTapItsOwnSubnet(t *testing.T) {
-	type sb struct {
-		ID    string  `json:"id"`
-		Node  *string `json:"node_id"`
-		State string  `json:"state"`
-	}
-	var mu sync.Mutex
-	boxes := map[string]*sb{
-		"aaaaaaaa-0001": {ID: "aaaaaaaa-0001", State: "requested"},
-		"bbbbbbbb-0002": {ID: "bbbbbbbb-0002", State: "requested"},
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		parts := strings.Split(r.URL.Path, "/")
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes/n1/work":
-			list := []any{}
-			for _, b := range boxes {
-				if b.State != "running" && b.State != "stopped" {
-					list = append(list, b)
-				}
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": list})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
-			b := boxes[parts[3]]
-			nid := "n1"
-			b.Node, b.State = &nid, "starting"
-			_ = json.NewEncoder(w).Encode(b)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
-			var body struct {
-				State string `json:"state"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			b := boxes[parts[3]]
-			b.State = body.State
-			_ = json.NewEncoder(w).Encode(b)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	cp := newFakeCP(t, "aaaaaaaa-0001", "bbbbbbbb-0002")
 
 	recTap := &tap.RecordingRunner{}
 	fake := vmm.NewFakeVMM(nil)
 	cache := &egress.PolicyCache{}
-	rec := New(cpclient.New(srv.URL, srv.Client()), "n1", fake, nil, time.Hour)
+	rec := New(cp.client(), "n1", fake, nil, time.Hour)
 	rec.VsockDir = t.TempDir()
 	rec.TapAuto = true
 	rec.Tap = &tap.Manager{Runner: recTap}
@@ -108,14 +67,84 @@ func TestReconcilerGivesEachTapItsOwnSubnet(t *testing.T) {
 	}
 
 	// Stopping one sandbox frees its /30 and its proxy binding.
-	mu.Lock()
-	boxes[a].State = "stopping"
-	mu.Unlock()
+	cp.setState(a, "stopping")
 	rec.tick(context.Background())
 	if got := cache.SandboxFor(netip.MustParseAddr("10.200.0.2")); got != "" {
 		t.Fatalf("stopped sandbox still bound to %q", got)
 	}
 	if _, gnet, err := rec.allocSlot(); err != nil || gnet.HostCIDR() != "10.200.0.1/30" {
 		t.Fatalf("freed slot not reused: %v %v", gnet.HostCIDR(), err)
+	}
+}
+
+// fakeCP is a minimal control plane for reconciler tests: work, claim, status.
+type fakeCP struct {
+	t     *testing.T
+	srv   *httptest.Server
+	mu    sync.Mutex
+	boxes map[string]*fakeSandbox
+}
+
+type fakeSandbox struct {
+	ID     string  `json:"id"`
+	Node   *string `json:"node_id"`
+	State  string  `json:"state"`
+	Detail string  `json:"-"`
+}
+
+func newFakeCP(t *testing.T, ids ...string) *fakeCP {
+	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}}
+	for _, id := range ids {
+		f.boxes[id] = &fakeSandbox{ID: id, State: "requested"}
+	}
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeCP) client() *cpclient.Client { return cpclient.New(f.srv.URL, f.srv.Client()) }
+
+func (f *fakeCP) setState(id, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boxes[id].State = state
+}
+
+func (f *fakeCP) state(id string) (string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.boxes[id].State, f.boxes[id].Detail
+}
+
+func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	parts := strings.Split(r.URL.Path, "/")
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes/n1/work":
+		list := []any{}
+		for _, b := range f.boxes {
+			if b.State == "requested" || b.State == "starting" || b.State == "stopping" {
+				list = append(list, b)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": list})
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+		b := f.boxes[parts[3]]
+		nid := "n1"
+		b.Node, b.State = &nid, "starting"
+		_ = json.NewEncoder(w).Encode(b)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
+		var body struct {
+			State  string `json:"state"`
+			Detail string `json:"detail"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		b := f.boxes[parts[3]]
+		b.State, b.Detail = body.State, body.Detail
+		_ = json.NewEncoder(w).Encode(b)
+	default:
+		http.NotFound(w, r)
 	}
 }

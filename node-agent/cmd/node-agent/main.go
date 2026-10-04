@@ -68,6 +68,7 @@ type config struct {
 	GuestSubnet          string
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
+	DiskDir              string
 }
 
 func main() {
@@ -444,6 +445,10 @@ func main() {
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
+		if !cfg.DryRun {
+			// Never boot the shared image writable: every VM gets its own copy.
+			rec.DiskDir = cfg.DiskDir
+		}
 		if hvSvc != nil {
 			rec.GuestHost = hvSvc
 			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox",
@@ -525,6 +530,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
 	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
+	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img, deleted on stop); ignored with --dry-run")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
 	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "localhost listen addr for internal exec proxy")

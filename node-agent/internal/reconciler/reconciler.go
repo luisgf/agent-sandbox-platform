@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ type Handle struct {
 	TapName   string
 	SSHSock   string // per-sandbox symlink path under VsockDir (virtiofs docs)
 	Slot      int    // index of the guest /30 in GuestSubnet; -1 without a TAP
+	RootFS    string // this sandbox's private rootfs copy; "" when not cloned
 	stopFS    func() // stops virtiofsd when a workspace was mounted
 }
 
@@ -52,6 +54,13 @@ type Reconciler struct {
 	// KernelPath / RootFSPath are defaults for dry-run FakeVMM configs.
 	KernelPath string
 	RootFSPath string
+	// DiskDir, when set, gives every VM a private copy of RootFSPath
+	// (DiskDir/rootfs-{id}.img), deleted on stop. Without it all VMs would
+	// boot one writable image: concurrent guests corrupt the filesystem and
+	// whatever one sandbox writes persists into the next.
+	DiskDir string
+	// CloneDisk copies src to dst (tests). Nil uses cp --reflink=auto --sparse=always.
+	CloneDisk func(src, dst string) error
 
 	// VsockDir holds host CH vsock muxer sockets (vsock-{sandboxID}.sock).
 	VsockDir string
@@ -311,7 +320,17 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		return fmt.Errorf("local-net: %w", err)
 	}
 
-	if err := r.Engine.Start(ctx, cfg); err != nil {
+	rootfs, err := r.cloneRootFS(sb.ID)
+	if err != nil {
+		err = fmt.Errorf("rootfs: %w", err)
+	} else {
+		if rootfs != "" {
+			cfg.RootFSPath = rootfs
+		}
+		err = r.Engine.Start(ctx, cfg)
+	}
+	if err != nil {
+		r.removeRootFS(rootfs)
 		_ = r.localApplier().Clear(sb.ID)
 		if stopFS != nil {
 			stopFS()
@@ -328,7 +347,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 
 	sshSock := r.linkSSHAgent(sb.ID)
 
-	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, stopFS: stopFS}
+	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, RootFS: rootfs, stopFS: stopFS}
 	r.mu.Lock()
 	r.handles[sb.ID] = h
 	r.mu.Unlock()
@@ -391,6 +410,7 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 		if h.stopFS != nil {
 			h.stopFS()
 		}
+		r.removeRootFS(h.RootFS)
 		if r.TapAuto && h.TapName != "" {
 			if err := r.tapMgr().Delete(h.TapName); err != nil {
 				r.Logger.Warn("tap delete", "tap", h.TapName, "error", err)
@@ -615,6 +635,51 @@ func (r *Reconciler) releaseCID(cid uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.freeCID = append(r.freeCID, cid)
+}
+
+// cloneRootFS makes this sandbox's private disk. It returns "" when DiskDir
+// is unset (dry-run), so the shared RootFSPath is used as before.
+func (r *Reconciler) cloneRootFS(sandboxID string) (string, error) {
+	if r.DiskDir == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(r.DiskDir, 0o700); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(r.DiskDir, "rootfs-"+sandboxID+".img")
+	_ = os.Remove(dst) // a leftover from a crash must not be reused
+	clone := r.CloneDisk
+	if clone == nil {
+		clone = cloneDisk
+	}
+	if err := clone(r.RootFSPath, dst); err != nil {
+		_ = os.Remove(dst)
+		return "", err
+	}
+	if err := os.Chmod(dst, 0o600); err != nil {
+		_ = os.Remove(dst)
+		return "", err
+	}
+	return dst, nil
+}
+
+func (r *Reconciler) removeRootFS(path string) {
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		r.Logger.Warn("remove sandbox rootfs", "path", path, "error", err)
+	}
+}
+
+// cloneDisk is a reflink copy where the filesystem supports it (btrfs, XFS)
+// and a sparse copy otherwise, so only used blocks are written.
+func cloneDisk(src, dst string) error {
+	out, err := exec.Command("cp", "--reflink=auto", "--sparse=always", "--", src, dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cp %s: %w (%s)", src, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // allocSlot reserves the next free guest /30.
