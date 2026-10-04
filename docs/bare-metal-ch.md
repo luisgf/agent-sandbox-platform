@@ -155,11 +155,12 @@ Cada microVM debería tener **TAP + NAT en el host**. Egress HTTP/DNS deny-by-de
 **Hoy en código:**
 
 - El reconciler pone `TapDevice: "asp-" + shortID(sandbox_id)` (8 primeros chars del UUID) en el `vm.create` de CH.
-- **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add 10.200.0.1/24`) antes de Start y lo borra en Stop. **SoftFail:** sin `CAP_NET_ADMIN` / permisos, loguea warning y continúa (CH puede fallar al abrir el TAP).
+- **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add <host>/30`) antes de Start y lo borra en Stop. Cada sandbox recibe su propia /30 de `--guest-subnet` (default `10.200.0.0/16`): el TAP lleva la `.1` de esa /30 y el guest la `.2`, que el kernel configura con `ip=` en la cmdline (`CONFIG_IP_PNP`). **SoftFail:** sin `CAP_NET_ADMIN` / permisos, loguea warning y continúa (CH puede fallar al abrir el TAP).
 - Sin `--tap-auto`, prepáralo a mano (sketch abajo) o el create fallará al abrir el device.
-- Allowlist de tenant (`PUT /v1/tenants/{id}/egress`) + check API; **forward proxy HTTP(S)** (`--egress-proxy-listen`) y **DNS sink** (`--egress-dns-sink`) están listos (fase 2b). Guest: `HTTP_PROXY` → IP TAP host:8888.
+- Allowlist de tenant (`PUT /v1/tenants/{id}/egress`) + check API; **forward proxy HTTP(S)** (`--egress-proxy-listen`) y **DNS sink** (`--egress-dns-sink`) están listos (fase 2b). Guest: `HTTP_PROXY` → su gateway (la IP del TAP en su /30):8888.
 - **nft redirect anti-bypass** (`--nft-egress-redirect`, modo `soft|enforce`) fuerza HTTP(S)+DNS por el proxy/sink (fase 2e, §8e). Tabla `asp_egress`.
-- **NAT/MASQUERADE** (`asp_nat`) sigue siendo **ops manual** (§3.3): da ruta IP mínima; no sustituye el proxy deny-default.
+- **Deny-by-default en nft:** con `--nft-egress-redirect`, la tabla `asp_egress` descarta todo lo que el guest manda salvo HTTP(S) y DNS redirigidos al proxy/sink: otros puertos, otros guests, servicios del host y orígenes falsificados. Solo se reenvía el túnel propio de una sesión local-net (`wg-asp-*`).
+- **NAT/MASQUERADE** (`asp_nat`, §3.3) ya no hace falta para el egress público: el proxy sale desde el host. Si lo tienes de antes, el drop de `asp_egress` sigue mandando.
 
 ### 3.2 Sketch: crear TAP + IP host (manual o referencia de `--tap-auto`)
 
@@ -168,12 +169,12 @@ Cada microVM debería tener **TAP + NAT en el host**. Egress HTTP/DNS deny-by-de
 # /var/lib/asp/tap/setup-tap.sh <tap-name> <host-ip/cidr>
 set -euo pipefail
 TAP="${1:?tap name}"   # reconciler: asp-<8chars>
-HOST_CIDR="${2:-10.200.0.1/24}"
+HOST_CIDR="${2:-10.200.0.1/30}"   # --tap-auto: una /30 distinta por sandbox
 
 sudo ip tuntap add dev "$TAP" mode tap user "$(id -un)"
 sudo ip link set "$TAP" up
 sudo ip addr add "$HOST_CIDR" dev "$TAP" 2>/dev/null || true
-# El guest necesita DHCP estático o cloud-init; CH no configura IP sola.
+# --tap-auto pasa ip=<guest>::<host>:255.255.255.252::eth0:off en la cmdline.
 ```
 
 Con `--tap-auto` el node-agent ejecuta el equivalente (usuario del proceso; suele necesitar capabilities o root).
@@ -219,21 +220,22 @@ Esto da **conectividad IP mínima**. No sustituye el proxy deny-default.
 
 #### Guest → host TAP proxy
 
-El forward proxy escucha en el host (p. ej. en la IP del TAP `10.200.0.1:8888`). En el guest:
+El forward proxy escucha en el host (`:8888`). En el guest, apunta al gateway de su /30 (la `.1`; para el primer sandbox `10.200.0.1`):
 
 ```bash
-# Sustituye 10.200.0.1 por la IP del host en el TAP de esa microVM
+# Sustituye 10.200.0.1 por el gateway del guest (ip route | grep default)
 export HTTP_PROXY=http://10.200.0.1:8888
 export HTTPS_PROXY=http://10.200.0.1:8888
-export NO_PROXY=localhost,127.0.0.1,10.200.0.0/24
+export NO_PROXY=localhost,127.0.0.1
 ```
 
-Allowlist efectiva (deny-by-default), en orden:
+Allowlist efectiva (deny-by-default). El proxy y el DNS sink identifican el sandbox por la **IP de origen** (la /30 de su TAP); nunca leen cabeceras que escribe el guest:
 
-1. Header por request `X-ASP-Allowlist-JSON` (lab/tests)
-2. Cache del último `egress_allowlist` adjunto a exec
-3. Env `ASP_EGRESS_ALLOWLIST_JSON` en el node-agent
-4. Allowlist default deny del proceso
+1. Origen dentro de la /30 de un sandbox → el `egress_allowlist` que el CP adjuntó al último exec **de ese sandbox**. Antes del primer exec: deny.
+2. Origen que no es un sandbox → env `ASP_EGRESS_ALLOWLIST_JSON` del node-agent.
+3. Si no, default deny del proceso.
+
+`X-ASP-Allowlist-JSON` y `X-ASP-Sandbox-ID` se borran de la petición reenviada y no cambian la decisión.
 
 Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomendado junto a `--egress-enforce`). Hardening: rate-limit token-bucket por host/sandbox, límite de body (`ASP_EGRESS_MAX_BODY`), deny de schemes no-HTTP, audit JSON. MITM CONNECT bump **off** por defecto; solo con `--egress-mitm` / `ASP_EGRESS_MITM=1` + `--egress-mitm-ca` (corp caution).
 
