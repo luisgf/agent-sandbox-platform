@@ -14,17 +14,26 @@ COPY images/guest/cmd/vsock-ssh-agent-proxy/*.go ./
 RUN go mod tidy && CGO_ENABLED=0 go build -o /out/vsock-ssh-agent-proxy .
 
 FROM debian:bookworm-slim
+# CH boots the kernel with root=/dev/vda and /sbin/init. docker export does not
+# keep ENTRYPOINT/CMD, and bookworm-slim ships neither systemd nor /sbin/init.
+# systemd-sysv is the package that links /sbin/init -> /lib/systemd/systemd.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+         ca-certificates kmod systemd systemd-sysv \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home /nonexistent --shell /usr/sbin/nologin sandboxd \
+    && install -d -o root -g root -m 0755 /var/lib/sandboxd \
+    && useradd --system --uid 10001 --home-dir /var/lib/sandboxd --shell /usr/sbin/nologin sandboxd \
+    && chown sandboxd:sandboxd /var/lib/sandboxd \
     && install -d -o sandboxd -g sandboxd -m 0750 /run/agent-sandbox \
-    && install -d -m 0755 /etc/systemd/system
+    && install -d -m 0755 /etc/systemd/system \
+    && test -x /lib/systemd/systemd \
+    && test -e /sbin/init
 COPY --from=build-rust /src/pod-daemon/target/release/pod-daemon /usr/local/bin/pod-daemon
 COPY --from=build-go /out/vsock-ssh-agent-proxy /usr/local/bin/vsock-ssh-agent-proxy
 COPY images/guest/systemd/pod-daemon.service /etc/systemd/system/pod-daemon.service
 COPY images/guest/systemd/ssh-agent-vsock.service /etc/systemd/system/ssh-agent-vsock.service
 COPY images/guest/systemd/workspace-virtiofs.service /etc/systemd/system/workspace-virtiofs.service
+COPY images/guest/modules-load.d/vsock.conf /etc/modules-load.d/vsock.conf
 COPY images/guest/openrc/pod-daemon /etc/init.d/pod-daemon.openrc-example
 COPY images/guest/openrc/ssh-agent-vsock /etc/init.d/ssh-agent-vsock.openrc-example
 COPY images/guest/openrc/workspace-virtiofs /etc/init.d/workspace-virtiofs.openrc-example

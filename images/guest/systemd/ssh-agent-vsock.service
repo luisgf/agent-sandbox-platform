@@ -8,6 +8,7 @@ Wants=pod-daemon.service
 Type=simple
 User=sandboxd
 Group=sandboxd
+WorkingDirectory=/
 Environment=ASP_HOST_CID=2
 Environment=SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
 # Lab/dry-run override (unix fallback): set ASP_SSH_AGENT_UPSTREAM=unix:/path in a drop-in.

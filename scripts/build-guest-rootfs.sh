@@ -20,6 +20,21 @@ trap cleanup EXIT
 
 TMP="$(mktemp -d)"
 docker export "$CID" | tar -C "$TMP" -xf -
+# docker create injects /.dockerenv. systemd then treats the VM as a container.
+rm -f "$TMP/.dockerenv"
+
+# Optional kernel modules for the guest vmlinux. AF_VSOCK is modular on the
+# Ubuntu kernel (socket() returns EAFNOSUPPORT until vsock.ko is loaded).
+# The directory name must be the guest kernel's uname -r.
+if [[ -n "${ASP_GUEST_MODULES:-}" ]]; then
+  if [[ ! -d "$ASP_GUEST_MODULES" ]]; then
+    echo "ASP_GUEST_MODULES is not a directory: $ASP_GUEST_MODULES" >&2
+    exit 1
+  fi
+  ver="$(basename "$ASP_GUEST_MODULES")"
+  mkdir -p "$TMP/lib/modules"
+  cp -a "$ASP_GUEST_MODULES" "$TMP/lib/modules/$ver"
+fi
 
 # Ensure runtime dirs exist for systemd / pod-daemon / ssh-agent-vsock
 mkdir -p "$TMP/run/agent-sandbox" "$TMP/etc/systemd/system"

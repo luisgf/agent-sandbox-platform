@@ -14,6 +14,7 @@ El `Dockerfile`:
 
 - Compila `pod-daemon` (Rust release).
 - Instala el binario en `/usr/local/bin/pod-daemon`.
+- Instala `systemd` y `systemd-sysv` (`/sbin/init`). Cloud Hypervisor no usa el ENTRYPOINT de Docker; sin init el kernel arranca y `pod-daemon` no llega a ejecutarse.
 - Incluye unidades systemd `pod-daemon.service`, **`ssh-agent-vsock.service`** y **`workspace-virtiofs.service`**, más ejemplos OpenRC.
 - Binario **`vsock-ssh-agent-proxy`**: unix `/run/agent-sandbox/ssh-agent.sock` ← vsock CID 2:26501.
 - **CMD por defecto:** `--listen vsock --vsock-port 26500` (path productivo CH).

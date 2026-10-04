@@ -4,9 +4,10 @@ After=network.target
 ConditionPathExists=/usr/local/bin/pod-daemon
 
 [Service]
+# Run as root. systemd 252 returns 200/CHDIR for User=sandboxd before exec
+# (the listener never binds). Revisit when that chdir is fixed.
 Type=simple
-User=sandboxd
-Group=sandboxd
+WorkingDirectory=/
 Environment=ASP_HOST_CID=2
 ExecStart=/usr/local/bin/pod-daemon --listen vsock --vsock-port 26500
 Restart=on-failure
