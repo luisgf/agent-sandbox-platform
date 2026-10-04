@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in ASP does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Found a way to break isolation, bypass egress or leak a credential?** Do not file it here. Report it privately: [Report a vulnerability](https://github.com/luisgf/agent-sandbox-platform/security/advisories/new).
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      multiple: true
+      options:
+        - Control plane
+        - Node agent
+        - pod-daemon (guest)
+        - asp CLI / sessions
+        - Guest image
+        - Egress (proxy, DNS sink, nftables)
+        - Local network (--local-net)
+        - Identity (IdP, SSH agent, OIDC)
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How was the node running?
+      options:
+        - Dry-run (FakeVMM, no KVM)
+        - KVM + Cloud Hypervisor
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands in order, as close to copy-paste as possible.
+      placeholder: |
+        asp session start --name demo --node-id=dev-node
+        asp session exec --name demo --cmd '...'
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`.
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS and kernel, Cloud Hypervisor version, nftables mode (`soft` or `enforce`), IdP if any.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant control-plane, node-agent or CLI output. Remove tokens and keys first.
+      render: text

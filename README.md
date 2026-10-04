@@ -1,5 +1,8 @@
 # Agent Sandbox Platform (ASP)
 
+[![CI](https://github.com/luisgf/agent-sandbox-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/luisgf/agent-sandbox-platform/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Run the code your AI agent writes inside a microVM — never on your host.**
 
 ASP is a self-hosted, FOSS sandbox platform for coding agents. An agent harness gets a long-lived **session**: one Cloud Hypervisor microVM with its own disk, its own deny-by-default egress and an owner taken from your IdP. Every shell command the agent runs goes through `asp session exec` and executes inside that guest. Your SSH keys, your tokens and the hypervisor socket stay on the host.
@@ -22,6 +25,7 @@ ASP is a self-hosted, FOSS sandbox platform for coding agents. An agent harness 
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
 - [Development](#development)
+- [License](#license)
 
 ---
 
@@ -474,3 +478,9 @@ make pack             # release tarball
 ```
 
 Each Go component is its own module (`control-plane/`, `node-agent/`, `cli/`); `pod-daemon/` is a Cargo crate.
+
+---
+
+## License
+
+[Apache License 2.0](LICENSE). To report a vulnerability, see [SECURITY.md](SECURITY.md).

@@ -1,6 +1,6 @@
 [Unit]
 Description=ASP guest virtiofs workspace mount (/workspace)
-Documentation=https://github.com/luisgf/bots
+Documentation=https://github.com/luisgf/agent-sandbox-platform
 After=local-fs.target
 Before=pod-daemon.service
 # WantedBy, not RequiredBy: a missing tag must not fail the boot transaction.
