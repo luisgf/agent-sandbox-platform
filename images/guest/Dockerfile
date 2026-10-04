@@ -7,7 +7,7 @@ COPY pod-daemon/Cargo.toml pod-daemon/Cargo.lock* ./
 COPY pod-daemon/src ./src
 RUN if [ -f Cargo.lock ]; then cargo build --release --locked; else cargo build --release; fi
 
-FROM golang:1.22-bookworm AS build-go
+FROM golang:1.27-bookworm AS build-go
 WORKDIR /src/vsock-ssh-agent-proxy
 COPY images/guest/cmd/vsock-ssh-agent-proxy/go.mod ./
 COPY images/guest/cmd/vsock-ssh-agent-proxy/*.go ./
