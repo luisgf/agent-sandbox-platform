@@ -153,3 +153,14 @@ func TestScriptHijackRefusesDefaultAndAllowsUplinkRead(t *testing.T) {
 		t.Fatal("guest return route is not a default route")
 	}
 }
+
+func TestDarwinTunEnvRetargetsExisting(t *testing.T) {
+	t.Setenv("ASP_LOCAL_NET_UTUN", "utun144")
+	if got := darwinTun("wg-asp-other"); got != "utun144" {
+		t.Fatalf("got %s", got)
+	}
+	t.Setenv("ASP_LOCAL_NET_UTUN", "not-a-utun")
+	if got := darwinTun("wg-asp-ln-1"); got == "utun144" || !strings.HasPrefix(got, "utun") {
+		t.Fatalf("got %s", got)
+	}
+}

@@ -509,6 +509,30 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 		})
 		return out, nil
 	}
+	// failed: the node already tore the VM down. Destroy finishes as stopped
+	// instead of 409, so the session file can be cleared.
+	if sb.State == SandboxFailed {
+		from := string(sb.State)
+		sb.State = SandboxStopped
+		withdrawLocalNetFields(&sb)
+		sb.StateVersion++
+		sb.UpdatedAt = time.Now().UTC()
+		m.sandboxes[id] = sb
+		out := cloneSandbox(sb)
+		tenantID := sb.TenantID
+		m.mu.Unlock()
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: id,
+			TenantID:  tenantID,
+			EventType: "sandbox.state_changed",
+			FromState: &from,
+			ToState:   strPtr(string(SandboxStopped)),
+			Actor:     "api",
+			ActorSub:  actorSub,
+			Payload:   json.RawMessage(`{"reason":"destroy_failed"}`),
+		})
+		return out, nil
+	}
 	if !IsActiveLifecycle(sb.State) {
 		m.mu.Unlock()
 		return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, sb.State)

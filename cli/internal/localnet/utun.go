@@ -34,6 +34,10 @@ var utunName = regexp.MustCompile(`^utun[0-9]+$`)
 // Numbers start at 80 so we do not take the Mac's existing utun0-utun8.
 func darwinTun(linuxIface string) string {
 	linuxIface = strings.TrimSpace(linuxIface)
+	// ASP_LOCAL_NET_UTUN retargets an existing utun (the Mac already has one up).
+	if v := strings.TrimSpace(os.Getenv("ASP_LOCAL_NET_UTUN")); utunName.MatchString(v) {
+		return v
+	}
 	if utunName.MatchString(linuxIface) {
 		return linuxIface
 	}

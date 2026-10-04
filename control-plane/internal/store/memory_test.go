@@ -626,3 +626,26 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 		t.Fatalf("destroy actor_sub=%q event=%+v", last.ActorSub, last)
 	}
 }
+
+func TestDestroyFailedSandboxStops(t *testing.T) {
+	s := NewMemoryStore()
+	sb, err := s.CreateSandbox(CreateSandboxInput{
+		TenantID:  "tenant-a",
+		ImageRef:  "img",
+		CPUMillis: 100,
+		MemoryMiB: 128,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxFailed, "virtiofs"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.MarkSandboxStopping(sb.ID, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != SandboxStopped {
+		t.Fatalf("state %s", out.State)
+	}
+}

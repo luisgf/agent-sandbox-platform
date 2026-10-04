@@ -586,6 +586,9 @@ func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error
 	if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
 		target = SandboxStopped
 		payload = json.RawMessage(`{"reason":"destroy_unassigned"}`)
+	} else if sb.State == SandboxFailed {
+		target = SandboxStopped
+		payload = json.RawMessage(`{"reason":"destroy_failed"}`)
 	} else if !IsActiveLifecycle(sb.State) {
 		return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, sb.State)
 	}

@@ -125,6 +125,13 @@ func (h *Host) Apply(p Plan) error {
 			return fmt.Errorf("local-net %s: %w", p.SandboxID, err)
 		}
 	}
+	if p.Kind == KindTunnel {
+		if err := ensureTapWGForward(p.Tap, p.Iface); err != nil {
+			return fmt.Errorf("local-net %s: %w", p.SandboxID, err)
+		}
+	} else if p.Tap != "" && p.Iface != "" {
+		removeTapWGForward(p.Tap, p.Iface)
+	}
 	h.mu.Lock()
 	if h.plans == nil {
 		h.plans = map[string]Plan{}
@@ -147,6 +154,7 @@ func (h *Host) Clear(sandboxID string) error {
 			return err
 		}
 	}
+	removeTapWGForward(p.Tap, p.Iface)
 	_ = os.Remove(h.keyPath(sandboxID))
 	h.mu.Lock()
 	delete(h.plans, sandboxID)
@@ -200,4 +208,56 @@ func ifaceUp(name string) bool {
 	}
 	cmd := exec.Command("ip", "link", "show", "dev", name)
 	return cmd.Run() == nil
+}
+
+// ensureTapWGForward lets this sandbox's TAP reach its WireGuard device and
+// the reverse path back. Docker's FORWARD policy is drop; these two rules are
+// the only exception and they name this session's interfaces. Nothing else
+// in FORWARD is changed. Missing iptables (unit tests) is a no-op.
+func ensureTapWGForward(tap, wg string) error {
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return nil
+	}
+	for _, spec := range [][]string{
+		{"-i", tap, "-o", wg, "-j", "ACCEPT"},
+		{"-i", wg, "-o", tap, "-j", "ACCEPT"},
+	} {
+		if iptablesCheck(spec) {
+			continue
+		}
+		if err := iptablesRun(append([]string{"-I", "FORWARD", "1"}, spec...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeTapWGForward(tap, wg string) {
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return
+	}
+	for _, spec := range [][]string{
+		{"-i", tap, "-o", wg, "-j", "ACCEPT"},
+		{"-i", wg, "-o", tap, "-j", "ACCEPT"},
+	} {
+		_ = iptablesRun(append([]string{"-D", "FORWARD"}, spec...))
+	}
+}
+
+func iptablesCheck(spec []string) bool {
+	cmd := exec.Command("iptables", append([]string{"-C", "FORWARD"}, spec...)...)
+	return cmd.Run() == nil
+}
+
+func iptablesRun(args []string) error {
+	cmd := exec.Command("iptables", args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	return fmt.Errorf("iptables %s: %s", strings.Join(args, " "), msg)
 }
