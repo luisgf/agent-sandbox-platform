@@ -136,6 +136,9 @@ type chCpusConfig struct {
 
 type chMemoryConfig struct {
 	Size int64 `json:"size"`
+	// Shared is required for vhost-user (virtiofs). Cloud Hypervisor rejects
+	// an fs device unless memory is shared or backed by huge pages.
+	Shared bool `json:"shared,omitempty"`
 }
 
 type chPayloadConfig struct {
@@ -144,8 +147,9 @@ type chPayloadConfig struct {
 }
 
 type chDiskConfig struct {
-	Path     string `json:"path"`
-	Readonly bool   `json:"readonly,omitempty"`
+	Path      string `json:"path"`
+	Readonly  bool   `json:"readonly,omitempty"`
+	ImageType string `json:"image_type,omitempty"`
 }
 
 type chNetConfig struct {
@@ -227,13 +231,14 @@ func (c *CloudHypervisor) createVMWith(ctx context.Context, client *http.Client,
 	if cmdline == "" {
 		cmdline = "console=hvc0 root=/dev/vda rw"
 	}
+	mem := chMemoryConfig{Size: memBytes}
 	body := chVMConfig{
 		CPUs:    chCpusConfig{BootVCPUs: cpus, MaxVCPUs: cpus},
-		Memory:  chMemoryConfig{Size: memBytes},
+		Memory:  mem,
 		Payload: chPayloadConfig{Kernel: config.KernelPath, Cmdline: cmdline},
 	}
 	if config.RootFSPath != "" {
-		body.Disks = []chDiskConfig{{Path: config.RootFSPath}}
+		body.Disks = []chDiskConfig{{Path: config.RootFSPath, ImageType: "Raw"}}
 	}
 	if config.TapDevice != "" {
 		body.Net = []chNetConfig{{Tap: config.TapDevice}}
@@ -246,6 +251,7 @@ func (c *CloudHypervisor) createVMWith(ctx context.Context, client *http.Client,
 	// puts the socket here. An fs device without a socket would fail vm.create,
 	// so an empty socket omits fs even if a host path was recorded.
 	if tag, sock, ok := WorkspaceFS(config); ok {
+		body.Memory.Shared = true
 		body.Fs = []chFsConfig{{Tag: tag, Socket: sock}}
 	} else if strings.TrimSpace(config.WorkspaceHostPath) != "" {
 		c.logger().Warn("workspace host path recorded; Cloud Hypervisor virtiofs not attached (no virtiofsd socket)",

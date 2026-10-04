@@ -30,12 +30,24 @@ func TestCreateVMDoesNotPretendVirtiofsWithoutSocket(t *testing.T) {
 	if len(body.Fs) != 0 {
 		t.Fatalf("fs leaked into vm.create: %+v", body.Fs)
 	}
+	if body.Memory.Shared {
+		t.Fatal("memory.shared set without a virtiofs socket")
+	}
+	if len(body.Disks) != 1 || body.Disks[0].ImageType != "Raw" {
+		t.Fatalf("disk=%+v", body.Disks)
+	}
 	cfg.WorkspaceFSSocket = "/run/asp/virtiofs.sock"
 	if err := ch.CreateVM(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	if len(body.Fs) != 1 || body.Fs[0].Tag != WorkspaceVirtiofsTag || body.Fs[0].Socket != cfg.WorkspaceFSSocket {
 		t.Fatalf("fs=%+v", body.Fs)
+	}
+	if !body.Memory.Shared {
+		t.Fatal("virtiofs vm.create must set memory.shared (vhost-user)")
+	}
+	if len(body.Disks) != 1 || body.Disks[0].ImageType != "Raw" {
+		t.Fatalf("disk=%+v", body.Disks)
 	}
 }
 
