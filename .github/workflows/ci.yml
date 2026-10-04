@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - control-plane
+          - node-agent
+          - cli
+          - images/guest/cmd/vsock-ssh-agent-proxy
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.*
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  rust:
+    name: Rust (pod-daemon)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pod-daemon
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            pod-daemon/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('pod-daemon/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: cargo test
+        run: cargo test --locked
