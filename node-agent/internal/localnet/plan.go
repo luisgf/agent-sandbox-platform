@@ -14,6 +14,10 @@ import (
 type Kind string
 
 const (
+	// guestLAN is the prefix on every sandbox TAP (tap.DefaultHostCIDR is
+	// 10.200.0.1/24). Replies from the tunnel use the session table, not the
+	// main table: an older TAP can still own 10.200.0.0/24 there.
+	guestLAN = "10.200.0.0/24"
 	// KindPublic is ADR-0002: node proxy, DNS sink, nft asp_egress.
 	KindPublic Kind = "public"
 	// KindBlackhole sinks 0.0.0.0/0 (and ::/0) for this session only.
@@ -157,12 +161,15 @@ func Argv(p Plan) []Cmd {
 			Cmd{Name: "ip", Args: []string{"link", "set", p.Iface, "up"}},
 			Cmd{Name: "ip", Args: []string{"route", "replace", "default", "dev", p.Iface, "table", table}},
 			Cmd{Name: "ip", Args: []string{"route", "replace", "::/0", "dev", p.Iface, "table", table}},
+			Cmd{Name: "ip", Args: []string{"route", "replace", guestLAN, "dev", p.Tap, "table", table}},
 			Cmd{Name: "ip", Args: []string{"rule", "add", "iif", p.Tap, "lookup", table, "priority", table}},
+			Cmd{Name: "ip", Args: []string{"rule", "add", "iif", p.Iface, "to", guestLAN, "lookup", table, "priority", returnPriority(p.TableID)}},
 		)
 		return cmds
 	default:
 		table := strconv.Itoa(p.TableID)
 		return []Cmd{
+			{Name: "ip", Args: []string{"rule", "del", "iif", p.Iface, "to", guestLAN, "lookup", table, "priority", returnPriority(p.TableID)}},
 			{Name: "ip", Args: []string{"link", "delete", "dev", p.Iface}},
 			{Name: "ip", Args: []string{"route", "replace", "blackhole", "0.0.0.0/0", "table", table}},
 			{Name: "ip", Args: []string{"route", "replace", "blackhole", "::/0", "table", table}},
@@ -178,8 +185,16 @@ func ClearArgv(p Plan) []Cmd {
 	return []Cmd{
 		{Name: "ip", Args: []string{"link", "delete", "dev", p.Iface}},
 		{Name: "ip", Args: []string{"rule", "del", "iif", p.Tap, "lookup", table, "priority", table}},
+		{Name: "ip", Args: []string{"rule", "del", "iif", p.Iface, "to", guestLAN, "lookup", table, "priority", returnPriority(p.TableID)}},
 		{Name: "ip", Args: []string{"route", "flush", "table", table}},
 	}
+}
+
+// returnPriority is the session table id. That priority is before the main
+// table (32766). A rule after main never runs: main already routes
+// 10.200.0.0/24 at whichever TAP was created first.
+func returnPriority(tableID int) string {
+	return strconv.Itoa(tableID)
 }
 
 // Commands joins Argv for logs and tests.

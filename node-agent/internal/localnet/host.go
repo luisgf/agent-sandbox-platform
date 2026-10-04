@@ -176,7 +176,11 @@ func ignoreMissing(c Cmd) bool {
 	if c.Name != "ip" || len(c.Args) < 2 {
 		return false
 	}
-	return c.Args[0] == "link" && c.Args[1] == "delete"
+	if c.Args[0] == "link" && c.Args[1] == "delete" {
+		return true
+	}
+	// rule del on withdraw runs even when the return rule was never added.
+	return c.Args[0] == "rule" && c.Args[1] == "del"
 }
 
 func runCmd(c Cmd, soft bool) error {
@@ -189,6 +193,7 @@ func runCmd(c Cmd, soft bool) error {
 	if soft && (strings.Contains(msg, "Cannot find device") ||
 		strings.Contains(msg, "does not exist") ||
 		strings.Contains(msg, "No such device") ||
+		strings.Contains(msg, "No such file") ||
 		strings.Contains(err.Error(), "Cannot find device")) {
 		return nil
 	}

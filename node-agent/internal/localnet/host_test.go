@@ -106,6 +106,8 @@ func TestHostApplyMockPath(t *testing.T) {
 		"wg set wg-asp-abcdef01 listen-port 51024 private-key " + keyPath + " peer " + up.PeerPublic + " allowed-ips 0.0.0.0/0,::/0",
 		"ip route replace default dev wg-asp-abcdef01 table 13853",
 		"ip rule add iif asp-abcdef01 lookup 13853 priority 13853",
+		"ip route replace 10.200.0.0/24 dev asp-abcdef01 table 13853",
+		"ip rule add iif wg-asp-abcdef01 to 10.200.0.0/24 lookup 13853 priority 13853",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("missing %q\nlog:\n%s", want, log)
@@ -128,6 +130,9 @@ func TestHostApplyMockPath(t *testing.T) {
 	}
 	if !strings.Contains(log, "ip route replace blackhole 0.0.0.0/0 table 13853") {
 		t.Fatalf("no blackhole:\n%s", log)
+	}
+	if !strings.Contains(log, "ip rule del iif wg-asp-abcdef01 to 10.200.0.0/24 lookup 13853 priority 13853") {
+		t.Fatalf("return rule not removed:\n%s", log)
 	}
 	if strings.Contains(log, "8888") || strings.Contains(log, "wg set") {
 		t.Fatalf("disconnect still tunneled or proxied:\n%s", log)
