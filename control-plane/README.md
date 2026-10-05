@@ -98,6 +98,23 @@ La unit `scripts/systemd/asp-control-plane.service` fija `2h`. Los tests y smoke
 
 **Límites.** El reaper no es un sustituto de `asp session stop`: el fichero local de sesión sigue apuntando al id; `asp session status` y `exec` lo dicen (`idle timeout` / `idle_reaped`) y hay que `asp session start --force`. La migración `008` rellena `last_activity_at` de filas viejas con `now()`, así que al activar el reaper no se destruye de golpe todo lo creado hace horas; el reloj de esas filas empieza en la migración. Evento de auditoría: `sandbox.idle_reaped` (`stop_reason=idle_timeout`).
 
+## Timeouts hacia el node-agent
+
+**Por qué.** El cliente hacia el agente tenía un timeout total de 30 s, y ese timeout cuenta también la lectura del body: un `exec` en streaming (`?stream=1`) o una sesión PTY se cortaba a los 30 s aunque siguiera saliendo salida.
+
+**Qué se limita.** Cada fase de la llamada, igual por HTTP plano (agente en el mismo host) que por mTLS (`https://`):
+
+| Fase | Límite |
+|---|---|
+| Conexión TCP | 10 s |
+| Handshake TLS | 10 s |
+| Hasta que el agente empieza a responder (cabeceras) | 30 s |
+| `exec` sin `?stream=1` y `exec/stdin`, de principio a fin | 30 s |
+
+Un stream no tiene límite total: dura lo que el comando. Si el cliente cuelga, el plano de control cancela la llamada al agente. Si el nodo desaparece a mitad de stream, lo detecta el keep-alive de TCP en unos minutos.
+
+**Límites.** El agente responde a un `exec` acumulado cuando el comando termina, así que ese `exec` sigue limitado a 30 s, como antes; para algo más largo, el stream (`asp session exec` lo usa por defecto). Un stream recibe las cabeceras con su primer evento: un PTY o un `stdin_stream` empiezan con `ready`, pero un comando sin PTY que no escribe nada en 30 s recibe 502. Los valores no se configuran por entorno. Más abajo hay otros cortes: el node-agent llama al pod-daemon con un timeout total de 60 s, y el pod-daemon mata el proceso a los `--exec-timeout-secs` (default 30).
+
 ## Lab IdP (Keycloak)
 
 En ncc1701d el CP lab carga `ASP_IDP_*` desde `/home/ubuntu/.secrets/asp-idp.env` (no en git). Unit: `asp-control-plane.service` → `127.0.0.1:18112`. Guía: [`docs/ops-idp-keycloak-lab.md`](../docs/ops-idp-keycloak-lab.md).
