@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 )
@@ -173,4 +174,85 @@ func TestMemoryBinpackStacksSandboxes(t *testing.T) {
 func TestPostgresBinpackStacksSandboxes(t *testing.T) {
 	s := newPostgresTestStore(t)
 	testBinpackStacksSandboxes(t, s, s.SetSchedConfig)
+}
+
+// Only the node a sandbox was placed on gets it as work and can claim it.
+func testClaimOnlyByAssignedNode(t *testing.T, s Store) {
+	t.Helper()
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	registerPlacementNodes(t, s, 0, "node-a", "node-b")
+	sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work, _ := s.ListNodeWork("node-b"); len(work) != 0 {
+		t.Fatalf("node-b sees another node's sandbox: %+v", work)
+	}
+	if work, _ := s.ListNodeWork("node-a"); len(work) != 1 || work[0].ID != sb.ID {
+		t.Fatalf("node-a work: %+v", work)
+	}
+	if _, err := s.ClaimSandbox(sb.ID, "node-b"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("claim by another node: %v", err)
+	}
+	claimed, err := s.ClaimSandbox(sb.ID, "node-a")
+	if err != nil || claimed.State != SandboxStarting || claimed.NodeLeaseUntil == nil {
+		t.Fatalf("claim by the assigned node: %+v %v", claimed, err)
+	}
+	if _, err := s.ClaimSandbox(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second claim: %v", err)
+	}
+	if _, err := s.ClaimSandbox("missing", "node-a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("claim of an unknown sandbox: %v", err)
+	}
+}
+
+func TestMemoryClaimOnlyByAssignedNode(t *testing.T) {
+	testClaimOnlyByAssignedNode(t, NewMemoryStore())
+}
+
+func TestPostgresClaimOnlyByAssignedNode(t *testing.T) {
+	testClaimOnlyByAssignedNode(t, newPostgresTestStore(t))
+}
+
+// A work poll keeps the node fresh (throttled) and is refused for unknown nodes.
+func testTouchNodePoll(t *testing.T, s Store) {
+	t.Helper()
+	registerPlacementNodes(t, s, 0, "node-a")
+	if err := s.TouchNodePoll("ghost", time.Now().UTC()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown node: %v", err)
+	}
+	later := time.Now().UTC().Add(time.Minute)
+	if err := s.TouchNodePoll("node-a", later); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := s.GetNode("node-a")
+	if n.LastSeenAt == nil || n.LastSeenAt.Before(later.Add(-time.Millisecond)) {
+		t.Fatalf("poll did not refresh last_seen_at: %v", n.LastSeenAt)
+	}
+	// Within the throttle window nothing is written.
+	if err := s.TouchNodePoll("node-a", later.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	n2, _ := s.GetNode("node-a")
+	if !n2.LastSeenAt.Equal(*n.LastSeenAt) {
+		t.Fatalf("throttled poll wrote last_seen_at: %v -> %v", n.LastSeenAt, n2.LastSeenAt)
+	}
+	// A revoked node stays revoked and offline.
+	if _, err := s.RevokeNode("node-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchNodePoll("node-a", later.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n3, _ := s.GetNode("node-a"); n3.State != "offline" {
+		t.Fatalf("poll revived a revoked node: %+v", n3)
+	}
+}
+
+func TestMemoryTouchNodePoll(t *testing.T) {
+	testTouchNodePoll(t, NewMemoryStore())
+}
+
+func TestPostgresTouchNodePoll(t *testing.T) {
+	testTouchNodePoll(t, newPostgresTestStore(t))
 }

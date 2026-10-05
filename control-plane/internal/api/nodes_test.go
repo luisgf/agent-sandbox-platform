@@ -116,3 +116,12 @@ func TestCreateExplainsPlacementRefusals(t *testing.T) {
 		t.Fatalf("unknown pin: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestWorkPollForUnknownNodeIs404(t *testing.T) {
+	mux := testMux(NewServer(store.NewMemoryStore()))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/nodes/ghost/work", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("want 404 so the agent re-registers, got %d %s", rr.Code, rr.Body.String())
+	}
+}

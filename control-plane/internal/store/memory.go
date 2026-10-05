@@ -290,51 +290,18 @@ func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 		m.mu.Unlock()
 		return Sandbox{}, ErrNotFound
 	}
-	now := time.Now().UTC()
-	// Allow reclaim of requested with expired lease from another node.
-	if sb.State == SandboxRequested {
-		if sb.NodeID != nil && *sb.NodeID != "" && *sb.NodeID != nodeID {
-			if !leaseExpired(sb.NodeLeaseUntil, now) {
-				m.mu.Unlock()
-				return Sandbox{}, fmt.Errorf("%w: already assigned to %s", ErrConflict, *sb.NodeID)
-			}
-			// expired soft-assign — take over
-		}
-	} else if sb.State == SandboxStarting || sb.State == SandboxRunning {
-		// Reclaim stuck sandbox with expired lease → treat as claimable after reset.
-		if sb.NodeID != nil && *sb.NodeID != "" && *sb.NodeID != nodeID && leaseExpired(sb.NodeLeaseUntil, now) {
-			fromStuck := string(sb.State)
-			sb.State = SandboxRequested
-			sb.NodeID = nil
-			sb.NodeLeaseUntil = nil
-			sb.StateVersion++
-			sb.UpdatedAt = now
-			m.sandboxes[id] = sb
-			tenantStuck := sb.TenantID
-			m.mu.Unlock()
-			_ = m.EmitEvent(EmitEventInput{
-				SandboxID: id,
-				TenantID:  tenantStuck,
-				EventType: "sandbox.lease_reclaimed",
-				FromState: &fromStuck,
-				ToState:   strPtr(string(SandboxRequested)),
-				Actor:     "lease",
-				Payload:   mustJSON(map[string]string{"by": nodeID, "reason": "expired_before_claim"}),
-			})
-			m.mu.Lock()
-			sb = m.sandboxes[id]
-		} else {
-			m.mu.Unlock()
-			return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
-		}
-	} else {
+	// Only the node the scheduler placed the sandbox on can claim it (ADR-0011).
+	if sb.NodeID == nil || *sb.NodeID != nodeID {
+		m.mu.Unlock()
+		return Sandbox{}, fmt.Errorf("%w: sandbox is not assigned to node %s", ErrConflict, nodeID)
+	}
+	if sb.State != SandboxRequested {
 		m.mu.Unlock()
 		return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
 	}
+	now := time.Now().UTC()
 	from := string(sb.State)
-	nid := nodeID
 	until := leaseUntil(now)
-	sb.NodeID = &nid
 	sb.State = SandboxStarting
 	sb.NodeLeaseUntil = &until
 	sb.StateVersion++
@@ -365,15 +332,12 @@ func (m *MemoryStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 	out := make([]Sandbox, 0)
 	for _, sb := range m.sandboxes {
 		assigned := sb.NodeID != nil && *sb.NodeID == nodeID
-		unassigned := sb.NodeID == nil || *sb.NodeID == ""
 		switch {
 		case assigned && (sb.State == SandboxRequested || sb.State == SandboxStarting || sb.State == SandboxStopping):
 			out = append(out, cloneSandbox(sb))
 		case assigned && sb.LocalNet && sb.State == SandboxRunning:
 			// Running full-tunnel sessions stay visible so the node can move
 			// pending → up → withdrawn without ever restoring public egress.
-			out = append(out, cloneSandbox(sb))
-		case unassigned && sb.State == SandboxRequested:
 			out = append(out, cloneSandbox(sb))
 		}
 	}
@@ -900,6 +864,28 @@ func (m *MemoryStore) HeartbeatNode(id string) (Node, error) {
 	n.State = "ready"
 	m.nodes[id] = n
 	return cloneNode(n), nil
+}
+
+// nodePollWriteEvery throttles last_seen_at writes from work polls (every ~2s per node).
+const nodePollWriteEvery = 5 * time.Second
+
+func (m *MemoryStore) TouchNodePoll(id string, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if n.LastSeenAt != nil && now.Sub(*n.LastSeenAt) < nodePollWriteEvery {
+		return nil
+	}
+	n.LastSeenAt = &now
+	n.UpdatedAt = now
+	if n.RevokedAt == nil {
+		n.State = "ready"
+	}
+	m.nodes[id] = n
+	return nil
 }
 
 func (m *MemoryStore) ListNodes() ([]Node, error) {

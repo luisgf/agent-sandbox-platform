@@ -2,7 +2,6 @@ package store
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -300,19 +299,18 @@ func TestMemoryStoreClaimAtomicity(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The assigned node races itself (e.g. two reconcile ticks): one claim wins.
 	const n = 32
 	var wg sync.WaitGroup
 	wg.Add(n)
 	wins := make(chan string, n)
 	for i := 0; i < n; i++ {
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			node := fmt.Sprintf("node-%d", i)
-			got, err := s.ClaimSandbox(sb.ID, node)
-			if err == nil {
+			if got, err := s.ClaimSandbox(sb.ID, "node-0"); err == nil {
 				wins <- *got.NodeID
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 	close(wins)
@@ -327,16 +325,10 @@ func TestMemoryStoreClaimAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != SandboxStarting {
-		t.Fatalf("state=%s", got.State)
+	if got.State != SandboxStarting || got.NodeID == nil || *got.NodeID != "node-0" {
+		t.Fatalf("after claim: %+v", got)
 	}
-	if got.NodeID == nil || *got.NodeID != winners[0] {
-		t.Fatalf("node=%v winner=%s", got.NodeID, winners[0])
-	}
-
-	// Second claim by other node conflicts
-	_, err = s.ClaimSandbox(sb.ID, "other")
-	if err == nil {
+	if _, err := s.ClaimSandbox(sb.ID, "other"); err == nil {
 		t.Fatal("expected conflict")
 	}
 }
@@ -431,7 +423,8 @@ func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
 		t.Fatalf("reclaim failed: %+v", reclaimed)
 	}
 
-	// Fresh sandbox: expire + re-request then other node claims
+	// Re-request clears the node: the row is never handed to another node, since
+	// only the scheduler assigns nodes (ADR-0011).
 	sb2, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1,
 	})
@@ -454,52 +447,17 @@ func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reclaimed) != 1 || reclaimed[0].State != SandboxRequested {
+	if len(reclaimed) != 1 || reclaimed[0].State != SandboxRequested || reclaimed[0].NodeID != nil {
 		t.Fatalf("re-request: %+v", reclaimed)
 	}
-	if reclaimed[0].NodeID != nil {
-		t.Fatalf("expected cleared node, got %v", reclaimed[0].NodeID)
+	if _, err := s.ClaimSandbox(sb2.ID, "node-b"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an unassigned sandbox must not be claimable: %v", err)
 	}
-	takeover, err := s.ClaimSandbox(sb2.ID, "node-b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if takeover.NodeID == nil || *takeover.NodeID != "node-b" {
-		t.Fatalf("takeover=%+v", takeover)
+	work, _ := s.ListNodeWork("node-b")
+	if len(work) != 0 {
+		t.Fatalf("unassigned sandboxes are not handed out: %+v", work)
 	}
 }
-
-func TestMemoryStoreClaimReclaimsExpiredRunning(t *testing.T) {
-	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := newMemoryStoreWithNodes(t, "node-a")
-	sb, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, ""); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	got := s.sandboxes[sb.ID]
-	past := time.Now().UTC().Add(-time.Hour)
-	got.NodeLeaseUntil = &past
-	s.sandboxes[sb.ID] = got
-	s.mu.Unlock()
-
-	takeover, err := s.ClaimSandbox(sb.ID, "node-b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if takeover.State != SandboxStarting || takeover.NodeID == nil || *takeover.NodeID != "node-b" {
-		t.Fatalf("%+v", takeover)
-	}
-}
-
 func TestMemoryStoreRotateAndRevokeCert(t *testing.T) {
 	s := NewMemoryStore()
 	_, err := s.EnrollNode(EnrollNodeInput{

@@ -351,55 +351,39 @@ func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 		return Sandbox{}, fmt.Errorf("%w: id and node_id required", ErrInvalidInput)
 	}
 	ctx := context.Background()
-	sb, err := p.GetSandbox(id)
-	if err != nil {
-		return Sandbox{}, err
-	}
 	now := time.Now().UTC()
-	if sb.State != SandboxRequested {
-		// Allow reclaim of stuck starting/running with expired lease by resetting first.
-		if (sb.State == SandboxStarting || sb.State == SandboxRunning) &&
-			sb.NodeID != nil && *sb.NodeID != "" && *sb.NodeID != nodeID &&
-			leaseExpired(sb.NodeLeaseUntil, now) {
-			_, _ = p.ReclaimExpiredLeases(now, true)
-			sb, err = p.GetSandbox(id)
-			if err != nil {
-				return Sandbox{}, err
-			}
-			if sb.State != SandboxRequested {
-				return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
-			}
-		} else {
-			return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
-		}
-	}
-	if sb.NodeID != nil && *sb.NodeID != "" && *sb.NodeID != nodeID && !leaseExpired(sb.NodeLeaseUntil, now) {
-		return Sandbox{}, fmt.Errorf("%w: already assigned to %s", ErrConflict, *sb.NodeID)
-	}
-	from := string(sb.State)
+	until := leaseUntil(now)
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return Sandbox{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	until := leaseUntil(now)
-	tag, err := tx.Exec(ctx, `
+	// Only the node the scheduler placed the sandbox on can claim it (ADR-0011).
+	var tenantID string
+	err = tx.QueryRow(ctx, `
 		UPDATE sandboxes
-		SET node_id=$2, state='starting', state_version=state_version+1, updated_at=$3, node_lease_until=$4
-		WHERE id=$1 AND state='requested'
-		  AND (node_id IS NULL OR node_id = '' OR node_id = $2
-		       OR node_lease_until IS NULL OR node_lease_until <= $3)`,
-		id, nodeID, now, until)
+		SET state='starting', state_version=state_version+1, updated_at=$3, node_lease_until=$4
+		WHERE id=$1 AND state='requested' AND node_id=$2
+		RETURNING tenant_id`,
+		id, nodeID, now, until).Scan(&tenantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		sb, gerr := p.GetSandbox(id)
+		if gerr != nil {
+			return Sandbox{}, gerr
+		}
+		if sb.NodeID == nil || *sb.NodeID != nodeID {
+			return Sandbox{}, fmt.Errorf("%w: sandbox is not assigned to node %s", ErrConflict, nodeID)
+		}
+		return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
+	}
 	if err != nil {
 		return Sandbox{}, err
 	}
-	if tag.RowsAffected() == 0 {
-		return Sandbox{}, fmt.Errorf("%w: claim lost race", ErrConflict)
-	}
+	from := string(SandboxRequested)
 	if err := emitEventTx(ctx, tx, EmitEventInput{
 		SandboxID: id,
-		TenantID:  sb.TenantID,
+		TenantID:  tenantID,
 		EventType: "sandbox.claimed",
 		FromState: &from,
 		ToState:   strPtr(string(SandboxStarting)),
@@ -427,7 +411,6 @@ func (p *PostgresStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 		FROM sandboxes
 		WHERE (node_id = $1 AND state IN ('requested','starting','stopping'))
 		   OR (node_id = $1 AND local_net = true AND state = 'running')
-		   OR ((node_id IS NULL OR node_id = '') AND state = 'requested')
 		ORDER BY created_at ASC`, nodeID)
 	if err != nil {
 		return nil, err
@@ -1146,6 +1129,29 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 		return Node{}, errNodeRevoked(id)
 	}
 	return p.GetNode(id)
+}
+
+func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
+	ctx := context.Background()
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE nodes SET last_seen_at=$2, updated_at=$2,
+		    state=CASE WHEN revoked_at IS NULL THEN 'ready' ELSE state END
+		WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3)`,
+		id, now, now.Add(-nodePollWriteEvery))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	var exists bool
+	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNotFound
+	}
+	return nil // seen recently; nothing to write
 }
 
 func (p *PostgresStore) ListNodes() ([]Node, error) {

@@ -61,6 +61,9 @@ type Store interface {
 	// IsCertRevoked reports whether a client-cert fingerprint must be rejected by mTLS middleware.
 	IsCertRevoked(fingerprint string) (bool, error)
 	HeartbeatNode(id string) (Node, error)
+	// TouchNodePoll records that the node polled for work: it is alive. Writes are
+	// throttled; ErrNotFound for an unknown node.
+	TouchNodePoll(id string, now time.Time) error
 	ListNodes() ([]Node, error)
 	GetNode(id string) (Node, error)
 

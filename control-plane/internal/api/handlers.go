@@ -1141,6 +1141,15 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 	if !authorizeNodeID(w, r, id) {
 		return
 	}
+	// Polling for work is a liveness signal (the heartbeat is only every 30s).
+	if err := s.Store.TouchNodePoll(id, time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "node not registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	list, err := s.Store.ListNodeWork(id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -1171,9 +1180,6 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 	nodeID := actingNodeID(r, req.NodeID)
 	if !authorizeNodeID(w, r, nodeID) {
 		return
-	}
-	if prev, err := s.Store.GetSandbox(id); err == nil {
-		s.maybeFenceOnReclaim(r.Context(), prev)
 	}
 	sb, err := s.Store.ClaimSandbox(id, nodeID)
 	if err != nil {

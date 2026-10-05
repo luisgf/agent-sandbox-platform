@@ -1,16 +1,13 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
-	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
@@ -175,53 +172,6 @@ func mustJSONPayload(v any) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return b
-}
-
-// maybeFenceOnReclaim fences the previous owner when reclaiming a running sandbox.
-func (s *Server) maybeFenceOnReclaim(ctx context.Context, sb store.Sandbox) {
-	if s.Fence == nil || !fence.Enabled() {
-		return
-	}
-	if sb.State != store.SandboxRunning {
-		return
-	}
-	if sb.NodeID == nil || *sb.NodeID == "" {
-		return
-	}
-	now := time.Now().UTC()
-	if sb.NodeLeaseUntil != nil && sb.NodeLeaseUntil.After(now) {
-		return
-	}
-	node, err := s.Store.GetNode(*sb.NodeID)
-	if err != nil {
-		slog.Warn("fence: lookup old node", "node_id", *sb.NodeID, "error", err)
-		return
-	}
-	if strings.TrimSpace(node.FenceEndpoint) == "" {
-		slog.Info("fence skipped: no fence_endpoint", "node_id", node.ID, "sandbox_id", sb.ID)
-		return
-	}
-	t := fence.Target{
-		NodeID:   node.ID,
-		Endpoint: node.FenceEndpoint,
-		Token:    node.FenceToken,
-	}
-	if err := s.Fence.Fence(ctx, t); err != nil {
-		if _, ok := err.(fence.SoftFailError); ok {
-			slog.Warn("fence soft-fail", "provider", s.Fence.Name(), "node_id", node.ID, "error", err)
-			return
-		}
-		slog.Error("fence failed", "provider", s.Fence.Name(), "node_id", node.ID, "error", err)
-		return
-	}
-	slog.Info("fenced node before reclaim", "provider", s.Fence.Name(), "node_id", node.ID, "sandbox_id", sb.ID)
-	_ = s.Store.EmitEvent(store.EmitEventInput{
-		SandboxID: sb.ID,
-		TenantID:  sb.TenantID,
-		EventType: "sandbox.fenced",
-		Actor:     "fence",
-		Payload:   mustJSONPayload(map[string]any{"old_node_id": node.ID, "provider": s.Fence.Name()}),
-	})
 }
 
 // attestationClaim builds optional x_asp_attestation for OIDC mint.
