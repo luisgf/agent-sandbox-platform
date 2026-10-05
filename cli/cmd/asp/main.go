@@ -42,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return sessionCmd(args[1:], stdout, stderr)
 	case "auth":
 		return authCmd(args[1:], stdout, stderr)
+	case "node":
+		return nodeCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printRootUsage(stderr)
@@ -61,6 +63,8 @@ Usage:
   asp sandbox run (--cmd '…' | -- argv…) [flags]
   asp session start|exec|status|stop|local-net [--name] [--local-net] [flags]
   asp auth login|logout|status [flags]
+  asp node list [--json]
+  asp node cordon|uncordon <id>
   asp version
 
 Global env:
@@ -174,7 +178,7 @@ func cmdCreate(args []string, stdout, stderr io.Writer) int {
 	image := fs.String("image", "debian:bookworm-slim", "image_ref")
 	cpu := fs.Int("cpu-millis", 1000, "cpu_millis")
 	mem := fs.Int("memory-mib", 512, "memory_mib")
-	node := fs.String("node-id", "", "optional node pin")
+	node := fs.String("node-id", "", "pin to this node (default: the scheduler picks one with room)")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -193,7 +197,7 @@ func cmdCreate(args []string, stdout, stderr io.Writer) int {
 		NodeID:     *node,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "create: %v\n", err)
+		fmt.Fprintf(stderr, "create: %s\n", explainCreateError(err))
 		return 1
 	}
 	fmt.Fprintf(stderr, "asp: created sandbox %s state=%s\n", sb.ID, sb.State)
@@ -332,7 +336,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	image := fs.String("image", "debian:bookworm-slim", "image_ref")
 	cpu := fs.Int("cpu-millis", 1000, "cpu_millis")
 	mem := fs.Int("memory-mib", 512, "memory_mib")
-	node := fs.String("node-id", "", "optional node pin (dry-run: pin to enrolled node)")
+	node := fs.String("node-id", "", "pin to this node (default: the scheduler picks one with room)")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
 	if err := fs.Parse(before); err != nil {
 		return 2
@@ -362,7 +366,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		NodeID:     *node,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "run create: %v\n", err)
+		fmt.Fprintf(stderr, "run create: %s\n", explainCreateError(err))
 		return 1
 	}
 	fmt.Fprintf(stderr, "asp: created sandbox %s state=%s\n", sb.ID, sb.State)

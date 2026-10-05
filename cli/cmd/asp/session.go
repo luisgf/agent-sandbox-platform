@@ -130,7 +130,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	image := fs.String("image", "debian:bookworm-slim", "image_ref")
 	cpu := fs.Int("cpu-millis", 1000, "cpu_millis")
 	mem := fs.Int("memory-mib", 512, "memory_mib")
-	node := fs.String("node-id", "", "optional node pin")
+	node := fs.String("node-id", "", "pin to this node (default: the scheduler picks one with room)")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
 	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest image mounts tag workspace on /workspace; older images need mount -t virtiofs)")
 	force := fs.Bool("force", false, "destroy any sandbox recorded in the session file, then start a new one")
@@ -201,7 +201,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 		LocalNet:          lnPtr,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "session start: create: %v\n", err)
+		fmt.Fprintf(stderr, "session start: create: %s\n", explainCreateError(err))
 		return 1
 	}
 	fmt.Fprintf(stderr, "asp: created sandbox %s state=%s\n", sb.ID, sb.State)
@@ -459,10 +459,10 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if out.IdleReaped {
-		fmt.Fprintf(stdout, "id=%s name=%s state=%s tenant=%s cp=%s file=%s workspace=%s stop_reason=%s idle_reaped=true\n", sb.ID, st.Name, sb.State, sb.TenantID, st.CPURL, path, st.Workspace, sb.StopReason)
+		fmt.Fprintf(stdout, "id=%s name=%s state=%s node=%s tenant=%s cp=%s file=%s workspace=%s stop_reason=%s idle_reaped=true\n", sb.ID, st.Name, sb.State, nodeOf(sb), sb.TenantID, st.CPURL, path, st.Workspace, sb.StopReason)
 		return 1
 	}
-	fmt.Fprintf(stdout, "id=%s name=%s state=%s tenant=%s cp=%s file=%s workspace=%s\n", sb.ID, st.Name, sb.State, sb.TenantID, st.CPURL, path, st.Workspace)
+	fmt.Fprintf(stdout, "id=%s name=%s state=%s node=%s tenant=%s cp=%s file=%s workspace=%s\n", sb.ID, st.Name, sb.State, nodeOf(sb), sb.TenantID, st.CPURL, path, st.Workspace)
 	return 0
 }
 
