@@ -16,6 +16,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
@@ -34,21 +35,20 @@ type Server struct {
 	// https:// agent endpoints (nil: https endpoints are refused).
 	Client *http.Client
 	Agents *AgentDialer
+	// Sched mirrors the store's placement config, for the node view.
+	Sched sched.Config
 }
 
 func NewServer(s store.Store) *Server {
 	return &Server{
 		Store:  s,
 		Client: &http.Client{Timeout: 30 * time.Second},
+		Sched:  sched.DefaultConfig(),
 	}
 }
 
 type listSandboxesResponse struct {
 	Sandboxes []store.Sandbox `json:"sandboxes"`
-}
-
-type listNodesResponse struct {
-	Nodes []store.Node `json:"nodes"`
 }
 
 type listEventsResponse struct {
@@ -509,23 +509,6 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, node)
-}
-
-// ListNodes returns registered nodes. With an IdP principal it needs admin or operator.
-func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
-	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !canViewNodes(p) {
-		forbid(w, "admin or operator role required to list nodes")
-		return
-	}
-	list, err := s.Store.ListNodes()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if list == nil {
-		list = []store.Node{}
-	}
-	writeJSON(w, http.StatusOK, listNodesResponse{Nodes: list})
 }
 
 // Exec authorizes and proxies an execution request to the sandbox's node-agent.

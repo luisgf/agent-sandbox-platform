@@ -888,6 +888,25 @@ func (m *MemoryStore) TouchNodePoll(id string, now time.Time) error {
 	return nil
 }
 
+func (m *MemoryStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return Node{}, ErrNotFound
+	}
+	n.Cordoned = cordoned
+	n.UpdatedAt = time.Now().UTC()
+	m.nodes[id] = n
+	return cloneNode(n), nil
+}
+
+func (m *MemoryStore) ListNodeUsage() (map[string]NodeUsage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.nodeUsageLocked(), nil
+}
+
 func (m *MemoryStore) ListNodes() ([]Node, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

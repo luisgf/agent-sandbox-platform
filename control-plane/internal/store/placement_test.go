@@ -256,3 +256,56 @@ func TestMemoryTouchNodePoll(t *testing.T) {
 func TestPostgresTouchNodePoll(t *testing.T) {
 	testTouchNodePoll(t, newPostgresTestStore(t))
 }
+
+// Cordon stops placements, survives re-registration, and usage sums what is placed.
+func testCordonAndUsage(t *testing.T, s Store) {
+	t.Helper()
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	registerPlacementNodes(t, s, 0, "node-a", "node-b")
+	if _, err := s.SetNodeCordoned("ghost", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cordon unknown node: %v", err)
+	}
+	n, err := s.SetNodeCordoned("node-a", true)
+	if err != nil || !n.Cordoned {
+		t.Fatalf("cordon: %+v %v", n, err)
+	}
+	// An agent re-registering never lifts an admin's cordon.
+	registerPlacementNodes(t, s, 0, "node-a")
+	if n, _ := s.GetNode("node-a"); !n.Cordoned {
+		t.Fatal("re-register lifted the cordon")
+	}
+	for i := 0; i < 3; i++ {
+		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+		if err != nil || *sb.NodeID != "node-b" {
+			t.Fatalf("placement must skip the cordoned node: %+v %v", sb, err)
+		}
+	}
+	if _, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"}); !errors.Is(err, ErrNodeUnavailable) {
+		t.Fatalf("pin to a cordoned node: %v", err)
+	}
+	usage, err := s.ListNodeUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := usage["node-b"]; u.Sandboxes != 3 || u.CPUMillis != 3000 || u.MemoryMiB != 1536 {
+		t.Fatalf("usage node-b = %+v", u)
+	}
+	if u := usage["node-a"]; u.Sandboxes != 0 {
+		t.Fatalf("usage node-a = %+v", u)
+	}
+	if _, err := s.SetNodeCordoned("node-a", false); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+	if err != nil || *sb.NodeID != "node-a" {
+		t.Fatalf("after uncordon spread goes to node-a: %+v %v", sb, err)
+	}
+}
+
+func TestMemoryCordonAndUsage(t *testing.T) {
+	testCordonAndUsage(t, NewMemoryStore())
+}
+
+func TestPostgresCordonAndUsage(t *testing.T) {
+	testCordonAndUsage(t, newPostgresTestStore(t))
+}

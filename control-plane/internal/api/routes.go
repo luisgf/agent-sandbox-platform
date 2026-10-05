@@ -40,6 +40,8 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/nodes/{id}/rotate-cert", s.RotateNodeCert)
 	mux.HandleFunc("POST /v1/nodes/{id}/revoke", s.RevokeNode)
 	mux.HandleFunc("GET /v1/nodes/{id}/work", s.ListNodeWork)
+	mux.HandleFunc("POST /v1/nodes/{id}/cordon", s.CordonNode)
+	mux.HandleFunc("POST /v1/nodes/{id}/uncordon", s.UncordonNode)
 	mux.HandleFunc("GET /v1/nodes", s.ListNodes)
 	return mux
 }

@@ -114,6 +114,7 @@ func main() {
 
 	srv := api.NewServer(st)
 	srv.CA = ca
+	srv.Sched = schedCfg
 	srv.Agents = api.NewAgentDialer(ca, api.EnvTruthy(api.EnvInsecureAgentHTTP))
 	if srv.Agents.AllowInsecureHTTP {
 		slog.Warn(api.EnvInsecureAgentHTTP + "=1: plain HTTP agent endpoints on other hosts are allowed; exec traffic is unauthenticated (lab only)")

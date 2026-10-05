@@ -125,3 +125,65 @@ func TestWorkPollForUnknownNodeIs404(t *testing.T) {
 		t.Fatalf("want 404 so the agent re-registers, got %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	key, kid, v := testIdP(t)
+	mem := store.NewMemoryStore()
+	for _, id := range []string{"node-b", "node-a"} {
+		if _, err := mem.RegisterNode(store.RegisterNodeInput{
+			ID: id, AgentEndpoint: "http://127.0.0.1:9100", CapacityCPU: 2, CapacityMemMiB: 4096, MaxSandboxes: 4,
+			FenceToken: "bmc-secret",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1500, MemoryMiB: 1024, NodeID: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(NewServer(mem)))
+	admin := mintUserJWTWithGroups(t, key, kid, "user:admin", "", []string{"asp-admin"})
+	operator := mintUserJWTWithGroups(t, key, kid, "user:op", "", []string{"asp-operator"})
+	do := func(method, path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if rr := do(http.MethodPost, "/v1/nodes/node-a/cordon", operator); rr.Code != http.StatusForbidden {
+		t.Fatalf("operator cordon: want 403, got %d %s", rr.Code, rr.Body.String())
+	}
+	rr := do(http.MethodPost, "/v1/nodes/node-a/cordon", admin)
+	if rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte(`"unschedulable_reason":"cordoned"`)) {
+		t.Fatalf("admin cordon: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := do(http.MethodPost, "/v1/nodes/ghost/cordon", admin); rr.Code != http.StatusNotFound {
+		t.Fatalf("cordon unknown node: %d", rr.Code)
+	}
+
+	rr = do(http.MethodGet, "/v1/nodes", operator)
+	if rr.Code != http.StatusOK || bytes.Contains(rr.Body.Bytes(), []byte("bmc-secret")) {
+		t.Fatalf("list: %d %s", rr.Code, rr.Body.String())
+	}
+	var list listNodesResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Nodes) != 2 || list.Nodes[0].ID != "node-a" || list.Nodes[1].ID != "node-b" {
+		t.Fatalf("nodes sorted by id: %+v", list.Nodes)
+	}
+	a := list.Nodes[0]
+	if a.Allocated.CPUMillis != 1500 || a.Allocated.MemoryMiB != 1024 || a.Allocated.Sandboxes != 1 ||
+		a.Allocatable.CPUMillis != 8000 || a.Allocatable.MemoryMiB != 4096 || a.Allocatable.Sandboxes != 4 ||
+		a.Schedulable || a.UnschedulableReason != "cordoned" || !a.Cordoned {
+		t.Fatalf("node-a view: %+v", a)
+	}
+	if b := list.Nodes[1]; !b.Schedulable || b.UnschedulableReason != "" {
+		t.Fatalf("node-b view: %+v", b)
+	}
+	if rr := do(http.MethodPost, "/v1/nodes/node-a/uncordon", admin); rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte(`"schedulable":true`)) {
+		t.Fatalf("uncordon: %d %s", rr.Code, rr.Body.String())
+	}
+}

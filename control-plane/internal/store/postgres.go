@@ -1154,6 +1154,57 @@ func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
 	return nil // seen recently; nothing to write
 }
 
+func (p *PostgresStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
+	ctx := context.Background()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return Node{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `UPDATE nodes SET cordoned=$2, updated_at=$3 WHERE id=$1`, id, cordoned, time.Now().UTC())
+	if err != nil {
+		return Node{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Node{}, ErrNotFound
+	}
+	eventType := "node.uncordoned"
+	if cordoned {
+		eventType = "node.cordoned"
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO node_events (node_id, event_type, actor, payload)
+		VALUES ($1,$2,'api','{}'::jsonb)`, id, eventType); err != nil {
+		return Node{}, fmt.Errorf("node event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Node{}, err
+	}
+	return p.GetNode(id)
+}
+
+func (p *PostgresStore) ListNodeUsage() (map[string]NodeUsage, error) {
+	ctx := context.Background()
+	rows, err := p.pool.Query(ctx, `
+		SELECT node_id, COALESCE(SUM(cpu_millis),0)::bigint, COALESCE(SUM(memory_mib),0)::bigint, COUNT(*)
+		FROM sandboxes WHERE node_id IS NOT NULL AND state = ANY($1)
+		GROUP BY node_id`, occupyingStateNames())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	usage := map[string]NodeUsage{}
+	for rows.Next() {
+		var id string
+		var u NodeUsage
+		if err := rows.Scan(&id, &u.CPUMillis, &u.MemoryMiB, &u.Sandboxes); err != nil {
+			return nil, err
+		}
+		usage[id] = u
+	}
+	return usage, rows.Err()
+}
+
 func (p *PostgresStore) ListNodes() ([]Node, error) {
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
