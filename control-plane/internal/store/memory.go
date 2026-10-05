@@ -680,6 +680,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
+		if existing.RevokedAt != nil {
+			return Node{}, errNodeRevoked(id)
+		}
 		node.CreatedAt = existing.CreatedAt
 		node.CertFingerprint = existing.CertFingerprint
 		node.CertSerial = existing.CertSerial
@@ -838,6 +841,9 @@ func (m *MemoryStore) HeartbeatNode(id string) (Node, error) {
 	n, ok := m.nodes[id]
 	if !ok {
 		return Node{}, ErrNotFound
+	}
+	if n.RevokedAt != nil {
+		return Node{}, errNodeRevoked(id)
 	}
 	now := time.Now().UTC()
 	n.LastSeenAt = &now

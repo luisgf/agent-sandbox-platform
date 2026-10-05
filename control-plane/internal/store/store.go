@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -12,6 +13,12 @@ var (
 	ErrUnauthorized  = errors.New("unauthorized")
 	ErrConflict      = errors.New("conflict")
 )
+
+// errNodeRevoked is returned when a revoked node registers or heartbeats.
+// Only a fresh enroll (new certificate) brings it back (ADR-0005).
+func errNodeRevoked(id string) error {
+	return fmt.Errorf("%w: node %s is revoked; re-enroll required", ErrConflict, id)
+}
 
 // Store is the persistence boundary for the control plane.
 // MemoryStore is the default; PostgresStore is used when DATABASE_URL is set.
