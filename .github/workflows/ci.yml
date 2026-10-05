@@ -40,6 +40,39 @@ jobs:
       - name: go test
         run: go test ./...
 
+  postgres:
+    name: Go (control-plane store on Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: asp
+          POSTGRES_PASSWORD: asp
+          POSTGRES_DB: asp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asp -d asp"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: control-plane/go.*
+      - name: go test (Postgres integration)
+        run: go test ./internal/store/... -run Postgres -count=1 -v
+
   rust:
     name: Rust (pod-daemon)
     runs-on: ubuntu-latest
