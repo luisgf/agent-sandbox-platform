@@ -11,19 +11,72 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 )
 
 // PostgresStore implements Store against PostgreSQL via pgxpool.
 type PostgresStore struct {
 	pool            *pgxpool.Pool
 	provisionNodeID string
+	schedCfg        sched.Config
 }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{
 		pool:            pool,
 		provisionNodeID: DefaultLocalNodeID,
+		schedCfg:        sched.DefaultConfig(),
 	}
+}
+
+// SetSchedConfig sets the placement policy (ASP_SCHED_POLICY and friends).
+func (p *PostgresStore) SetSchedConfig(cfg sched.Config) {
+	p.schedCfg = cfg
+}
+
+// placementLockKey serialises placements across control-plane replicas
+// (pg_advisory_xact_lock, released at commit or rollback).
+const placementLockKey int64 = 0x41535031 // "ASP1"
+
+// placementCandidates reads nodes and their usage through tx, after the placement
+// lock: under READ COMMITTED each statement then sees every committed placement.
+func placementCandidates(ctx context.Context, tx pgx.Tx) ([]sched.Candidate, error) {
+	usage := map[string]NodeUsage{}
+	rows, err := tx.Query(ctx, `
+		SELECT node_id, COALESCE(SUM(cpu_millis),0)::bigint, COALESCE(SUM(memory_mib),0)::bigint, COUNT(*)
+		FROM sandboxes WHERE node_id IS NOT NULL AND state = ANY($1)
+		GROUP BY node_id`, occupyingStateNames())
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		var u NodeUsage
+		if err := rows.Scan(&id, &u.CPUMillis, &u.MemoryMiB, &u.Sandboxes); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		usage[id] = u
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	nrows, err := tx.Query(ctx, `SELECT `+nodeColumns+` FROM nodes`)
+	if err != nil {
+		return nil, err
+	}
+	defer nrows.Close()
+	var out []sched.Candidate
+	for nrows.Next() {
+		n, err := scanNode(nrows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Candidate(n, usage[n.ID]))
+	}
+	return out, nrows.Err()
 }
 
 func (p *PostgresStore) SetProvisionNodeID(id string) {
@@ -60,8 +113,11 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	if err := p.ensureTenant(ctx, input.TenantID); err != nil {
 		return Sandbox{}, fmt.Errorf("ensure tenant: %w", err)
 	}
-	if err := p.EnsureBootstrapNode(ctx); err != nil {
-		return Sandbox{}, fmt.Errorf("ensure bootstrap node: %w", err)
+	if AutoProvisionEnabled() {
+		// The stub provisioner assigns the local-dev row; real placement never uses it.
+		if err := p.EnsureBootstrapNode(ctx); err != nil {
+			return Sandbox{}, fmt.Errorf("ensure bootstrap node: %w", err)
+		}
 	}
 
 	vmm := input.VMMProfile
@@ -84,15 +140,31 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	var placedOn *string
+	if !AutoProvisionEnabled() {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, placementLockKey); err != nil {
+			return Sandbox{}, fmt.Errorf("placement lock: %w", err)
+		}
+		cands, err := placementCandidates(ctx, tx)
+		if err != nil {
+			return Sandbox{}, fmt.Errorf("placement candidates: %w", err)
+		}
+		picked, err := sched.Place(p.schedCfg, placementRequest(input, vmm), cands, now)
+		if err != nil {
+			return Sandbox{}, err
+		}
+		placedOn = &picked
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO sandboxes (
 			id, tenant_id, node_id, state, vmm_profile, image_ref,
 			cpu_millis, memory_mib, state_version, node_lease_until, created_at, updated_at,
 			owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
 			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
-		) VALUES ($1,$2,NULL,'requested',$3,$4,$5,$6,1,$7,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'')`,
+		) VALUES ($1,$2,$14,'requested',$3,$4,$5,$6,1,$7,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'')`,
 		id, input.TenantID, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB, now,
-		ownerSub, ownerEmail, input.WorkspaceHostPath, lnOn, lnState, "",
+		ownerSub, ownerEmail, input.WorkspaceHostPath, lnOn, lnState, "", placedOn,
 	)
 	if err != nil {
 		return Sandbox{}, fmt.Errorf("insert sandbox: %w", err)
@@ -163,24 +235,14 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		}); err != nil {
 			return Sandbox{}, err
 		}
-	} else {
-		// Soft-assign: pin node_id when provided or when a ready node exists; leave requested.
-		pin := strings.TrimSpace(input.NodeID)
-		if pin == "" {
-			nodes, err := p.ListNodes()
-			if err != nil {
-				return Sandbox{}, err
-			}
-			pin = PickReadyNodeID(nodes)
-		}
-		if pin != "" {
-			nowPin := time.Now().UTC()
-			if _, err := tx.Exec(ctx, `
-				UPDATE sandboxes SET node_id=$2, updated_at=$3
-				WHERE id=$1`, id, pin, nowPin); err != nil {
-				return Sandbox{}, err
-			}
-		}
+	} else if err := emitEventTx(ctx, tx, EmitEventInput{
+		SandboxID: id,
+		TenantID:  input.TenantID,
+		EventType: "sandbox.placed",
+		Actor:     "scheduler",
+		Payload:   placedEventPayload(*placedOn, p.schedCfg, input),
+	}); err != nil {
+		return Sandbox{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -566,62 +628,69 @@ func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error
 	}
 	actorSub = strings.TrimSpace(actorSub)
 	ctx := context.Background()
-	sb, err := p.GetSandbox(id)
-	if err != nil {
-		return Sandbox{}, err
-	}
-	if sb.State == SandboxStopped || sb.State == SandboxStopping {
-		return sb, nil
-	}
-	from := string(sb.State)
-	now := time.Now().UTC()
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return Sandbox{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// The update is guarded by the state it was decided from: a node claiming the
+	// sandbox in between changes the decision, so read again and retry.
+	for attempt := 0; attempt < 3; attempt++ {
+		sb, err := p.GetSandbox(id)
+		if err != nil {
+			return Sandbox{}, err
+		}
+		if sb.State == SandboxStopped || sb.State == SandboxStopping {
+			return sb, nil
+		}
+		from := string(sb.State)
+		target := SandboxStopping
+		payload := json.RawMessage(`{"reason":"destroy"}`)
+		if sb.State == SandboxRequested {
+			// Never claimed: no VM exists before a node claims it.
+			target = SandboxStopped
+			payload = json.RawMessage(`{"reason":"destroy_unclaimed"}`)
+		} else if sb.State == SandboxFailed {
+			target = SandboxStopped
+			payload = json.RawMessage(`{"reason":"destroy_failed"}`)
+		} else if !IsActiveLifecycle(sb.State) {
+			return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, sb.State)
+		}
 
-	target := SandboxStopping
-	payload := json.RawMessage(`{"reason":"destroy"}`)
-	if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
-		target = SandboxStopped
-		payload = json.RawMessage(`{"reason":"destroy_unassigned"}`)
-	} else if sb.State == SandboxFailed {
-		target = SandboxStopped
-		payload = json.RawMessage(`{"reason":"destroy_failed"}`)
-	} else if !IsActiveLifecycle(sb.State) {
-		return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, sb.State)
+		now := time.Now().UTC()
+		tx, err := p.pool.Begin(ctx)
+		if err != nil {
+			return Sandbox{}, err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3,
+			    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
+			    local_net_client_public='',
+			    local_net_grant_hash='',
+			    local_net_grant_expires_at=NULL
+			WHERE id=$1 AND state=$4`, id, string(target), now, from)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return Sandbox{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			_ = tx.Rollback(ctx)
+			continue // the state moved under us; decide again
+		}
+		if err := emitEventTx(ctx, tx, EmitEventInput{
+			SandboxID: id,
+			TenantID:  sb.TenantID,
+			EventType: "sandbox.state_changed",
+			FromState: &from,
+			ToState:   strPtr(string(target)),
+			Actor:     "api",
+			ActorSub:  actorSub,
+			Payload:   payload,
+		}); err != nil {
+			_ = tx.Rollback(ctx)
+			return Sandbox{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Sandbox{}, err
+		}
+		return p.GetSandbox(id)
 	}
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3,
-		    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
-		    local_net_client_public='',
-		    local_net_grant_hash='',
-		    local_net_grant_expires_at=NULL
-		WHERE id=$1`, id, string(target), now)
-	if err != nil {
-		return Sandbox{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return Sandbox{}, ErrNotFound
-	}
-	if err := emitEventTx(ctx, tx, EmitEventInput{
-		SandboxID: id,
-		TenantID:  sb.TenantID,
-		EventType: "sandbox.state_changed",
-		FromState: &from,
-		ToState:   strPtr(string(target)),
-		Actor:     "api",
-		ActorSub:  actorSub,
-		Payload:   payload,
-	}); err != nil {
-		return Sandbox{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Sandbox{}, err
-	}
-	return p.GetSandbox(id)
+	return Sandbox{}, fmt.Errorf("%w: sandbox %s changed state concurrently; retry", ErrConflict, id)
 }
 
 func (p *PostgresStore) TouchSandboxActivity(id string) error {
@@ -679,7 +748,7 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 			continue
 		}
 		target := SandboxStopping
-		if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+		if sb.State == SandboxRequested { // never claimed: no VM to stop
 			target = SandboxStopped
 		}
 		from := string(sb.State)

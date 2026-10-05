@@ -20,6 +20,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
@@ -50,9 +51,12 @@ func main() {
 			os.Exit(1)
 		}
 		pg := store.NewPostgresStore(pool)
-		if err := pg.EnsureBootstrapNode(ctx); err != nil {
-			slog.Error("bootstrap node", "error", err)
-			os.Exit(1)
+		if store.AutoProvisionEnabled() {
+			// Only the stub provisioner uses the local-dev row.
+			if err := pg.EnsureBootstrapNode(ctx); err != nil {
+				slog.Error("bootstrap node", "error", err)
+				os.Exit(1)
+			}
 		}
 		st = pg
 		storeName = "postgres"
@@ -64,6 +68,17 @@ func main() {
 			_ = os.Setenv("ASP_EGRESS_DEFAULT_ALLOW", "1")
 		}
 	}
+
+	schedCfg, err := sched.ConfigFromEnv()
+	if err != nil {
+		slog.Error("scheduler config", "error", err)
+		os.Exit(1)
+	}
+	if sc, ok := st.(interface{ SetSchedConfig(sched.Config) }); ok {
+		sc.SetSchedConfig(schedCfg)
+	}
+	slog.Info("scheduler ready", "policy", schedCfg.Policy, "cpu_overcommit", schedCfg.CPUOvercommit,
+		"node_stale_after", schedCfg.StaleAfter.String(), "auto_provision", store.AutoProvisionEnabled())
 
 	if secret := os.Getenv("ASP_BOOTSTRAP_API_KEY"); secret != "" {
 		key, err := api.BootstrapAPIKey(st, secret)

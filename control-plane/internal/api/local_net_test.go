@@ -14,7 +14,7 @@ import (
 )
 
 func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	s := &Server{Store: mem}
 	mux := testMux(s)
 
@@ -165,7 +165,7 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 }
 
 func TestLocalNetGrantCarriesNodeDevice(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	s := &Server{Store: mem}
 	mux := testMux(s)
 	nodePub := "ERERERERERERERERERERERERERERERERERERERERERE="

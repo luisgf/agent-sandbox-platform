@@ -78,3 +78,41 @@ func TestEnrollIssuesServerCertificateForTheNode(t *testing.T) {
 		t.Fatalf("reserved node id: want 400, got %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCreateExplainsPlacementRefusals(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	mem := store.NewMemoryStore()
+	mux := testMux(NewServer(mem))
+	create := func(body string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body)))
+		return rr
+	}
+	const sb = `{"tenant_id":"t1","image_ref":"img","cpu_millis":1000,"memory_mib":512`
+
+	rr := create(sb + `}`)
+	if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") != "30" ||
+		!bytes.Contains(rr.Body.Bytes(), []byte("no schedulable nodes registered")) {
+		t.Fatalf("no nodes: %d %q %s", rr.Code, rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+
+	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if rr := create(sb + `}`); rr.Code != http.StatusCreated {
+		t.Fatalf("first create: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = create(sb + `}`)
+	var refused placementErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &refused); err != nil {
+		t.Fatal(err)
+	}
+	if rr.Code != http.StatusServiceUnavailable || refused.Reasons["max_sandboxes"] != 1 {
+		t.Fatalf("full node: %d %s", rr.Code, rr.Body.String())
+	}
+
+	rr = create(sb + `,"node_id":"ghost"}`)
+	if rr.Code != http.StatusConflict || !bytes.Contains(rr.Body.Bytes(), []byte("node ghost is not registered")) {
+		t.Fatalf("unknown pin: %d %s", rr.Code, rr.Body.String())
+	}
+}

@@ -20,6 +20,22 @@ func testMux(s *Server) http.Handler {
 	return s.Routes()
 }
 
+// newTestStore returns a memory store with healthy nodes, so creates without
+// ASP_AUTO_PROVISION have somewhere to go (ADR-0011).
+func newTestStore(t *testing.T, ids ...string) *store.MemoryStore {
+	t.Helper()
+	mem := store.NewMemoryStore()
+	if len(ids) == 0 {
+		ids = []string{"test-node"}
+	}
+	for _, id := range ids {
+		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return mem
+}
+
 func TestCreateGetListSandbox(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "1")
 	srv := NewServer(store.NewMemoryStore())
@@ -241,7 +257,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 }
 
 func TestAuthMiddlewareOptionalOff(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{Require: false})(testMux(srv))
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -260,7 +276,7 @@ func TestAuthMiddlewareOptionalOff(t *testing.T) {
 }
 
 func TestAuthMiddlewareRequire(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	secret := "test-key-abc"
 	_, err := BootstrapAPIKey(mem, secret)
 	if err != nil {
@@ -361,7 +377,7 @@ func TestOIDCMintAndJWKS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
@@ -641,7 +657,7 @@ func TestRotateWithBootstrapWhenAPIKeysExist(t *testing.T) {
 
 func TestCreateSandboxOwnerAndActorHeader(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newTestStore(t))
 	mux := testMux(srv)
 
 	// Empty owner OK (lab)
@@ -724,7 +740,7 @@ func TestCreateSandboxOwnerAndActorHeader(t *testing.T) {
 
 func TestCreateSandboxActorFallsBackToOwner(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newTestStore(t))
 	mux := testMux(srv)
 	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":128,"owner_sub":"user:bob"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
@@ -751,7 +767,7 @@ func TestOIDCMintIncludesUserSubFromOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
@@ -808,7 +824,7 @@ func TestOIDCMintIgnoresGuestUserSubOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
@@ -845,7 +861,7 @@ func TestOIDCMintLabWithoutOwnerStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)

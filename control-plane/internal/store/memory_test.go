@@ -236,24 +236,37 @@ func TestMemoryStoreEnrollAndHeartbeat(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreCreateRequestedWithoutAutoProvision(t *testing.T) {
+// newMemoryStoreWithNodes returns a store with healthy nodes that can take
+// sandboxes: since ADR-0011 a create without a schedulable node is refused.
+func newMemoryStoreWithNodes(t *testing.T, ids ...string) *MemoryStore {
+	t.Helper()
+	s := NewMemoryStore()
+	if len(ids) == 0 {
+		ids = []string{"test-node"}
+	}
+	for _, id := range ids {
+		if _, err := s.RegisterNode(RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
+func TestMemoryStoreCreateWithoutNodesHasNoCapacity(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := NewMemoryStore()
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	_, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128,
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrNoCapacity) || err.Error() != "no schedulable nodes registered" {
+		t.Fatalf("want no capacity, got %v", err)
 	}
-	if sb.State != SandboxRequested {
-		t.Fatalf("want requested, got %s", sb.State)
-	}
-	if sb.NodeID != nil {
-		t.Fatalf("expected unassigned, got %v", sb.NodeID)
+	if list, _ := s.ListSandboxes(""); len(list) != 0 {
+		t.Fatalf("a refused create must not leave a sandbox: %+v", list)
 	}
 }
 
-func TestMemoryStoreSoftAssignOnCreate(t *testing.T) {
+func TestMemoryStorePlacesOnCreate(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := NewMemoryStore()
 	_, err := s.RegisterNode(RegisterNodeInput{
@@ -279,7 +292,7 @@ func TestMemoryStoreSoftAssignOnCreate(t *testing.T) {
 
 func TestMemoryStoreClaimAtomicity(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t, "node-0")
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128,
 	})
@@ -330,7 +343,7 @@ func TestMemoryStoreClaimAtomicity(t *testing.T) {
 
 func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t, "n1")
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1, NodeID: "n1",
 	})
@@ -369,7 +382,7 @@ func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 
 func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t, "node-a")
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1,
 	})
@@ -458,7 +471,7 @@ func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
 
 func TestMemoryStoreClaimReclaimsExpiredRunning(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t, "node-a")
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1,
 	})
@@ -529,7 +542,7 @@ func TestMemoryStoreRotateAndRevokeCert(t *testing.T) {
 
 func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t)
 
 	// Lab: empty owner_sub OK
 	sbEmpty, err := s.CreateSandbox(CreateSandboxInput{
@@ -628,7 +641,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 }
 
 func TestDestroyFailedSandboxStops(t *testing.T) {
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t)
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID:  "tenant-a",
 		ImageRef:  "img",

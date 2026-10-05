@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 )
 
 const DefaultLocalNodeID = "local-dev"
@@ -25,6 +27,7 @@ type MemoryStore struct {
 	nextEvt      int64
 	// provisionNodeID is assigned by the stub provisioner when creating sandboxes.
 	provisionNodeID string
+	schedCfg        sched.Config
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -37,7 +40,29 @@ func NewMemoryStore() *MemoryStore {
 		revokedCerts:    make(map[string]string),
 		events:          make([]SandboxEvent, 0),
 		provisionNodeID: DefaultLocalNodeID,
+		schedCfg:        sched.DefaultConfig(),
 	}
+}
+
+// SetSchedConfig sets the placement policy (ASP_SCHED_POLICY and friends).
+func (m *MemoryStore) SetSchedConfig(cfg sched.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedCfg = cfg
+}
+
+// nodeUsageLocked sums what is placed on each node. Caller holds m.mu.
+func (m *MemoryStore) nodeUsageLocked() map[string]NodeUsage {
+	usage := make(map[string]NodeUsage, len(m.nodes))
+	for _, sb := range m.sandboxes {
+		if sb.NodeID == nil || *sb.NodeID == "" || !OccupiesNode(sb.State) {
+			continue
+		}
+		u := usage[*sb.NodeID]
+		u.add(sb)
+		usage[*sb.NodeID] = u
+	}
+	return usage
 }
 
 // SetProvisionNodeID overrides the stub node used by sync provisioning.
@@ -83,28 +108,29 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 	}
 
 	m.mu.Lock()
-	m.sandboxes[sb.ID] = sb
 	nodeID := m.provisionNodeID
 	if input.NodeID != "" {
 		nodeID = input.NodeID
 	}
-	// Optional soft-assigner: pin a node but leave requested for the agent.
-	if !AutoProvisionEnabled() {
-		pin := strings.TrimSpace(input.NodeID)
-		if pin == "" {
-			nodes := make([]Node, 0, len(m.nodes))
-			for _, n := range m.nodes {
-				nodes = append(nodes, n)
-			}
-			pin = PickReadyNodeID(nodes)
+	placed := !AutoProvisionEnabled()
+	if placed {
+		// Decide and insert under one lock: concurrent creates cannot overfill a node.
+		usage := m.nodeUsageLocked()
+		cands := make([]sched.Candidate, 0, len(m.nodes))
+		for _, n := range m.nodes {
+			cands = append(cands, Candidate(n, usage[n.ID]))
 		}
-		if pin != "" {
-			nid := pin
-			sb.NodeID = &nid
-			m.sandboxes[sb.ID] = sb
+		picked, err := sched.Place(m.schedCfg, placementRequest(input, sb.VMMProfile), cands, now)
+		if err != nil {
+			m.mu.Unlock()
+			return Sandbox{}, err
 		}
+		nodeID = picked
+		sb.NodeID = &picked
 	}
-	out := cloneSandbox(m.sandboxes[sb.ID])
+	m.sandboxes[sb.ID] = sb
+	out := cloneSandbox(sb)
+	schedCfg := m.schedCfg
 	m.mu.Unlock()
 
 	_ = m.EmitEvent(EmitEventInput{
@@ -124,6 +150,15 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 			Actor:     "api",
 			ActorSub:  actorSub,
 			Payload:   mustJSON(map[string]any{"local_net": true, "local_net_state": out.LocalNetState}),
+		})
+	}
+	if placed {
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: out.ID,
+			TenantID:  out.TenantID,
+			EventType: "sandbox.placed",
+			Actor:     "scheduler",
+			Payload:   placedEventPayload(nodeID, schedCfg, input),
 		})
 	}
 
@@ -486,8 +521,8 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 		m.mu.Unlock()
 		return out, nil
 	}
-	// Never started / unassigned requested → stopped immediately.
-	if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+	// Never claimed → stopped immediately: no VM exists before a node claims it.
+	if sb.State == SandboxRequested {
 		from := string(sb.State)
 		sb.State = SandboxStopped
 		withdrawLocalNetFields(&sb)
@@ -505,7 +540,7 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 			ToState:   strPtr(string(SandboxStopped)),
 			Actor:     "api",
 			ActorSub:  actorSub,
-			Payload:   json.RawMessage(`{"reason":"destroy_unassigned"}`),
+			Payload:   json.RawMessage(`{"reason":"destroy_unclaimed"}`),
 		})
 		return out, nil
 	}
@@ -599,7 +634,7 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 		}
 		from := string(sb.State)
 		target := SandboxStopping
-		if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+		if sb.State == SandboxRequested { // never claimed: no VM to stop
 			target = SandboxStopped
 		}
 		sb.State = target

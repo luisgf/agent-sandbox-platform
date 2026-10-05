@@ -26,29 +26,3 @@ func IsActiveLifecycle(state SandboxState) bool {
 		return false
 	}
 }
-
-// PickReadyNodeID returns the first ready node id (stable by map iteration order is fine for MVP),
-// or empty if none. Prefer nodes with a non-empty AgentEndpoint.
-func PickReadyNodeID(nodes []Node) string {
-	var fallback string
-	for _, n := range nodes {
-		if n.State != "ready" {
-			continue
-		}
-		if n.AgentEndpoint != "" && n.AgentEndpoint != "local://stub" {
-			return n.ID
-		}
-		if fallback == "" && n.Endpoint != "local://stub" {
-			fallback = n.ID
-		}
-	}
-	if fallback != "" {
-		return fallback
-	}
-	for _, n := range nodes {
-		if n.State == "ready" {
-			return n.ID
-		}
-	}
-	return ""
-}

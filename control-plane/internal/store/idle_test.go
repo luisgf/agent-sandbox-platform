@@ -75,7 +75,7 @@ func TestParseIdleTimeout(t *testing.T) {
 }
 
 func TestStopIdleSandboxesMemory(t *testing.T) {
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t, "n1")
 	fresh, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128, NodeID: "n1",
 	})

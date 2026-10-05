@@ -170,10 +170,40 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if writePlacementError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, sb)
+}
+
+// placementErrorResponse explains a refused placement; reasons counts why each
+// node was skipped (e.g. {"insufficient_memory": 2, "cordoned": 1}).
+type placementErrorResponse struct {
+	Error   string         `json:"error"`
+	Reasons map[string]int `json:"reasons,omitempty"`
+}
+
+// writePlacementError maps scheduler refusals: no room → 503 with Retry-After
+// (capacity frees as sandboxes stop), a pinned node that cannot run sandboxes → 409.
+func writePlacementError(w http.ResponseWriter, err error) bool {
+	var nc *store.NoCapacityError
+	if errors.As(err, &nc) {
+		reasons := make(map[string]int, len(nc.Reasons))
+		for r, n := range nc.Reasons {
+			reasons[string(r)] = n
+		}
+		w.Header().Set("Retry-After", "30")
+		writeJSON(w, http.StatusServiceUnavailable, placementErrorResponse{Error: err.Error(), Reasons: reasons})
+		return true
+	}
+	if errors.Is(err, store.ErrNodeUnavailable) {
+		writeError(w, http.StatusConflict, err.Error())
+		return true
+	}
+	return false
 }
 
 // GetSandbox returns the current sandbox and its observed state.

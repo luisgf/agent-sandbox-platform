@@ -13,7 +13,7 @@ import (
 )
 
 func TestExecRejectsIdleReapedSandbox(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t, "n")
 	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n",
 	})
