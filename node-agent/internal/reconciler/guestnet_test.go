@@ -83,6 +83,9 @@ type fakeCP struct {
 	srv   *httptest.Server
 	mu    sync.Mutex
 	boxes map[string]*fakeSandbox
+	// conflict makes renew-lease and status=running answer 409 for a sandbox,
+	// as the control plane does once it no longer assigns it to this node.
+	conflict map[string]bool
 }
 
 type fakeSandbox struct {
@@ -93,7 +96,7 @@ type fakeSandbox struct {
 }
 
 func newFakeCP(t *testing.T, ids ...string) *fakeCP {
-	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}}
+	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}, conflict: map[string]bool{}}
 	for _, id := range ids {
 		f.boxes[id] = &fakeSandbox{ID: id, State: "requested"}
 	}
@@ -135,12 +138,22 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		nid := "n1"
 		b.Node, b.State = &nid, "starting"
 		_ = json.NewEncoder(w).Encode(b)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/renew-lease"):
+		if f.conflict[parts[3]] {
+			http.Error(w, `{"error":"conflict: not active on n1"}`, http.StatusConflict)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(f.boxes[parts[3]])
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
 		var body struct {
 			State  string `json:"state"`
 			Detail string `json:"detail"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.State == "running" && f.conflict[parts[3]] {
+			http.Error(w, `{"error":"conflict: cannot move sandbox from failed to running"}`, http.StatusConflict)
+			return
+		}
 		b := f.boxes[parts[3]]
 		b.State, b.Detail = body.State, body.Detail
 		_ = json.NewEncoder(w).Encode(b)
