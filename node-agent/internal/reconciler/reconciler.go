@@ -117,6 +117,11 @@ type Reconciler struct {
 	// nextSlot / freeSlot allocate guest /30s like CIDs.
 	nextSlot int
 	freeSlot []int
+	// OnUnknownNode runs when the control plane answers 404 to the work poll: it
+	// lost this node (e.g. a memory-store restart). main registers again. It runs
+	// at most every unknownNodeEvery.
+	OnUnknownNode   func(context.Context)
+	lastUnknownNode time.Time
 }
 
 func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Logger, every time.Duration) *Reconciler {
@@ -142,6 +147,9 @@ func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Lo
 	}
 }
 
+// unknownNodeEvery rate-limits OnUnknownNode.
+const unknownNodeEvery = 10 * time.Second
+
 // Run loops until ctx is cancelled.
 func (r *Reconciler) Run(ctx context.Context) {
 	r.Logger.Info("reconciler started", "interval", r.Every.String(), "node_id", r.NodeID, "tap_auto", r.TapAuto)
@@ -166,6 +174,12 @@ func (r *Reconciler) tick(ctx context.Context) {
 
 	work, err := r.CP.ListWork(ctx, r.NodeID)
 	if err != nil {
+		if cpclient.IsNotFound(err) && r.OnUnknownNode != nil && time.Since(r.lastUnknownNode) >= unknownNodeEvery {
+			r.lastUnknownNode = time.Now()
+			r.Logger.Warn("control plane does not know this node; registering again", "node_id", r.NodeID)
+			r.OnUnknownNode(ctx)
+			return
+		}
 		r.Logger.Warn("list work failed", "error", err)
 		return
 	}

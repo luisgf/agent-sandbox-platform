@@ -134,3 +134,37 @@ func TestLoadMTLSClientWithoutCertificates(t *testing.T) {
 		t.Fatal("a missing --control-plane-ca file must fail")
 	}
 }
+
+func TestStatusErrorsAreTyped(t *testing.T) {
+	var gotRegister map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/nodes/n1/heartbeat":
+			http.Error(w, `{"error":"node not found"}`, http.StatusNotFound)
+		case "/v1/sandboxes/s1/renew-lease":
+			http.Error(w, `{"error":"not owned"}`, http.StatusConflict)
+		case "/v1/nodes/register":
+			_ = json.NewDecoder(r.Body).Decode(&gotRegister)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, srv.Client())
+
+	err := c.Heartbeat(context.Background(), "n1")
+	if !IsNotFound(err) || IsConflict(err) || err.Error() != `heartbeat status 404: {"error":"node not found"}` {
+		t.Fatalf("heartbeat 404: %v", err)
+	}
+	_, err = c.RenewLease(context.Background(), "s1", "n1")
+	if !IsConflict(err) || IsNotFound(err) {
+		t.Fatalf("renew 409: %v", err)
+	}
+
+	no := false
+	if err := c.Register(context.Background(), RegisterRequest{ID: "n1", CapacityCPU: 8, CapacityMemMiB: 16384, MaxSandboxes: 3, AcceptsWork: &no, LocalNetDial: "203.0.113.10"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotRegister["max_sandboxes"] != float64(3) || gotRegister["accepts_work"] != false || gotRegister["local_net_dial"] != "203.0.113.10" || gotRegister["capacity_cpu"] != float64(8) {
+		t.Fatalf("register body: %v", gotRegister)
+	}
+}

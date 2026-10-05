@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/capacity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress/mitm"
@@ -73,6 +74,10 @@ type config struct {
 	NFTDNSAction         string // redirect | drop
 	NFTHTTPPorts         string
 	GuestSubnet          string
+	CapacityCPU          int    // --capacity-cpu: cores offered; -1 detect, 0 not enforced
+	CapacityMemMiB       int    // --capacity-mem-mib: MiB offered; -1 detect, 0 not enforced
+	MaxSandboxes         int    // --max-sandboxes: 0 = no limit
+	LocalNetDial         string // --local-net-dial: host[:port] laptops dial for local-net
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
 	DiskDir              string
@@ -128,8 +133,8 @@ func main() {
 			Endpoint:       cfg.Endpoint,
 			AgentEndpoint:  agentEndpointURL(cfg),
 			VMMProfiles:    []string{"cloud-hypervisor"},
-			CapacityCPU:    4,
-			CapacityMemMiB: 8192,
+			CapacityCPU:    cfg.CapacityCPU,
+			CapacityMemMiB: cfg.CapacityMemMiB,
 		})
 		if err != nil {
 			slog.Error("enrollment failed", "error", err)
@@ -412,21 +417,16 @@ func main() {
 		}
 	}
 
-	if err := cp.Register(ctx, cpclient.RegisterRequest{
-		ID:             cfg.NodeID,
-		Name:           cfg.NodeID,
-		Endpoint:       cfg.Endpoint,
-		AgentEndpoint:  agentEndpointURL(cfg),
-		VMMProfiles:    []string{"cloud-hypervisor"},
-		CapacityCPU:    4,
-		CapacityMemMiB: 8192,
-		FenceEndpoint:  os.Getenv("ASP_FENCE_ENDPOINT"),
-		FenceToken:     os.Getenv("ASP_FENCE_TOKEN"),
-	}); err != nil {
+	register := func(ctx context.Context) error {
+		return cp.Register(ctx, registerRequest(cfg))
+	}
+	if err := register(ctx); err != nil {
 		slog.Error("control-plane registration failed", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("registered with control plane", "node_id", cfg.NodeID, "agent_endpoint", agentEndpointURL(cfg))
+	slog.Info("registered with control plane", "node_id", cfg.NodeID, "agent_endpoint", agentEndpointURL(cfg),
+		"capacity_cpu", cfg.CapacityCPU, "capacity_mem_mib", cfg.CapacityMemMiB, "max_sandboxes", cfg.MaxSandboxes,
+		"accepts_work", cfg.Reconcile, "local_net_dial", cfg.LocalNetDial)
 
 	if err := cp.Heartbeat(ctx, cfg.NodeID); err != nil {
 		slog.Warn("initial heartbeat failed", "error", err)
@@ -446,6 +446,11 @@ func main() {
 			os.Exit(1)
 		}
 		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
+		rec.OnUnknownNode = func(ctx context.Context) {
+			if err := register(ctx); err != nil {
+				slog.Warn("re-register failed", "error", err)
+			}
+		}
 		keyDir := os.Getenv("ASP_LOCAL_NET_KEY_DIR")
 		if keyDir == "" {
 			if cfg.DryRun {
@@ -522,6 +527,14 @@ func main() {
 			return
 		case <-ticker.C:
 			if err := cp.Heartbeat(ctx, cfg.NodeID); err != nil {
+				if cpclient.IsNotFound(err) {
+					// The control plane lost this node (e.g. a memory-store restart).
+					slog.Warn("control plane does not know this node; registering again", "node_id", cfg.NodeID)
+					if err := register(ctx); err != nil {
+						slog.Warn("re-register failed", "error", err)
+					}
+					continue
+				}
 				slog.Warn("heartbeat failed", "error", err)
 			}
 		}
@@ -597,6 +610,10 @@ func loadConfig() config {
 	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", "soft"), "nft redirect failure mode: soft (SoftFail) | enforce (fail hard)")
 	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
 	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
+	flag.IntVar(&cfg.CapacityCPU, "capacity-cpu", getenvInt("ASP_CAPACITY_CPU", capacity.Detected), "CPU cores offered to sandboxes: -1 detects, 0 is not enforced (the control plane overcommits CPU)")
+	flag.IntVar(&cfg.CapacityMemMiB, "capacity-mem-mib", getenvInt("ASP_CAPACITY_MEM_MIB", capacity.Detected), "memory offered to sandboxes in MiB: -1 detects MemTotal minus max(1 GiB, 10%), 0 is not enforced")
+	flag.IntVar(&cfg.MaxSandboxes, "max-sandboxes", getenvInt("ASP_MAX_SANDBOXES", 0), "maximum sandboxes on this node; 0 = no limit")
+	flag.StringVar(&cfg.LocalNetDial, "local-net-dial", os.Getenv("ASP_LOCAL_NET_DIAL"), "host[:port] laptops dial for this node's local-net tunnels (default: the control plane's ASP_LOCAL_NET_DIAL)")
 	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest pool: each TAP gets its own /30 from it; also the nft --egress-nft-redirect match")
 	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
 	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
@@ -624,6 +641,13 @@ func loadConfig() config {
 	if cfg.EnrollURL == "" {
 		cfg.EnrollURL = cfg.ControlPlaneURL
 	}
+	if cfg.CapacityCPU < capacity.Detected || cfg.CapacityMemMiB < capacity.Detected || cfg.MaxSandboxes < 0 {
+		slog.Error("--capacity-cpu and --capacity-mem-mib take -1 (detect), 0 (not enforced) or a count; --max-sandboxes takes 0 or more")
+		os.Exit(2)
+	}
+	host := capacity.Detect()
+	cfg.CapacityCPU = capacity.CPU(cfg.CapacityCPU, host)
+	cfg.CapacityMemMiB = capacity.MemMiB(cfg.CapacityMemMiB, host)
 
 	if cfg.NodeID == "" {
 		// An enrolled node keeps the identity of its certificate: the control plane
@@ -659,6 +683,39 @@ func loadConfig() config {
 		}
 	}
 	return cfg
+}
+
+// registerRequest is what the node tells the control plane on every register.
+// accepts_work mirrors --reconcile: an agent that does not claim work gets none.
+func registerRequest(cfg config) cpclient.RegisterRequest {
+	acceptsWork := cfg.Reconcile
+	return cpclient.RegisterRequest{
+		ID:             cfg.NodeID,
+		Name:           cfg.NodeID,
+		Endpoint:       cfg.Endpoint,
+		AgentEndpoint:  agentEndpointURL(cfg),
+		VMMProfiles:    []string{"cloud-hypervisor"},
+		CapacityCPU:    cfg.CapacityCPU,
+		CapacityMemMiB: cfg.CapacityMemMiB,
+		MaxSandboxes:   cfg.MaxSandboxes,
+		AcceptsWork:    &acceptsWork,
+		LocalNetDial:   cfg.LocalNetDial,
+		FenceEndpoint:  os.Getenv("ASP_FENCE_ENDPOINT"),
+		FenceToken:     os.Getenv("ASP_FENCE_TOKEN"),
+	}
+}
+
+func getenvInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Error("invalid integer", "env", key, "value", v)
+		os.Exit(2)
+	}
+	return n
 }
 
 // certNodeID returns the CN of the enrolled node certificate in certDir, or "".
