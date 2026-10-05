@@ -30,7 +30,10 @@ type Server struct {
 	OIDC     *oidc.Signer
 	Attestor *attest.SoftwareAttestor
 	Fence    fence.FenceProvider
-	Client   *http.Client
+	// Client calls same-host agents over plain HTTP; Agents builds mTLS clients for
+	// https:// agent endpoints (nil: https endpoints are refused).
+	Client *http.Client
+	Agents *AgentDialer
 }
 
 func NewServer(s store.Store) *Server {
@@ -271,6 +274,10 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if err := ValidateAgentEndpoint(effectiveAgentEndpoint(input.AgentEndpoint, input.Endpoint), s.allowInsecureAgentHTTP()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	nodeID := strings.TrimSpace(input.ID)
 	if nodeID == "" {
 		nodeID = strings.TrimSpace(input.Name)
@@ -428,6 +435,10 @@ func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := ValidateAgentEndpoint(effectiveAgentEndpoint(input.AgentEndpoint, input.Endpoint), s.allowInsecureAgentHTTP()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	node, err := s.Store.RegisterNode(input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -541,25 +552,9 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
-	if sb.NodeID == nil || *sb.NodeID == "" {
-		writeError(w, http.StatusConflict, "sandbox has no assigned node")
-		return
-	}
-	node, err := s.Store.GetNode(*sb.NodeID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusConflict, "assigned node not registered")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	agentURL := strings.TrimRight(node.AgentEndpoint, "/")
-	if agentURL == "" {
-		agentURL = strings.TrimRight(node.Endpoint, "/")
-	}
-	if agentURL == "" || strings.HasPrefix(agentURL, "local://") {
-		writeError(w, http.StatusBadGateway, "node has no agent_endpoint for exec")
+	agentURL, client, status, msg := s.agentTarget(sb)
+	if status != 0 {
+		writeError(w, status, msg)
 		return
 	}
 	egressPol := s.effectiveEgress(sb.TenantID)
@@ -588,10 +583,6 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	httpReq.Header.Set("Content-Type", "application/json")
 	if stream {
 		httpReq.Header.Set("Accept", "application/x-ndjson")
-	}
-	client := s.Client
-	if client == nil {
-		client = http.DefaultClient
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -684,25 +675,9 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
-	if sb.NodeID == nil || *sb.NodeID == "" {
-		writeError(w, http.StatusConflict, "sandbox has no assigned node")
-		return
-	}
-	node, err := s.Store.GetNode(*sb.NodeID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusConflict, "assigned node not registered")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	agentURL := strings.TrimRight(node.AgentEndpoint, "/")
-	if agentURL == "" {
-		agentURL = strings.TrimRight(node.Endpoint, "/")
-	}
-	if agentURL == "" || strings.HasPrefix(agentURL, "local://") {
-		writeError(w, http.StatusBadGateway, "node has no agent_endpoint for exec")
+	agentURL, client, status, msg := s.agentTarget(sb)
+	if status != 0 {
+		writeError(w, status, msg)
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -719,10 +694,6 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	client := s.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
