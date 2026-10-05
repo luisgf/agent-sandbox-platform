@@ -383,6 +383,8 @@ Only the most common settings. Full lists live in each component's README.
 | `DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. |
 | `ASP_NODE_BOOTSTRAP_TOKEN` | CP, node | One-time token for node enrollment. |
+| `ASP_CLIENT_CA` | CP | Require node client certificates and bind each node route to the certificate's node. |
+| `--agent-tls-listen` | node | mTLS exec listener for a control plane on another host ([ADR-0011](docs/adr/0011-multi-node.md)). |
 
 Reference: [`cli/README.md`](cli/README.md) · [`control-plane/README.md`](control-plane/README.md) · [`node-agent/README.md`](node-agent/README.md) · [`pod-daemon/README.md`](pod-daemon/README.md).
 
@@ -461,6 +463,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0008](docs/adr/0008-network-flow-attribution.md) | Network flow → `owner_sub` attribution (evaluation, not implemented) |
 | [0009](docs/adr/0009-agent-sessions.md) | Sessions as the primary use of isolation |
 | [0010](docs/adr/0010-on-demand-local-net.md) | On-demand local network: full tunnel, opt-in |
+| [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes |
 
 Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 

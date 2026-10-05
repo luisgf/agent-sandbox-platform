@@ -345,7 +345,11 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--enroll` | `ASP_ENROLL=1` | + `--bootstrap-token` |
 | `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
 | `--mtls` | `ASP_MTLS=1` | client certs hacia CP |
-| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` |
+| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca salvo `--insecure-agent-listen` |
+| `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — p.ej. `0.0.0.0:9443`: `exec` con mTLS para un CP en otro host (ver 5.5) |
+| `--endpoint` | `NODE_ENDPOINT` | lo que se anuncia al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen` |
+| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
+| `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix del pod-daemon (**host**, dry-run / fallback) |
 | `--pod-daemon-port` | | `26500` — puerto guest vsock para CONNECT |
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check; intent para proxy |
@@ -437,6 +441,29 @@ En modo shared (`--ch-api-socket` set), si CH no escucha: warning `CH ping faile
 Modo shared (`--ch-api-socket`) sigue siendo un sandbox a la vez — solo para debug.
 
 ---
+
+### 5.5 Plano de control en otro host (mTLS en los dos sentidos)
+
+Con el plano de control en otra máquina, el `exec` no puede ir al `--agent-listen` de loopback. El nodo abre `--agent-tls-listen` y el plano de control lo llama con mTLS ([ADR-0011](adr/0011-multi-node.md)):
+
+```bash
+# En el nodo: el cert de enroll sirve también como cert de servidor.
+node-agent \
+  --control-plane-url=https://cp.ejemplo.corp:8443 \
+  --control-plane-ca=/etc/asp/cp-ca.pem \
+  --enroll --bootstrap-token="$ASP_NODE_BOOTSTRAP_TOKEN" \
+  --cert-dir=/var/lib/asp/node-certs --mtls \
+  --agent-listen=127.0.0.1:9100 \
+  --agent-tls-listen=0.0.0.0:9443 \
+  --endpoint=https://node1.ejemplo.corp:9443 \
+  --reconcile
+```
+
+- **Firewall:** el plano de control → el nodo, `9443/tcp`. El nodo → el plano de control, su puerto TLS. Nada más hacia `9100`.
+- **El plano de control** comprueba que el cert del agente es de su CA y nombra al nodo (`ServerName` = node id), y presenta el suyo (CN `asp-control-plane`). El agente no acepta ningún otro certificado.
+- **Nodos enrolados antes de este cambio:** su cert es solo de cliente. Con `--agent-tls-listen` el agente no arranca y pide re-enrolar (`--enroll`) o `POST /v1/nodes/{id}/rotate-cert`.
+- **`http://` desde otro host** se rechaza en register (400) y en `exec` (502). Solo para laboratorio: `ASP_INSECURE_AGENT_HTTP=1` en el plano de control y `--insecure-agent-listen` en el nodo.
+- **Identidad:** con `ASP_CLIENT_CA`, cada ruta de nodo compara el CN del cert con el nodo para el que actúa (403 si no coincide). Sin `--node-id`, el agente usa el CN de su cert.
 
 ## 6. Imagen guest y dataplane exec
 
