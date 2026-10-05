@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostproc"
 )
 
 // Cloud Hypervisor REST paths (OpenAPI /api/v1/* over a Unix socket).
@@ -88,6 +90,44 @@ func NewSpawningCloudHypervisor(binaryPath, socketDir string) *CloudHypervisor {
 // NewCloudHypervisorWithClient allows injecting a custom HTTP client (shared-mode tests).
 func NewCloudHypervisorWithClient(apiSocket string, client *http.Client) *CloudHypervisor {
 	return &CloudHypervisor{APISocket: apiSocket, HTTPClient: client}
+}
+
+// APISocketName is the per-sandbox API socket under SocketDir.
+func APISocketName(sandboxID string) string {
+	return "ch-" + sandboxID + ".sock"
+}
+
+// ParseAPISocketName returns the sandbox an APISocketName belongs to.
+func ParseAPISocketName(name string) (string, bool) {
+	id, ok := strings.CutPrefix(name, "ch-")
+	if !ok {
+		return "", false
+	}
+	id, ok = strings.CutSuffix(id, ".sock")
+	return id, ok && id != ""
+}
+
+// SpawnedSandbox reports which sandbox a cloud-hypervisor process serves when
+// a per-sandbox CloudHypervisor with this socketDir started it: its argv names
+// --api-socket socketDir/ch-{id}.sock. The node-agent reaper uses it to find
+// VMs a previous agent process left running. A CH on any other socket (the
+// shared --ch-api-socket, another agent's directory) does not match.
+func SpawnedSandbox(argv []string, socketDir string) (string, bool) {
+	sock, ok := hostproc.FlagValue(argv, "--api-socket")
+	if !ok {
+		return "", false
+	}
+	// Newer Cloud Hypervisor also takes "path=<socket>[,...]".
+	if p, ok := strings.CutPrefix(sock, "path="); ok {
+		sock, _, _ = strings.Cut(p, ",")
+	}
+	if socketDir == "" {
+		socketDir = defaultCHSocketDir
+	}
+	if filepath.Clean(filepath.Dir(sock)) != filepath.Clean(socketDir) {
+		return "", false
+	}
+	return ParseAPISocketName(filepath.Base(sock))
 }
 
 func (c *CloudHypervisor) sharedMode() bool {
@@ -340,7 +380,7 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 	if err := os.MkdirAll(socketDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir socket dir: %w", err)
 	}
-	sock := filepath.Join(socketDir, "ch-"+config.ID+".sock")
+	sock := filepath.Join(socketDir, APISocketName(config.ID))
 	_ = os.Remove(sock) // drop stale socket
 
 	binary := c.BinaryPath

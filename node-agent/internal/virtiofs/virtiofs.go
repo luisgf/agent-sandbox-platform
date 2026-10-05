@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostproc"
 )
 
 // ErrNotFound means the virtiofsd binary is not on PATH (or the configured
@@ -37,6 +39,13 @@ func DaemonArgs(socketPath, sharedDir string) []string {
 		"--cache", "never",
 		"--sandbox", "none",
 	}
+}
+
+// SocketPathOf returns the socket a virtiofsd started with DaemonArgs serves,
+// from its argv. The node-agent reaper uses it to find daemons a previous
+// agent process left running.
+func SocketPathOf(argv []string) (string, bool) {
+	return hostproc.FlagValue(argv, "--socket-path")
 }
 
 // Start launches virtiofsd and waits until the socket exists.

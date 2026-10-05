@@ -22,6 +22,16 @@ func TestDaemonArgsRustCLI(t *testing.T) {
 	}
 }
 
+func TestSocketPathOfDaemonArgs(t *testing.T) {
+	argv := append([]string{"/usr/libexec/virtiofsd"}, DaemonArgs("/run/asp/virtiofs-sb.sock", "/data/proj")...)
+	if got, ok := SocketPathOf(argv); !ok || got != "/run/asp/virtiofs-sb.sock" {
+		t.Fatalf("SocketPathOf(%q) = %q %v", argv, got, ok)
+	}
+	if got, ok := SocketPathOf([]string{"cloud-hypervisor", "--api-socket", "/run/asp/ch-sb.sock"}); ok {
+		t.Fatalf("a CH argv names socket %q", got)
+	}
+}
+
 func TestStartMissingBinary(t *testing.T) {
 	_, err := Start(context.Background(), Config{
 		Binary:     "asp-virtiofsd-does-not-exist",

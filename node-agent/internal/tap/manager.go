@@ -4,7 +4,9 @@ package tap
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -71,13 +73,38 @@ func (m *Manager) log() *slog.Logger {
 	return slog.Default()
 }
 
+// DevicePrefix starts every sandbox TAP name (DeviceName).
+const DevicePrefix = "asp-"
+
 // DeviceName returns the TAP name for a sandbox (asp-{shortID}).
 func DeviceName(sandboxID string) string {
 	id := sandboxID
 	if len(id) > 8 {
 		id = id[:8]
 	}
-	return "asp-" + id
+	return DevicePrefix + id
+}
+
+// Devices lists the TUN/TAP devices under sysClassNet (/sys/class/net) whose
+// name starts with DevicePrefix. Only TUN/TAP devices have tun_flags, so other
+// kinds of device that share the prefix are left out.
+func Devices(sysClassNet string) ([]string, error) {
+	entries, err := os.ReadDir(sysClassNet)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, DevicePrefix) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(sysClassNet, name, "tun_flags")); err != nil {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 // Create brings up a TAP with the manager's host address.

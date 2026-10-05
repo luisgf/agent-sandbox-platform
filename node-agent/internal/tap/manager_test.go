@@ -3,6 +3,9 @@ package tap
 import (
 	"errors"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,6 +16,34 @@ func TestDeviceName(t *testing.T) {
 	}
 	if got := DeviceName("short"); got != "asp-short" {
 		t.Fatalf("got %s", got)
+	}
+}
+
+func TestDevicesListsOnlyTapDevices(t *testing.T) {
+	sys := t.TempDir()
+	for name, files := range map[string][]string{
+		"asp-aaaa1111":    {"tun_flags", "uevent"},
+		"asp-bbbb2222":    {"uevent"}, // shares the prefix, not a TUN/TAP device
+		"wg-asp-cccc3333": {"uevent"},
+		"tap0":            {"tun_flags"},
+		"eth0":            {"uevent"},
+	} {
+		dir := filepath.Join(sys, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("0x1002\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, err := Devices(sys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"asp-aaaa1111"}) {
+		t.Fatalf("devices=%v", got)
 	}
 }
 

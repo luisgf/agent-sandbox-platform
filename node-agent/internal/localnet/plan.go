@@ -27,6 +27,9 @@ const (
 	KindTunnel Kind = "tunnel"
 )
 
+// IfacePrefix starts every session WireGuard device name (Plan.Iface).
+const IfacePrefix = "wg-asp-"
+
 // Plan is what the node should install for one sandbox.
 // The default route lives in TableID, selected by ingress on Tap.
 // It is never installed in the host main table.
@@ -70,7 +73,7 @@ func Decide(sandboxID, ownerSub string, localNet bool, state string) Plan {
 	p := Plan{
 		SandboxID:      sandboxID,
 		OwnerSub:       ownerSub,
-		Iface:          "wg-asp-" + short,
+		Iface:          IfacePrefix + short,
 		Table:          "aspln-" + short,
 		Tap:            "asp-" + short,
 		TableID:        TableID(sandboxID),
