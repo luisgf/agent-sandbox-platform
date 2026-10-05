@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -35,6 +34,8 @@ import (
 
 type config struct {
 	ControlPlaneURL      string
+	ControlPlaneCA       string // --control-plane-ca: CA of the control plane's TLS certificate
+	EnrollURL            string // --enroll-url: where to enroll (default: ControlPlaneURL)
 	NodeID               string
 	CHAPISocket          string
 	CHSocketDir          string
@@ -110,13 +111,17 @@ func main() {
 	defer stop()
 
 	// Enrollment uses a plain (or server-TLS) client with bootstrap token — no client cert yet.
-	plain := &http.Client{Timeout: 15 * time.Second}
+	plain, err := cpclient.NewEnrollHTTPClient(cfg.ControlPlaneCA)
+	if err != nil {
+		slog.Error("load --control-plane-ca", "error", err)
+		os.Exit(1)
+	}
 	if cfg.Enroll {
 		if cfg.BootstrapToken == "" {
 			slog.Error("--enroll requires --bootstrap-token or ASP_NODE_BOOTSTRAP_TOKEN")
 			os.Exit(2)
 		}
-		enrollClient := cpclient.New(cfg.ControlPlaneURL, plain)
+		enrollClient := cpclient.New(cfg.EnrollURL, plain)
 		resp, err := enrollClient.Enroll(ctx, cfg.BootstrapToken, cpclient.EnrollRequest{
 			ID:             cfg.NodeID,
 			Name:           cfg.NodeID,
@@ -140,7 +145,7 @@ func main() {
 		slog.Info("enrolled", "node_id", cfg.NodeID, "cert_dir", cfg.CertDir, "fingerprint", resp.CertFingerprint)
 	}
 
-	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS)
+	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS, cfg.ControlPlaneCA)
 	if err != nil {
 		slog.Error("load mTLS client", "error", err)
 		os.Exit(1)
@@ -553,6 +558,8 @@ func agentEndpointURL(cfg config) string {
 func loadConfig() config {
 	var cfg config
 	flag.StringVar(&cfg.ControlPlaneURL, "control-plane-url", getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8080"), "control plane base URL")
+	flag.StringVar(&cfg.ControlPlaneCA, "control-plane-ca", os.Getenv("ASP_CONTROL_PLANE_CA"), "PEM CA that signed the control plane's TLS certificate (enroll and API calls); default: cert-dir/ca.crt, then system roots")
+	flag.StringVar(&cfg.EnrollURL, "enroll-url", os.Getenv("ASP_ENROLL_URL"), "control-plane URL for --enroll when it differs from --control-plane-url (ASP_MTLS_STRICT serves enroll on a separate listener)")
 	flag.StringVar(&cfg.NodeID, "node-id", os.Getenv("NODE_ID"), "node identifier")
 	flag.StringVar(&cfg.CHAPISocket, "ch-api-socket", os.Getenv("CH_API_SOCKET"), "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir")
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
@@ -613,6 +620,9 @@ func loadConfig() config {
 	}
 	if cfg.NFTEgressMode == "" {
 		cfg.NFTEgressMode = "soft"
+	}
+	if cfg.EnrollURL == "" {
+		cfg.EnrollURL = cfg.ControlPlaneURL
 	}
 
 	if cfg.NodeID == "" {

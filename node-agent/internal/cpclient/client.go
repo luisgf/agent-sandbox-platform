@@ -59,14 +59,17 @@ func New(baseURL string, httpClient *http.Client) *Client {
 }
 
 // LoadMTLSClient builds an HTTP client using certs from certDir when present
-// or when force is true (ASP_MTLS=1).
-func LoadMTLSClient(certDir string, force bool) (*http.Client, bool, error) {
+// or when force is true (ASP_MTLS=1). The control plane's TLS certificate is
+// verified against cpCAFile when set (--control-plane-ca), else against the
+// enrollment CA in certDir/ca.crt when present, else the system roots.
+func LoadMTLSClient(certDir string, force bool, cpCAFile string) (*http.Client, bool, error) {
 	certPath := filepath.Join(certDir, "client.crt")
 	keyPath := filepath.Join(certDir, "client.key")
 	caPath := filepath.Join(certDir, "ca.crt")
 	have := fileExists(certPath) && fileExists(keyPath)
 	if !have && !force {
-		return &http.Client{Timeout: 15 * time.Second}, false, nil
+		c, err := NewEnrollHTTPClient(cpCAFile)
+		return c, false, err
 	}
 	if !have {
 		return nil, false, fmt.Errorf("mTLS required but certs missing in %s", certDir)
@@ -79,14 +82,14 @@ func LoadMTLSClient(certDir string, force bool) (*http.Client, bool, error) {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
 	}
-	if fileExists(caPath) {
-		pemBytes, err := os.ReadFile(caPath)
+	rootsFile := cpCAFile
+	if rootsFile == "" && fileExists(caPath) {
+		rootsFile = caPath
+	}
+	if rootsFile != "" {
+		pool, err := loadCertPool(rootsFile)
 		if err != nil {
 			return nil, false, err
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pemBytes) {
-			return nil, false, fmt.Errorf("no CA certs in %s", caPath)
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -96,6 +99,35 @@ func LoadMTLSClient(certDir string, force bool) (*http.Client, bool, error) {
 			TLSClientConfig: tlsCfg,
 		},
 	}, true, nil
+}
+
+// NewEnrollHTTPClient is the client for calls made before the node has a
+// certificate (enrollment). With cpCAFile it trusts only that CA for the
+// control plane's TLS certificate, so a node can enroll against a control plane
+// on another host whose certificate is not in the system roots.
+func NewEnrollHTTPClient(cpCAFile string) (*http.Client, error) {
+	c := &http.Client{Timeout: 15 * time.Second}
+	if cpCAFile == "" {
+		return c, nil
+	}
+	pool, err := loadCertPool(cpCAFile)
+	if err != nil {
+		return nil, err
+	}
+	c.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
+	return c, nil
+}
+
+func loadCertPool(path string) (*x509.CertPool, error) {
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("no CA certs in %s", path)
+	}
+	return pool, nil
 }
 
 func (c *Client) Enroll(ctx context.Context, bootstrapToken string, req EnrollRequest) (EnrollResponse, error) {
