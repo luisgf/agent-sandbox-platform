@@ -138,8 +138,10 @@ console=ttyS0 root=/dev/vda reboot=k panic=1
   images/rootfs.img
   certs/               # CA / TLS servidor del control-plane (corp)
   node-certs/          # default ASP_CERT_DIR del node-agent
+  disks/               # --disk-dir: rootfs-{sandboxID}.img, copia privada por sandbox
+  local-net/           # ASP_LOCAL_NET_KEY_DIR: clave WireGuard {sandboxID}.key por sesión local-net
   tap/                 # scripts/state de TAP (opcional)
-/run/asp/              # sockets runtime: ch-{sandboxID}.sock + vsock-{sandboxID}.sock
+/run/asp/              # sockets runtime: ch-{sandboxID}.sock + vsock-{sandboxID}.sock; node-agent.lock (§5.6)
 /run/cloud-hypervisor/api.sock   # opcional: --ch-api-socket shared/legacy/debug
 /opt/sandbox/{vmlinux,rootfs.img} → symlinks a /var/lib/asp/...
 ```
@@ -341,6 +343,9 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--ch-api-socket` | `CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
 | `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` — binario spawneado por sandbox |
 | `--dry-run` | `DRY_RUN=1` | **omitir** en bare-metal real |
+| `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — `rootfs-{sandboxID}.img` por sandbox, borrada al parar |
+| `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, borra lo que dejó un node-agent anterior (§5.6); `report` solo lo lista; `off` |
+| `--reap-only` | | hace solo esa limpieza y sale (`ExecStopPost` de la unit) |
 | `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop |
 | `--enroll` | `ASP_ENROLL=1` | + `--bootstrap-token` |
 | `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
@@ -368,7 +373,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 
 Un proceso CH = **una** VM (modelo OpenAPI de CH).
 
-**Default — el node-agent spawnea por sandbox** (no hace falta systemd de CH):
+**Default — el node-agent spawnea por sandbox** (no hace falta systemd de CH). Los CH son hijos del agente: córrelo con la unit de §5.6 para que un reinicio no los deje huérfanos.
 
 ```bash
 sudo install -d -m 0750 /run/asp
@@ -467,6 +472,44 @@ node-agent \
 - **Nodos enrolados antes de este cambio:** su cert es solo de cliente. Con `--agent-tls-listen` el agente no arranca y pide re-enrolar (`--enroll`) o `POST /v1/nodes/{id}/rotate-cert`.
 - **`http://` desde otro host** se rechaza en register (400) y en `exec` (502). Solo para laboratorio: `ASP_INSECURE_AGENT_HTTP=1` en el plano de control y `--insecure-agent-listen` en el nodo.
 - **Identidad:** con `ASP_CLIENT_CA`, cada ruta de nodo compara el CN del cert con el nodo para el que actúa (403 si no coincide). Sin `--node-id`, el agente usa el CN de su cert.
+
+### 5.6 Servicio systemd y reinicios del agente
+
+El node-agent guarda sus VMs solo en memoria y un proceso nuevo no las adopta: al registrarse con otro `agent_instance_id`, el plano de control falla sus sandboxes `running`/`paused` con `node_agent_restarted` ([ADR-0011](adr/0011-multi-node.md)). Lo que dejara el proceso anterior en el host ya no es de nadie. Dos defensas:
+
+**1. La unit** [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service), con `KillMode=control-group`: al parar o reiniciar el servicio, y si el agente muere, systemd mata con él todos sus `cloud-hypervisor` y `virtiofsd`. Después, `ExecStopPost=-node-agent --reap-only` borra lo que tenían.
+
+```bash
+sudo install -m 0755 build/node-agent /usr/local/bin/node-agent
+sudo install -d -m 0750 /etc/asp
+sudo install -m 0600 /dev/null /etc/asp/node-agent.env
+sudoedit /etc/asp/node-agent.env   # CONTROL_PLANE_URL, ASP_CONTROL_PLANE_CA, NODE_ENDPOINT… (ejemplo en la unit)
+sudo cp scripts/systemd/asp-node-agent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now asp-node-agent.service
+journalctl -u asp-node-agent -f
+```
+
+Primer arranque: añade `ASP_ENROLL=1` y `ASP_NODE_BOOTSTRAP_TOKEN=…` al env file y quítalos cuando el journal diga `enrolled`; el token no debe quedarse en el nodo. Las líneas del env file mandan sobre las `Environment=` de la unit.
+
+**2. Limpieza al arrancar** (`--reap-leftovers=on`, por defecto). Antes de abrir ningún socket y antes de registrarse, el agente busca lo que dejó un proceso anterior y lo borra. Cubre lo que la unit no evita: un agente lanzado a mano, una unit con `KillMode=process`, o los discos que sobreviven a un reboot.
+
+| Resto | Cómo lo reconoce |
+|---|---|
+| Procesos `cloud-hypervisor` | argv `--api-socket {--ch-socket-dir}/ch-{id}.sock`. SIGTERM, 5 s, SIGKILL |
+| Procesos `virtiofsd` | argv `--socket-path {--ch-socket-dir}/virtiofs-{id}.sock` |
+| Túneles local-net | claves `{id}.key` en `ASP_LOCAL_NET_KEY_DIR` y devices WireGuard `wg-asp-*`. Borra el device, las `ip rule`, la tabla, las reglas FORWARD y las excepciones nft, como al parar la sandbox |
+| TAPs | devices TUN/TAP `asp-{8 hex}` |
+| Sockets y enlaces | `ch-`, `vsock-` (y sus `_26501`/`_26502`), `virtiofs-` y `ssh-agent-{id}.sock` en `--ch-socket-dir` |
+| Discos | `rootfs-{id}.img` en `--disk-dir` |
+
+- Solo toca nombres con un id de sandbox del plano de control (UUID en minúsculas) y con el tipo de fichero que crea el agente. Nunca toca el rootfs base, `--ch-api-socket`, el bridge SSH ni el socket de identidad.
+- Un fallo no para el resto: sale como `host cleanup incomplete` en el log y el agente arranca igual. Cada resto borrado deja una línea `removing leftover of a previous node-agent`.
+- `--reap-leftovers=report` solo lo lista; `off` lo desactiva. Con `--dry-run` solo informa, y no mira TAPs, túneles ni discos del host.
+- `--reap-only` hace solo la limpieza y sale (código 0 si todo se borró). Para ver qué queda en un nodo con el servicio parado: `sudo node-agent --reap-only --reap-leftovers=report`, con los mismos `--ch-socket-dir` y `--disk-dir` que el servicio si no son los de por defecto.
+- **Un agente por host.** Mientras vive, el agente mantiene un `flock` sobre `{--ch-socket-dir}/node-agent.lock`. Un segundo agente en ese directorio no arranca (`refusing to start … is held by pid N`), y `--reap-only` tampoco corre. Los TAPs y túneles son de todo el host: dos agentes reales en una misma máquina (solo lab) necesitan directorios de sockets distintos y `--reap-leftovers=off`.
+- Modo shared (`--ch-api-socket`): ese CH no es del agente y no se toca; su VM sigue ahí tras el reinicio (`vm.delete` a mano).
+- **Actualizar el agente detiene sus VMs.** Haz `asp node cordon` y drena antes de `systemctl restart` ([`ops-multi-node.md`](ops-multi-node.md)).
 
 ## 6. Imagen guest y dataplane exec
 
@@ -754,6 +797,9 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 | Egress “allow” pero tráfico sale | Guest no usa HTTP_PROXY / DNS bypass | Apunta proxy §3.4; nft bloquear UDP53/WAN directo |
 | Permission denied cert-dir | `/var/lib/asp/node-certs` no writable | `mkdir` + owner; o `ASP_CERT_DIR` writable |
 | CID vsock conflict | (resuelto) allocator ≥3 | Si ves colisión, bug en `allocCID`; revisa handles |
+| `refusing to start … node-agent.lock is held by pid N` | Ya corre un node-agent (o un `--reap-only`) con ese `--ch-socket-dir` | `systemctl status asp-node-agent`; `ps -p N`; no arranques otro agente a mano junto al servicio |
+| `host cleanup incomplete` al arrancar | La limpieza de §5.6 no pudo parar o borrar algo (permisos, proceso en estado D) | El error nombra el recurso; `node-agent --reap-only --reap-leftovers=report` lista lo que queda |
+| `cloud-hypervisor` o TAP `asp-*` huérfanos tras reiniciar el agente | Agente fuera de systemd, unit con `KillMode=process`, o `--reap-leftovers=off` | Usa la unit de §5.6; el siguiente arranque los borra |
 
 ---
 
@@ -764,7 +810,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 1. Instalar CH pinneado + assets (`vmlinux`, `rootfs.img` vía `build-guest-rootfs.sh`) → symlinks `/opt/sandbox/*`.
 2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens.
-3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`).
+3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`), como servicio: [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) (§5.6).
 4. `POST /v1/sandboxes` → reconciler claim → TAP `asp-*` → CH spawn → `running`.
 5. `POST /v1/sandboxes/{id}/exec` → hybrid CONNECT 26500 → guest pod-daemon.
 6. Desde guest: dial CID 2 ports 26501/26502 (o socat); mint OIDC / SSH agent.
