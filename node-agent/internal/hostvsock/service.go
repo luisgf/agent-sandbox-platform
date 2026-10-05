@@ -11,9 +11,11 @@
 //  1. Optional global AF_VSOCK (or lab UnixFactory under --host-vsock-dir).
 //  2. Per-sandbox Cloud Hypervisor / Firecracker hybrid muxer sockets
 //     `{vsockMuxer}_{port}` via AttachSandbox — required for CH guest→host.
+//     Identity requests on these are bound to the sandbox; on (1) they are not.
 package hostvsock
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/mdlayher/vsock"
 )
@@ -139,7 +142,7 @@ func (s *Service) Start() error {
 
 	go s.acceptSSH(sshLn)
 	if s.IdentityHandler != nil {
-		go s.serveIdentity(idLn)
+		go s.serveIdentity(idLn, "")
 	} else {
 		go s.acceptDrain(idLn, "identity")
 	}
@@ -222,10 +225,19 @@ func (s *Service) resolveHybridSSHSock(sandboxID string) (string, bool) {
 	return s.SSHRegistry.Lookup(sandboxID), true
 }
 
-func (s *Service) serveIdentity(ln net.Listener) {
+// serveIdentity serves IdentityHandler on ln. A non-empty sandboxID binds every
+// request on ln to that sandbox (identity.WithSandboxID): the hybrid
+// {muxer}_26502 acceptor only gets connections from that sandbox's VMM. The
+// global listeners pass "" and cannot tell guests apart.
+func (s *Service) serveIdentity(ln net.Listener, sandboxID string) {
 	srv := &http.Server{
 		Handler:           s.IdentityHandler,
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if sandboxID != "" {
+		srv.BaseContext = func(net.Listener) context.Context {
+			return identity.WithSandboxID(context.Background(), sandboxID)
+		}
 	}
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
 		s.mu.Lock()

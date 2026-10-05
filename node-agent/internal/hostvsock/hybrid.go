@@ -92,7 +92,7 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 
 	go s.acceptSSHUpstream(sshLn, hostSock, scoped)
 	if s.IdentityHandler != nil {
-		go s.serveIdentity(idLn)
+		go s.serveIdentity(idLn, sandboxID)
 	} else {
 		go s.acceptDrain(idLn, "identity-hybrid")
 	}
