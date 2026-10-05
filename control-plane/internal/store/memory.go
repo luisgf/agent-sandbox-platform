@@ -643,6 +643,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.Name) == "" {
 		return Node{}, fmt.Errorf("%w: id or name required", ErrInvalidInput)
 	}
+	if err := validateNodeCapacity(input.CapacityCPU, input.CapacityMemMiB, input.MaxSandboxes); err != nil {
+		return Node{}, err
+	}
 	now := time.Now().UTC()
 	id := input.ID
 	if id == "" {
@@ -670,6 +673,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		VMMProfiles:    append([]string(nil), profiles...),
 		CapacityCPU:    input.CapacityCPU,
 		CapacityMemMiB: input.CapacityMemMiB,
+		MaxSandboxes:   input.MaxSandboxes,
+		AcceptsWork:    input.acceptsWork(),
+		LocalNetDial:   strings.TrimSpace(input.LocalNetDial),
 		FenceEndpoint:  strings.TrimSpace(input.FenceEndpoint),
 		FenceToken:     strings.TrimSpace(input.FenceToken),
 		LastSeenAt:     &seen,
@@ -688,6 +694,8 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		node.CertSerial = existing.CertSerial
 		node.EnrolledAt = existing.EnrolledAt
 		node.RevokedAt = existing.RevokedAt
+		// Cordon is an admin decision; an agent re-registering never lifts it.
+		node.Cordoned = existing.Cordoned
 		if node.AgentEndpoint == "" {
 			node.AgentEndpoint = existing.AgentEndpoint
 		}
@@ -740,6 +748,7 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 		VMMProfiles:     append([]string(nil), profiles...),
 		CapacityCPU:     input.CapacityCPU,
 		CapacityMemMiB:  input.CapacityMemMiB,
+		AcceptsWork:     true,
 		CertFingerprint: fp,
 		CertSerial:      strings.TrimSpace(cert.Serial),
 		EnrolledAt:      &enrolled,
@@ -751,9 +760,14 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
 		node.CreatedAt = existing.CreatedAt
-		// Same as Postgres: enroll does not carry fence settings, so keep the registered ones.
+		// Same as Postgres: enroll does not carry fence or scheduling settings, so keep
+		// the registered ones (and an admin's cordon).
 		node.FenceEndpoint = existing.FenceEndpoint
 		node.FenceToken = existing.FenceToken
+		node.MaxSandboxes = existing.MaxSandboxes
+		node.Cordoned = existing.Cordoned
+		node.AcceptsWork = existing.AcceptsWork
+		node.LocalNetDial = existing.LocalNetDial
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {
 			m.revokedCerts[existing.CertFingerprint] = id

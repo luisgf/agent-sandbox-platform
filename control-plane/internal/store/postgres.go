@@ -733,6 +733,9 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.Name) == "" {
 		return Node{}, fmt.Errorf("%w: id or name required", ErrInvalidInput)
 	}
+	if err := validateNodeCapacity(input.CapacityCPU, input.CapacityMemMiB, input.MaxSandboxes); err != nil {
+		return Node{}, err
+	}
 	ctx := context.Background()
 	id := input.ID
 	if id == "" {
@@ -775,12 +778,15 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, fence_endpoint, fence_token,
-				last_seen_at, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10)`,
+				last_seen_at, created_at, updated_at,
+				max_sandboxes, accepts_work, local_net_dial
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13)`,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
+			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 		)
 	} else {
+		// cordoned is an admin decision: register never touches it.
 		_, err = tx.Exec(ctx, `
 			UPDATE nodes SET
 				name=$2, endpoint=$3,
@@ -789,10 +795,12 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 				capacity_cpu=$6, capacity_mem_mib=$7,
 				fence_endpoint=CASE WHEN $8 = '' THEN fence_endpoint ELSE $8 END,
 				fence_token=CASE WHEN $9 = '' THEN fence_token ELSE $9 END,
-				last_seen_at=$10, updated_at=$10
+				last_seen_at=$10, updated_at=$10,
+				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13
 			WHERE id=$1`,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
+			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 		)
 	}
 	if err != nil {
@@ -1074,9 +1082,7 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 func (p *PostgresStore) ListNodes() ([]Node, error) {
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, name, endpoint, agent_endpoint, state, vmm_profiles,
-		       capacity_cpu, capacity_mem_mib, cert_fingerprint, cert_serial, fence_token, fence_endpoint, enrolled_at,
-		       revoked_at, last_seen_at, created_at, updated_at
+		SELECT `+nodeColumns+`
 		FROM nodes ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -1096,9 +1102,7 @@ func (p *PostgresStore) ListNodes() ([]Node, error) {
 func (p *PostgresStore) GetNode(id string) (Node, error) {
 	ctx := context.Background()
 	row := p.pool.QueryRow(ctx, `
-		SELECT id, name, endpoint, agent_endpoint, state, vmm_profiles,
-		       capacity_cpu, capacity_mem_mib, cert_fingerprint, cert_serial, fence_token, fence_endpoint, enrolled_at,
-		       revoked_at, last_seen_at, created_at, updated_at
+		SELECT `+nodeColumns+`
 		FROM nodes WHERE id=$1`, id)
 	n, err := scanNode(row)
 	if err != nil {
@@ -1252,11 +1256,18 @@ func scanSandbox(row scannable) (Sandbox, error) {
 	return sb, nil
 }
 
+// nodeColumns is the column list scanNode reads, in order.
+const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
+		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial,
+		cert_fingerprint, cert_serial, fence_token, fence_endpoint, enrolled_at,
+		revoked_at, last_seen_at, created_at, updated_at`
+
 func scanNode(row scannable) (Node, error) {
 	var n Node
 	err := row.Scan(
 		&n.ID, &n.Name, &n.Endpoint, &n.AgentEndpoint, &n.State, &n.VMMProfiles,
-		&n.CapacityCPU, &n.CapacityMemMiB, &n.CertFingerprint, &n.CertSerial, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
+		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial,
+		&n.CertFingerprint, &n.CertSerial, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
 		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt,
 	)
 	if err != nil {
