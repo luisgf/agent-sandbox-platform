@@ -187,3 +187,21 @@ func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
 		t.Fatalf("uncordon: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestLateStatusReportIs409(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	mem := newTestStore(t)
+	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.MarkSandboxStopping(sb.ID, ""); err != nil { // never claimed → stopped
+		t.Fatal(err)
+	}
+	mux := testMux(NewServer(mem))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/status", bytes.NewBufferString(`{"state":"running"}`)))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("late running report: want 409, got %d %s", rr.Code, rr.Body.String())
+	}
+}

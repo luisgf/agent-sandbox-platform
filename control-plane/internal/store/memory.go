@@ -357,6 +357,10 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		m.mu.Unlock()
 		return Sandbox{}, ErrNotFound
 	}
+	if !ValidAgentTransition(sb.State, state) {
+		m.mu.Unlock()
+		return Sandbox{}, fmt.Errorf("%w: cannot move sandbox from %s to %s", ErrConflict, sb.State, state)
+	}
 	from := string(sb.State)
 	now := time.Now().UTC()
 	sb.State = state
@@ -410,6 +414,10 @@ func (m *MemoryStore) RenewSandboxLease(id, nodeID string) (Sandbox, error) {
 	if sb.NodeID == nil || *sb.NodeID != nodeID {
 		m.mu.Unlock()
 		return Sandbox{}, fmt.Errorf("%w: not owned by %s", ErrConflict, nodeID)
+	}
+	if !leaseRenewable(sb.State) {
+		m.mu.Unlock()
+		return Sandbox{}, fmt.Errorf("%w: sandbox is %s, not active on %s", ErrConflict, sb.State, nodeID)
 	}
 	now := time.Now().UTC()
 	until := leaseUntil(now)

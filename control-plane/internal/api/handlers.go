@@ -1256,6 +1256,10 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
 			return
 		}
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
