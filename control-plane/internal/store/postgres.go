@@ -1119,13 +1119,18 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 	}
 	ctx := context.Background()
 	now := time.Now().UTC()
-	tag, err := p.pool.Exec(ctx, `
+	var prevState string
+	err := p.pool.QueryRow(ctx, `
+		WITH prev AS (SELECT state FROM nodes WHERE id=$1 FOR UPDATE)
 		UPDATE nodes SET last_seen_at=$2, updated_at=$2, state='ready'
-		WHERE id=$1 AND revoked_at IS NULL`, id, now)
-	if err != nil {
+		WHERE id=$1 AND revoked_at IS NULL
+		RETURNING (SELECT state FROM prev)`, id, now).Scan(&prevState)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, err
 	}
-	if tag.RowsAffected() == 0 {
+	if err == nil {
+		p.recordNodeOnline(ctx, id, prevState)
+	} else {
 		var revokedAt *time.Time
 		err := p.pool.QueryRow(ctx, `SELECT revoked_at FROM nodes WHERE id=$1`, id).Scan(&revokedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1141,16 +1146,20 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 
 func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
 	ctx := context.Background()
-	tag, err := p.pool.Exec(ctx, `
+	var prevState string
+	err := p.pool.QueryRow(ctx, `
+		WITH prev AS (SELECT state FROM nodes WHERE id=$1 FOR UPDATE)
 		UPDATE nodes SET last_seen_at=$2, updated_at=$2,
 		    state=CASE WHEN revoked_at IS NULL THEN 'ready' ELSE state END
-		WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3)`,
-		id, now, now.Add(-nodePollWriteEvery))
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() > 0 {
+		WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3)
+		RETURNING (SELECT state FROM prev)`,
+		id, now, now.Add(-nodePollWriteEvery)).Scan(&prevState)
+	if err == nil {
+		p.recordNodeOnline(ctx, id, prevState)
 		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
 	}
 	var exists bool
 	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)`, id).Scan(&exists); err != nil {

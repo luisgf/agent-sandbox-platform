@@ -68,6 +68,16 @@ type Store interface {
 	SetNodeCordoned(id string, cordoned bool) (Node, error)
 	// ListNodeUsage sums what is placed on each node (states that hold a node).
 	ListNodeUsage() (map[string]NodeUsage, error)
+	// MarkNodeOffline marks a silent node offline: only if it is not revoked, not
+	// already offline, and has not been seen since silentSince. Reports a change.
+	MarkNodeOffline(id string, silentSince time.Time) (bool, error)
+	// FailNodeSandboxes fails the sandboxes of a lost node (revoked, or not seen
+	// since silentSince, checked atomically): requested through paused → failed,
+	// stopping → stopped. A node seen again in between keeps its sandboxes.
+	FailNodeSandboxes(nodeID, reason string, silentSince time.Time) ([]Sandbox, error)
+	// FailUnassignedRequested fails requested sandboxes without a node created before
+	// createdBefore: rows from before placement at create, which no node will claim.
+	FailUnassignedRequested(createdBefore time.Time, reason string) ([]Sandbox, error)
 	ListNodes() ([]Node, error)
 	GetNode(id string) (Node, error)
 

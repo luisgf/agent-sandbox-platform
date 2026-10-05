@@ -46,6 +46,9 @@ func idleExecBlock(sb store.Sandbox) string {
 	if sb.StopReason == store.StopReasonIdle {
 		return store.IdleReapedMessage
 	}
+	if sb.StopReason == store.StopReasonNodeLost {
+		return store.NodeLostMessage
+	}
 	switch sb.State {
 	case store.SandboxStopped, store.SandboxStopping, store.SandboxFailed:
 		return "sandbox is " + string(sb.State)

@@ -151,6 +151,14 @@ func main() {
 		slog.Info("sandbox idle reaper disabled",
 			"hint", "set ASP_SANDBOX_IDLE_TIMEOUT=2h (or 1h) or -idle-timeout 2h; 0/off disables")
 	}
+	monCfg, err := api.NodeMonitorConfigFromEnv(schedCfg.StaleAfter)
+	if err != nil {
+		slog.Error("node monitor config", "error", err)
+		os.Exit(1)
+	}
+	go srv.RunNodeMonitor(ctx, monCfg)
+	slog.Info("node monitor enabled", "interval", monCfg.Interval.String(), "stale_after", monCfg.StaleAfter.String(),
+		"failover_after", monCfg.FailoverAfter.String(), "note", "a lost node's sandboxes fail; they are not moved")
 	if idpCfg.Enabled() {
 		slog.Info("idp jwt validation ready",
 			"issuer", idpCfg.Issuer,
