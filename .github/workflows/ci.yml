@@ -73,6 +73,22 @@ jobs:
       - name: go test (Postgres integration)
         run: go test ./internal/store/... -run Postgres -count=1 -v
 
+  smoke-multi-node:
+    name: Smoke (two dry-run nodes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: |
+            control-plane/go.sum
+            node-agent/go.sum
+      - name: scripts/smoke-multi-node.sh
+        run: ./scripts/smoke-multi-node.sh
+
   rust:
     name: Rust (pod-daemon)
     runs-on: ubuntu-latest
