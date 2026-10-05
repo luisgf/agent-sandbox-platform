@@ -94,11 +94,12 @@ type Service struct {
 	// Useful when only hybrid AttachSandbox paths are desired (tests / CH-only).
 	SkipGlobalListeners bool
 
-	mu      sync.Mutex
-	sshLn   net.Listener
-	idLn    net.Listener
-	hybrids map[string]*sandboxHybrid
-	closed  bool
+	mu       sync.Mutex
+	attachMu sync.Mutex // serializes AttachSandbox (one sandbox per muxer path)
+	sshLn    net.Listener
+	idLn     net.Listener
+	hybrids  map[string]*sandboxHybrid
+	closed   bool
 }
 
 // Start opens optional global listeners and serves until Close.

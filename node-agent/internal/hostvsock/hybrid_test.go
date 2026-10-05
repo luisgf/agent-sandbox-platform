@@ -162,6 +162,34 @@ func TestHybridIdentityBindsSandbox(t *testing.T) {
 	}
 }
 
+// The identity binding relies on one sandbox per muxer path.
+func TestHybridAttachRefusesSharedMuxer(t *testing.T) {
+	cp, minted := mintRecorder(t)
+	svc := &Service{
+		SkipGlobalListeners: true,
+		IdentityHandler:     (&identity.Proxy{ControlPlaneURL: cp.URL, HTTP: cp.Client()}).Handler(),
+	}
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	muxer := filepath.Join(t.TempDir(), "vsock-a.sock")
+	if err := svc.AttachSandbox("sb-a", muxer); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AttachSandbox("sb-b", muxer); err == nil {
+		t.Fatal("attached sb-b to sb-a's muxer")
+	}
+	// sb-a's VMM still reaches a listener bound to sb-a.
+	if status, _ := requestToken(t, HybridGuestPath(muxer, PortIdentity), ""); status != http.StatusOK || fmt.Sprint(minted()) != "[sb-a]" {
+		t.Fatalf("status %d, minted %v; want sb-a's token", status, minted())
+	}
+	svc.DetachSandbox("sb-a")
+	if err := svc.AttachSandbox("sb-b", muxer); err != nil {
+		t.Fatalf("muxer still held after detach: %v", err)
+	}
+}
+
 // mintRecorder is a control plane that mints "tok-{sandbox}" and records
 // which sandbox each token was for.
 func mintRecorder(t *testing.T) (*httptest.Server, func() []string) {
