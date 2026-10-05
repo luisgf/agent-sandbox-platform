@@ -32,7 +32,7 @@ type AuthConfig struct {
 	RejectRevokedCerts bool
 	// IdP validates corporate OIDC JWTs when non-nil (ASP_IDP_ISSUER configured).
 	IdP *idp.Validator
-	// IdPRequired forces a valid IdP JWT on user-facing sandbox routes (ASP_IDP_REQUIRED=1).
+	// IdPRequired forces a valid IdP JWT on user-facing routes (ASP_IDP_REQUIRED=1).
 	IdPRequired bool
 }
 
@@ -98,10 +98,10 @@ func isNodeAgentPath(path string) bool {
 	return false
 }
 
-// isUserFacingSandboxPath is the IdP JWT surface (create/list/get/exec/destroy/events).
-// Node claim/status/attest/renew-lease stay on mTLS / internal auth.
-func isUserFacingSandboxPath(path string) bool {
-	if path == "/v1/sandboxes" {
+// isUserFacingPath is the IdP JWT surface: sandbox create/list/get/exec/destroy/events
+// and the node inventory. Node claim/status/attest/renew-lease stay on mTLS / internal auth.
+func isUserFacingPath(path string) bool {
+	if path == "/v1/sandboxes" || path == "/v1/nodes" {
 		return true
 	}
 	if !strings.HasPrefix(path, "/v1/sandboxes/") {
@@ -199,8 +199,8 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				return
 			}
 
-			// ASP_IDP_REQUIRED: user-facing sandbox routes need a validated IdP JWT.
-			if cfg.IdPRequired && isUserFacingSandboxPath(r.URL.Path) {
+			// ASP_IDP_REQUIRED: user-facing routes need a validated IdP JWT.
+			if cfg.IdPRequired && isUserFacingPath(r.URL.Path) {
 				if cfg.IdP == nil {
 					writeError(w, http.StatusUnauthorized, "idp not configured")
 					return

@@ -265,3 +265,35 @@ func TestRBACRoleMapFromEnv(t *testing.T) {
 		t.Fatalf("want admin highest, got %q", role)
 	}
 }
+
+func TestRBACNodeListAdminOrOperator(t *testing.T) {
+	key, kid, v := testIdP(t)
+	mem := store.NewMemoryStore()
+	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(mem)
+	h := AuthMiddleware(mem, AuthConfig{IdP: v, IdPRequired: true})(testMux(srv))
+
+	list := func(token string) int {
+		req := httptest.NewRequest(http.MethodGet, "/v1/nodes", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+	if got := list(""); got != http.StatusUnauthorized {
+		t.Fatalf("no token: want 401 with ASP_IDP_REQUIRED, got %d", got)
+	}
+	if got := list(mintUserJWTWithGroups(t, key, kid, "user:view", "", []string{"asp-viewer"})); got != http.StatusForbidden {
+		t.Fatalf("viewer: want 403, got %d", got)
+	}
+	if got := list(mintUserJWTWithGroups(t, key, kid, "user:op", "", []string{"asp-operator"})); got != http.StatusOK {
+		t.Fatalf("operator: want 200, got %d", got)
+	}
+	if got := list(mintUserJWTWithGroups(t, key, kid, "user:admin", "", []string{"asp-admin"})); got != http.StatusOK {
+		t.Fatalf("admin: want 200, got %d", got)
+	}
+}

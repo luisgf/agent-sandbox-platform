@@ -442,8 +442,12 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, node)
 }
 
-// ListNodes returns registered nodes.
-func (s *Server) ListNodes(w http.ResponseWriter, _ *http.Request) {
+// ListNodes returns registered nodes. With an IdP principal it needs admin or operator.
+func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !canViewNodes(p) {
+		forbid(w, "admin or operator role required to list nodes")
+		return
+	}
 	list, err := s.Store.ListNodes()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
