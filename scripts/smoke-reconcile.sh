@@ -2,6 +2,8 @@
 # Dry-run reconciler: Create stays requested → node claims → FakeVMM start → running → destroy → stopped.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=smoke-lib.sh
+source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-smoke-rec-$$"
 mkdir -p "$WORKDIR"
 CERT_DIR="$WORKDIR/certs"
@@ -53,6 +55,7 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 curl -sf http://127.0.0.1:19102/healthz | grep -q ok
+wait_node_schedulable http://127.0.0.1:18082 smoke-rec-node
 
 echo "==> create sandbox (expect requested)"
 SB=$(curl -sf -X POST http://127.0.0.1:18082/v1/sandboxes \

@@ -3,6 +3,8 @@
 # Uses ASP_AUTO_PROVISION=0 + --reconcile so Create stays requested until FakeVMM start.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=smoke-lib.sh
+source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-smoke-$$"
 mkdir -p "$WORKDIR"
 SOCK="$WORKDIR/pod-daemon.sock"
@@ -68,6 +70,7 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 curl -sf http://127.0.0.1:19100/healthz | grep -q ok
+wait_node_schedulable http://127.0.0.1:18080 smoke-node
 [[ -f "$CERT_DIR/client.crt" ]] || { echo "certs not written"; cat "$NA_LOG"; exit 1; }
 
 echo "==> create sandbox pinned to smoke-node (requested until reconcile)"
