@@ -50,8 +50,11 @@ Firecracker: misma convención `uds_path_PORT`.
   antes de `Engine.Start`.
 - Si el path del muxer cambia (snapshot restore / override), hay que
   re-Attach (no implementado).
-- Identity HTTP por hybrid no añade autenticación extra: el guest sigue
-  siendo untrusted; headers `X-ASP-Sandbox-ID` no son prueba de identidad.
+- El guest sigue siendo untrusted y `X-ASP-Sandbox-ID` no es prueba de
+  identidad: el acceptor `{VsockPath}_26502` liga su sandbox a cada petición de
+  identity, y una cabecera que nombre otra sandbox recibe 403. Los listeners
+  globales no saben qué guest llama y rechazan los tokens
+  ([ADR-0003](adr/0003-identity.md) § 2).
 - Verify bare-metal requiere imagen guest con `vsock-ssh-agent-proxy` y
   node-agent desplegado con este cambio.
 

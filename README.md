@@ -197,7 +197,7 @@ flowchart TB
 **Secrets stay on the host:**
 
 - **SSH:** inside the guest, `SSH_AUTH_SOCK` points to a vsock proxy (port 26501). Sign requests are forwarded to an agent on the host, optionally gated by an explicit approval. The private key is never copied.
-- **OIDC:** the guest asks for a token for an audience (port 26502). The node agent injects the sandbox/tenant identity and the control plane mints a short-lived JWT; any user claims sent by the guest are ignored.
+- **OIDC:** the guest asks for a token for an audience (port 26502). The node agent takes the sandbox from the guest's vsock connection, so a guest cannot ask for another sandbox's token, and the control plane mints a short-lived JWT with the tenant from its store; any user claims sent by the guest are ignored.
 
 ---
 
