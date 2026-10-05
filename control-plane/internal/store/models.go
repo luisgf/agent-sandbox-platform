@@ -72,23 +72,24 @@ type Sandbox struct {
 }
 
 type Node struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Endpoint        string     `json:"endpoint"`
-	AgentEndpoint   string     `json:"agent_endpoint,omitempty"`
-	State           string     `json:"state"`
-	VMMProfiles     []string   `json:"vmm_profiles"`
-	CapacityCPU     int        `json:"capacity_cpu"`
-	CapacityMemMiB  int        `json:"capacity_mem_mib"`
-	CertFingerprint string     `json:"cert_fingerprint,omitempty"`
-	CertSerial      string     `json:"cert_serial,omitempty"`
-	FenceToken      string     `json:"fence_token,omitempty"`
-	FenceEndpoint   string     `json:"fence_endpoint,omitempty"`
-	EnrolledAt      *time.Time `json:"enrolled_at,omitempty"`
-	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
-	LastSeenAt      *time.Time `json:"last_seen_at"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Endpoint        string   `json:"endpoint"`
+	AgentEndpoint   string   `json:"agent_endpoint,omitempty"`
+	State           string   `json:"state"`
+	VMMProfiles     []string `json:"vmm_profiles"`
+	CapacityCPU     int      `json:"capacity_cpu"`
+	CapacityMemMiB  int      `json:"capacity_mem_mib"`
+	CertFingerprint string   `json:"cert_fingerprint,omitempty"`
+	CertSerial      string   `json:"cert_serial,omitempty"`
+	// Fence credentials can power the node off; they never leave the control plane.
+	FenceToken    string     `json:"-"`
+	FenceEndpoint string     `json:"-"`
+	EnrolledAt    *time.Time `json:"enrolled_at,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
+	LastSeenAt    *time.Time `json:"last_seen_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type ApiKey struct {
