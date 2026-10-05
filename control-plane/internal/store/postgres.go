@@ -1127,11 +1127,15 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	var prevState string
+	// The previous state comes from a locking sub-select in FROM, which runs
+	// before the row is updated. A CTE read only in RETURNING runs after the
+	// update, and its FOR UPDATE then skips the row this statement changed:
+	// the subquery returns NULL.
 	err := p.pool.QueryRow(ctx, `
-		WITH prev AS (SELECT state FROM nodes WHERE id=$1 FOR UPDATE)
-		UPDATE nodes SET last_seen_at=$2, updated_at=$2, state='ready'
-		WHERE id=$1 AND revoked_at IS NULL
-		RETURNING (SELECT state FROM prev)`, id, now).Scan(&prevState)
+		UPDATE nodes n SET last_seen_at=$2, updated_at=$2, state='ready'
+		FROM (SELECT id, state FROM nodes WHERE id=$1 AND revoked_at IS NULL FOR UPDATE) prev
+		WHERE n.id = prev.id
+		RETURNING prev.state`, id, now).Scan(&prevState)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, err
 	}
@@ -1154,12 +1158,15 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
 	ctx := context.Background()
 	var prevState string
+	// As in HeartbeatNode. The throttle is in the sub-select, so a poll inside
+	// the window neither locks nor writes the row.
 	err := p.pool.QueryRow(ctx, `
-		WITH prev AS (SELECT state FROM nodes WHERE id=$1 FOR UPDATE)
-		UPDATE nodes SET last_seen_at=$2, updated_at=$2,
-		    state=CASE WHEN revoked_at IS NULL THEN 'ready' ELSE state END
-		WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3)
-		RETURNING (SELECT state FROM prev)`,
+		UPDATE nodes n SET last_seen_at=$2, updated_at=$2,
+		    state=CASE WHEN n.revoked_at IS NULL THEN 'ready' ELSE n.state END
+		FROM (SELECT id, state FROM nodes
+		      WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3) FOR UPDATE) prev
+		WHERE n.id = prev.id
+		RETURNING prev.state`,
 		id, now, now.Add(-nodePollWriteEvery)).Scan(&prevState)
 	if err == nil {
 		p.recordNodeOnline(ctx, id, prevState)
