@@ -22,8 +22,29 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
-// fakeTLSAgent is a node agent's control-plane listener: TLS with the given server
-// certificate, client certificates required and verified against the CA.
+// startMTLSAgent serves h as a node agent's control-plane listener does: TLS with
+// the given server certificate, client certificates required and verified against
+// the CA, and HTTP/2 offered like --agent-tls-listen.
+func startMTLSAgent(t *testing.T, ca *pki.CA, certPEM, keyPEM []byte, h http.Handler) *httptest.Server {
+	t.Helper()
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := httptest.NewUnstartedServer(h)
+	s.EnableHTTP2 = true
+	s.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{pair},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    ca.CertPool(),
+	}
+	s.StartTLS()
+	t.Cleanup(s.Close)
+	return s
+}
+
+// fakeTLSAgent answers every exec and records the client identities it saw.
 type fakeTLSAgent struct {
 	*httptest.Server
 	mu      sync.Mutex
@@ -32,26 +53,14 @@ type fakeTLSAgent struct {
 
 func newFakeTLSAgent(t *testing.T, ca *pki.CA, certPEM, keyPEM []byte) *fakeTLSAgent {
 	t.Helper()
-	pair, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
 	a := &fakeTLSAgent{}
-	a.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	a.Server = startMTLSAgent(t, ca, certPEM, keyPEM, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.peerCNs = append(a.peerCNs, r.TLS.PeerCertificates[0].Subject.CommonName)
 		a.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"stdout":"hello\n","stderr":"","exit_code":0}`))
 	}))
-	a.TLS = &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{pair},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    ca.CertPool(),
-	}
-	a.StartTLS()
-	t.Cleanup(a.Close)
 	return a
 }
 

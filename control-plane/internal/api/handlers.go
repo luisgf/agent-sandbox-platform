@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -33,9 +34,13 @@ type Server struct {
 	Attestor *attest.SoftwareAttestor
 	Fence    fence.FenceProvider
 	// Client calls same-host agents over plain HTTP; Agents builds mTLS clients for
-	// https:// agent endpoints (nil: https endpoints are refused).
+	// https:// agent endpoints (nil: https endpoints are refused). Neither has an
+	// overall timeout, so a streamed exec is not cut (see agent_client.go).
 	Client *http.Client
 	Agents *AgentDialer
+	// BufferedExecTimeout bounds a whole buffered call to an agent, body included:
+	// exec without ?stream=1, and exec/stdin. Zero means no limit.
+	BufferedExecTimeout time.Duration
 	// Sched mirrors the store's placement config, for the node view.
 	Sched sched.Config
 
@@ -47,9 +52,10 @@ type Server struct {
 
 func NewServer(s store.Store) *Server {
 	return &Server{
-		Store:  s,
-		Client: &http.Client{Timeout: 30 * time.Second},
-		Sched:  sched.DefaultConfig(),
+		Store:               s,
+		Client:              newAgentHTTPClient(defaultAgentTimeouts()),
+		BufferedExecTimeout: 30 * time.Second,
+		Sched:               sched.DefaultConfig(),
 	}
 }
 
@@ -594,7 +600,9 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	if stream {
 		url += "?stream=1"
 	}
-	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(payload))
+	ctx, cancel := s.agentCallContext(r, stream)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -630,7 +638,11 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.TouchSandboxActivity(sb.ID)
 		return
 	}
-	body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "read node-agent exec response: "+err.Error())
+		return
+	}
 	var out execResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		writeError(w, http.StatusBadGateway, "invalid node-agent exec response")
@@ -707,7 +719,9 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		"rows":       req.Rows,
 		"cols":       req.Cols,
 	})
-	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, agentURL+"/v1/internal/exec/stdin", bytes.NewReader(payload))
+	ctx, cancel := s.agentCallContext(r, false)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, agentURL+"/v1/internal/exec/stdin", bytes.NewReader(payload))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -732,6 +746,16 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// agentCallContext is the context of a call to a sandbox's agent. It derives from
+// the caller's request, so a disconnect cancels the call. A buffered call is also
+// bounded by BufferedExecTimeout; a stream is not, it lasts as long as the command.
+func (s *Server) agentCallContext(r *http.Request, stream bool) (context.Context, context.CancelFunc) {
+	if stream || s.BufferedExecTimeout <= 0 {
+		return r.Context(), func() {}
+	}
+	return context.WithTimeout(r.Context(), s.BufferedExecTimeout)
 }
 
 // wantsExecStream is true when the client asked for NDJSON chunks on the

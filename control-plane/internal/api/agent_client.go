@@ -24,6 +24,14 @@ import (
 // and presents its own client identity (CN asp-control-plane). Plain HTTP to another
 // host would expose exec and the sandbox egress policy to the network, so it needs
 // ASP_INSECURE_AGENT_HTTP=1 (lab only).
+//
+// No client has an overall timeout: http.Client.Timeout also covers reading the
+// response body, so it would cut a streamed exec (NDJSON) or a PTY session while
+// output is still flowing. AgentTimeouts bounds each phase up to the agent's
+// response headers instead. After that a stream lasts as long as the command, and
+// a caller that disconnects cancels the upstream call, which carries the incoming
+// request's context. Buffered calls also keep an overall deadline
+// (Server.BufferedExecTimeout).
 
 // EnvInsecureAgentHTTP allows plain http:// agent endpoints on non-loopback hosts.
 const EnvInsecureAgentHTTP = "ASP_INSECURE_AGENT_HTTP"
@@ -32,11 +40,49 @@ const EnvInsecureAgentHTTP = "ASP_INSECURE_AGENT_HTTP"
 // It is issued in memory from the CA and renewed at two thirds of its lifetime.
 const controlPlaneCertTTL = 30 * 24 * time.Hour
 
+// AgentTimeouts bounds the phases of a call to a node agent, up to its response
+// headers. Zero means no limit for that phase.
+type AgentTimeouts struct {
+	// Dial bounds the TCP connect.
+	Dial time.Duration
+	// TLSHandshake bounds the mutual TLS handshake with an https:// agent.
+	TLSHandshake time.Duration
+	// ResponseHeader bounds the wait for the agent to start answering once the
+	// request is sent. An agent answers a stream with its first event (at once for
+	// a PTY or a stdin stream) but a buffered exec only when the command exits, so
+	// this also caps a buffered exec.
+	ResponseHeader time.Duration
+}
+
+// defaultAgentTimeouts gives an agent 30s to start answering, the overall limit
+// every call had before.
+func defaultAgentTimeouts() AgentTimeouts {
+	return AgentTimeouts{Dial: 10 * time.Second, TLSHandshake: 10 * time.Second, ResponseHeader: 30 * time.Second}
+}
+
+// apply sets t's bounds on tr. A node that vanishes mid-stream is noticed by TCP
+// keep-alive, which the dialer enables by default.
+func (t AgentTimeouts) apply(tr *http.Transport) {
+	tr.DialContext = (&net.Dialer{Timeout: t.Dial}).DialContext
+	tr.TLSHandshakeTimeout = t.TLSHandshake
+	tr.ResponseHeaderTimeout = t.ResponseHeader
+}
+
+// newAgentHTTPClient returns the client for plain http:// agents: the default
+// transport with t's bounds.
+func newAgentHTTPClient(t AgentTimeouts) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	t.apply(tr)
+	return &http.Client{Transport: tr}
+}
+
 // AgentDialer builds the HTTP clients the control plane uses to reach node agents.
 type AgentDialer struct {
 	CA                *pki.CA
 	AllowInsecureHTTP bool
-	Timeout           time.Duration
+	// Timeouts bounds every call. Clients are cached per node, so set it before
+	// the first call.
+	Timeouts AgentTimeouts
 
 	mu          sync.Mutex
 	clients     map[string]*http.Client
@@ -44,9 +90,9 @@ type AgentDialer struct {
 	certRenewAt time.Time
 }
 
-// NewAgentDialer returns a dialer with the same 30s request timeout as Server.Client.
+// NewAgentDialer returns a dialer with the same timeouts as Server.Client.
 func NewAgentDialer(ca *pki.CA, allowInsecureHTTP bool) *AgentDialer {
-	return &AgentDialer{CA: ca, AllowInsecureHTTP: allowInsecureHTTP, Timeout: 30 * time.Second}
+	return &AgentDialer{CA: ca, AllowInsecureHTTP: allowInsecureHTTP, Timeouts: defaultAgentTimeouts()}
 }
 
 func (d *AgentDialer) clientCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
@@ -89,11 +135,11 @@ func (d *AgentDialer) clientFor(nodeID, baseURL string) *http.Client {
 			GetClientCertificate: d.clientCertificate,
 		},
 		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	c := &http.Client{Transport: tr, Timeout: d.Timeout}
+	d.Timeouts.apply(tr)
+	c := &http.Client{Transport: tr}
 	d.clients[key] = c
 	return c
 }
