@@ -282,8 +282,12 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	} else {
 		input.ID = nodeID
 	}
-	issued, err := s.CA.IssueNodeClient(nodeID, pki.DefaultNodeTTL)
+	issued, err := s.CA.IssueNodeCert(nodeID, pki.EndpointHosts(input.AgentEndpoint, input.Endpoint), pki.DefaultNodeTTL)
 	if err != nil {
+		if errors.Is(err, pki.ErrInvalidNodeID) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "issue cert: "+err.Error())
 		return
 	}
@@ -325,7 +329,8 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
-	if _, err := s.Store.GetNode(id); err != nil {
+	existing, err := s.Store.GetNode(id)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
 			return
@@ -333,8 +338,12 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	issued, err := s.CA.IssueNodeClient(id, pki.DefaultNodeTTL)
+	issued, err := s.CA.IssueNodeCert(id, pki.EndpointHosts(existing.AgentEndpoint, existing.Endpoint), pki.DefaultNodeTTL)
 	if err != nil {
+		if errors.Is(err, pki.ErrInvalidNodeID) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "issue cert: "+err.Error())
 		return
 	}
