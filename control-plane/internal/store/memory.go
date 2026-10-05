@@ -748,6 +748,9 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
 		node.CreatedAt = existing.CreatedAt
+		// Same as Postgres: enroll does not carry fence settings, so keep the registered ones.
+		node.FenceEndpoint = existing.FenceEndpoint
+		node.FenceToken = existing.FenceToken
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {
 			m.revokedCerts[existing.CertFingerprint] = id
