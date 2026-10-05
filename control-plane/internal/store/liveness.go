@@ -123,6 +123,9 @@ func (m *MemoryStore) FailUnassignedRequested(createdBefore time.Time, reason st
 	return out, nil
 }
 
+// EmitNodeEvent: the memory store keeps no node events.
+func (m *MemoryStore) EmitNodeEvent(string, string, string, map[string]any) error { return nil }
+
 // SetNodeLastSeenForTest moves a node's last_seen_at (tests only).
 func (m *MemoryStore) SetNodeLastSeenForTest(id string, t time.Time) {
 	m.mu.Lock()

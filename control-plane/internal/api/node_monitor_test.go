@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
@@ -146,5 +147,47 @@ func TestNodeMonitorConfigFromEnv(t *testing.T) {
 	t.Setenv(EnvNodeMonitorInterval, "nope")
 	if _, err := NodeMonitorConfigFromEnv(90 * time.Second); err == nil {
 		t.Fatal("an invalid interval must be rejected")
+	}
+}
+
+func TestNodeMonitorFencesALostNodeOncePerOutage(t *testing.T) {
+	t.Setenv("ASP_FENCE_PROVIDER", "http_webhook")
+	var hits []string
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhook.Close()
+
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	mem := store.NewMemoryStore()
+	for _, id := range []string{"busy", "idle"} {
+		if _, err := mem.RegisterNode(store.RegisterNodeInput{
+			ID: id, AgentEndpoint: "http://127.0.0.1:9100", FenceEndpoint: webhook.URL, FenceToken: "tok-" + id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "busy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(mem)
+	srv.Fence = fence.FromEnv()
+	now := time.Now().UTC()
+	for _, id := range []string{"busy", "idle"} {
+		mem.SetNodeLastSeenForTest(id, now.Add(-time.Hour))
+	}
+
+	srv.sweepNodes(context.Background(), now, now.Add(-2*time.Hour), monCfg)
+	if len(hits) != 1 || hits[0] != "Bearer tok-busy" {
+		t.Fatalf("fence calls = %v, want one for the node with sandboxes", hits)
+	}
+	if got := state(t, mem, sb.ID); got.State != store.SandboxFailed {
+		t.Fatalf("sandbox after fencing: %s", got.State)
+	}
+	srv.sweepNodes(context.Background(), now.Add(time.Minute), now.Add(-2*time.Hour), monCfg)
+	if len(hits) != 1 {
+		t.Fatalf("fenced again in the same outage: %v", hits)
 	}
 }

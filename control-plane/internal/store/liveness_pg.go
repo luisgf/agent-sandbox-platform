@@ -192,3 +192,13 @@ func (p *PostgresStore) recordNodeOnline(ctx context.Context, id, prevState stri
 		INSERT INTO node_events (node_id, event_type, actor, payload)
 		VALUES ($1,'node.online','node-agent','{}'::jsonb)`, id)
 }
+
+func (p *PostgresStore) EmitNodeEvent(nodeID, eventType, actor string, payload map[string]any) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	_, err := p.pool.Exec(context.Background(), `
+		INSERT INTO node_events (node_id, event_type, actor, payload)
+		VALUES ($1,$2,$3,$4)`, nodeID, eventType, actor, mustJSON(payload))
+	return err
+}

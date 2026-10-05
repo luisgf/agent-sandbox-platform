@@ -88,6 +88,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 		slog.Error("node monitor: list nodes", "error", err)
 		return
 	}
+	var usage map[string]store.NodeUsage // read once, only if a node is lost
 	for _, n := range nodes {
 		ep := store.EffectiveAgentEndpoint(n)
 		if ep == "" || strings.HasPrefix(ep, "local://") {
@@ -116,6 +117,15 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 		if n.RevokedAt != nil {
 			silentSince = now
 		}
+		if usage == nil {
+			if usage, err = s.Store.ListNodeUsage(); err != nil {
+				slog.Error("node monitor: usage", "error", err)
+				usage = map[string]store.NodeUsage{}
+			}
+		}
+		if usage[n.ID].Sandboxes > 0 {
+			s.fenceLostNode(ctx, n, lastSign)
+		}
 		failed, err := s.Store.FailNodeSandboxes(n.ID, store.StopReasonNodeLost, silentSince)
 		if err != nil {
 			slog.Error("node monitor: fail sandboxes of a lost node", "node_id", n.ID, "error", err)
@@ -134,5 +144,36 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 		for _, sb := range failed {
 			slog.Warn("sandbox without a node failed", "sandbox_id", sb.ID, "stop_reason", sb.StopReason)
 		}
+	}
+}
+
+// fenceLostNode fences a lost node once per outage (keyed by its last sign of
+// life). A failed fence is logged and recorded; the sandboxes are failed anyway:
+// nothing restarts them elsewhere, and the node stops them itself when it comes
+// back and its lease renewals are refused.
+func (s *Server) fenceLostNode(ctx context.Context, n store.Node, lastSign time.Time) {
+	s.fenceMu.Lock()
+	if s.fencedOutage == nil {
+		s.fencedOutage = map[string]time.Time{}
+	}
+	if done, ok := s.fencedOutage[n.ID]; ok && done.Equal(lastSign) {
+		s.fenceMu.Unlock()
+		return
+	}
+	s.fencedOutage[n.ID] = lastSign
+	s.fenceMu.Unlock()
+
+	provider := "none"
+	if s.Fence != nil {
+		provider = s.Fence.Name()
+	}
+	fenced, err := s.fenceNode(ctx, n)
+	switch {
+	case err != nil:
+		slog.Error("fence of a lost node failed; failing its sandboxes anyway", "node_id", n.ID, "provider", provider, "error", err)
+		_ = s.Store.EmitNodeEvent(n.ID, "node.fence_failed", "node-monitor", map[string]any{"provider": provider, "error": err.Error()})
+	case fenced:
+		slog.Warn("fenced a lost node", "node_id", n.ID, "provider", provider)
+		_ = s.Store.EmitNodeEvent(n.ID, "node.fenced", "node-monitor", map[string]any{"provider": provider})
 	}
 }

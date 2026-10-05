@@ -78,6 +78,9 @@ type Store interface {
 	// FailUnassignedRequested fails requested sandboxes without a node created before
 	// createdBefore: rows from before placement at create, which no node will claim.
 	FailUnassignedRequested(createdBefore time.Time, reason string) ([]Sandbox, error)
+	// EmitNodeEvent records a node event (Postgres node_events; the memory store
+	// keeps no node events).
+	EmitNodeEvent(nodeID, eventType, actor string, payload map[string]any) error
 	ListNodes() ([]Node, error)
 	GetNode(id string) (Node, error)
 

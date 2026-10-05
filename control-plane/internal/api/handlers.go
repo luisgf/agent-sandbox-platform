@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
@@ -37,6 +38,11 @@ type Server struct {
 	Agents *AgentDialer
 	// Sched mirrors the store's placement config, for the node view.
 	Sched sched.Config
+
+	// fencedOutage remembers, per node, the last sign of life of the outage it
+	// was fenced for, so the monitor fences once per outage.
+	fenceMu      sync.Mutex
+	fencedOutage map[string]time.Time
 }
 
 func NewServer(s store.Store) *Server {
