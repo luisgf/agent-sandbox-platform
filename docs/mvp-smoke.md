@@ -282,7 +282,7 @@ Migraciones con Postgres: `001` + `002` + `003_tenant_egress.sql`.
 
 Por defecto `ASP_AUTO_PROVISION` está **off**: Create deja el sandbox en `requested`. El node-agent con `--reconcile` hace el ciclo:
 
-1. `GET /v1/nodes/{id}/work` — requested/starting/stopping asignados o requested sin asignar
+1. `GET /v1/nodes/{id}/work` — requested/starting/stopping asignados a ese nodo (el plano de control los coloca al crear)
 2. `POST /v1/sandboxes/{id}/claim` `{node_id}` — assign atómico → `starting`
 3. FakeVMM / CH `Start` → `POST .../status` `{state:running}`
 4. `DELETE /v1/sandboxes/{id}` → `stopping` → Stop+Delete → `stopped`

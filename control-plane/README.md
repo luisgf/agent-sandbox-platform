@@ -10,12 +10,12 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | GET | `/.well-known/openid-configuration` | OIDC discovery |
 | GET | `/oidc/jwks.json` | JWKS público |
 | POST | `/v1/internal/oidc/token` | Mint JWT (nodo; tenant desde store) |
-| POST | `/v1/sandboxes` | Create + provision stub → `running` |
+| POST | `/v1/sandboxes` | Create: coloca en un nodo con hueco (503 si ninguno cabe, 409 si el pin no vale); con `ASP_AUTO_PROVISION=1`, stub → `running` |
 | GET | `/v1/sandboxes?tenant_id=` | List |
 | GET | `/v1/sandboxes/{id}` | Get |
 | GET | `/v1/sandboxes/{id}/events` | Audit trail |
 | POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`) |
-| POST | `/v1/sandboxes/{id}/claim` | Claim atómico (+ lease 30s) |
+| POST | `/v1/sandboxes/{id}/claim` | Claim atómico del nodo asignado (+ lease 30s) |
 | POST | `/v1/sandboxes/{id}/status` | Estado observado por el agente |
 | POST | `/v1/sandboxes/{id}/renew-lease` | Renueva `node_lease_until` |
 | POST | `/v1/sandboxes/{id}/attest` | Guarda evidencia de boot firmada (nodo) |
@@ -28,8 +28,10 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados |
 | POST | `/v1/nodes/register` | Registra/actualiza nodo |
 | POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
-| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler |
-| GET | `/v1/nodes` | Lista nodos |
+| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`) |
+| POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin) |
+| POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin) |
+| GET | `/v1/nodes` | Lista nodos con asignado/ofrecido y si son planificables (admin u operador) |
 
 ## Variables de entorno
 
@@ -51,6 +53,9 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |
 | `ASP_TLS_CERT` / `ASP_TLS_KEY` | unset | TLS servidor |
 | `ASP_CLIENT_CA` | unset | Client CA (register/heartbeat/oidc mint); habilita check de revocación y ata el CN del cert a cada ruta de nodo (403 si es otro nodo) |
+| `ASP_SCHED_POLICY` | `spread` | `spread` o `binpack` ([`ops-multi-node.md`](../docs/ops-multi-node.md)) |
+| `ASP_SCHED_CPU_OVERCOMMIT` | `4` | vCPU por core físico; la memoria no se sobresuscribe |
+| `ASP_NODE_STALE_AFTER` | `90s` | Sin señales más tiempo → el nodo no recibe sandboxes |
 | `ASP_INSECURE_AGENT_HTTP` | unset | `1` → permite `agent_endpoint` `http://` fuera de loopback (`exec` sin autenticar; solo lab). Por defecto: `http://` solo en loopback, `https://` con mTLS ([ADR-0011](../docs/adr/0011-multi-node.md)) |
 | `ASP_MTLS_STRICT` | unset | `1` → `RequireAndVerifyClientCert` en listener TLS |
 | `ASP_ENROLL_LISTEN` | `127.0.0.1:8081` | Plaintext enroll-only cuando `ASP_MTLS_STRICT=1` |
