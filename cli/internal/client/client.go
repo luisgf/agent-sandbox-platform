@@ -67,6 +67,18 @@ func (s Sandbox) IdleReaped() bool {
 	return s.StopReason == StopReasonIdle
 }
 
+// Stop reasons for sandboxes lost with their node (control-plane store).
+const (
+	StopReasonNodeLost       = "node_lost"
+	StopReasonAgentRestarted = "node_agent_restarted"
+)
+
+// LostWithNode reports that the sandbox's node was lost or its agent restarted:
+// the guest disk lived on that server, so the sandbox cannot come back.
+func (s Sandbox) LostWithNode() bool {
+	return s.StopReason == StopReasonNodeLost || s.StopReason == StopReasonAgentRestarted
+}
+
 // CreateInput is POST /v1/sandboxes body.
 type CreateInput struct {
 	TenantID   string `json:"tenant_id"`

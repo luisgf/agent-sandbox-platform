@@ -448,15 +448,23 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 	if out.IdleReaped {
 		fmt.Fprintf(stderr, "session status: %s\n", idleReapedText(st.SandboxID, path))
 	}
+	lost := sb.LostWithNode()
+	if lost {
+		fmt.Fprintf(stderr, "session status: %s\n", lostWithNodeText(sb, path))
+	}
 	if g.jsonOut {
 		code := writeJSON(stdout, out)
 		if code != 0 {
 			return code
 		}
-		if out.IdleReaped {
+		if out.IdleReaped || lost {
 			return 1
 		}
 		return 0
+	}
+	if lost {
+		fmt.Fprintf(stdout, "id=%s name=%s state=%s node=%s tenant=%s cp=%s file=%s workspace=%s stop_reason=%s lost_with_node=true\n", sb.ID, st.Name, sb.State, nodeOf(sb), sb.TenantID, st.CPURL, path, st.Workspace, sb.StopReason)
+		return 1
 	}
 	if out.IdleReaped {
 		fmt.Fprintf(stdout, "id=%s name=%s state=%s node=%s tenant=%s cp=%s file=%s workspace=%s stop_reason=%s idle_reaped=true\n", sb.ID, st.Name, sb.State, nodeOf(sb), sb.TenantID, st.CPURL, path, st.Workspace, sb.StopReason)
@@ -468,6 +476,15 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 
 func idleReapedText(id, path string) string {
 	return fmt.Sprintf("sandbox %s was stopped after idle timeout (reaped). Session file kept (%s). Run: asp session start --force", id, path)
+}
+
+func lostWithNodeText(sb client.Sandbox, path string) string {
+	why := "its node stopped responding"
+	if sb.StopReason == client.StopReasonAgentRestarted {
+		why = "the node agent restarted"
+	}
+	return fmt.Sprintf("sandbox %s on node %s was lost because %s (%s); its disk lived on that server. Session file kept (%s). Run: asp session start --force",
+		sb.ID, nodeOf(sb), why, sb.StopReason, path)
 }
 
 func idleReapedErr(err error) bool {
