@@ -823,7 +823,8 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 
 	var createdAt time.Time
 	var revokedAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT created_at, revoked_at FROM nodes WHERE id=$1`, id).Scan(&createdAt, &revokedAt)
+	var prevInstance string
+	err = tx.QueryRow(ctx, `SELECT created_at, revoked_at, agent_instance_id FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(&createdAt, &revokedAt, &prevInstance)
 	isNew := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !isNew {
 		return Node{}, err
@@ -839,11 +840,12 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, fence_endpoint, fence_token,
 				last_seen_at, created_at, updated_at,
-				max_sandboxes, accepts_work, local_net_dial
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13)`,
+				max_sandboxes, accepts_work, local_net_dial, agent_instance_id
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13,$14)`,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
+			strings.TrimSpace(input.AgentInstanceID),
 		)
 	} else {
 		// cordoned is an admin decision: register never touches it.
@@ -856,12 +858,17 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 				fence_endpoint=CASE WHEN $8 = '' THEN fence_endpoint ELSE $8 END,
 				fence_token=CASE WHEN $9 = '' THEN fence_token ELSE $9 END,
 				last_seen_at=$10, updated_at=$10,
-				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13
+				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13,
+				agent_instance_id=CASE WHEN $14 = '' THEN agent_instance_id ELSE $14 END
 			WHERE id=$1`,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
+			strings.TrimSpace(input.AgentInstanceID),
 		)
+		if err == nil && agentRestarted(prevInstance, strings.TrimSpace(input.AgentInstanceID)) {
+			err = failRestartOrphansTx(ctx, tx, id, now)
+		}
 	}
 	if err != nil {
 		return Node{}, err
@@ -1401,7 +1408,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 
 // nodeColumns is the column list scanNode reads, in order.
 const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
-		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial,
+		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial, agent_instance_id,
 		cert_fingerprint, cert_serial, fence_token, fence_endpoint, enrolled_at,
 		revoked_at, last_seen_at, created_at, updated_at`
 
@@ -1409,7 +1416,7 @@ func scanNode(row scannable) (Node, error) {
 	var n Node
 	err := row.Scan(
 		&n.ID, &n.Name, &n.Endpoint, &n.AgentEndpoint, &n.State, &n.VMMProfiles,
-		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial,
+		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial, &n.AgentInstanceID,
 		&n.CertFingerprint, &n.CertSerial, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
 		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt,
 	)

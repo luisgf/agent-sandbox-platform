@@ -672,29 +672,51 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		agentEndpoint = input.Endpoint
 	}
 	node := Node{
-		ID:             id,
-		Name:           name,
-		Endpoint:       input.Endpoint,
-		AgentEndpoint:  agentEndpoint,
-		State:          "ready",
-		VMMProfiles:    append([]string(nil), profiles...),
-		CapacityCPU:    input.CapacityCPU,
-		CapacityMemMiB: input.CapacityMemMiB,
-		MaxSandboxes:   input.MaxSandboxes,
-		AcceptsWork:    input.acceptsWork(),
-		LocalNetDial:   strings.TrimSpace(input.LocalNetDial),
-		FenceEndpoint:  strings.TrimSpace(input.FenceEndpoint),
-		FenceToken:     strings.TrimSpace(input.FenceToken),
-		LastSeenAt:     &seen,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              id,
+		Name:            name,
+		Endpoint:        input.Endpoint,
+		AgentEndpoint:   agentEndpoint,
+		State:           "ready",
+		VMMProfiles:     append([]string(nil), profiles...),
+		CapacityCPU:     input.CapacityCPU,
+		CapacityMemMiB:  input.CapacityMemMiB,
+		MaxSandboxes:    input.MaxSandboxes,
+		AcceptsWork:     input.acceptsWork(),
+		LocalNetDial:    strings.TrimSpace(input.LocalNetDial),
+		AgentInstanceID: strings.TrimSpace(input.AgentInstanceID),
+		FenceEndpoint:   strings.TrimSpace(input.FenceEndpoint),
+		FenceToken:      strings.TrimSpace(input.FenceToken),
+		LastSeenAt:      &seen,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	m.mu.Lock()
+	var orphaned []lostSandbox
+	defer func() {
+		for _, l := range orphaned {
+			from := string(l.from)
+			_ = m.EmitEvent(EmitEventInput{
+				SandboxID: l.id,
+				TenantID:  l.tenant,
+				EventType: "sandbox.agent_restarted",
+				FromState: &from,
+				ToState:   strPtr(string(l.to)),
+				Actor:     "node-agent",
+				Payload:   mustJSON(map[string]string{"node_id": id, "reason": StopReasonAgentRestarted}),
+			})
+		}
+	}()
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
 		if existing.RevokedAt != nil {
 			return Node{}, errNodeRevoked(id)
+		}
+		if node.AgentInstanceID == "" {
+			node.AgentInstanceID = existing.AgentInstanceID
+		}
+		if agentRestarted(existing.AgentInstanceID, node.AgentInstanceID) {
+			orphaned = m.failRestartOrphansLocked(id, now)
 		}
 		node.CreatedAt = existing.CreatedAt
 		node.CertFingerprint = existing.CertFingerprint
@@ -717,6 +739,31 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	}
 	m.nodes[id] = node
 	return cloneNode(node), nil
+}
+
+// failRestartOrphansLocked fails the sandboxes a restarted agent lost track of.
+// Caller holds m.mu; events are emitted after unlock.
+func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time) []lostSandbox {
+	var out []lostSandbox
+	for sid, sb := range m.sandboxes {
+		if sb.NodeID == nil || *sb.NodeID != nodeID {
+			continue
+		}
+		to, ok := restartOrphanTarget(sb.State)
+		if !ok {
+			continue
+		}
+		from := sb.State
+		sb.State = to
+		withdrawLocalNetFields(&sb)
+		sb.StopReason = StopReasonAgentRestarted
+		sb.NodeLeaseUntil = nil
+		sb.StateVersion++
+		sb.UpdatedAt = now
+		m.sandboxes[sid] = sb
+		out = append(out, lostSandbox{id: sid, tenant: sb.TenantID, from: from, to: to})
+	}
+	return out
 }
 
 func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, error) {
@@ -775,6 +822,7 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 		node.Cordoned = existing.Cordoned
 		node.AcceptsWork = existing.AcceptsWork
 		node.LocalNetDial = existing.LocalNetDial
+		node.AgentInstanceID = existing.AgentInstanceID
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {
 			m.revokedCerts[existing.CertFingerprint] = id

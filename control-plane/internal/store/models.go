@@ -89,7 +89,9 @@ type Node struct {
 	// AcceptsWork is false for agents running without --reconcile.
 	AcceptsWork bool `json:"accepts_work"`
 	// LocalNetDial is the host[:port] a laptop dials for this node's local-net tunnels.
-	LocalNetDial    string `json:"local_net_dial,omitempty"`
+	LocalNetDial string `json:"local_net_dial,omitempty"`
+	// AgentInstanceID changes when the node-agent process restarts.
+	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	CertFingerprint string `json:"cert_fingerprint,omitempty"`
 	CertSerial      string `json:"cert_serial,omitempty"`
 	// Fence credentials can power the node off; they never leave the control plane.
@@ -176,10 +178,13 @@ type RegisterNodeInput struct {
 	CapacityMemMiB int      `json:"capacity_mem_mib"`
 	MaxSandboxes   int      `json:"max_sandboxes"`
 	// AcceptsWork: nil (agents that predate the field) means true.
-	AcceptsWork   *bool  `json:"accepts_work,omitempty"`
-	LocalNetDial  string `json:"local_net_dial,omitempty"`
-	FenceEndpoint string `json:"fence_endpoint,omitempty"`
-	FenceToken    string `json:"fence_token,omitempty"`
+	AcceptsWork  *bool  `json:"accepts_work,omitempty"`
+	LocalNetDial string `json:"local_net_dial,omitempty"`
+	// AgentInstanceID is random per node-agent process; a new one on register
+	// means the agent restarted and its running sandboxes are orphaned.
+	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+	FenceEndpoint   string `json:"fence_endpoint,omitempty"`
+	FenceToken      string `json:"fence_token,omitempty"`
 }
 
 // acceptsWork resolves the optional register field.

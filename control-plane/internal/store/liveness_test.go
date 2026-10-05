@@ -146,3 +146,75 @@ func TestPostgresNodeLoss(t *testing.T) {
 		},
 	})
 }
+
+// A new agent process id on register: running and paused sandboxes are gone with
+// the old process; stopping finishes; requested and starting are booted again.
+func testAgentRestartOrphans(t *testing.T, s Store) {
+	t.Helper()
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	register := func(instance string) {
+		t.Helper()
+		if _, err := s.RegisterNode(RegisterNodeInput{ID: "node-a", AgentEndpoint: "http://127.0.0.1:9100", AgentInstanceID: instance}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("i1")
+	create := func() Sandbox {
+		t.Helper()
+		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sb
+	}
+	requested := create()
+	starting := create()
+	running := create()
+	stopping := create()
+	for _, sb := range []Sandbox{starting, running, stopping} {
+		if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.UpdateSandboxStatus(running.ID, SandboxRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSandboxStatus(stopping.ID, SandboxRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkSandboxStopping(stopping.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	register("i1") // same process re-registering (e.g. after a 404)
+	register("")   // an agent that predates instance ids
+	if got, _ := s.GetSandbox(running.ID); got.State != SandboxRunning {
+		t.Fatalf("same agent re-registering failed a sandbox: %s", got.State)
+	}
+
+	register("i2") // the agent restarted
+	want := map[string]SandboxState{
+		requested.ID: SandboxRequested, starting.ID: SandboxStarting,
+		running.ID: SandboxFailed, stopping.ID: SandboxStopped,
+	}
+	for id, st := range want {
+		got, _ := s.GetSandbox(id)
+		if got.State != st {
+			t.Errorf("%s: %s, want %s", id, got.State, st)
+		}
+	}
+	if got, _ := s.GetSandbox(running.ID); got.StopReason != StopReasonAgentRestarted {
+		t.Fatalf("stop_reason = %q", got.StopReason)
+	}
+	if n, _ := s.GetNode("node-a"); n.AgentInstanceID != "i2" {
+		t.Fatalf("agent_instance_id = %q", n.AgentInstanceID)
+	}
+}
+
+func TestMemoryAgentRestartOrphans(t *testing.T) {
+	testAgentRestartOrphans(t, NewMemoryStore())
+}
+
+func TestPostgresAgentRestartOrphans(t *testing.T) {
+	testAgentRestartOrphans(t, newPostgresTestStore(t))
+}

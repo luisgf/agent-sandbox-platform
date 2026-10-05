@@ -202,3 +202,53 @@ func (p *PostgresStore) EmitNodeEvent(nodeID, eventType, actor string, payload m
 		VALUES ($1,$2,$3,$4)`, nodeID, eventType, actor, mustJSON(payload))
 	return err
 }
+
+// failRestartOrphansTx fails, inside the register transaction, the sandboxes a
+// restarted agent lost track of (see restartOrphanTarget).
+func failRestartOrphansTx(ctx context.Context, tx pgx.Tx, nodeID string, now time.Time) error {
+	rows, err := tx.Query(ctx, `
+		WITH victims AS (
+		    SELECT id, state FROM sandboxes
+		    WHERE node_id=$1 AND state IN ('running','paused','stopping')
+		    FOR UPDATE
+		)
+		UPDATE sandboxes s SET
+		    state = CASE WHEN v.state='stopping' THEN 'stopped' ELSE 'failed' END,
+		    state_version = s.state_version+1, updated_at=$2, node_lease_until=NULL, stop_reason=$3,
+		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
+		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
+		FROM victims v WHERE s.id = v.id
+		RETURNING s.id, s.tenant_id, v.state, s.state`, nodeID, now, StopReasonAgentRestarted)
+	if err != nil {
+		return err
+	}
+	type row struct{ id, tenant, from, to string }
+	var orphaned []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.tenant, &r.from, &r.to); err != nil {
+			rows.Close()
+			return err
+		}
+		orphaned = append(orphaned, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range orphaned {
+		from := r.from
+		if err := emitEventTx(ctx, tx, EmitEventInput{
+			SandboxID: r.id,
+			TenantID:  r.tenant,
+			EventType: "sandbox.agent_restarted",
+			FromState: &from,
+			ToState:   strPtr(r.to),
+			Actor:     "node-agent",
+			Payload:   mustJSON(map[string]string{"node_id": nodeID, "reason": StopReasonAgentRestarted}),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}

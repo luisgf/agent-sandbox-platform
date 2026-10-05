@@ -9,8 +9,9 @@ import (
 // silent nodes offline and, after the failover delay, fails their sandboxes. A
 // sandbox's disk lives on its node, so failover means failing, not moving.
 const (
-	StopReasonNodeLost    = "node_lost"
-	StopReasonUnscheduled = "unscheduled"
+	StopReasonNodeLost       = "node_lost"
+	StopReasonUnscheduled    = "unscheduled"
+	StopReasonAgentRestarted = "node_agent_restarted"
 
 	NodeLostMessage = "sandbox was lost with its node; start a new sandbox (asp session start --force)"
 )
@@ -121,6 +122,24 @@ func (m *MemoryStore) FailUnassignedRequested(createdBefore time.Time, reason st
 		})
 	}
 	return out, nil
+}
+
+// agentRestarted: both ids known and different.
+func agentRestarted(prev, next string) bool {
+	return prev != "" && next != "" && prev != next
+}
+
+// restartOrphanTarget is where a sandbox goes when its agent restarted: running
+// and paused VMs are gone with the old process; stopping finishes as stopped;
+// requested and starting are left for the new process to (re)boot.
+func restartOrphanTarget(state SandboxState) (SandboxState, bool) {
+	switch state {
+	case SandboxRunning, SandboxPaused:
+		return SandboxFailed, true
+	case SandboxStopping:
+		return SandboxStopped, true
+	}
+	return "", false
 }
 
 // EmitNodeEvent: the memory store keeps no node events.
