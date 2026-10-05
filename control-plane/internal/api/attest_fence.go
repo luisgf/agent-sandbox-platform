@@ -58,6 +58,13 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !authorizeSandboxNode(w, r, sb) {
+		return
+	}
+	if certID, ok := NodeIdentityFromContext(r.Context()); ok && req.Statement.NodeID != certID {
+		writeError(w, http.StatusForbidden, "attestation statement names node "+req.Statement.NodeID+", not "+certID)
+		return
+	}
 	ev := attest.Evidence{
 		Statement:    req.Statement,
 		Signature:    req.Signature,

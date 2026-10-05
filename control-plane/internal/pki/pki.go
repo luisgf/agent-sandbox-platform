@@ -23,6 +23,9 @@ const (
 	DefaultCACertRel = "ca.crt"
 	DefaultCAKeyRel  = "ca.key"
 	DefaultNodeTTL   = 365 * 24 * time.Hour
+
+	// OUNodes marks node-agent certificates; the control plane binds their CN to the node id.
+	OUNodes = "nodes"
 )
 
 // CA holds a loaded certificate authority used to issue node client certs.
@@ -166,9 +169,9 @@ func (c *CA) IssueNodeClient(nodeID string, ttl time.Duration) (*IssueResult, er
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   nodeID,
-			Organization: []string{"agent-sandbox-platform"},
-			OrganizationalUnit: []string{"nodes"},
+			CommonName:         nodeID,
+			Organization:       []string{"agent-sandbox-platform"},
+			OrganizationalUnit: []string{OUNodes},
 		},
 		NotBefore:             now.Add(-time.Minute),
 		NotAfter:              now.Add(ttl),

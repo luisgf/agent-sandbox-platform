@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
@@ -17,6 +19,7 @@ type ctxKey int
 const (
 	apiKeyContextKey ctxKey = 1
 	idpPrincipalKey  ctxKey = 2
+	nodeIdentityKey  ctxKey = 3
 )
 
 // AuthConfig controls optional Bearer API-key middleware, IdP JWT (ADR-0007), and mTLS route policy.
@@ -57,6 +60,14 @@ func APIKeyFromContext(ctx context.Context) (store.ApiKey, bool) {
 func IdPPrincipalFromContext(ctx context.Context) (idp.Principal, bool) {
 	p, ok := ctx.Value(idpPrincipalKey).(idp.Principal)
 	return p, ok
+}
+
+// NodeIdentityFromContext returns the node id proven by a verified mTLS client
+// certificate (leaf CN with OU "nodes") on node-agent routes. It is absent in open
+// lab and API-key mode, where node routes keep their pre-mTLS behaviour.
+func NodeIdentityFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(nodeIdentityKey).(string)
+	return id, ok && id != ""
 }
 
 // publicPaths never require API keys.
@@ -156,6 +167,15 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 					writeError(w, http.StatusUnauthorized, "client certificate required")
 					return
 				}
+				// The TLS listener verified the chain (ClientCAs). Bind the request to the
+				// node the certificate names; handlers compare it with the node they act for.
+				leaf := r.TLS.PeerCertificates[0]
+				nodeID := strings.TrimSpace(leaf.Subject.CommonName)
+				if nodeID == "" || !slices.Contains(leaf.Subject.OrganizationalUnit, pki.OUNodes) {
+					writeError(w, http.StatusForbidden, "client certificate is not a node certificate")
+					return
+				}
+				r = r.WithContext(context.WithValue(r.Context(), nodeIdentityKey, nodeID))
 			}
 
 			if isPublicPath(r.URL.Path) {

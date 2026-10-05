@@ -411,6 +411,14 @@ func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// With mTLS a node registers only itself; otherwise it could re-point another
+	// node's agent_endpoint and receive that node's exec traffic.
+	if _, ok := NodeIdentityFromContext(r.Context()); ok {
+		input.ID = actingNodeID(r, input.ID)
+		if !authorizeNodeID(w, r, input.ID) {
+			return
+		}
+	}
 	node, err := s.Store.RegisterNode(input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -432,6 +440,9 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "node id required")
+		return
+	}
+	if !authorizeNodeID(w, r, id) {
 		return
 	}
 	node, err := s.Store.HeartbeatNode(id)
@@ -1059,6 +1070,9 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !authorizeSandboxNode(w, r, sb) {
+		return
+	}
 	attClaim := s.attestationClaim(sb.ID)
 	userSub := strings.TrimSpace(sb.OwnerSub) // authoritative; empty OK in lab
 	token, claims, err := s.OIDC.MintWithAttestation(sb.TenantID, sb.ID, req.Aud, req.Nonce, userSub, attClaim)
@@ -1114,6 +1128,9 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
+	if !authorizeNodeID(w, r, id) {
+		return
+	}
 	list, err := s.Store.ListNodeWork(id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -1141,10 +1158,14 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	nodeID := actingNodeID(r, req.NodeID)
+	if !authorizeNodeID(w, r, nodeID) {
+		return
+	}
 	if prev, err := s.Store.GetSandbox(id); err == nil {
 		s.maybeFenceOnReclaim(r.Context(), prev)
 	}
-	sb, err := s.Store.ClaimSandbox(id, strings.TrimSpace(req.NodeID))
+	sb, err := s.Store.ClaimSandbox(id, nodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1176,7 +1197,11 @@ func (s *Server) RenewSandboxLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	sb, err := s.Store.RenewSandboxLease(id, strings.TrimSpace(req.NodeID))
+	nodeID := actingNodeID(r, req.NodeID)
+	if !authorizeNodeID(w, r, nodeID) {
+		return
+	}
+	sb, err := s.Store.RenewSandboxLease(id, nodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1220,6 +1245,9 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 	var req statusRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !s.authorizeSandboxNodeByID(w, r, id) {
 		return
 	}
 	state := store.SandboxState(strings.TrimSpace(req.State))

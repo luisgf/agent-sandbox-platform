@@ -292,6 +292,9 @@ func (s *Server) RegisterLocalNetNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if !s.authorizeSandboxNodeByID(w, r, id) {
+		return
+	}
 	out, err := s.Store.SetLocalNetNodePublic(id, req.PublicKey)
 	if err != nil {
 		writeLocalNetErr(w, err)
