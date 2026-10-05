@@ -124,6 +124,27 @@ type Reconciler struct {
 	lastUnknownNode time.Time
 }
 
+// Guest kernel and base image every VM boots (the base is cloned per sandbox
+// under DiskDir). The reaper never removes the base image.
+const (
+	DefaultKernelPath = "/opt/sandbox/vmlinux"
+	DefaultRootFSPath = "/opt/sandbox/rootfs.img"
+)
+
+// Per-sandbox state on the host. reap.go parses these names back, so the
+// reaper removes exactly what ensureRunning creates.
+const (
+	vsockPrefix    = "vsock-"     // VsockDir: CH vsock muxer, and its {muxer}_{port} hybrid listeners
+	virtiofsPrefix = "virtiofs-"  // VsockDir: virtiofsd socket
+	sshAgentPrefix = "ssh-agent-" // VsockDir: link to the sandbox's SSH agent upstream
+	rootfsPrefix   = "rootfs-"    // DiskDir: private rootfs copy
+)
+
+func vsockName(id string) string    { return vsockPrefix + id + ".sock" }
+func virtiofsName(id string) string { return virtiofsPrefix + id + ".sock" }
+func sshAgentName(id string) string { return sshAgentPrefix + id + ".sock" }
+func rootfsName(id string) string   { return rootfsPrefix + id + ".img" }
+
 func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Logger, every time.Duration) *Reconciler {
 	if logger == nil {
 		logger = slog.Default()
@@ -137,8 +158,8 @@ func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Lo
 		Engine:     engine,
 		Logger:     logger,
 		Every:      every,
-		KernelPath: "/opt/sandbox/vmlinux",
-		RootFSPath: "/opt/sandbox/rootfs.img",
+		KernelPath: DefaultKernelPath,
+		RootFSPath: DefaultRootFSPath,
 		VsockDir:   "/run/asp",
 		VsockPort:  poddaemon.DefaultGuestPort,
 		handles:    make(map[string]Handle),
@@ -530,7 +551,7 @@ func (r *Reconciler) linkSSHAgent(sandboxID string) string {
 		vsockDir = "/run/asp"
 	}
 	_ = os.MkdirAll(vsockDir, 0o755)
-	link := filepath.Join(vsockDir, "ssh-agent-"+sandboxID+".sock")
+	link := filepath.Join(vsockDir, sshAgentName(sandboxID))
 	_ = os.Remove(link)
 	if err := os.Symlink(target, link); err != nil {
 		r.Logger.Warn("ssh-agent symlink", "link", link, "target", target, "error", err)
@@ -580,7 +601,7 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 		vsockDir = "/run/asp"
 	}
 	_ = os.MkdirAll(vsockDir, 0o755)
-	vsockPath := filepath.Join(vsockDir, "vsock-"+sb.ID+".sock")
+	vsockPath := filepath.Join(vsockDir, vsockName(sb.ID))
 	_ = os.Remove(vsockPath) // drop stale muxer socket before CH binds it
 	return vmm.MicroVMConfig{
 		ID:         sb.ID,
@@ -623,7 +644,7 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 	if err := os.MkdirAll(vsockDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("workspace socket dir: %w", err)
 	}
-	sock := filepath.Join(vsockDir, "virtiofs-"+sb.ID+".sock")
+	sock := filepath.Join(vsockDir, virtiofsName(sb.ID))
 	var stop func()
 	if r.FSLauncher != nil {
 		stop, err = r.FSLauncher(ctx, sb.ID, host, sock)
@@ -684,7 +705,7 @@ func (r *Reconciler) cloneRootFS(sandboxID string) (string, error) {
 	if err := os.MkdirAll(r.DiskDir, 0o700); err != nil {
 		return "", err
 	}
-	dst := filepath.Join(r.DiskDir, "rootfs-"+sandboxID+".img")
+	dst := filepath.Join(r.DiskDir, rootfsName(sandboxID))
 	_ = os.Remove(dst) // a leftover from a crash must not be reused
 	clone := r.CloneDisk
 	if clone == nil {

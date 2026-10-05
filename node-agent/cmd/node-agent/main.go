@@ -84,10 +84,15 @@ type config struct {
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
 	DiskDir              string
+	ReapLeftovers        string // --reap-leftovers: on | report | off
+	ReapOnly             bool   // --reap-only: clean up and exit, without registering
 }
 
 func main() {
 	cfg := loadConfig()
+	if cfg.ReapOnly {
+		os.Exit(reapOnly(cfg))
+	}
 	slog.Info("node-agent starting",
 		"node_id", cfg.NodeID,
 		"control_plane_url", cfg.ControlPlaneURL,
@@ -113,10 +118,20 @@ func main() {
 		"egress_nft_redirect", cfg.EgressNFTRedirect,
 		"nft_egress_mode", cfg.NFTEgressMode,
 		"guest_ssh_agent_auto", cfg.GuestSSHAgentAuto,
+		"reap_leftovers", cfg.ReapLeftovers,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Before any socket is bound and before registering: the new instance id
+	// fails the previous process's sandboxes, so their VMs must be gone too.
+	hostLock, err := cleanHost(ctx, cfg)
+	if err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
+	defer hostLock.Release()
 
 	// Enrollment uses a plain (or server-TLS) client with bootstrap token — no client cert yet.
 	plain, err := cpclient.NewEnrollHTTPClient(cfg.ControlPlaneCA)
@@ -454,14 +469,7 @@ func main() {
 				slog.Warn("re-register failed", "error", err)
 			}
 		}
-		keyDir := os.Getenv("ASP_LOCAL_NET_KEY_DIR")
-		if keyDir == "" {
-			if cfg.DryRun {
-				keyDir = filepath.Join(os.TempDir(), "asp-local-net-keys")
-			} else {
-				keyDir = "/var/lib/asp/local-net"
-			}
-		}
+		keyDir := localNetKeyDir(cfg)
 		rec.LocalNet = localnet.NewHost(keyDir)
 		slog.Info("local-net host applier", "key_dir", keyDir, "note", "needs wireguard-tools and CAP_NET_ADMIN; does not change the host default route")
 		rec.VsockDir = cfg.CHSocketDir
@@ -583,6 +591,8 @@ func loadConfig() config {
 	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
 	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img, deleted on stop); ignored with --dry-run")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
+	flag.StringVar(&cfg.ReapLeftovers, "reap-leftovers", getenv("ASP_REAP_LEFTOVERS", reapOn), "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing, rootfs copies in --disk-dir. on | report (log, remove nothing) | off; --dry-run only reports")
+	flag.BoolVar(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
 	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "loopback listen addr for the exec proxy and operator routes (ssh-agent approve, egress-check); plain HTTP, no authentication")
 	flag.StringVar(&cfg.AgentTLSListen, "agent-tls-listen", os.Getenv("ASP_AGENT_TLS_LISTEN"), "listen addr for the control plane's mTLS exec API (e.g. 0.0.0.0:9443) when the control plane runs on another host; uses the enrolled node certificate")
@@ -643,6 +653,12 @@ func loadConfig() config {
 	}
 	if cfg.EnrollURL == "" {
 		cfg.EnrollURL = cfg.ControlPlaneURL
+	}
+	switch cfg.ReapLeftovers {
+	case reapOn, reapReport, reapOff:
+	default:
+		slog.Error("--reap-leftovers takes on, report or off", "value", cfg.ReapLeftovers)
+		os.Exit(2)
 	}
 	if cfg.CapacityCPU < capacity.Detected || cfg.CapacityMemMiB < capacity.Detected || cfg.MaxSandboxes < 0 {
 		slog.Error("--capacity-cpu and --capacity-mem-mib take -1 (detect), 0 (not enforced) or a count; --max-sandboxes takes 0 or more")
@@ -711,7 +727,8 @@ func registerRequest(cfg config) cpclient.RegisterRequest {
 }
 
 // newInstanceID identifies this process to the control plane. VMs are not adopted
-// across restarts, so a new id makes the control plane fail the running ones.
+// across restarts, so a new id makes the control plane fail the running ones;
+// cleanHost has already stopped them.
 func newInstanceID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
