@@ -157,6 +157,7 @@ stateDiagram-v2
   requested --> starting: the assigned node claims it (lease)
   starting --> running: VM booted
   starting --> failed: boot / TAP / virtiofsd error
+  running --> failed: node lost (node_lost) · agent restarted
   running --> paused
   paused --> running
   running --> stopping: DELETE · idle timeout
@@ -168,7 +169,7 @@ stateDiagram-v2
 
 - **Placement:** the control plane picks the node at create time from the nodes that can take sandboxes and their free CPU (overcommitted 4x by default), memory and slots; `ASP_SCHED_POLICY=spread|binpack`. When nothing fits, create fails at once with 503 and the reasons; only the chosen node can claim the sandbox. See [`docs/ops-multi-node.md`](docs/ops-multi-node.md).
 - **Idle reaper:** with `ASP_SANDBOX_IDLE_TIMEOUT=2h`, a forgotten sandbox is stopped. Create, reaching `running` and a successful exec count as activity; status calls and heartbeats do not. Off by default.
-- **Node failure:** a node that stops sending signs of life gets no new sandboxes after `ASP_NODE_STALE_AFTER` (90 s). Sandboxes stay assigned to their node; detecting a lost node and failing its sandboxes is the next step of [ADR-0011](docs/adr/0011-multi-node.md).
+- **Node failure:** a node silent for `ASP_NODE_STALE_AFTER` (90 s) gets no new sandboxes and goes `offline`; after `ASP_NODE_FAILOVER_AFTER` (5 min) it is fenced (if a `FenceProvider` is set) and its sandboxes fail with `node_lost`. They are not moved: the guest disk lives on that server. A node that comes back stops the VMs it no longer owns. See [ADR-0011](docs/adr/0011-multi-node.md).
 
 ---
 
@@ -411,7 +412,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Harness integration | No plugin; a wrapper script is the integration point. |
 | Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |
 | Kubernetes | Optional, only to deploy the API. Sandboxes are not Pods. |
-| Multiple nodes | Capacity placement, cordon and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Placement does not know about `--workspace` paths. |
+| Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Agents do not adopt running VMs after a restart. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
 
 ---
 

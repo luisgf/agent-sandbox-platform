@@ -278,7 +278,7 @@ Varios servidores de microVMs ([ADR-0011](adr/0011-multi-node.md), ops: [`ops-mu
 |---|---|---|
 | **3m.1** | Identidad de nodo atada al cert en cada ruta; mTLS plano de control → nodo (`--agent-tls-listen`); HTTP plano solo en loopback; secretos de fencing fuera de las respuestas | ✅ |
 | **3m.2** | Colocación por capacidad al crear (`spread`/`binpack`, CPU 4×, 503 sin hueco); trabajo solo para el nodo asignado; cordon; capacidad real del host; `asp node` | ✅ |
-| **3m.3** | Detección de nodos caídos, fallo de sus sandboxes, fencing y autodefensa del nodo | Pendiente |
+| **3m.3** | Detección de nodos caídos (`offline` a 90 s, failover a 5 min), fallo de sus sandboxes, fencing, autodefensa del nodo, transiciones validadas, reinicio del agente | ✅ Sin lab KVM multi-servidor |
 
 - Métricas/SLOs; caos; fencing BMC de producción endurecido.
 - Attestors hardware (TPM/SEV) vía `Attestor`.

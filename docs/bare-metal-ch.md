@@ -597,11 +597,11 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 ### Leases
 
 - `sandboxes.node_lease_until` (migración `004`): claim / status running / `POST /v1/sandboxes/{id}/renew-lease` extienden **30s**.
-- El reconciler renueva leases de sandboxes locales en cada tick.
-- Si el lease expira, otro nodo puede reclaim (→ `failed` o `requested` vía `ReclaimExpiredLeases` / claim).
+- El reconciler renueva leases de sandboxes locales en cada tick. Si el CP responde 409 (la sandbox ya no es de ese nodo o no está activa), el agente para la VM local.
+- Ningún nodo reclama sandboxes de otro: un nodo caído lo detecta el monitor del plano de control ([ADR-0011](adr/0011-multi-node.md), [`ops-multi-node.md`](ops-multi-node.md)): `offline` a los `ASP_NODE_STALE_AFTER` (90 s); fencing y sandboxes → `failed` (`node_lost`) a los `ASP_NODE_FAILOVER_AFTER` (5 min).
 - `nodes.fence_token` es opcional (metadato ops).
 
-**Límite split-brain (honesto):** el lease software **no** es STONITH. Sin fencing out-of-band, dos reconcileres pueden solaparse. Mitigación: TTL corto + `ASP_FENCE_PROVIDER` (ver §8c).
+**Límite split-brain (honesto):** el lease software **no** es STONITH. Un nodo particionado sigue corriendo sus VMs hasta que vuelve y su lease es rechazado, o hasta el fencing. Mitigación: `ASP_FENCE_PROVIDER` (ver §8c).
 
 ### Rotación de clave OIDC
 
@@ -629,7 +629,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 | `redfish` | Stub HTTP basic → `{endpoint}/redfish/v1/Systems/1/Actions/ComputerSystem.Reset` |
 | `ipmi` | Exec `ipmitool … chassis power off` si existe; **SoftFail** si no |
 
-Registro de nodo: `fence_endpoint` + `fence_token` (migración `005`). Al **claim** que reclaims un sandbox **running** con lease expirado, el CP llama al provider antes de reasignar.
+Registro de nodo: `fence_endpoint` + `fence_token` (migración `005`). Cuando el monitor da un nodo por perdido y tiene sandboxes, el CP llama al provider (una vez por caída) antes de marcarlas `failed`. Si el fencing falla, se registra `node.fence_failed` y se marcan igual.
 
 > **Ops:** STONITH real exige BMC out-of-band (Redfish/IPMI alcanzable aunque el host esté hung). Un lease en Postgres **no** apaga VMs huérfanas.
 
