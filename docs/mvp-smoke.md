@@ -9,10 +9,10 @@ Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal
 | | Detalle |
 |---|---|
 | **Precondiciones** | Go 1.22+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
-| **Qué demuestra** | Plano de control + enroll + exec unix + (scripts) identity/egress/reconcile/CLI. Contrato de APIs y flags. |
+| **Qué demuestra** | Plano de control + enroll + exec unix + (scripts) identity/egress/reconcile/CLI y reparto entre dos nodos (`smoke-multi-node`). Contrato de APIs y flags. |
 | **Qué NO demuestra** | Aislamiento de hipervisor, bypass-proof nft, AF_VSOCK real, TAP/NAT. Eso es bare-metal. |
 | **Resultado OK** | `curl /healthz` → `{"status":"ok"}`; exec → `exit_code:0`; smokes exit 0; `asp sandbox run` imprime stdout del guest. |
-| **Fallos típicos** | Puerto ocupado; olvidar `--reconcile` con `ASP_AUTO_PROVISION=0` (sandbox queda `requested`); pod-daemon caído (exec 5xx/timeout); API key requerida pero no enviada; SoftFail nft/TAP solo avisa en logs. |
+| **Fallos típicos** | Puerto ocupado; crear sin ningún node-agent con `--reconcile` registrado (503 `no schedulable nodes registered`); un node-agent sin `--reconcile` no recibe sandboxes (409 si lo fijas con `node_id`); pod-daemon caído (exec 5xx/timeout); API key requerida pero no enviada; SoftFail nft/TAP solo avisa en logs. |
 
 Scripts automatizados (preferibles a copiar curls a mano):
 
@@ -20,8 +20,9 @@ Scripts automatizados (preferibles a copiar curls a mano):
 ./scripts/smoke-enroll-exec.sh
 ./scripts/smoke-identity-egress.sh
 ./scripts/smoke-reconcile.sh
+./scripts/smoke-multi-node.sh   # dos nodos dry-run: reparto, cordon, nodo caído, reinicio del agente
 ./scripts/smoke-asp-cli.sh   # o: make smoke-asp
-# make smoke  # agrega los tres primeros según Makefile
+# make smoke  # enroll-exec, identity-egress, reconcile y multi-node
 ```
 
 ## 0. (Opcional) Postgres local
@@ -74,8 +75,10 @@ export ASP_CLIENT_CA=/tmp/asp-dev-ca/ca.crt   # VerifyClientCertIfGiven
 
 ## 2. Crear / listar / obtener sandboxes + events
 
+Por defecto (`ASP_AUTO_PROVISION=0`) crear necesita un nodo planificable: arranca antes el node-agent con `--reconcile` (§4). Sin ninguno, el create responde **503** `no schedulable nodes registered`. Para probar solo la API sin nodos, arranca el CP con `ASP_AUTO_PROVISION=1`: un stub la pasa a `running` en el nodo ficticio `local-dev`.
+
 ```bash
-# Create (provisioner stub → state=running, node_id=local-dev por defecto)
+# Create: el planificador elige un nodo con hueco (ver ops-multi-node.md)
 curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/sandboxes \
   -H 'Content-Type: application/json' \
   -d '{
@@ -84,12 +87,13 @@ curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/sandboxes \
     "cpu_millis": 1000,
     "memory_mib": 512
   }'
-# → JSON con id, state="running", node_id="local-dev"
+# → JSON con id, state="requested", node_id="dev-node" (y el reconciler la lleva a running)
+# Con ASP_AUTO_PROVISION=1 y sin nodos: state="running", node_id="local-dev"
 
 > **ADR-0007 fases 1–3 (opcional):** sin IdP, puedes enviar `"owner_sub"` / `"owner_email"` en el body y/o `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; **smokes existentes no cambian** (`ASP_IDP_REQUIRED` off). Con IdP: ver § «Lab JWT IdP (fase 2)» más abajo.
 
 
-# Pin a un nodo concreto (dry-run exec):
+# Fijar un nodo concreto (opcional; 409 si no existe o no admite sandboxes):
 # "node_id": "dev-node"
 
 # List / Get / Events
@@ -112,6 +116,8 @@ curl -s -X POST http://127.0.0.1:8080/v1/nodes/enroll \
     "capacity_cpu": 4,
     "capacity_mem_mib": 8192
   }'
+# El node-agent real envía la capacidad del host (--capacity-cpu, --capacity-mem-mib,
+# --max-sandboxes) y accepts_work según --reconcile. 0 = esa dimensión no se limita.
 
 # Register / heartbeat (sin mTLS en lab HTTP)
 curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/nodes/register \
@@ -153,12 +159,13 @@ Manual:
   --bootstrap-token="$ASP_NODE_BOOTSTRAP_TOKEN" \
   --cert-dir=/tmp/asp-node-certs \
   --agent-listen=127.0.0.1:9100 \
-  --pod-daemon-sock=/tmp/pod-daemon.sock)
+  --pod-daemon-sock=/tmp/pod-daemon.sock \
+  --reconcile)
 
-# Exec
+# Exec (el planificador coloca la sandbox en dev-node; el reconciler la arranca)
 SID=$(curl -s -X POST http://127.0.0.1:8080/v1/sandboxes \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"t","image_ref":"img","cpu_millis":1,"memory_mib":1,"node_id":"dev-node"}' \
+  -d '{"tenant_id":"t","image_ref":"img","cpu_millis":1,"memory_mib":1}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 curl -s -X POST "http://127.0.0.1:8080/v1/sandboxes/${SID}/exec" \
@@ -184,12 +191,13 @@ Flujo: cliente → control-plane `POST /v1/sandboxes/{id}/exec` → node-agent `
 ./scripts/smoke-enroll-exec.sh
 ./scripts/smoke-identity-egress.sh
 ./scripts/smoke-reconcile.sh
+./scripts/smoke-multi-node.sh
 ```
 
 ## Notas
 
 - Sin `DATABASE_URL`: persistencia solo en memoria; reiniciar el API borra sandboxes/nodos.
-- Con `DATABASE_URL`: migraciones embebidas `001`–`006` al arrancar (`init`, enrollment, egress, leases, attestation/fence, cert rotation).
+- Con `DATABASE_URL`: migraciones embebidas `001`–`013` al arrancar (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`).
 - Auth opcional API key en rutas de tenant; `/healthz` y `/v1/nodes/enroll` son públicos respecto a API keys (enroll usa `ASP_NODE_BOOTSTRAP_TOKEN`). Con `ASP_MTLS_STRICT=1` el enroll vive en `ASP_ENROLL_LISTEN` (ver ADR-0005).
 - TLS: `ASP_TLS_CERT`/`ASP_TLS_KEY`; client CA con `ASP_CLIENT_CA` (lab: `VerifyClientCertIfGiven` + middleware; prod: `ASP_MTLS_STRICT=1`).
 - CA de enrollment: `ASP_CA_CERT`/`ASP_CA_KEY` o auto-create en `/tmp/asp-dev-ca`.
@@ -278,7 +286,7 @@ Clave de firma: `ASP_OIDC_KEY` (PEM path; auto-create) e issuer `ASP_OIDC_ISSUER
 # Confirm gate opcional: --ssh-agent-confirm + POST /v1/internal/ssh-agent/approve
 ```
 
-Migraciones con Postgres: `001` + `002` + `003_tenant_egress.sql`.
+Con Postgres, todas las migraciones (`001`–`013`) se aplican al arrancar.
 
 ## 7. Reconciler (fase 1e)
 
@@ -309,8 +317,8 @@ Con el stack dry-run del §4 (CP + node-agent `--reconcile` + pod-daemon):
 
 ```bash
 make asp
-./build/asp sandbox run --cp-url=http://127.0.0.1:8080 --node-id=dev-node --cmd 'echo hello'
-# o: ./build/asp sandbox run --node-id=dev-node -- echo hello
+./build/asp sandbox run --cp-url=http://127.0.0.1:8080 --cmd 'echo hello'
+# o: ./build/asp sandbox run -- echo hello   (--node-id fija un nodo si hace falta)
 ```
 
 Building blocks: `create`, `get`, `list`, `exec`, `delete`. Por defecto `run` destruye el sandbox; `--keep` lo deja.

@@ -43,7 +43,7 @@ Dos nombres son dos sandboxes. No comparten disco ni egress.
 | No es un plugin de OpenCode | No registra tools ni habla el protocolo del harness. Es un binario que el harness **exec**. El wrapper de abajo es un ejemplo, no se instala solo. |
 | El nombre es local | Otro host, otro contenedor o un `HOME` distinto no ve el directorio. El CP sí sigue teniendo el sandbox. El nombre no es un id global. |
 | Imagen vieja no auto-monta | El dispositivo sí se crea cuando hay workspace y `virtiofsd` está en el nodo. El tag es `workspace` y el punto de montaje es `/workspace`. La imagen **nueva** lo monta al boot (`workspace-virtiofs.service`, oneshot, sale 0 si el tag no está). Una imagen construida antes de esa unidad no ejecuta el `mount`: el exec sigue viendo solo el disco del guest hasta el comando manual, o hasta reconstruir el rootfs. |
-| La ruta es la del nodo | El CLI comprueba que el path exista en **su** máquina. Si el node-agent corre en otro host, la cadena guardada puede no existir allí. El CP no hace `stat`. |
+| La ruta es la del nodo | El CLI comprueba que el path exista en **su** máquina. Si el node-agent corre en otro host, la cadena guardada puede no existir allí. El CP no hace `stat`, y con varios nodos el planificador no sabe en cuáles existe: fija el nodo con `--node-id` o comparte la ruta en todos ([`ops-multi-node.md`](ops-multi-node.md)). |
 | PTY con límites | `asp session exec` (sin `--buffered`) pide PTY en el guest salvo `--no-pty`. Si stdout local es una TTY, el CLI pasa a raw y reenvía stdin. Un pipe también se reenvía. El protocolo sigue siendo NDJSON (`ready`, `stdout`, `stderr`, `exit`) más `POST .../exec/stdin`. No es un SSH ni un websocket. Ver la sección de virtiofs y PTY. |
 | Guest viejo | Si el pod-daemon responde 404 a `?stream=1`, el node-agent hace el exec JSON y lo reescribe como un solo burst NDJSON al final. No es streaming real. Hace falta el pod-daemon de este cambio dentro de la imagen. |
 | Binario en el stream | Los trozos pasan por JSON string (UTF-8 con reemplazo). No es un pipe de bytes opacos. El JSON acumulado tampoco lo era (`read_to_string`). |
@@ -132,7 +132,8 @@ Secuencia de operador / agente:
 export ASP_CP_URL=http://127.0.0.1:8080   # dry-run local; lab: http://127.0.0.1:18112
 # lab IdP: export ASP_IDP_REQUIRED=1  y secretos en ~/.secrets/ (ver ops-asp-agent-runner.md)
 asp session start --name opencode --workspace /ruta/absoluta/del/repo \
-  --tenant=tenant-demo --node-id=dev-node --timeout=120s
+  --tenant=tenant-demo --timeout=120s
+# el plano de control elige un nodo con hueco; --node-id=… lo fija
 # stdout: <sandbox id>
 # Imagen nueva: /workspace ya está montado al boot (tag workspace).
 # Imagen anterior a workspace-virtiofs.service, dentro del guest:
@@ -174,7 +175,7 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 | `session status`, `GET`, heartbeat del nodo, renew del lease | No. Si contaran, el reconciler impediría el idle para siempre. |
 | Exec que falla antes del guest (red, 502, stream cortado a medias) | No. |
 
-**Qué hace el reaper.** Pasa el sandbox a `stopping` (el node-agent lo destruye) o a `stopped` si nunca tuvo nodo. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.
+**Qué hace el reaper.** Pasa el sandbox a `stopping` (el node-agent lo destruye) o a `stopped` si ningún nodo la había reclamado todavía. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.
 
 **Qué ve esta CLI.** `asp session status --name …` imprime `idle_reaped=true` (y `--json` el booleano) y sale **1**. `asp session exec` no llama al exec proxy si el GET ya trae `stop_reason=idle_timeout`. El fichero de ese nombre no se borra solo.
 
@@ -211,6 +212,9 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 | `invalid session name` | El nombre tiene `/`, espacios o `..`. |
 | exec HTTP 404 | Alguien borró el sandbox y el JSON sigue. `stop` (limpia en 404) o `start --force`. |
 | `idle timeout` / `idle_reaped=true` | El reaper paró el sandbox. El JSON local sigue. `asp session start --force --name …`. |
+| `no capacity: …` en start (503) | Ningún nodo tiene hueco; el mensaje cuenta por qué se descartó cada uno (`max_sandboxes`, `insufficient_memory`, `cordoned`, `stale`…). Reintenta, o que un admin añada nodos o haga `uncordon` (`asp node list`). |
+| `node pin rejected: …` en start (409) | `--node-id` apunta a un nodo desconocido, caído, revocado o en cordon. Quita el pin o revisa ese nodo. |
+| `lost_with_node=true` / `sandbox was lost with its node` | Su nodo dejó de dar señales (`node_lost`) o su node-agent se reinició (`node_agent_restarted`). El disco vivía en ese servidor: `asp session start --force --name …`. |
 | exec 401 | Token caducado o `ASP_IDP_REQUIRED` sin secretos. `asp auth status`. |
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
 | `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. La actividad **no** se refresca. |

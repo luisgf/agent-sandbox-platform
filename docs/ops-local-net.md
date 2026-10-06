@@ -11,7 +11,7 @@ La default que se mueve es la **de esa sesión** (tabla de policy routing, `iif`
 Default **apagado**. Un `asp session start` normal no manda `local_net`.
 
 ```bash
-asp session start --name agente --node-id=dev-node --local-net
+asp session start --name agente --local-net
 ```
 
 Equivale a `POST /v1/sandboxes` con `"local_net": true` y nada más. No hay CIDR ni puertos. Un body con `local_net_policy`, `prefixes`, `cidrs`, `ports`, `routes` o `exceptions` responde **400**. `--local-net-allow` en la CLI sale 2: no existe en v1.
@@ -36,7 +36,7 @@ Si `wg` e `ip` están en el `PATH` y el proceso tiene `CAP_NET_ADMIN`, `up` ejec
 ```text
 ip link add dev wg-asp-… type wireguard
 ip address add <client /30> dev wg-asp-…
-wg set wg-asp-… private-key <fichero 0600> peer <clave nodo> allowed-ips 0.0.0.0/0,::/0 endpoint <ASP_LOCAL_NET_DIAL> persistent-keepalive 25
+wg set wg-asp-… private-key <fichero 0600> peer <clave nodo> allowed-ips 0.0.0.0/0,::/0 endpoint <dial del grant> persistent-keepalive 25
 ip link set wg-asp-… up
 ```
 
@@ -72,7 +72,7 @@ Identidad: `owner_sub` del create. Otro sujeto con JWT no obtiene grant. El gues
 - `wireguard-tools` (`wg`) y `iproute2` en el portátil y en el nodo.
 - `CAP_NET_ADMIN` (en la práctica, root o una capability acotada) para crear el dispositivo. Sin eso el CLI solo imprime los comandos y el nodo falla el Start de un sandbox con `local_net=true` en vez de caer al proxy.
 - `nft` en el portátil si se quiere el MASQUERADE (`iifname` del `wg-asp-…`). Si no está, el dispositivo puede crearse y el NAT no se instala. Este repo no ha comprobado el reenvío.
-- `ASP_LOCAL_NET_DIAL` (`host:puerto` alcanzable desde el portátil). Vacío = el `wg set` del cliente no lleva `endpoint` y no hay paquetes. El control plane no reenvía el payload.
+- Una dirección del nodo alcanzable desde el portátil: `--local-net-dial` en cada node-agent (`host` o `host:puerto`). Si el nodo no la declara, el grant usa `ASP_LOCAL_NET_DIAL` del plano de control, que solo vale con un único nodo. Vacío = el `wg set` del cliente no lleva `endpoint` y no hay paquetes. El control plane no reenvía el payload. Con varios nodos, abre UDP `47000–54999` hacia cada uno ([`ops-multi-node.md`](ops-multi-node.md)).
 - No poner `AllowedIPs = 0.0.0.0/0` con `wg-quick` en la tabla principal. Está prohibido.
 
 Los tests de unidad meten un script `wg` e `ip` en el `PATH` y comprueban el argv, incluido que la desconexión no menciona `:8888`. No cargan el módulo WireGuard del kernel.
