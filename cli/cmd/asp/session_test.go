@@ -330,8 +330,8 @@ func TestSessionStatusAndExecIdleReaped(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr.String(), "idle timeout") {
 		t.Fatalf("exec exit=%d stderr=%q", code, stderr.String())
 	}
-	if execs.Load() != 0 {
-		t.Fatalf("exec should not be proxied when already reaped, execs=%d", execs.Load())
+	if execs.Load() != 1 {
+		t.Fatalf("exec should be sent once and explained from the 409, execs=%d", execs.Load())
 	}
 }
 
@@ -767,4 +767,69 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// A healthy exec is one request: no GetSandbox before it.
+func TestSessionExecIsOneRequest(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	var requests atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") == "1" {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			_, _ = w.Write([]byte(`{"type":"stdout","data":"hi\n"}` + "\n" + `{"type":"exit","exit_code":0}` + "\n"))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(client.ExecResult{Stdout: "hi\n"})
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		mux.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	sessFile := filepath.Join(t.TempDir(), "session.json")
+	if err := session.Save(sessFile, session.State{SandboxID: "s1", CPURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range [][]string{{"--buffered"}, {}} {
+		requests.Store(0)
+		var stdout, stderr strings.Builder
+		args := append([]string{"session", "exec", "--session-file", sessFile}, mode...)
+		code := run(append(args, "--cmd", "echo hi"), &stdout, &stderr)
+		if code != 0 || !strings.Contains(stdout.String(), "hi") {
+			t.Fatalf("exec %v: exit=%d stdout=%q stderr=%q", mode, code, stdout.String(), stderr.String())
+		}
+		if n := requests.Load(); n != 1 {
+			t.Fatalf("exec %v made %d requests, want 1", mode, n)
+		}
+	}
+}
+
+func TestSessionExecExplainsSandboxLostWithNode(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	mux := http.NewServeMux()
+	node := "node-b"
+	mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "lost", State: "failed", NodeID: &node, StopReason: client.StopReasonNodeLost})
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"sandbox was lost with its node; start a new sandbox (asp session start --force)"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	sessFile := filepath.Join(t.TempDir(), "session.json")
+	if err := session.Save(sessFile, session.State{SandboxID: "lost", CPURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range [][]string{{"--buffered"}, {}} {
+		var stdout, stderr strings.Builder
+		args := append([]string{"session", "exec", "--session-file", sessFile}, mode...)
+		code := run(append(args, "--cmd", "true"), &stdout, &stderr)
+		if code != 1 || !strings.Contains(stderr.String(), "on node node-b was lost") || !strings.Contains(stderr.String(), "--force") {
+			t.Fatalf("exec %v: exit=%d stderr=%q", mode, code, stderr.String())
+		}
+	}
 }

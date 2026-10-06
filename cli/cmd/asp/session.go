@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,10 +299,6 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
-	if sb, gerr := c.GetSandbox(context.Background(), st.SandboxID); gerr == nil && sb.IdleReaped() {
-		fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
-		return 1
-	}
 	req := client.ExecRequest{Cmd: argv, Cwd: *cwd}
 	stdinR, raw := sessionStdin(stdout)
 	// --json and --buffered keep the accumulated JSON path (smokes, one blob).
@@ -319,11 +316,7 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 		}
 		res, err := c.Exec(context.Background(), st.SandboxID, req)
 		if err != nil {
-			if idleReapedErr(err) {
-				fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
-				return 1
-			}
-			fmt.Fprintf(stderr, "session exec: sandbox %s: %v\n", st.SandboxID, err)
+			explainExecError(c, st, path, err, stderr)
 			return 1
 		}
 		if code := writeExec(stdout, stderr, res, g.jsonOut); code != 0 {
@@ -349,14 +342,35 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	}
 	code, err = c.ExecStreamIO(context.Background(), st.SandboxID, req, stdout, stderr, stdinR)
 	if err != nil {
-		if idleReapedErr(err) {
-			fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
-			return 1
-		}
-		fmt.Fprintf(stderr, "session exec: sandbox %s: %v\n", st.SandboxID, err)
+		explainExecError(c, st, path, err, stderr)
 		return 1
 	}
 	return code
+}
+
+// explainExecError prints why exec failed. The control plane refuses exec on a
+// sandbox that is not running with 409; only then does the CLI read the sandbox
+// once, to tell an idle-reaped session from one lost with its node. A healthy
+// exec costs one request.
+func explainExecError(c *client.Client, st session.State, path string, err error, stderr io.Writer) {
+	var he *client.HTTPError
+	if errors.As(err, &he) && he.StatusCode == http.StatusConflict {
+		if sb, gerr := c.GetSandbox(context.Background(), st.SandboxID); gerr == nil {
+			switch {
+			case sb.IdleReaped():
+				fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
+				return
+			case sb.LostWithNode():
+				fmt.Fprintf(stderr, "session exec: %s\n", lostWithNodeText(sb, path))
+				return
+			}
+		}
+	}
+	if idleReapedErr(err) {
+		fmt.Fprintf(stderr, "session exec: %s\n", idleReapedText(st.SandboxID, path))
+		return
+	}
+	fmt.Fprintf(stderr, "session exec: sandbox %s: %v\n", st.SandboxID, err)
 }
 
 // sessionStdin forwards process stdin only for a real CLI invocation.
