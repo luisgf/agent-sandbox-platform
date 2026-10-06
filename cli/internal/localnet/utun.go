@@ -56,21 +56,21 @@ func (d ClientDevice) darwinArgv() []cmd {
 	}
 	tun := darwinTun(d.Iface)
 	var cmds []cmd
-	cmds = append(cmds, cmd{"wireguard-go", []string{tun}})
+	cmds = append(cmds, cmd{name: "wireguard-go", args: []string{tun}})
 	if d.KeyPath != "" && d.NodePublic != "" {
 		args := []string{"set", tun, "private-key", d.KeyPath, "peer", d.NodePublic, "allowed-ips", "0.0.0.0/0,::/0"}
 		if d.Endpoint != "" {
 			args = append(args, "endpoint", d.Endpoint, "persistent-keepalive", "25")
 		}
-		cmds = append(cmds, cmd{"wg", args})
+		cmds = append(cmds, cmd{name: "wg", args: args})
 	}
 	if ip, mask, err := parseV4CIDR(d.Address); err == nil && ip != "" {
-		cmds = append(cmds, cmd{"ifconfig", []string{tun, "inet", ip, ip, "netmask", mask, "up"}})
+		cmds = append(cmds, cmd{name: "ifconfig", args: []string{tun, "inet", ip, ip, "netmask", mask, "up"}})
 	}
 	// Return path for guest sources and the tunnel prefix. Not a default route.
 	cmds = append(cmds,
-		cmd{"route", []string{"-n", "add", "-net", "10.200.0.0", "-netmask", "255.255.0.0", "-interface", tun}},
-		cmd{"route", []string{"-n", "add", "-net", "10.188.0.0", "-netmask", "255.255.0.0", "-interface", tun}},
+		cmd{name: "route", args: []string{"-n", "add", "-net", "10.200.0.0", "-netmask", "255.255.0.0", "-interface", tun}},
+		cmd{name: "route", args: []string{"-n", "add", "-net", "10.188.0.0", "-netmask", "255.255.0.0", "-interface", tun}},
 	)
 	return cmds
 }
@@ -156,9 +156,9 @@ func bringUpDarwin(stderr io.Writer, d ClientDevice) (bool, error) {
 	}
 	var runErr error
 	if os.Geteuid() == 0 {
-		runErr = run(cmd{upPath, nil}, false)
+		runErr = run(cmd{name: upPath}, false)
 	} else {
-		runErr = run(cmd{"sudo", []string{"-n", upPath}}, false)
+		runErr = run(cmd{name: "sudo", args: []string{"-n", upPath}}, false)
 	}
 	if runErr != nil {
 		return false, runErr
@@ -191,9 +191,9 @@ func tearDownDarwin(stderr io.Writer, iface, sessionPath string) error {
 		return nil
 	}
 	if os.Geteuid() == 0 {
-		return run(cmd{path, nil}, false)
+		return run(cmd{name: path}, false)
 	}
-	return run(cmd{"sudo", []string{"-n", path}}, false)
+	return run(cmd{name: "sudo", args: []string{"-n", path}}, false)
 }
 
 func fileExists(path string) bool {

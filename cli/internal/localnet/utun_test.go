@@ -26,17 +26,20 @@ func TestLinuxCommandsStillUseIPAndDoNotRouteDefault(t *testing.T) {
 	for _, want := range []string{
 		"ip link add dev wg-asp-ln-1 type wireguard",
 		"ip address add 10.188.17.98/30 dev wg-asp-ln-1",
-		"wg set wg-asp-ln-1 private-key /tmp/example.local-net.key",
+		// Through a pipe: Ubuntu's AppArmor profile only lets wg open /etc/wireguard.
+		"cat /tmp/example.local-net.key | wg set wg-asp-ln-1 private-key /dev/stdin",
 		"allowed-ips 0.0.0.0/0,::/0",
 		"endpoint 203.0.113.10:51024",
 		"ip link set wg-asp-ln-1 up",
+		// The guest keeps its address in the tunnel: replies need this route.
+		"ip route add 10.200.0.0/16 dev wg-asp-ln-1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, " route ") || strings.Contains(text, "8888") {
-		t.Fatalf("linux recipe routes or proxies:\n%s", text)
+	if strings.Contains(text, "8888") {
+		t.Fatalf("linux recipe proxies:\n%s", text)
 	}
 }
 
@@ -155,10 +158,10 @@ func TestScriptHijackRefusesDefaultAndAllowsUplinkRead(t *testing.T) {
 	if scriptHijacks("UPLINK=$(route -n get default | awk '/interface:/{print $2}')\n") {
 		t.Fatal("reading the default route must be allowed")
 	}
-	if !cmdHijacks(cmd{"route", []string{"-n", "add", "default", "-interface", "utun80"}}) {
+	if !cmdHijacks(cmd{name: "route", args: []string{"-n", "add", "default", "-interface", "utun80"}}) {
 		t.Fatal("argv default")
 	}
-	if cmdHijacks(cmd{"route", []string{"-n", "add", "-net", "10.200.0.0", "-netmask", "255.255.0.0", "-interface", "utun80"}}) {
+	if cmdHijacks(cmd{name: "route", args: []string{"-n", "add", "-net", "10.200.0.0", "-netmask", "255.255.0.0", "-interface", "utun80"}}) {
 		t.Fatal("guest return route is not a default route")
 	}
 }

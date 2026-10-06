@@ -656,6 +656,8 @@ func TestLocalNetUpAppliesMockWireGuardAndDownDeletesIt(t *testing.T) {
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_LOCAL_NET_APPLY", "1")
+	// The Linux recipe on any host; darwin has its own test.
+	t.Setenv("ASP_LOCAL_NET_OS", "linux")
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "argv.log")
@@ -663,10 +665,13 @@ func TestLocalNetUpAppliesMockWireGuardAndDownDeletesIt(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// wg logs the size of what it reads on stdin: the private key arrives
+	// through a pipe, never as a path (Ubuntu's AppArmor profile denies those).
 	script := "#!/bin/sh\n" +
 		"n=$0; n=${n##*/}\n" +
 		"printf '%s' \"$n\" >> \"$ASP_MOCK_LOG\"\n" +
 		"for a in \"$@\"; do printf ' %s' \"$a\" >> \"$ASP_MOCK_LOG\"; done\n" +
+		"if [ \"$n\" = wg ]; then IFS= read -r k; printf ' <stdin:%s>' \"${#k}\" >> \"$ASP_MOCK_LOG\"; fi\n" +
 		"printf '\\n' >> \"$ASP_MOCK_LOG\"\n" +
 		"exit 0\n"
 	for _, name := range []string{"ip", "wg"} {
@@ -714,18 +719,25 @@ func TestLocalNetUpAppliesMockWireGuardAndDownDeletesIt(t *testing.T) {
 	for _, want := range []string{
 		"ip link add dev wg-asp-ln-1 type wireguard",
 		"ip address add 10.188.17.98/30 dev wg-asp-ln-1",
-		"wg set wg-asp-ln-1 private-key ",
+		"wg set wg-asp-ln-1 private-key /dev/stdin ",
 		"peer " + nodePub,
 		"allowed-ips 0.0.0.0/0,::/0",
 		"endpoint 203.0.113.10:51024",
+		"<stdin:44>",
 		"ip link set wg-asp-ln-1 up",
+		"ip route add 10.200.0.0/16 dev wg-asp-ln-1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\nlog:\n%s\nstderr:\n%s", want, text, stderr.String())
 		}
 	}
-	if strings.Contains(text, "8888") || strings.Contains(text, "asp_egress") || strings.Contains(text, " route ") {
-		t.Fatalf("client argv hijacks or proxies:\n%s", text)
+	if strings.Contains(text, "8888") || strings.Contains(text, "asp_egress") {
+		t.Fatalf("client argv proxies:\n%s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "ip route") && (strings.Contains(line, " default") || strings.Contains(line, " 0.0.0.0/0") || strings.Contains(line, " ::/0")) {
+			t.Fatalf("client argv routes the host default: %s", line)
+		}
 	}
 	keyRaw, _ := os.ReadFile(sess + ".local-net.key")
 	if strings.Contains(text, strings.TrimSpace(string(keyRaw))) {

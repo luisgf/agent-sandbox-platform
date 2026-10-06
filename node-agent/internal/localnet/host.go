@@ -1,6 +1,7 @@
 package localnet
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -252,6 +253,14 @@ func ignoreMissing(c Cmd) bool {
 
 func runCmd(c Cmd, soft bool) error {
 	cmd := exec.Command(c.Name, c.Args...)
+	if c.Stdin != "" {
+		b, err := os.ReadFile(c.Stdin)
+		if err != nil {
+			return fmt.Errorf("%s: %w", c.Line(), err)
+		}
+		// A reader that is not an *os.File reaches the command through a pipe.
+		cmd.Stdin = bytes.NewReader(b)
+	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -270,7 +279,7 @@ func runCmd(c Cmd, soft bool) error {
 	if msg == "" {
 		msg = err.Error()
 	}
-	return fmt.Errorf("%s %s: %s", c.Name, strings.Join(c.Args, " "), msg)
+	return fmt.Errorf("%s: %s", c.Line(), msg)
 }
 
 func ifaceUp(name string) bool {

@@ -2,7 +2,7 @@
 
 Contrato: [ADR-0010](adr/0010-on-demand-local-net.md). Por qué: [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
 
-El nodo y el CLI **sí lanzan** `ip` y `wg` para crear `wg-asp-{id8}`. No es un esqueleto que se queda en disco. **No** está demostrado que un paquete salga por el túnel: hace falta un host con `wireguard-tools` y `CAP_NET_ADMIN`, y un lab que este repo no ha corrido.
+El nodo y el CLI **sí lanzan** `ip` y `wg` para crear `wg-asp-{id8}`. No es un esqueleto que se queda en disco. Probado en un host KVM (Ubuntu 26.04, octubre de 2026) con dos sesiones a la vez y el cliente Linux en un network namespace. Cada sandbox llega a la LAN de su propio cliente por su túnel. La del otro le da `Network is unreachable`, y el otro túnel no cuenta ni un byte.
 
 La default que se mueve es la **de esa sesión** (tabla de policy routing, `iif` del TAP `asp-{id8}`). No se instala `ip route replace default` en la tabla principal del nodo ni del portátil. `AllowedIPs = 0.0.0.0/0` en `wg set` elige el peer; no añade esa ruta al sistema. Sin el flag, el egress sigue siendo el proxy del nodo (ADR-0002).
 
@@ -36,9 +36,14 @@ Si `wg` e `ip` están en el `PATH` y el proceso tiene `CAP_NET_ADMIN`, `up` ejec
 ```text
 ip link add dev wg-asp-… type wireguard
 ip address add <client /30> dev wg-asp-…
-wg set wg-asp-… private-key <fichero 0600> peer <clave nodo> allowed-ips 0.0.0.0/0,::/0 endpoint <dial del grant> persistent-keepalive 25
+cat <fichero 0600> | wg set wg-asp-… private-key /dev/stdin peer <clave nodo> allowed-ips 0.0.0.0/0,::/0 endpoint <dial del grant> persistent-keepalive 25
 ip link set wg-asp-… up
+ip route add 10.200.0.0/16 dev wg-asp-…
 ```
+
+La clave llega a `wg` por una tubería, no como ruta. El perfil AppArmor de `wg` en Ubuntu 26.04 solo le deja abrir ficheros bajo `/etc/wireguard`, y con una ruta `wg set` falla con `fopen: Permission denied`. El nodo hace lo mismo con `/var/lib/asp/local-net/<id>.key`, así que no hace falta ningún override en `/etc/apparmor.d/local/wg`.
+
+El guest conserva su dirección dentro del túnel. Sin la ruta a `10.200.0.0/16` (el pool por defecto de `--guest-subnet`, el mismo que enruta el cliente de macOS), las respuestas del portátil saldrían por su ruta por defecto. No es una ruta por defecto. Solo una sesión por portátil la tiene: el `add` de una segunda sesión la encuentra puesta y la deja.
 
 No hay `ip route … default` sin `table`. Si falta la capability o falta `wg`, el CLI imprime esos argv y no los ejecuta. `ASP_LOCAL_NET_APPLY=0` tampoco los ejecuta. `=1` solo fuerza el intento en un lab que ya tiene las herramientas (los tests lo usan con un `wg` falso en el `PATH`).
 
