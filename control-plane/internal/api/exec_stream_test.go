@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
@@ -34,6 +36,10 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 		}
 	}))
 	defer agent.Close()
+	// Runs before agent.Close: a failed assertion must not leave the handler
+	// blocked on release, or Close waits for it forever.
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
 
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("exec-node")
@@ -95,12 +101,14 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 	if !strings.Contains(line, "chunk") {
 		t.Fatalf("first line=%q", line)
 	}
+	// The handler closes started right after its flush: the proxied line can
+	// arrive first, so wait for it instead of checking once.
 	select {
 	case <-started:
-	default:
+	case <-time.After(5 * time.Second):
 		t.Fatal("first line arrived without upstream having flushed")
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	rest, err := io.ReadAll(rd)
 	if err != nil {
 		t.Fatal(err)
