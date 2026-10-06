@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -161,3 +162,32 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}
 }
+
+// Outside dry-run a TAP that cannot be created fails the sandbox: the VM does
+// not boot without its network, and the /30 and the CID are released.
+func TestReconcilerFailsTheSandboxWhenTheTapCannotBeCreated(t *testing.T) {
+	cp := newFakeCP(t, "cccccccc-0003")
+	fake := vmm.NewFakeVMM(nil)
+	rec := New(cp.client(), "n1", fake, nil, time.Hour)
+	rec.VsockDir = t.TempDir()
+	rec.TapAuto = true
+	rec.Tap = &tap.Manager{Runner: &tap.RecordingRunner{InjectedErr: errTapDenied}, SysClassNet: t.TempDir()}
+	rec.Egress = &egress.PolicyCache{}
+	rec.tick(context.Background())
+
+	state, detail := cp.state("cccccccc-0003")
+	if state != "failed" || !strings.Contains(detail, "tap:") {
+		t.Fatalf("want failed with a tap detail, got %s %q", state, detail)
+	}
+	if len(rec.Handles()) != 0 || len(fake.Running) != 0 {
+		t.Fatalf("no VM may run without its TAP: handles=%v running=%v", rec.Handles(), fake.Running)
+	}
+	if n, gnet, err := rec.allocSlot(); err != nil || n != 0 || gnet.HostCIDR() != "10.200.0.1/30" {
+		t.Fatalf("slot not released: %d %v %v", n, gnet.HostCIDR(), err)
+	}
+	if cid := rec.allocCID(); cid != 3 {
+		t.Fatalf("CID not released: got %d", cid)
+	}
+}
+
+var errTapDenied = errors.New("ip: operation not permitted")

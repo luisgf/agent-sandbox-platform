@@ -73,7 +73,8 @@ type Reconciler struct {
 
 	// TapAuto enables create/delete of TAP devices around VMM Start/Stop.
 	TapAuto bool
-	// Tap is the TAP manager (created with SoftFail when nil and TapAuto).
+	// Tap is the TAP manager. Nil uses a strict one (ip(8), errors returned);
+	// main passes a soft-failing manager only to dry-run agents.
 	Tap *tap.Manager
 	// GuestSubnet is the pool each TAP's /30 is carved from (default
 	// tap.DefaultGuestSubnet). Must match the nft --guest-subnet.
@@ -243,7 +244,7 @@ func (r *Reconciler) tapMgr() *tap.Manager {
 	if r.Tap != nil {
 		return r.Tap
 	}
-	return &tap.Manager{Logger: r.Logger, SoftFail: true}
+	return &tap.Manager{Logger: r.Logger}
 }
 
 func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) error {

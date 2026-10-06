@@ -12,7 +12,7 @@ Smoke dry-run (sin KVM): [`mvp-smoke.md`](mvp-smoke.md). Arquitectura: [`archite
 |---|---|
 | **Precondiciones** | CPU con VT-x/AMD-V, `/dev/kvm` usable, usuario en grupo `kvm` (y `netdev` si crea TAP), binario `cloud-hypervisor`, `vmlinux` + `rootfs.img` en `/opt/sandbox/`, CAP_NET_ADMIN o root para TAP/nft enforce, CP alcanzable (TLS/mTLS). |
 | **Resultado OK** | Sandbox `requested`→`running` vía reconciler; `asp sandbox exec` o `POST …/exec` devuelve stdout; guest tiene `SSH_AUTH_SOCK`; egress no allowlisted → 403; con nft enforce, dial directo 80/443/DNS no bypasea el proxy. |
-| **Fallos típicos** | Sin KVM → CH aborta (usa dry-run); sin `--tap-auto` ni TAP manual → `vm.create` falla al abrir device; SoftFail TAP/nft → logs warn pero **no** hay frontera; `ASP_AUTO_PROVISION=1` → `running` mentiroso sin VMM; rootfs viejo sin `vsock-ssh-agent-proxy` → sin `SSH_AUTH_SOCK`; nft enforce sin `nft`/root → node-agent no arranca el redirect. |
+| **Fallos típicos** | Sin KVM → CH aborta (usa dry-run); sin `--tap-auto` ni TAP manual → `vm.create` falla al abrir device; SoftFail nft → logs warn pero **no** hay frontera; un TAP que no se puede crear deja la sandbox en `failed`; `ASP_AUTO_PROVISION=1` → `running` mentiroso sin VMM; rootfs viejo sin `vsock-ssh-agent-proxy` → sin `SSH_AUTH_SOCK`; nft enforce sin `nft`/root → node-agent no arranca el redirect. |
 
 ---
 
@@ -157,7 +157,7 @@ Cada microVM debería tener **TAP + NAT en el host**. Egress HTTP/DNS deny-by-de
 **Hoy en código:**
 
 - El reconciler pone `TapDevice: "asp-" + shortID(sandbox_id)` (8 primeros chars del UUID) en el `vm.create` de CH.
-- **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add <host>/30`) antes de Start y lo borra en Stop. Cada sandbox recibe su propia /30 de `--guest-subnet` (default `10.200.0.0/16`): el TAP lleva la `.1` de esa /30 y el guest la `.2`, que el kernel configura con `ip=` en la cmdline (`CONFIG_IP_PNP`). **SoftFail:** sin `CAP_NET_ADMIN` / permisos, loguea warning y continúa (CH puede fallar al abrir el TAP).
+- **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add <host>/30`) antes de Start y lo borra en Stop. Cada sandbox recibe su propia /30 de `--guest-subnet` (default `10.200.0.0/16`): el TAP lleva la `.1` de esa /30 y el guest la `.2`, que el kernel configura con `ip=` en la cmdline (`CONFIG_IP_PNP`). Si un paso falla (sin `CAP_NET_ADMIN`, o el nombre ya existe) la sandbox pasa a `failed` con el motivo `tap: …` y se borra el TAP a medio crear; la VM no arranca sin red. Solo `--dry-run` tolera el fallo (warning y sigue).
 - Sin `--tap-auto`, prepáralo a mano (sketch abajo) o el create fallará al abrir el device.
 - Allowlist de tenant (`PUT /v1/tenants/{id}/egress`) + check API; **forward proxy HTTP(S)** (`--egress-proxy-listen`) y **DNS sink** (`--egress-dns-sink`) están listos (fase 2b). Guest: `HTTP_PROXY` → su gateway (la IP del TAP en su /30):8888.
 - **nft redirect anti-bypass** (`--nft-egress-redirect`, modo `soft|enforce`) fuerza HTTP(S)+DNS por el proxy/sink (fase 2e, §8e). Tabla `asp_egress`.

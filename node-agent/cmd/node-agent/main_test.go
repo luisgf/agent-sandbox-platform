@@ -91,3 +91,12 @@ func TestRegisterRequestReportsCapacityAndWork(t *testing.T) {
 		t.Fatal("an agent without --reconcile must not accept work")
 	}
 }
+
+func TestTapManagerSoftFailsOnlyInDryRun(t *testing.T) {
+	if !tapManager(config{DryRun: true}).SoftFail {
+		t.Fatal("a dry-run agent may run without TAPs")
+	}
+	if tapManager(config{}).SoftFail {
+		t.Fatal("a real agent must not boot a VM whose TAP failed")
+	}
+}

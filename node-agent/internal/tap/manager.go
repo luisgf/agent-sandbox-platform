@@ -2,6 +2,7 @@
 package tap
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,9 +49,16 @@ type Manager struct {
 	Runner   Runner
 	HostCIDR string // default DefaultHostCIDR
 	Logger   *slog.Logger
-	// SoftFail logs permission/capability errors instead of failing Start.
+	// SoftFail logs errors instead of returning them. Only for dry-run: a real
+	// VM must not boot without its TAP, or with someone else's.
 	SoftFail bool
+	// SysClassNet is where an existing device is detected (default /sys/class/net).
+	SysClassNet string
 }
+
+// ErrDeviceExists means the TAP name is taken: another sandbox with the same
+// short id, or a leftover the reaper could not remove.
+var ErrDeviceExists = errors.New("network device already exists")
 
 func (m *Manager) runner() Runner {
 	if m.Runner != nil {
@@ -64,6 +72,13 @@ func (m *Manager) cidr() string {
 		return m.HostCIDR
 	}
 	return DefaultHostCIDR
+}
+
+func (m *Manager) sysClassNet() string {
+	if m.SysClassNet != "" {
+		return m.SysClassNet
+	}
+	return "/sys/class/net"
 }
 
 func (m *Manager) log() *slog.Logger {
@@ -120,6 +135,16 @@ func (m *Manager) CreateWithCIDR(name, hostCIDR string) error {
 	if name == "" {
 		return fmt.Errorf("tap name required")
 	}
+	// Never take over a device that is already there: ip tuntap add on an
+	// existing TAP fails, but a soft failure would boot the VM on it.
+	if _, err := os.Lstat(filepath.Join(m.sysClassNet(), name)); err == nil {
+		err := fmt.Errorf("%w: %s", ErrDeviceExists, name)
+		if m.SoftFail {
+			m.log().Warn("tap create skipped (soft)", "tap", name, "error", err)
+			return nil
+		}
+		return err
+	}
 	r := m.runner()
 	steps := []struct {
 		bin  string
@@ -129,11 +154,15 @@ func (m *Manager) CreateWithCIDR(name, hostCIDR string) error {
 		{"ip", []string{"link", "set", name, "up"}},
 		{"ip", []string{"addr", "add", hostCIDR, "dev", name}},
 	}
-	for _, step := range steps {
+	for i, step := range steps {
 		if err := r.Run(step.bin, step.args...); err != nil {
 			if m.SoftFail {
 				m.log().Warn("tap create step failed (soft)", "tap", name, "cmd", step.bin, "args", step.args, "error", err)
 				return nil
+			}
+			if i > 0 {
+				// The device exists but is not usable: do not leave it behind.
+				_ = r.Run("ip", "link", "delete", name)
 			}
 			return err
 		}
