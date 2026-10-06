@@ -108,20 +108,23 @@ Matriz breve:
 |---|---|---|
 | `ASP_IDP_ROLE_CLAIM` | `groups` | Claim del JWT con grupos/roles (`groups`, `roles`, u otro nombre). |
 | `ASP_IDP_ROLE_MAP` | unset | Mapa `claimValue:role` CSV, p.ej. `Corp.Admin:admin,Corp.Ops:operator`. Si set, tiene prioridad sobre prefijo. |
-| `ASP_IDP_ROLE_PREFIX` | `asp-` (si no hay map) | `asp-admin` → admin, `asp-operator` → operator, `asp-viewer` → viewer. También acepta roles bare (`admin`). |
+| `ASP_IDP_ROLE_PREFIX` | `asp-` (si no hay map) | `asp-admin` → admin, `asp-operator` → operator, `asp-user` → user, `asp-viewer` → viewer. También acepta roles bare (`admin`). Con `asp-viewer` y `asp-user` a la vez el rol es operator, que es la unión de los dos. |
 | `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Si el claim incluye este valor, un **operator** puede destroy de cualquier sandbox del tenant. |
+| `ASP_IDP_EXEC_ANY_GROUP` | `sandbox:exec-any` | Si el claim incluye este valor, un **operator** puede hacer exec en cualquier sandbox del tenant. Sin él, solo en las suyas: un exec en una sandbox ajena lee su workspace y pide tokens a nombre de esa sandbox. |
 
 Matriz efectiva (IdP on + JWT presente):
 
-| Acción | owner | admin | operator | viewer |
-|---|---|---|---|---|
-| Create | — (pasa a owner) | sí | sí | no |
-| List / Get | sí | sí (todos) | sí (**tenant-wide**) | sí (**tenant-wide**, RO) |
-| Exec | sí | sí | sí | no |
-| Destroy | sí | sí | sí **solo propios** (o +destroy-any) | no |
-| Egress policy | no | sí | no | no |
+| Acción | owner | admin | operator | user | viewer |
+|---|---|---|---|---|---|
+| Create | — (pasa a owner) | sí | sí | sí | no |
+| List / Get | sí | sí (todos) | sí (**tenant-wide**) | **solo propios** | sí (**tenant-wide**, RO) |
+| Exec | sí | sí | **solo propios** (o +exec-any) | solo propios | no |
+| Destroy | sí | sí | **solo propios** (o +destroy-any) | solo propios | no |
+| Egress policy | no | sí | no | no | no |
 
-**Elección list:** tenant-wide para operator/viewer (no filtro a propios). IdP off → sin RBAC (lab/smokes iguales).
+**Elección list:** tenant-wide para operator/viewer y solo propios para user. IdP off → sin RBAC (lab/smokes iguales).
+
+`user` es el rol de una persona o un agente que usa sandboxes: crea las suyas y no ve ni toca las de otros. `operator` es un user que además ve todo el tenant. Para actuar sobre sandboxes ajenas necesita los permisos explícitos `sandbox:exec-any` y `sandbox:destroy-any`.
 
 
 ## Fase 4 — SSH scoped (qué cambia ops)

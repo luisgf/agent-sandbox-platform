@@ -17,7 +17,7 @@ Sin este cableado, “IdP listo en código” sigue siendo teórico: el binary n
 
 - Realm dedicado `asp` en `https://auth.luisgf.es/realms/asp` (issuer público, discovery/JWKS).
 - Cliente confidencial `asp-api` (`aud` = `asp-api`) alineado con `ASP_IDP_AUDIENCE`.
-- Grupos de lab: `asp-admin`, `asp-operator`, `asp-viewer` (+ claim `sandbox:destroy-any` para destroy operator no-propio).
+- Grupos de lab: `asp-admin`, `asp-operator`, `asp-user`, `asp-viewer`, más `sandbox:destroy-any` y `sandbox:exec-any` para que un operator haga destroy o exec en sandboxes ajenas. `asp-user` es el grupo de las personas y agentes que solo usan sandboxes: crean las suyas y no ven las de otros.
 - CP en loopback `127.0.0.1:18112` con IdP **required**; `/healthz` público; rutas user-facing → **401** sin Bearer.
 - Secretos solo en el host (`~/.secrets/…`); plantilla systemd y scripts en git **sin** passwords.
 - Usuario de prueba `asp-lab` para password-grant / smokes manuales (no es cuenta de producción).
@@ -62,9 +62,18 @@ Internet / operadores
 | Issuer | `https://auth.luisgf.es/realms/asp` |
 | JWKS | `https://auth.luisgf.es/realms/asp/protocol/openid-connect/certs` |
 | Cliente | `asp-api` (audiencia del access token) |
-| Grupos / roles claim | claim `groups`; prefijo `asp-` → `asp-admin` / `asp-operator` / `asp-viewer` |
+| Grupos / roles claim | claim `groups`; prefijo `asp-` → `asp-admin` / `asp-operator` / `asp-user` / `asp-viewer` |
 | Destroy-any | valor de grupo `sandbox:destroy-any` (`ASP_IDP_DESTROY_ANY_GROUP`) |
+| Exec-any | valor de grupo `sandbox:exec-any` (`ASP_IDP_EXEC_ANY_GROUP`). Sin él un operator solo hace exec en sus sandboxes |
 | Usuario de prueba | `asp-lab` (password **solo** en el fichero de secretos del host) |
+
+**Migrar al rol `asp-user`:** antes, para poder crear sandboxes había que ser `asp-operator`, y operator podía hacer exec en las sandboxes de cualquiera del tenant. Ahora un operator solo hace exec en las suyas, salvo que también tenga `sandbox:exec-any`. En Keycloak:
+
+1. Crear los grupos `asp-user` y `sandbox:exec-any`.
+2. Pasar a `asp-user` a las personas y agentes que solo usan sandboxes.
+3. Dejar `asp-operator`, y en su caso `sandbox:exec-any`, a quien de verdad opera sobre las sandboxes de otros.
+
+Un operator sin `sandbox:exec-any` recibe 403 al hacer exec en una sandbox ajena.
 
 ### Variables `ASP_IDP_*` (no secretas; viven en el env file del host)
 
@@ -77,6 +86,7 @@ Internet / operadores
 | `ASP_IDP_ROLE_CLAIM` | `groups` | Lee grupos del token |
 | `ASP_IDP_ROLE_PREFIX` | `asp-` | `asp-operator` → rol operator |
 | `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios |
+| `ASP_IDP_EXEC_ANY_GROUP` | `sandbox:exec-any` | Operator puede hacer exec en no-propios |
 | `ASP_IDP_DEFAULT_TENANT` | `default` | Tenant de los tokens del realm, que no traen claim `tenant_id`. **Obligatorio** desde el aislamiento entre tenants: sin tenant, 401 |
 
 Código: `control-plane/internal/authn/idp` + middleware en `internal/api/auth.go`.
