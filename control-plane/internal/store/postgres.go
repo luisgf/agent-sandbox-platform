@@ -1386,8 +1386,11 @@ func (p *PostgresStore) CountAPIKeys() (int64, error) {
 
 func (p *PostgresStore) TouchAPIKey(id string) error {
 	ctx := context.Background()
-	_, err := p.pool.Exec(ctx,
-		`UPDATE api_keys SET last_used_at=now() WHERE id=$1`, id)
+	// The middleware already writes at most once a minute per key and process;
+	// the guard keeps several control-plane replicas to the same pace.
+	_, err := p.pool.Exec(ctx, `
+		UPDATE api_keys SET last_used_at=now()
+		WHERE id=$1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, id)
 	return err
 }
 

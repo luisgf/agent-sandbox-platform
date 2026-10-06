@@ -201,3 +201,26 @@ func TestMintWithAttestationCarriesUserSub(t *testing.T) {
 		t.Fatalf("verified user_sub=%q", got.UserSub)
 	}
 }
+
+// Minting with attestation signs once, with the attestation in the claims.
+func TestMintWithAttestationSignsOnce(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSignerFromKey(key, "")
+	signs := 0
+	signHook = func() { signs++ }
+	defer func() { signHook = nil }()
+	tok, claims, err := s.MintWithAttestation("t1", "sb1", "aud", "", "alice", map[string]any{"node_id": "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signs != 1 {
+		t.Fatalf("MintWithAttestation signed %d times, want 1", signs)
+	}
+	got, err := s.VerifyRS256(tok)
+	if err != nil || got.XAspAttestation["node_id"] != "n1" || claims.UserSub != "alice" {
+		t.Fatalf("token claims %+v err=%v", got, err)
+	}
+}
