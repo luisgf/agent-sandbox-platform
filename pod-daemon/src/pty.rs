@@ -23,7 +23,8 @@ pub fn open_pty(rows: u16, cols: u16) -> io::Result<(File, RawFd)> {
         unsafe { libc::close(master_fd) };
         return Err(err);
     }
-    let mut name = [0i8; 128];
+    // c_char is i8 on x86_64 and u8 on aarch64: spell the type, not the sign.
+    let mut name = [0 as libc::c_char; 128];
     if unsafe { libc::ptsname_r(master_fd, name.as_mut_ptr(), name.len()) } != 0 {
         let err = io::Error::last_os_error();
         unsafe { libc::close(master_fd) };
