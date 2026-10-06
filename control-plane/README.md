@@ -38,6 +38,7 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | Variable | Default | Descripción |
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Bind address |
+| `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
 | `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
 | `ASP_REQUIRE_API_KEY` | unset | `1` fuerza Bearer auth |
 | `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
