@@ -28,7 +28,12 @@ const (
 	EnvPolicy        = "ASP_SCHED_POLICY"
 	EnvCPUOvercommit = "ASP_SCHED_CPU_OVERCOMMIT"
 	EnvStaleAfter    = "ASP_NODE_STALE_AFTER"
+	EnvVMOverhead    = "ASP_SCHED_VM_OVERHEAD_MIB"
 )
+
+// DefaultVMOverheadMiB is the memory a microVM costs its node beyond the
+// guest's own memory_mib (VMM process, virtio queues, page tables).
+const DefaultVMOverheadMiB = 64
 
 // Config is the scheduler configuration (control-plane env).
 type Config struct {
@@ -39,14 +44,20 @@ type Config struct {
 	CPUOvercommit float64
 	// StaleAfter: a node not seen for longer is not placed on.
 	StaleAfter time.Duration
+	// VMOverheadMiB is added to every sandbox's memory when checking and
+	// reporting a node's memory: memory is never overcommitted, so the VMM's
+	// own share has to be counted too.
+	VMOverheadMiB int64
 }
 
-// DefaultConfig: spread, CPU overcommit 4, stale after 90s (three missed heartbeats).
+// DefaultConfig: spread, CPU overcommit 4, stale after 90s (three missed
+// heartbeats), 64 MiB of memory per VM on top of the guest's.
 func DefaultConfig() Config {
-	return Config{Policy: PolicySpread, CPUOvercommit: 4, StaleAfter: 90 * time.Second}
+	return Config{Policy: PolicySpread, CPUOvercommit: 4, StaleAfter: 90 * time.Second, VMOverheadMiB: DefaultVMOverheadMiB}
 }
 
-// ConfigFromEnv reads ASP_SCHED_POLICY, ASP_SCHED_CPU_OVERCOMMIT and ASP_NODE_STALE_AFTER.
+// ConfigFromEnv reads ASP_SCHED_POLICY, ASP_SCHED_CPU_OVERCOMMIT, ASP_NODE_STALE_AFTER
+// and ASP_SCHED_VM_OVERHEAD_MIB.
 func ConfigFromEnv() (Config, error) {
 	cfg := DefaultConfig()
 	if v := strings.TrimSpace(os.Getenv(EnvPolicy)); v != "" {
@@ -71,7 +82,20 @@ func ConfigFromEnv() (Config, error) {
 		}
 		cfg.StaleAfter = d
 	}
+	if v := strings.TrimSpace(os.Getenv(EnvVMOverhead)); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return Config{}, fmt.Errorf("%s=%q: want 0 or more MiB", EnvVMOverhead, v)
+		}
+		cfg.VMOverheadMiB = n
+	}
 	return cfg, nil
+}
+
+// MemoryUsed is what the node's memory holds: the sandboxes' memory plus the
+// per-VM overhead.
+func MemoryUsed(cfg Config, c Candidate) int64 {
+	return c.UsedMemMiB + c.UsedSandboxes*cfg.VMOverheadMiB
 }
 
 // Candidate is a node as the scheduler sees it, with what is already placed on it.
@@ -247,7 +271,7 @@ func reject(cfg Config, c Candidate, req Request, now time.Time) Reason {
 	switch {
 	case cpu > 0 && c.UsedCPUMillis+int64(req.CPUMillis) > cpu:
 		return ReasonInsufficientCPU
-	case mem > 0 && c.UsedMemMiB+int64(req.MemoryMiB) > mem:
+	case mem > 0 && MemoryUsed(cfg, c)+int64(req.MemoryMiB)+cfg.VMOverheadMiB > mem:
 		return ReasonInsufficientMem
 	case slots > 0 && c.UsedSandboxes+1 > slots:
 		return ReasonMaxSandboxes
@@ -264,7 +288,7 @@ func load(cfg Config, c Candidate, req Request) float64 {
 		l = max(l, float64(c.UsedCPUMillis+int64(req.CPUMillis))/float64(cpu))
 	}
 	if mem > 0 {
-		l = max(l, float64(c.UsedMemMiB+int64(req.MemoryMiB))/float64(mem))
+		l = max(l, float64(MemoryUsed(cfg, c)+int64(req.MemoryMiB)+cfg.VMOverheadMiB)/float64(mem))
 	}
 	if slots > 0 {
 		l = max(l, float64(c.UsedSandboxes+1)/float64(slots))

@@ -175,7 +175,8 @@ func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
 		t.Fatalf("nodes sorted by id: %+v", list.Nodes)
 	}
 	a := list.Nodes[0]
-	if a.Allocated.CPUMillis != 1500 || a.Allocated.MemoryMiB != 1024 || a.Allocated.Sandboxes != 1 ||
+	// Allocated memory counts the per-VM overhead: 1024 MiB asked + 64 MiB.
+	if a.Allocated.CPUMillis != 1500 || a.Allocated.MemoryMiB != 1024+64 || a.Allocated.Sandboxes != 1 || a.VMOverheadMiB != 64 ||
 		a.Allocatable.CPUMillis != 8000 || a.Allocatable.MemoryMiB != 4096 || a.Allocatable.Sandboxes != 4 ||
 		a.Schedulable || a.UnschedulableReason != "cordoned" || !a.Cordoned {
 		t.Fatalf("node-a view: %+v", a)

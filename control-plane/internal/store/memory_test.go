@@ -101,7 +101,7 @@ func TestMemoryStoreEventsOnCreate(t *testing.T) {
 
 func TestMemoryStoreValidation(t *testing.T) {
 	s := NewMemoryStore()
-	_, err := s.CreateSandbox(CreateSandboxInput{TenantID: "", ImageRef: "x", CPUMillis: 1, MemoryMiB: 1})
+	_, err := s.CreateSandbox(CreateSandboxInput{TenantID: "", ImageRef: "x", CPUMillis: 1, MemoryMiB: 64})
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -225,7 +225,7 @@ func TestMemoryStoreEnrollAndHeartbeat(t *testing.T) {
 		t.Fatal("expected last_seen")
 	}
 	sb, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1, NodeID: "n-enroll",
+		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64, NodeID: "n-enroll",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := newMemoryStoreWithNodes(t, "n1")
 	sb, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1, NodeID: "n1",
+		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64, NodeID: "n1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +376,7 @@ func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := newMemoryStoreWithNodes(t, "node-a")
 	sb, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1,
+		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -426,7 +426,7 @@ func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
 	// Re-request clears the node: the row is never handed to another node, since
 	// only the scheduler assigns nodes (ADR-0011).
 	sb2, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 1,
+		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -1146,11 +1146,15 @@ func validateCreateSandbox(input CreateSandboxInput) error {
 	if input.CPUMillis <= 0 {
 		return fmt.Errorf("%w: cpu_millis must be > 0", ErrInvalidInput)
 	}
-	if input.MemoryMiB <= 0 {
-		return fmt.Errorf("%w: memory_mib must be > 0", ErrInvalidInput)
+	if input.MemoryMiB < MinSandboxMemoryMiB {
+		return fmt.Errorf("%w: memory_mib must be at least %d", ErrInvalidInput, MinSandboxMemoryMiB)
 	}
 	return nil
 }
+
+// MinSandboxMemoryMiB is the smallest guest the node agent boots; asking for
+// less would make the scheduler count less memory than the VM takes.
+const MinSandboxMemoryMiB = 64
 
 func cloneSandbox(sb Sandbox) Sandbox {
 	if sb.NodeID != nil {

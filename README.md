@@ -395,6 +395,7 @@ Only the most common settings. Full lists live in each component's README.
 | `--agent-tls-listen` | node | mTLS exec listener for a control plane on another host ([ADR-0011](docs/adr/0011-multi-node.md)). |
 | `ASP_SCHED_POLICY` | CP | `spread` (default) or `binpack`. |
 | `ASP_SCHED_CPU_OVERCOMMIT` | CP | vCPUs per physical core (default `4`); memory is never overcommitted. |
+| `ASP_SCHED_VM_OVERHEAD_MIB` | CP | Memory each microVM costs beyond its `memory_mib` (default `64`), counted in placement. Sandboxes ask for at least 64 MiB. |
 | `--capacity-cpu` / `--capacity-mem-mib` / `--max-sandboxes` | node | What the node offers; detected from the host by default. |
 | `ASP_NODE_STALE_AFTER` / `ASP_NODE_FAILOVER_AFTER` | CP | A silent node leaves placement after `90s`; its sandboxes fail after `5m`. |
 

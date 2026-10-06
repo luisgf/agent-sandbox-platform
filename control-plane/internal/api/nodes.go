@@ -16,9 +16,11 @@ import (
 // and whether new sandboxes can go there. Fence credentials are never included.
 type nodeView struct {
 	store.Node
+	// Allocated memory includes the per-VM overhead (VMOverheadMiB per sandbox).
 	Allocated store.NodeUsage `json:"allocated"`
 	// Allocatable is what the node offers after CPU overcommit; 0 = not enforced.
 	Allocatable         store.NodeUsage `json:"allocatable"`
+	VMOverheadMiB       int64           `json:"vm_overhead_mib"`
 	Schedulable         bool            `json:"schedulable"`
 	UnschedulableReason string          `json:"unschedulable_reason,omitempty"`
 }
@@ -31,10 +33,13 @@ func (s *Server) nodeView(n store.Node, u store.NodeUsage, now time.Time) nodeVi
 	c := store.Candidate(n, u)
 	cpu, mem, slots := sched.Allocatable(s.Sched, c)
 	reason := sched.Unschedulable(s.Sched, c, now)
+	allocated := u
+	allocated.MemoryMiB = sched.MemoryUsed(s.Sched, c)
 	return nodeView{
 		Node:                n,
-		Allocated:           u,
+		Allocated:           allocated,
 		Allocatable:         store.NodeUsage{CPUMillis: cpu, MemoryMiB: mem, Sandboxes: slots},
+		VMOverheadMiB:       s.Sched.VMOverheadMiB,
 		Schedulable:         reason == "",
 		UnschedulableReason: string(reason),
 	}

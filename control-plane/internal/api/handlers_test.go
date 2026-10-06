@@ -251,7 +251,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 	srv.Client = agent.Client()
 	mux := testMux(srv)
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"node_id":"exec-node"}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64,"node_id":"exec-node"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
@@ -288,7 +288,7 @@ func TestAuthMiddlewareOptionalOff(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("healthz=%d", rr.Code)
 	}
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -324,7 +324,7 @@ func TestAuthMiddlewareRequire(t *testing.T) {
 		t.Fatalf("enroll should reach handler without API key, want 503 got %d body=%s", rr.Code, rr.Body.String())
 	}
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -404,7 +404,7 @@ func TestOIDCMintAndJWKS(t *testing.T) {
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
@@ -794,7 +794,7 @@ func TestOIDCMintIncludesUserSubFromOwner(t *testing.T) {
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"owner_sub":"user:alice"}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64,"owner_sub":"user:alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
@@ -851,7 +851,7 @@ func TestOIDCMintIgnoresGuestUserSubOverride(t *testing.T) {
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"owner_sub":"user:alice"}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64,"owner_sub":"user:alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
@@ -888,7 +888,7 @@ func TestOIDCMintLabWithoutOwnerStillWorks(t *testing.T) {
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
