@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
@@ -37,6 +38,11 @@ type Server struct {
 	Agents *AgentDialer
 	// Sched mirrors the store's placement config, for the node view.
 	Sched sched.Config
+
+	// fencedOutage remembers, per node, the last sign of life of the outage it
+	// was fenced for, so the monitor fences once per outage.
+	fenceMu      sync.Mutex
+	fencedOutage map[string]time.Time
 }
 
 func NewServer(s store.Store) *Server {
@@ -1254,6 +1260,10 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 		if errors.Is(err, store.ErrInvalidInput) {

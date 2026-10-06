@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"flag"
 	"fmt"
@@ -78,6 +80,7 @@ type config struct {
 	CapacityMemMiB       int    // --capacity-mem-mib: MiB offered; -1 detect, 0 not enforced
 	MaxSandboxes         int    // --max-sandboxes: 0 = no limit
 	LocalNetDial         string // --local-net-dial: host[:port] laptops dial for local-net
+	InstanceID           string // random per process; sent on every register
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
 	DiskDir              string
@@ -645,6 +648,7 @@ func loadConfig() config {
 		slog.Error("--capacity-cpu and --capacity-mem-mib take -1 (detect), 0 (not enforced) or a count; --max-sandboxes takes 0 or more")
 		os.Exit(2)
 	}
+	cfg.InstanceID = newInstanceID()
 	host := capacity.Detect()
 	cfg.CapacityCPU = capacity.CPU(cfg.CapacityCPU, host)
 	cfg.CapacityMemMiB = capacity.MemMiB(cfg.CapacityMemMiB, host)
@@ -690,19 +694,30 @@ func loadConfig() config {
 func registerRequest(cfg config) cpclient.RegisterRequest {
 	acceptsWork := cfg.Reconcile
 	return cpclient.RegisterRequest{
-		ID:             cfg.NodeID,
-		Name:           cfg.NodeID,
-		Endpoint:       cfg.Endpoint,
-		AgentEndpoint:  agentEndpointURL(cfg),
-		VMMProfiles:    []string{"cloud-hypervisor"},
-		CapacityCPU:    cfg.CapacityCPU,
-		CapacityMemMiB: cfg.CapacityMemMiB,
-		MaxSandboxes:   cfg.MaxSandboxes,
-		AcceptsWork:    &acceptsWork,
-		LocalNetDial:   cfg.LocalNetDial,
-		FenceEndpoint:  os.Getenv("ASP_FENCE_ENDPOINT"),
-		FenceToken:     os.Getenv("ASP_FENCE_TOKEN"),
+		ID:              cfg.NodeID,
+		Name:            cfg.NodeID,
+		Endpoint:        cfg.Endpoint,
+		AgentEndpoint:   agentEndpointURL(cfg),
+		VMMProfiles:     []string{"cloud-hypervisor"},
+		CapacityCPU:     cfg.CapacityCPU,
+		CapacityMemMiB:  cfg.CapacityMemMiB,
+		MaxSandboxes:    cfg.MaxSandboxes,
+		AcceptsWork:     &acceptsWork,
+		LocalNetDial:    cfg.LocalNetDial,
+		AgentInstanceID: cfg.InstanceID,
+		FenceEndpoint:   os.Getenv("ASP_FENCE_ENDPOINT"),
+		FenceToken:      os.Getenv("ASP_FENCE_TOKEN"),
 	}
+}
+
+// newInstanceID identifies this process to the control plane. VMs are not adopted
+// across restarts, so a new id makes the control plane fail the running ones.
+func newInstanceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func getenvInt(key string, fallback int) int {

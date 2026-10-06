@@ -17,6 +17,28 @@ func ValidAgentStatus(state SandboxState) bool {
 	}
 }
 
+// ValidAgentTransition reports whether a node may move a sandbox from one state to
+// another. A report that arrives late (after a destroy, a failover or a stop) must
+// not bring the sandbox back: stopped is final, failed only goes to stopped, and
+// stopping only finishes.
+func ValidAgentTransition(from, to SandboxState) bool {
+	switch from {
+	case SandboxStopped:
+		return to == SandboxStopped
+	case SandboxFailed:
+		return to == SandboxFailed || to == SandboxStopped
+	case SandboxStopping:
+		return to == SandboxStopped || to == SandboxFailed
+	}
+	return true
+}
+
+// leaseRenewable: a node keeps its lease only while the sandbox is active on it.
+// A 409 on renew tells the node to stop its local VM (self-fencing).
+func leaseRenewable(state SandboxState) bool {
+	return state == SandboxStarting || state == SandboxRunning || state == SandboxStopping
+}
+
 // IsActiveLifecycle is true for states that Destroy should move to stopping.
 func IsActiveLifecycle(state SandboxState) bool {
 	switch state {

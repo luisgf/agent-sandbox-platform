@@ -74,8 +74,14 @@ func TestCertNodeIDReadsTheEnrolledCertificate(t *testing.T) {
 }
 
 func TestRegisterRequestReportsCapacityAndWork(t *testing.T) {
-	cfg := config{NodeID: "n1", Endpoint: "https://n1:9443", CapacityCPU: 16, CapacityMemMiB: 60000, MaxSandboxes: 10, LocalNetDial: "203.0.113.10", Reconcile: true}
+	cfg := config{NodeID: "n1", Endpoint: "https://n1:9443", CapacityCPU: 16, CapacityMemMiB: 60000, MaxSandboxes: 10, LocalNetDial: "203.0.113.10", Reconcile: true, InstanceID: "abc"}
 	req := registerRequest(cfg)
+	if req.AgentInstanceID != "abc" {
+		t.Fatalf("instance id: %q", req.AgentInstanceID)
+	}
+	if a, b := newInstanceID(), newInstanceID(); a == b || len(a) != 32 {
+		t.Fatalf("instance ids must be random: %q %q", a, b)
+	}
 	if req.CapacityCPU != 16 || req.CapacityMemMiB != 60000 || req.MaxSandboxes != 10 || req.LocalNetDial != "203.0.113.10" ||
 		req.AgentEndpoint != "https://n1:9443" || req.AcceptsWork == nil || !*req.AcceptsWork {
 		t.Fatalf("register request: %+v", req)

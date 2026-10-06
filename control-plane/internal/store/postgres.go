@@ -435,59 +435,67 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 		return Sandbox{}, fmt.Errorf("%w: invalid status %s", ErrInvalidInput, state)
 	}
 	ctx := context.Background()
-	sb, err := p.GetSandbox(id)
-	if err != nil {
-		return Sandbox{}, err
+	// Guarded by the state the transition was checked against; retry if it moved.
+	for attempt := 0; attempt < 3; attempt++ {
+		sb, err := p.GetSandbox(id)
+		if err != nil {
+			return Sandbox{}, err
+		}
+		if !ValidAgentTransition(sb.State, state) {
+			return Sandbox{}, fmt.Errorf("%w: cannot move sandbox from %s to %s", ErrConflict, sb.State, state)
+		}
+		from := string(sb.State)
+		now := time.Now().UTC()
+		until := interface{}(nil)
+		if state == SandboxRunning || state == SandboxStarting {
+			until = leaseUntil(now)
+		}
+		tx, err := p.pool.Begin(ctx)
+		if err != nil {
+			return Sandbox{}, err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3, node_lease_until=$4,
+			    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE last_activity_at END,
+			    stop_reason=CASE WHEN $2='running' THEN '' ELSE stop_reason END,
+			    local_net_state=CASE
+			      WHEN $2 IN ('failed','stopped','stopping') AND local_net THEN 'withdrawn'
+			      WHEN $2 IN ('failed','stopped','stopping') AND NOT local_net THEN 'off'
+			      ELSE local_net_state END,
+			    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_client_public END,
+			    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_grant_hash END,
+			    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping') THEN NULL ELSE local_net_grant_expires_at END
+			WHERE id=$1 AND state=$5`, id, string(state), now, until, from)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return Sandbox{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		payload := map[string]string{}
+		if detail != "" {
+			payload["detail"] = detail
+		}
+		if err := emitEventTx(ctx, tx, EmitEventInput{
+			SandboxID: id,
+			TenantID:  sb.TenantID,
+			EventType: "sandbox.state_changed",
+			FromState: &from,
+			ToState:   strPtr(string(state)),
+			Actor:     "node-agent",
+			Payload:   mustJSON(payload),
+		}); err != nil {
+			_ = tx.Rollback(ctx)
+			return Sandbox{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Sandbox{}, err
+		}
+		return p.GetSandbox(id)
 	}
-	from := string(sb.State)
-	now := time.Now().UTC()
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return Sandbox{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	until := interface{}(nil)
-	if state == SandboxRunning || state == SandboxStarting {
-		u := leaseUntil(now)
-		until = u
-	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3, node_lease_until=$4,
-		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE last_activity_at END,
-		    stop_reason=CASE WHEN $2='running' THEN '' ELSE stop_reason END,
-		    local_net_state=CASE
-		      WHEN $2 IN ('failed','stopped','stopping') AND local_net THEN 'withdrawn'
-		      WHEN $2 IN ('failed','stopped','stopping') AND NOT local_net THEN 'off'
-		      ELSE local_net_state END,
-		    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_client_public END,
-		    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_grant_hash END,
-		    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping') THEN NULL ELSE local_net_grant_expires_at END
-		WHERE id=$1`, id, string(state), now, until)
-	if err != nil {
-		return Sandbox{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return Sandbox{}, ErrNotFound
-	}
-	payload := map[string]string{}
-	if detail != "" {
-		payload["detail"] = detail
-	}
-	if err := emitEventTx(ctx, tx, EmitEventInput{
-		SandboxID: id,
-		TenantID:  sb.TenantID,
-		EventType: "sandbox.state_changed",
-		FromState: &from,
-		ToState:   strPtr(string(state)),
-		Actor:     "node-agent",
-		Payload:   mustJSON(payload),
-	}); err != nil {
-		return Sandbox{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Sandbox{}, err
-	}
-	return p.GetSandbox(id)
+	return Sandbox{}, fmt.Errorf("%w: sandbox %s changed state concurrently; retry", ErrConflict, id)
 }
 
 func (p *PostgresStore) RenewSandboxLease(id, nodeID string) (Sandbox, error) {
@@ -499,7 +507,7 @@ func (p *PostgresStore) RenewSandboxLease(id, nodeID string) (Sandbox, error) {
 	until := leaseUntil(now)
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sandboxes SET node_lease_until=$3, updated_at=$4
-		WHERE id=$1 AND node_id=$2`, id, nodeID, until, now)
+		WHERE id=$1 AND node_id=$2 AND state IN ('starting','running','stopping')`, id, nodeID, until, now)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -511,7 +519,7 @@ func (p *PostgresStore) RenewSandboxLease(id, nodeID string) (Sandbox, error) {
 		if sb.NodeID == nil || *sb.NodeID != nodeID {
 			return Sandbox{}, fmt.Errorf("%w: not owned by %s", ErrConflict, nodeID)
 		}
-		return Sandbox{}, ErrNotFound
+		return Sandbox{}, fmt.Errorf("%w: sandbox is %s, not active on %s", ErrConflict, sb.State, nodeID)
 	}
 	return p.GetSandbox(id)
 }
@@ -815,7 +823,8 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 
 	var createdAt time.Time
 	var revokedAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT created_at, revoked_at FROM nodes WHERE id=$1`, id).Scan(&createdAt, &revokedAt)
+	var prevInstance string
+	err = tx.QueryRow(ctx, `SELECT created_at, revoked_at, agent_instance_id FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(&createdAt, &revokedAt, &prevInstance)
 	isNew := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !isNew {
 		return Node{}, err
@@ -831,11 +840,12 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, fence_endpoint, fence_token,
 				last_seen_at, created_at, updated_at,
-				max_sandboxes, accepts_work, local_net_dial
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13)`,
+				max_sandboxes, accepts_work, local_net_dial, agent_instance_id
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13,$14)`,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
+			strings.TrimSpace(input.AgentInstanceID),
 		)
 	} else {
 		// cordoned is an admin decision: register never touches it.
@@ -848,12 +858,17 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 				fence_endpoint=CASE WHEN $8 = '' THEN fence_endpoint ELSE $8 END,
 				fence_token=CASE WHEN $9 = '' THEN fence_token ELSE $9 END,
 				last_seen_at=$10, updated_at=$10,
-				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13
+				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13,
+				agent_instance_id=CASE WHEN $14 = '' THEN agent_instance_id ELSE $14 END
 			WHERE id=$1`,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
+			strings.TrimSpace(input.AgentInstanceID),
 		)
+		if err == nil && agentRestarted(prevInstance, strings.TrimSpace(input.AgentInstanceID)) {
+			err = failRestartOrphansTx(ctx, tx, id, now)
+		}
 	}
 	if err != nil {
 		return Node{}, err
@@ -1111,13 +1126,22 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 	}
 	ctx := context.Background()
 	now := time.Now().UTC()
-	tag, err := p.pool.Exec(ctx, `
-		UPDATE nodes SET last_seen_at=$2, updated_at=$2, state='ready'
-		WHERE id=$1 AND revoked_at IS NULL`, id, now)
-	if err != nil {
+	var prevState string
+	// The previous state comes from a locking sub-select in FROM, which runs
+	// before the row is updated. A CTE read only in RETURNING runs after the
+	// update, and its FOR UPDATE then skips the row this statement changed:
+	// the subquery returns NULL.
+	err := p.pool.QueryRow(ctx, `
+		UPDATE nodes n SET last_seen_at=$2, updated_at=$2, state='ready'
+		FROM (SELECT id, state FROM nodes WHERE id=$1 AND revoked_at IS NULL FOR UPDATE) prev
+		WHERE n.id = prev.id
+		RETURNING prev.state`, id, now).Scan(&prevState)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, err
 	}
-	if tag.RowsAffected() == 0 {
+	if err == nil {
+		p.recordNodeOnline(ctx, id, prevState)
+	} else {
 		var revokedAt *time.Time
 		err := p.pool.QueryRow(ctx, `SELECT revoked_at FROM nodes WHERE id=$1`, id).Scan(&revokedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1133,16 +1157,23 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 
 func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
 	ctx := context.Background()
-	tag, err := p.pool.Exec(ctx, `
-		UPDATE nodes SET last_seen_at=$2, updated_at=$2,
-		    state=CASE WHEN revoked_at IS NULL THEN 'ready' ELSE state END
-		WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3)`,
-		id, now, now.Add(-nodePollWriteEvery))
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() > 0 {
+	var prevState string
+	// As in HeartbeatNode. The throttle is in the sub-select, so a poll inside
+	// the window neither locks nor writes the row.
+	err := p.pool.QueryRow(ctx, `
+		UPDATE nodes n SET last_seen_at=$2, updated_at=$2,
+		    state=CASE WHEN n.revoked_at IS NULL THEN 'ready' ELSE n.state END
+		FROM (SELECT id, state FROM nodes
+		      WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < $3) FOR UPDATE) prev
+		WHERE n.id = prev.id
+		RETURNING prev.state`,
+		id, now, now.Add(-nodePollWriteEvery)).Scan(&prevState)
+	if err == nil {
+		p.recordNodeOnline(ctx, id, prevState)
 		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
 	}
 	var exists bool
 	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)`, id).Scan(&exists); err != nil {
@@ -1384,7 +1415,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 
 // nodeColumns is the column list scanNode reads, in order.
 const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
-		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial,
+		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial, agent_instance_id,
 		cert_fingerprint, cert_serial, fence_token, fence_endpoint, enrolled_at,
 		revoked_at, last_seen_at, created_at, updated_at`
 
@@ -1392,7 +1423,7 @@ func scanNode(row scannable) (Node, error) {
 	var n Node
 	err := row.Scan(
 		&n.ID, &n.Name, &n.Endpoint, &n.AgentEndpoint, &n.State, &n.VMMProfiles,
-		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial,
+		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial, &n.AgentInstanceID,
 		&n.CertFingerprint, &n.CertSerial, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
 		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt,
 	)

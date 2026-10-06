@@ -209,6 +209,10 @@ func (r *Reconciler) renewLocalLeases(ctx context.Context) {
 	r.mu.Unlock()
 	for _, id := range ids {
 		if _, err := r.CP.RenewLease(ctx, id, r.NodeID); err != nil {
+			if cpclient.IsConflict(err) {
+				r.selfFence(ctx, id, "lease renewal refused: "+err.Error())
+				continue
+			}
 			r.Logger.Warn("renew lease failed", "sandbox_id", id, "error", err)
 		}
 	}
@@ -232,6 +236,9 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		// Already started locally; just report running if CP still says starting.
 		if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "reconciler"); err != nil {
+			if cpclient.IsConflict(err) {
+				r.selfFence(ctx, sb.ID, "running report refused: "+err.Error())
+			}
 			return err
 		}
 		return nil
@@ -369,6 +376,10 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	r.registerEndpoint(sb.ID, h)
 
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "vmm started"); err != nil {
+		if cpclient.IsConflict(err) {
+			// The boot outlived the assignment (failover or destroy meanwhile).
+			r.selfFence(ctx, sb.ID, "running report refused: "+err.Error())
+		}
 		return fmt.Errorf("report running: %w", err)
 	}
 	r.postAttestation(ctx, sb, h)
@@ -398,22 +409,41 @@ func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h
 }
 
 func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) error {
+	r.teardownLocal(ctx, sb.ID)
+	if _, err := r.CP.ReportStatus(ctx, sb.ID, "stopped", "vmm deleted"); err != nil {
+		return fmt.Errorf("report stopped: %w", err)
+	}
+	r.Logger.Info("sandbox stopped", "sandbox_id", sb.ID)
+	return nil
+}
+
+// selfFence stops a VM the control plane no longer assigns to this node (it was
+// failed over, destroyed or never ours), without reporting: the control plane has
+// already moved on, and two copies of a sandbox must not run.
+func (r *Reconciler) selfFence(ctx context.Context, id, why string) {
+	r.Logger.Warn("self-fencing: stopping a sandbox the control plane no longer assigns here",
+		"sandbox_id", id, "node_id", r.NodeID, "reason", why)
+	r.teardownLocal(ctx, id)
+}
+
+// teardownLocal stops the VM and releases everything it held on this host.
+func (r *Reconciler) teardownLocal(ctx context.Context, id string) {
 	r.mu.Lock()
-	h, had := r.handles[sb.ID]
+	h, had := r.handles[id]
 	if had {
-		delete(r.handles, sb.ID)
+		delete(r.handles, id)
 	}
 	r.mu.Unlock()
 
-	if err := r.Engine.Stop(ctx, sb.ID); err != nil {
-		r.Logger.Warn("vmm stop", "sandbox_id", sb.ID, "error", err)
+	if err := r.Engine.Stop(ctx, id); err != nil {
+		r.Logger.Warn("vmm stop", "sandbox_id", id, "error", err)
 	}
 	if had {
 		r.releaseCID(h.CID)
 		r.releaseSlot(h.Slot)
-		r.detachGuestHost(sb.ID)
+		r.detachGuestHost(id)
 		if r.Registry != nil {
-			r.Registry.Unregister(sb.ID)
+			r.Registry.Unregister(id)
 		}
 		if h.VsockPath != "" {
 			_ = os.Remove(h.VsockPath)
@@ -431,16 +461,10 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 			}
 		}
 	}
-	r.Egress.Forget(sb.ID)
+	r.Egress.Forget(id)
 	if r.LocalNet != nil {
-		_ = r.LocalNet.Clear(sb.ID)
+		_ = r.LocalNet.Clear(id)
 	}
-
-	if _, err := r.CP.ReportStatus(ctx, sb.ID, "stopped", "vmm deleted"); err != nil {
-		return fmt.Errorf("report stopped: %w", err)
-	}
-	r.Logger.Info("sandbox stopped", "sandbox_id", sb.ID)
-	return nil
 }
 
 func (r *Reconciler) localApplier() localnet.Applier {

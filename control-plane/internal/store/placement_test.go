@@ -309,3 +309,76 @@ func TestMemoryCordonAndUsage(t *testing.T) {
 func TestPostgresCordonAndUsage(t *testing.T) {
 	testCordonAndUsage(t, newPostgresTestStore(t))
 }
+
+// Late agent reports cannot bring a sandbox back, and only an active sandbox
+// keeps its lease (a 409 on renew tells the node to stop its VM).
+func testAgentTransitionsAndLeases(t *testing.T, s Store) {
+	t.Helper()
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	registerPlacementNodes(t, s, 0, "node-a")
+	newClaimed := func() Sandbox {
+		t.Helper()
+		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RenewSandboxLease(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
+			t.Fatalf("renew before claim: %v", err)
+		}
+		if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+			t.Fatal(err)
+		}
+		return sb
+	}
+
+	sb := newClaimed()
+	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "booted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenewSandboxLease(sb.ID, "node-a"); err != nil {
+		t.Fatalf("renew while running: %v", err)
+	}
+	if _, err := s.RenewSandboxLease(sb.ID, "node-b"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("renew by another node: %v", err)
+	}
+	if _, err := s.MarkSandboxStopping(sb.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("running after stopping: %v", err)
+	}
+	if _, err := s.RenewSandboxLease(sb.ID, "node-a"); err != nil {
+		t.Fatalf("renew while stopping (the VM still exists): %v", err)
+	}
+	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxStopped, "cleaned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("running after stopped: %v", err)
+	}
+	if _, err := s.RenewSandboxLease(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("renew after stopped must tell the node to stop: %v", err)
+	}
+	if got, _ := s.GetSandbox(sb.ID); got.State != SandboxStopped {
+		t.Fatalf("state = %s, want stopped", got.State)
+	}
+
+	failed := newClaimed()
+	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxFailed, "boot error"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("running after failed: %v", err)
+	}
+	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxStopped, "cleanup"); err != nil {
+		t.Fatalf("failed → stopped: %v", err)
+	}
+}
+
+func TestMemoryAgentTransitionsAndLeases(t *testing.T) {
+	testAgentTransitionsAndLeases(t, NewMemoryStore())
+}
+
+func TestPostgresAgentTransitionsAndLeases(t *testing.T) {
+	testAgentTransitionsAndLeases(t, newPostgresTestStore(t))
+}

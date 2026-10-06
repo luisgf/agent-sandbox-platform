@@ -32,7 +32,7 @@ Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts
 | Canal CP → nodo | `exec` sin autenticar en la red | Loopback por defecto; en otro host, mTLS con `ServerName` = node id y solo el cert del CP (ADR-0011) |
 | Egress corporativo | Guest bypasea proxy | Forward proxy + DNS sink + nft `asp_egress` (enforce en bare-metal) |
 | Atribución de flujos a humano | Tras NAT no se sabe qué empleado dialó | Futuro: ADR-0008 (proxy + IP/mark → `owner_sub`); no implementado |
-| Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Leases TTL + FenceProvider opcional (≠ STONITH BMC real) |
+| Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Solo el nodo asignado reclama; transiciones validadas; monitor de nodos + FenceProvider; el nodo para sus VMs si el CP rechaza su lease (≠ STONITH BMC real) ([ADR-0011](adr/0011-multi-node.md)) |
 | Plano de control | API anónima / path mal cableado | API keys; `ASP_MTLS_STRICT`; rutas públicas mínimas |
 
 **No cubierto (honestidad):** TPM/SEV hardware attestation; bypass-proof nft medido en CI sin KVM; Windows guests; “Kubernetes NetworkPolicy como frontera”.
@@ -69,7 +69,7 @@ CLI `asp`, IDE o servicio automatizado. Se autentica ante el CP. El uso primario
 
 ### 2. Control plane (Go)
 
-Paquete `control-plane/`: API HTTP/TLS, store, PKI de enrollment, OIDC, attestation verify, fence al reclaim.
+Paquete `control-plane/`: API HTTP/TLS, store, PKI de enrollment, OIDC, attestation verify, planificador, monitor de nodos y fencing.
 
 Responsabilidades:
 
@@ -189,13 +189,16 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 
 | Escenario | Comportamiento |
 |---|---|
-| Node-agent cae | Leases expiran; sandbox puede marcarse failed o re-request; otro nodo no reclaima `running` sin fence |
-| Lease expirado en `running` | CP puede invocar `FenceProvider` (Noop / HTTPWebhook / Redfish stub / IPMI stub) antes de reclaim |
+| Nodo sin señales > `ASP_NODE_STALE_AFTER` (90 s) | Sale del reparto y pasa a `offline` |
+| Nodo sin señales > `ASP_NODE_FAILOVER_AFTER` (5 min) o revocado | `FenceProvider` (si tiene sandboxes, una vez por caída); sus sandboxes → `failed` (`node_lost`), `stopping` → `stopped`. No se mueven |
+| El nodo vuelve tras una partición | Vuelve a `ready`; sus renovaciones de lease reciben 409 y para esas VMs |
+| Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `failed` (`node_agent_restarted`); `requested`/`starting` las arranca el proceso nuevo |
+| Reinicio del plano de control | Gracia: el silencio se cuenta desde el arranque del monitor |
 | SoftFail TAP/nft | Log warning; CH puede fallar al abrir TAP; **no** hay frontera de red real |
 | Attest/JWKS caído | Mint OIDC falla cerrado |
 | FakeVMM dry-run | Todo el plano de control funciona; **cero** aislamiento KVM |
 
-**Lease software ≠ STONITH.** BMC out-of-band real sigue siendo ops (documentado en bare-metal §8b–8c).
+**Lease software ≠ STONITH.** BMC out-of-band real sigue siendo ops (documentado en bare-metal §8b–8c). Detalle: [`ops-multi-node.md`](ops-multi-node.md).
 
 ## Dry-run vs bare-metal
 

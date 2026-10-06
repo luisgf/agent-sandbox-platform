@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Two dry-run nodes behind one control plane (ADR-0011): spread placement,
-# cordon, 503 with reasons when full, uncordon, and 409 for an unknown pin.
+# cordon, 503 with reasons when full, uncordon, 409 for an unknown pin, a node
+# killed (its sandboxes fail as node_lost) and an agent restart (its running
+# sandboxes fail as node_agent_restarted). Liveness thresholds are seconds here.
 # Each node offers 2 sandbox slots. Honours DATABASE_URL (node ids are unique
 # per run so leftover rows do not count as usage).
 set -euo pipefail
@@ -18,6 +20,7 @@ export ASP_CA_CERT="$WORKDIR/ca.crt"
 export ASP_CA_KEY="$WORKDIR/ca.key"
 export ASP_OIDC_KEY="$WORKDIR/oidc.pem"
 export ASP_AUTO_PROVISION=0
+export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTERVAL=1s
 
 cleanup() {
   for pid in "${NA_A:-}" "${NA_B:-}" "${CP_PID:-}"; do
@@ -134,5 +137,41 @@ for _ in $(seq 1 60); do
 done
 read -r c5 s5 <<<"$(create)"; [[ "$c5" == 201 ]] || fail "s5 after destroy: $c5 $s5"
 [[ "$(node_of "$s5")" == "$NODE_A" ]] || fail "s5 went to $(node_of "$s5"), want $NODE_A"
+wait_running "$s5"
+
+field_of() { curl -sf "$CP/v1/sandboxes/$1" | json_field "$2"; }
+node_state() {
+  curl -sf "$CP/v1/nodes" | python3 -c 'import json,sys; print(next((n["state"] for n in json.load(sys.stdin)["nodes"] if n["id"]==sys.argv[1]), ""))' "$1"
+}
+
+echo "==> 8. kill -9 $NODE_B: offline, then its sandboxes fail as node_lost"
+{ kill -9 "$NA_B" && wait "$NA_B"; } 2>/dev/null || true; NA_B=""
+for _ in $(seq 1 80); do
+  [[ "$(field_of "$s2" state)" == failed && "$(field_of "$s3" state)" == failed ]] && break
+  sleep 0.25
+done
+for s in "$s2" "$s3"; do
+  [[ "$(field_of "$s" state)/$(field_of "$s" stop_reason)" == failed/node_lost ]] || fail "$s: $(field_of "$s" state)/$(field_of "$s" stop_reason)"
+done
+[[ "$(node_state "$NODE_B")" == offline ]] || fail "$NODE_B state: $(node_state "$NODE_B")"
+out=$(create)
+[[ "$out" == 503* ]] || fail "with $NODE_B lost and $NODE_A full want 503, got $out"
+echo "    ${out#503 }"
+
+echo "==> 9. restart the agent of $NODE_A: its running sandboxes fail as node_agent_restarted"
+{ kill -9 "$NA_A" && wait "$NA_A"; } 2>/dev/null || true
+start_node "$NODE_A" 19110 "$WORKDIR/na-a2.log"
+NA_A=$!
+for _ in $(seq 1 80); do
+  [[ "$(field_of "$s1" stop_reason)" == node_agent_restarted && "$(field_of "$s5" stop_reason)" == node_agent_restarted ]] && break
+  sleep 0.25
+done
+for s in "$s1" "$s5"; do
+  [[ "$(field_of "$s" state)/$(field_of "$s" stop_reason)" == failed/node_agent_restarted ]] || fail "$s: $(field_of "$s" state)/$(field_of "$s" stop_reason)"
+done
+wait_node_schedulable "$CP" "$NODE_A" || fail "$NODE_A not schedulable after restart"
+read -r c6 s6 <<<"$(create)"; [[ "$c6" == 201 ]] || fail "s6 after restart: $c6 $s6"
+[[ "$(node_of "$s6")" == "$NODE_A" ]] || fail "s6 went to $(node_of "$s6"), want $NODE_A"
+wait_running "$s6"
 
 echo "OK smoke-multi-node"

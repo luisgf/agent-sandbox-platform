@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
@@ -199,4 +202,21 @@ func (s *Server) attestationClaim(sandboxID string) map[string]any {
 		"alg":          rec.Alg,
 		"key_id":       rec.KeyID,
 	}
+}
+
+// fenceNode powers off a lost node through the configured FenceProvider before
+// its sandboxes are failed, so a partitioned node cannot keep running them. It
+// reports false when fencing is off or the node has no fence endpoint.
+func (s *Server) fenceNode(ctx context.Context, n store.Node) (bool, error) {
+	if s.Fence == nil || !fence.Enabled() {
+		return false, nil
+	}
+	if strings.TrimSpace(n.FenceEndpoint) == "" {
+		slog.Info("fence skipped: no fence_endpoint", "node_id", n.ID)
+		return false, nil
+	}
+	if err := s.Fence.Fence(ctx, fence.Target{NodeID: n.ID, Endpoint: n.FenceEndpoint, Token: n.FenceToken}); err != nil {
+		return false, err
+	}
+	return true, nil
 }

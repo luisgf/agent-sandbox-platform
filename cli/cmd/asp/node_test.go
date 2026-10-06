@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/client"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/session"
 )
 
 func TestNodeListCordonUncordon(t *testing.T) {
@@ -86,5 +89,33 @@ func TestCreateExplainsNoCapacityAndRejectedPins(t *testing.T) {
 	}
 	if got := explainCreateError(&client.HTTPError{StatusCode: 400, Message: "bad"}); got != "control-plane HTTP 400: bad" {
 		t.Errorf("other errors unchanged: %s", got)
+	}
+}
+
+func TestSessionStatusExplainsASandboxLostWithItsNode(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_API_KEY", "")
+	for reason, want := range map[string]string{
+		client.StopReasonNodeLost:       "its node stopped responding",
+		client.StopReasonAgentRestarted: "the node agent restarted",
+	} {
+		node := "node-a"
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "lost-1", State: "failed", TenantID: "acme", NodeID: &node, StopReason: reason})
+		})
+		srv := httptest.NewServer(mux)
+		sessFile := filepath.Join(t.TempDir(), "session.json")
+		if err := session.Save(sessFile, session.State{SandboxID: "lost-1", CPURL: srv.URL, TenantID: "acme"}); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		code := run([]string{"session", "status", "--session-file", sessFile}, &stdout, &stderr)
+		srv.Close()
+		if code != 1 || !strings.Contains(stderr.String(), want) || !strings.Contains(stderr.String(), "asp session start --force") ||
+			!strings.Contains(stdout.String(), "lost_with_node=true") || !strings.Contains(stdout.String(), "node=node-a") {
+			t.Fatalf("%s: exit=%d stdout=%q stderr=%q", reason, code, stdout.String(), stderr.String())
+		}
 	}
 }

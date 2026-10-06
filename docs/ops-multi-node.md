@@ -75,6 +75,19 @@ El nodo debe salir como `SCHEDULABLE yes`.
 
 **Subredes del guest:** dale a cada nodo un rango distinto dentro de `10.200.0.0/16` (`--guest-subnet`). Solo importa para local-net: un portátil con sesiones en dos nodos con el mismo rango vería las mismas IPs de guest.
 
+## Nodos caídos
+
+| Variable | Por defecto | Significado |
+|---|---|---|
+| `ASP_NODE_MONITOR_INTERVAL` | `15s` | Cada cuánto revisa el plano de control la vida de los nodos. |
+| `ASP_NODE_STALE_AFTER` | `90s` | Sin señales (heartbeat o sondeo de trabajo) → sale del reparto y pasa a `offline`. |
+| `ASP_NODE_FAILOVER_AFTER` | `5m` | Sin señales → fencing (si hay `ASP_FENCE_PROVIDER` y el nodo tiene sandboxes) y sus sandboxes pasan a `failed` con `node_lost`. `0` u `off` lo desactiva (salvo para nodos revocados). |
+
+- **No hay migración.** El disco del guest vive en su servidor: una sesión perdida se vuelve a abrir (`asp session start --force`). `asp session status` lo explica.
+- **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
+- **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: al renovar el lease recibe 409 y para esas VMs.
+- **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` fallan con `node_agent_restarted` y las que estaban arrancando se arrancan de nuevo. Los procesos de Cloud Hypervisor que sobrevivan quedan huérfanos; un reinicio limpio del servicio los mata.
+
 ## Mantenimiento
 
 - **Sacar un nodo del reparto:** `asp node cordon node2`. Las sandboxes que ya corren siguen ahí; no se colocan nuevas.
@@ -95,9 +108,14 @@ El nodo debe salir como `SCHEDULABLE yes`.
 | `502 … is plain HTTP on a non-loopback host` | Endpoint `http://` hacia otra máquina. Usa `--agent-tls-listen`. |
 | `403 client certificate is for node …` | El agente usa un `--node-id` distinto del CN de su certificado. Quita `--node-id` o re-enrola. |
 | El agente no arranca: `node certificate cannot serve TLS` | Certificado anterior a ADR-0011. Re-enrola con `--enroll` o `rotate-cert`. |
+| `sandbox was lost with its node` | El nodo llevaba más de `ASP_NODE_FAILOVER_AFTER` sin señales (o fue revocado). Abre una sesión nueva. |
+| `stop_reason=node_agent_restarted` | El node-agent se reinició y no adopta VMs. Abre una sesión nueva. |
+| `self-fencing` en el log del agente | El plano de control ya no le asigna esa sandbox (failover o destroy); el agente paró la VM. Esperado tras una partición. |
 
 ## Límites
 
 - No hay migración: si un servidor se pierde, sus sesiones se pierden con él.
+- Con varias réplicas del plano de control, cada una corre su monitor; es seguro, pero el fencing podría repetirse.
+- No se ha probado todavía en un lab con varios servidores KVM reales; el smoke usa dos agentes en dry-run.
 - La colocación no mira `--workspace`: la ruta debe existir en el nodo elegido. Con varios nodos, fija el nodo (`--node-id`) o comparte la ruta en todos.
 - El kernel y el rootfs son locales a cada nodo (`/opt/sandbox`). Mantenlos iguales.

@@ -1,6 +1,6 @@
-# ADR-0011: Varios nodos — identidad, canal plano de control ↔ nodo y colocación por capacidad
+# ADR-0011: Varios nodos — identidad, canal plano de control ↔ nodo, colocación por capacidad y nodos caídos
 
-- **Estado:** Propuesta. Esta revisión fija la identidad, el canal y la colocación por capacidad. La detección de nodos caídos se añadirá en el cambio siguiente.
+- **Estado:** Aceptada (2026-10-05). Identidad, canal, colocación y nodos caídos implementados; sin lab KVM con varios servidores reales.
 - **Fecha:** 2026-10-05
 - **Extiende:** [0005](0005-fase-2d-hardening.md) (identidad de nodo = certificado cliente mTLS), [0004](0004-k8s-scope.md) (el planificador de capacidad vive en nuestro plano de control)
 - **Relacionados:** [0010](0010-on-demand-local-net.md) (`Node.agent_endpoint`), [`../architecture.md`](../architecture.md), [`../bare-metal-ch.md`](../bare-metal-ch.md)
@@ -80,6 +80,21 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - **Local-net:** el grant devuelve el `local_net_dial` del nodo de la sandbox y, si no tiene, `ASP_LOCAL_NET_DIAL`.
 - Destruir una sandbox que ningún nodo ha reclamado la deja en `stopped` al momento: antes del claim no existe VM.
 
+### 7. Nodos caídos: detectar, aislar y fallar (sin mover)
+
+- **Señales de vida:** heartbeat (30 s) y cada sondeo de trabajo (~2 s, escritura limitada a una cada 5 s).
+- **Monitor de nodos** en el plano de control, cada `ASP_NODE_MONITOR_INTERVAL` (15 s):
+  - sin señales más de `ASP_NODE_STALE_AFTER` (90 s) → el nodo pasa a `offline` (el planificador ya lo había descartado);
+  - sin señales más de `ASP_NODE_FAILOVER_AFTER` (5 min; `0`/`off` lo desactiva) → **fencing** del nodo si tiene sandboxes (una vez por caída, `FenceProvider`) y sus sandboxes pasan a `failed` con `stop_reason=node_lost` (`stopping` → `stopped`);
+  - un nodo **revocado** se trata como perdido al momento.
+- El silencio se mide desde lo más reciente entre la última señal del nodo y el arranque del monitor: reiniciar el plano de control tras una parada no tumba todas las sandboxes.
+- El store vuelve a comprobar que el nodo sigue perdido al bloquear las filas: un heartbeat que llega antes gana.
+- **Las sandboxes se fallan, no se mueven:** el disco del guest vive en su servidor. El usuario abre una sesión nueva; el CLI lo explica.
+- **Autodefensa del nodo:** si renovar el lease o reportar `running` devuelve 409, el node-agent para la VM local sin reportar estado. Un nodo que vuelve tras una partición no deja copias vivas.
+- **Transiciones validadas:** `stopped` es final, `failed` solo va a `stopped`, `stopping` solo termina. Un informe tardío no resucita nada.
+- **Reinicio del agente:** cada proceso envía un `agent_instance_id` aleatorio. Si cambia, las sandboxes `running`/`paused` del nodo fallan con `node_agent_restarted` (el agente no adopta VMs); `requested` y `starting` las arranca el proceso nuevo.
+- **Filas antiguas** `requested` sin nodo (de antes de la colocación al crear) fallan como `unscheduled`.
+
 ## Alternativas consideradas
 
 - **Comprobar el nombre de host del endpoint en vez del node id.** Ata el certificado a una IP o nombre concretos; cambiar de dirección exigiría re-emitir. Además no prueba *qué* nodo contesta si dos nodos comparten nombre. Rechazada.
@@ -88,6 +103,8 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - **Cola de sandboxes pendientes** cuando no hay hueco. Esconde la falta de capacidad tras un `asp session start` que espera hasta su timeout. Se prefirió fallar rápido con un motivo claro.
 - **Que los nodos se repartan el trabajo reclamando.** Era el modelo anterior: todos veían las sandboxes sin asignar y competían. No respeta la capacidad y deja que un nodo se quede con trabajo de otro.
 - **Contadores de uso por nodo.** Se desincronizan con cada caída o reintento. Sumar las filas cuesta una consulta indexada (`sandboxes_node_state_idx`).
+- **Failover por caducidad del lease de cada sandbox.** Las renovaciones comparten el tick del reconciler, y un arranque de VM puede bloquearlo hasta 30 s: se fallarían VMs sanas. La señal de vida es del nodo (heartbeat y sondeos).
+- **Recolocar en otro nodo las sandboxes `requested` de un nodo perdido.** No se sabe si el usuario fijó ese nodo; fallar es honesto y el cliente puede reintentar.
 
 ## Consecuencias
 
@@ -97,6 +114,7 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - El plano de control puede vivir en otra máquina sin abrir un `exec` sin autenticar a la red.
 - Un nodo revocado se queda revocado.
 - Añadir un servidor añade capacidad sin configurar nada en el plano de control, y nunca se llena un nodo por encima de lo que declara.
+- Un servidor caído deja de recibir trabajo en 90 s, y en 5 min sus sesiones se dan por perdidas en vez de quedarse colgadas con 502.
 
 ### Negativas / coste
 
@@ -113,3 +131,5 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - El timeout de 30 s del cliente hacia el agente sigue cortando `exec` largos en streaming (fallo previo, fuera de este cambio).
 - La colocación no conoce `--workspace`: la ruta tiene que existir en el nodo elegido.
 - Sin migración: el disco del guest vive en su nodo.
+- Con varias réplicas del plano de control, cada una corre su monitor: el CAS lo hace seguro, pero el fencing podría repetirse.
+- El agente no adopta VMs tras reiniciar: las sandboxes fallan (sin mentir), pero los procesos de Cloud Hypervisor que sobrevivan quedan huérfanos en el host.
