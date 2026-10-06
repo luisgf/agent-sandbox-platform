@@ -216,7 +216,10 @@ func TestProcFSTerminatesRealProcesses(t *testing.T) {
 						child = p
 					}
 				}
-				if child.PID != 0 && slices.Contains(child.Argv, tc.script) {
+				// The trap case must not be signalled before sh has run its
+				// trap, or SIGTERM kills it before it can ignore it.
+				ready := tc.want != syscall.SIGKILL || sigIgnored(cmd.Process.Pid, syscall.SIGTERM)
+				if child.PID != 0 && slices.Contains(child.Argv, tc.script) && ready {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -242,4 +245,19 @@ func TestProcFSTerminatesRealProcesses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// sigIgnored reports whether /proc/PID/status lists sig in SigIgn.
+func sigIgnored(pid int, sig syscall.Signal) bool {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if v, ok := strings.CutPrefix(line, "SigIgn:"); ok {
+			mask, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			return err == nil && mask&(1<<(uint(sig)-1)) != 0
+		}
+	}
+	return false
 }
