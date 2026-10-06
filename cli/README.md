@@ -6,7 +6,7 @@ y obtención transparente de Bearer JWT (IdP).
 ```bash
 # Desde la raíz del repo
 make asp
-./build/asp sandbox run --node-id=dev-node --cmd 'echo hello'
+./build/asp sandbox run --cmd 'echo hello'   # --node-id fija un nodo si hace falta
 
 # Lab IdP (ncc1701d) — el agente solo pasa el comando
 export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1

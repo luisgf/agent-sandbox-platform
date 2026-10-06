@@ -6,8 +6,8 @@ La plataforma separa **orquestación**, **ejecución privilegiada en el nodo** y
 
 ```text
 cliente (IDE / asp / automatización)
-  → control-plane (API multi-tenant, estado, OIDC, attest, fence)
-    → node-agent (reconciler, VMM, TAP, nft, proxies, host-vsock)
+  → control-plane (API multi-tenant, estado, planificador, monitor de nodos, OIDC, attest, fence)
+    → node-agent × N, uno por servidor (reconciler, VMM, TAP, nft, proxies, host-vsock)
       → microVM (Cloud Hypervisor | FakeVMM)
         → pod-daemon (exec/files por vsock)
 ```
@@ -112,18 +112,20 @@ Estados (`store.SandboxState`):
 
 ```text
 requested → starting → running ⇄ paused → stopping → stopped
-                ↘ failed (terminal para el intento)
+    ↘ stopped (destroy antes del claim)
+                ↘ failed (terminal: error de arranque, node_lost, node_agent_restarted)
 ```
 
 Con `ASP_AUTO_PROVISION=0` (default prod/bare-metal):
 
-1. Cliente `POST /v1/sandboxes` → `requested` (+ evento).
-2. Node-agent `--reconcile` hace `GET …/work`.
-3. `POST …/claim` atómico → `starting` + lease TTL (~30s).
+1. Cliente `POST /v1/sandboxes` → el planificador la coloca en un nodo con hueco → `requested` con `node_id` (+ eventos `sandbox.created`, `sandbox.placed`). Si ninguno cabe: **503** con los motivos; pin a un nodo desconocido o caído: **409**.
+2. El node-agent asignado (`--reconcile`) la ve en `GET …/work`; los demás nodos no.
+3. `POST …/claim` atómico, solo del nodo asignado → `starting` + lease TTL (~30s).
 4. TAP (si `--tap-auto`) → VMM `Start` → dialer vsock → `POST …/status` `running`.
 5. Attestation opcional: nodo firma `BootStatement`, CP `POST …/attest`.
-6. Heartbeat + `renew-lease` mientras corre.
-7. `DELETE /v1/sandboxes/{id}` → `stopping` → VMM Stop + cleanup TAP/sockets → `stopped`.
+6. Heartbeat + `renew-lease` mientras corre. Si el CP responde 409 (la sandbox ya no es de ese nodo), el nodo para la VM.
+7. `DELETE /v1/sandboxes/{id}` → `stopping` → VMM Stop + cleanup TAP/sockets → `stopped`. Antes del claim, directamente `stopped`.
+8. Si el nodo se pierde, el monitor la pasa a `failed` (`node_lost`); ver [Fallos y recuperación](#fallos-y-recuperación).
 
 Reintentos idempotentes; el reconciler **reconcilia** estado real vs deseado en lugar de asumir RPC perfectos. `state_version` evita lost updates.
 
@@ -171,13 +173,14 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 ## Modelo de datos (control plane)
 
-Tablas / entidades principales (migraciones `001`–`007`):
+Tablas / entidades principales (migraciones `001`–`013`):
 
 | Entidad | Campos clave |
 |---|---|
-| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until, **owner_sub**, **owner_email** (007 / ADR-0007 fase 1) |
+| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until, **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011) |
 | `sandbox_events` | journal append-only; **actor_sub** (007) |
-| `nodes` | endpoint, agent_endpoint, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, cert_fingerprint/serial, fence_*, revoked_at |
+| `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, fence_*, revoked_at |
+| `node_events` | journal de nodos: registro, cordon, `node.offline`/`node.online`, fencing |
 | `node_cert_revocations` | fingerprints revocados (006) |
 | `api_keys` | sha256 del secreto; Bearer |
 | `tenant_egress_rules` | host_pattern, port, enabled (003) |
@@ -212,18 +215,18 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 
 ## Cómo usan la plataforma los agentes
 
-1. Ops levanta CP + node-agent (+ pod-daemon en dry-run).
+1. Ops levanta el CP y uno o varios node-agents, uno por servidor (+ pod-daemon en dry-run). Añadir servidores: [`ops-multi-node.md`](ops-multi-node.md).
 2. Un agente largo abre **una sesión** y engancha el shell a `exec` (no una VM por tool). Dirección: [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md) · [`ops-asp-session.md`](ops-asp-session.md).
 
 ```bash
 make asp
-./build/asp session start --node-id=dev-node
+./build/asp session start
 ./build/asp session exec --cmd 'echo hello'
 ./build/asp session stop
 ```
 
 3. `asp sandbox run` (create → wait `running` → exec → destroy) es la primitiva de CI/un comando, no la integración del bucle. Auth Bearer: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).
-4. El exec (`POST /v1/sandboxes/{id}/exec`) es el dataplane dentro de la sesión: NDJSON si `?stream=1`, JSON acumulado si no. No es un PTY. `--workspace` queda en el spec; en KVM el host no entra al guest.
+4. El exec (`POST /v1/sandboxes/{id}/exec`) es el dataplane dentro de la sesión: NDJSON si `?stream=1`, JSON acumulado si no. Con `pty` el guest asigna un pseudoterminal (solo en streaming); el cuerpo sigue siendo NDJSON. Un stream dura lo que el comando en el CP; los cortes que quedan están en [timeouts](../control-plane/README.md#timeouts-hacia-el-node-agent). `--workspace` queda en el spec; en KVM el host no entra al guest.
 5. Detalle CLI: [`why-cli-asp.md`](why-cli-asp.md).
 
 Los agentes **no** necesitan hablar con CH ni con nft; solo con el control plane.

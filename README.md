@@ -45,7 +45,7 @@ ASP is **not** a Kubernetes replacement (sandboxes are not Pods), does **not** d
 
 ## Architecture
 
-Four processes, three trust boundaries. Only the node agent ever talks to the hypervisor; the client never sees it.
+Four processes, three trust boundaries. Only the node agent ever talks to the hypervisor; the client never sees it. Capacity grows by adding servers: one node agent per server, and the control plane places each sandbox on a node with room ([ADR-0011](docs/adr/0011-multi-node.md)).
 
 ```mermaid
 flowchart LR
@@ -56,14 +56,14 @@ flowchart LR
   end
 
   subgraph CP["Control plane · Go"]
-    API["HTTP API<br/>sandboxes · nodes · exec proxy"]
+    API["HTTP API<br/>sandboxes · nodes · exec proxy<br/>scheduler · node monitor"]
     DB[("Postgres<br/>or in-memory")]
     OIDC["OIDC issuer · JWKS"]
     API --- DB
     API --- OIDC
   end
 
-  subgraph NODE["Node (bare metal) · privileged"]
+  subgraph NODE["Node × N (bare metal) · privileged"]
     NA["node-agent · Go<br/>reconciler · TAP · nft"]
     EG["Egress<br/>proxy :8888 · DNS sink"]
     VMM["Cloud Hypervisor<br/>(FakeVMM in dry-run)"]
@@ -89,11 +89,11 @@ flowchart LR
 
 | Component | Path | Language | Responsibility |
 |---|---|---|---|
-| **Control plane** | [`control-plane/`](control-plane/) | Go | Multi-tenant API, desired state, event journal, node enrollment (PKI + mTLS), exec proxy, egress policies, OIDC mint/JWKS, software attestation, leases and fencing, idle reaper. |
-| **Node agent** | [`node-agent/`](node-agent/) | Go | Polls the control plane for work, spawns one Cloud Hypervisor per sandbox, creates TAP devices, applies nftables, runs the egress proxy and DNS sink, bridges SSH agent / OIDC over vsock, starts `virtiofsd`, sets up per-session WireGuard. |
+| **Control plane** | [`control-plane/`](control-plane/) | Go | Multi-tenant API, desired state, event journal, node enrollment (PKI + mTLS both ways), capacity scheduler, node monitor (lost-node failover and fencing), exec proxy, egress policies, OIDC mint/JWKS, software attestation, idle reaper. |
+| **Node agent** | [`node-agent/`](node-agent/) | Go | Reports the host's capacity, polls the control plane for the sandboxes placed on it, spawns one Cloud Hypervisor per sandbox, creates TAP devices, applies nftables, runs the egress proxy and DNS sink, bridges SSH agent / OIDC over vsock, starts `virtiofsd`, sets up per-session WireGuard, and removes a previous agent's leftovers on start. |
 | **pod-daemon** | [`pod-daemon/`](pod-daemon/) | Rust | Runs inside the guest. Executes commands received over vsock (buffered JSON or streamed NDJSON, optional PTY). |
 | **Guest image** | [`images/guest/`](images/guest/) | Dockerfile / shell | Minimal Debian rootfs with systemd/OpenRC units for pod-daemon, the SSH-agent vsock proxy and the virtiofs workspace mount. |
-| **CLI `asp`** | [`cli/`](cli/) | Go | `sandbox`, `session` and `auth` commands; resolves IdP tokens transparently. |
+| **CLI `asp`** | [`cli/`](cli/) | Go | `sandbox`, `session`, `auth` and `node` commands; resolves IdP tokens transparently. |
 
 **vsock ports** (local to the node, never exposed on the network):
 
@@ -120,9 +120,10 @@ sequenceDiagram
 
   H->>C: asp session start --name agent
   C->>CP: POST /v1/sandboxes (Bearer JWT)
-  CP-->>C: sandbox id, state=requested
+  Note over CP: places it on a node with room<br/>(503 if none fits)
+  CP-->>C: sandbox id, node, state=requested
   NA->>CP: GET /v1/nodes/{id}/work
-  NA->>CP: POST /v1/sandboxes/{id}/claim (lease)
+  NA->>CP: POST /v1/sandboxes/{id}/claim (only the assigned node)
   NA->>VM: TAP + nft + boot Cloud Hypervisor
   NA->>CP: POST /v1/sandboxes/{id}/status running
   C->>CP: poll until running
@@ -131,7 +132,7 @@ sequenceDiagram
   loop every tool call
     H->>C: asp session exec --name agent --cmd '…'
     C->>CP: POST /v1/sandboxes/{id}/exec?stream=1
-    CP->>NA: /v1/internal/exec
+    CP->>NA: /v1/internal/exec (mTLS when the node is another host)
     NA->>VM: vsock 26500
     VM-->>C: NDJSON stdout / stderr / exit
     C-->>H: same output, same exit code
@@ -211,7 +212,7 @@ Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI
 
 ```bash
 make test        # Go + Rust unit tests
-make smoke       # enroll / identity / reconcile smoke scripts
+make smoke       # enroll / identity / reconcile / two-node smoke scripts
 make asp         # builds ./build/asp
 make smoke-asp   # CLI end-to-end in dry-run
 ```
@@ -239,11 +240,13 @@ export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 ### 3. Open a session and run commands
 
 ```bash
-./build/asp session start --name demo --node-id=dev-node
+./build/asp session start --name demo
 ./build/asp session exec  --name demo --cmd 'uname -a'
 ./build/asp session status --name demo
 ./build/asp session stop  --name demo
 ```
+
+The control plane places the session on a node with room; with the single dry-run node that is `dev-node`. `--node-id` pins a node instead.
 
 **Persistence (optional):** `docker compose up -d postgres` and start the control plane with `DATABASE_URL=postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable`. Without it, state is lost when the control plane exits.
 
@@ -284,7 +287,7 @@ cd ~/src/my-project
 asp session start --name opencode --workspace "$PWD" --timeout=120s
 ```
 
-Add `--node-id=dev-node` against the dry-run stack from the [Quickstart](#quickstart-dry-run-no-kvm). Add `--local-net` if the agent must reach your LAN.
+Against the dry-run stack from the [Quickstart](#quickstart-dry-run-no-kvm) nothing else is needed: the control plane places the session on a node with room. With several nodes, pin one with `--node-id` if the `--workspace` path only exists there. Add `--local-net` if the agent must reach your LAN.
 
 ### 3. Install the shell wrapper
 
@@ -355,6 +358,8 @@ If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when
 **Practical notes**
 
 - One session per agent. Two OpenCode instances with different `ASP_SESSION_NAME` values get two independent sandboxes.
+- If no node has room, `session start` fails with `no capacity` and the reason (for example `2 max_sandboxes`). `asp node list` shows what each node has in use.
+- If the session's node is lost, the sandbox fails with `node_lost` and `session status` says so; its disk lived on that server, so run `asp session start --force`.
 - The pod-daemon kills a command after its exec timeout (30 s by default, `--exec-timeout-secs` in the guest image). Raise it in the image for long builds or test suites.
 - Guest images built before `workspace-virtiofs.service` don't auto-mount `/workspace`. Run `mkdir -p /workspace && mount -t virtiofs workspace /workspace` once through the wrapper, or rebuild the rootfs.
 - No `--workspace`? The agent still works, but only on the guest's own disk; the host-side edit tools and the shell will see different files.
@@ -391,6 +396,7 @@ Only the most common settings. Full lists live in each component's README.
 | `ASP_SCHED_POLICY` | CP | `spread` (default) or `binpack`. |
 | `ASP_SCHED_CPU_OVERCOMMIT` | CP | vCPUs per physical core (default `4`); memory is never overcommitted. |
 | `--capacity-cpu` / `--capacity-mem-mib` / `--max-sandboxes` | node | What the node offers; detected from the host by default. |
+| `ASP_NODE_STALE_AFTER` / `ASP_NODE_FAILOVER_AFTER` | CP | A silent node leaves placement after `90s`; its sandboxes fail after `5m`. |
 
 Reference: [`cli/README.md`](cli/README.md) · [`control-plane/README.md`](control-plane/README.md) · [`node-agent/README.md`](node-agent/README.md) · [`pod-daemon/README.md`](pod-daemon/README.md).
 
@@ -405,7 +411,8 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Dry-run | `FakeVMM` exercises the control plane only. No KVM, no isolation. |
 | nftables | `soft` mode tolerates missing root; `enforce` needs privileges. CI does not prove bypass resistance. |
 | Attestation | Software signature (`ASP_ATTEST_KEY`), not TPM/SEV. |
-| Leases / fencing | TTL leases plus a stub `FenceProvider`. Not real BMC STONITH. |
+| Fencing | Lost-node failover calls a `FenceProvider` (the webhook works; Redfish and IPMI are stubs). Not real BMC STONITH. |
+| Exec timeouts | The node agent still ends a streamed exec after 60 s, a non-PTY command silent for 30 s gets a 502, and the guest kills commands after `--exec-timeout-secs` (30 s). See [timeouts](control-plane/README.md#timeouts-hacia-el-node-agent). |
 | Idle timeout | Off by default. Does not delete the local session file. |
 | `--local-net` | Real `ip`/`wg` commands on node and client; needs `wireguard-tools` and `CAP_NET_ADMIN`. End-to-end packet flow not yet lab-tested. |
 | Workspace (virtiofs) | Auto-mount ships in newly built guest images; older images need `mount -t virtiofs workspace /workspace`. No KVM test in CI. |
@@ -420,12 +427,12 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 
 ```text
 .
-├── cli/              asp CLI (sandbox · session · auth)
-├── control-plane/    API, store + SQL migrations, PKI, OIDC, attest, leases, local-net
-├── node-agent/       reconciler, VMM drivers, TAP, nft, egress proxy, vsock, virtiofs, WireGuard
+├── cli/              asp CLI (sandbox · session · auth · node)
+├── control-plane/    API, scheduler, node monitor, store + SQL migrations, PKI, OIDC, attest, local-net
+├── node-agent/       reconciler, VMM drivers, capacity, host cleanup, TAP, nft, egress proxy, vsock, virtiofs, WireGuard
 ├── pod-daemon/       in-guest exec daemon (Rust)
 ├── images/guest/     Debian rootfs, systemd/OpenRC units, vsock SSH-agent proxy
-├── scripts/          smoke tests, rootfs build, release pack, nft helpers, diagram generation
+├── scripts/          smoke tests, rootfs build, release pack, nft helpers, systemd units, diagram generation
 ├── docs/             architecture, ADRs, ops guides, design notes
 ├── docker-compose.yml  Postgres for local development
 └── Makefile
@@ -482,6 +489,7 @@ Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 ```bash
 make test             # all unit tests (Go modules + Rust + guest helper)
 make smoke            # control-plane / node-agent smoke scripts
+make smoke-multi-node # two dry-run nodes: placement, cordon, node loss, agent restart
 make smoke-asp        # CLI end-to-end (dry-run)
 make smoke-asp-auth   # CLI against an IdP lab
 make pack             # release tarball

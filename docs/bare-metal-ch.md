@@ -275,7 +275,7 @@ docker compose up -d postgres
 export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 ```
 
-Migraciones `001`–`006` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation).
+Migraciones `001`–`013` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`).
 
 ### 4.2 TLS + client CA + bootstrap
 
@@ -614,6 +614,11 @@ Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`).
 7. **Egress (política)**
    - [ ] `PUT /v1/tenants/{id}/egress` + check allow/deny
    - [ ] Node `--egress-enforce`
+8. **Varios nodos (si aplica)** — [`ops-multi-node.md`](ops-multi-node.md)
+   - [ ] `asp node list`: cada nodo `SCHEDULABLE yes`, con la capacidad esperada
+   - [ ] CP en otro host: `--agent-tls-listen` en el nodo y exec por mTLS (sin `9100` abierto)
+   - [ ] `asp node cordon` → las sandboxes nuevas van a otro nodo; `uncordon` lo devuelve
+   - [ ] Unit `scripts/systemd/asp-node-agent.service` instalada (`KillMode=control-group`)
 
 Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 

@@ -441,7 +441,7 @@ Qué **sigue** sin estar demostrado (límite honesto):
 - No hay temporizador de keepalive de N ventanas en el nodo. El cliente pone `persistent-keepalive 25` en su `wg set`. La caída de control plane sigue siendo explícita: `down`, stop, idle, o un grant caducado (eso pasa a `withdrawn`, no al proxy). El idle reap no borra el iface del portátil; borra el del nodo. El del portátil cae con `down` o `stop`.
 - FakeVMM en los tests del reconciler guarda el plan en memoria y no ejecuta `ip`. El applier de producción sí. No hay forwarding ni DNS de casa probados.
 - No hay relay de bytes en el control plane, ni excepciones por CIDR, ni fallback al proxy.
-- `dial` sale de `ASP_LOCAL_NET_DIAL` (vacío si no está). Sin endpoint el cliente no tiene a quién marcar y el egress sigue hundido.
+- `dial` sale del `local_net_dial` del nodo de la sandbox (`--local-net-dial`, [ADR-0011](0011-multi-node.md)) y, si el nodo no lo declara, de `ASP_LOCAL_NET_DIAL` (vacío si no está). Sin endpoint el cliente no tiene a quién marcar y el egress sigue hundido.
 
 ## Referencias cruzadas
 

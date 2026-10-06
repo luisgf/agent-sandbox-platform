@@ -29,7 +29,9 @@ export ASP_ENROLL_LISTEN=127.0.0.1:8081   # solo loopback / red de gestión
 (cd control-plane && go run ./cmd/api)
 ```
 
-El node-agent hace el enroll inicial contra el enroll listener (o vía túnel/ops) y después habla mTLS al listener principal.
+El node-agent hace el enroll inicial contra el enroll listener (`--enroll-url`; `--control-plane-ca` si el certificado del CP no es de una CA del sistema) y después habla mTLS al listener principal.
+
+> **Actualizado (ADR-0011):** con `ASP_CLIENT_CA` el CN del certificado del nodo se compara con el nodo para el que actúa cada ruta (403 si es otro). El canal también es mTLS en el otro sentido: el CP llama al `--agent-tls-listen` del nodo con su propio certificado de cliente. Ver [ADR-0011](adr/0011-multi-node.md).
 
 ## Límites honestos
 

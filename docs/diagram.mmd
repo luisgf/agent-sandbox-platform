@@ -5,8 +5,8 @@ flowchart TB
   end
 
   subgraph CP["Control plane (Go)"]
-    API["HTTP API<br/>sandboxes · nodes · exec"]
-    AUTH["API keys · mTLS enroll<br/>cert rotate/revoke"]
+    API["HTTP API<br/>sandboxes · nodes · exec<br/>scheduler · node monitor"]
+    AUTH["API keys · IdP JWT · mTLS<br/>node identity · cert rotate/revoke"]
     DB[("PostgreSQL<br/>state · events · leases")]
     OIDC["OIDC / JWKS<br/>mint + key prev"]
     ATTEST["Attestation verify<br/>Fence / STONITH"]
@@ -16,7 +16,7 @@ flowchart TB
     API --> ATTEST
   end
 
-  subgraph NODE["Nodo bare metal / VM"]
+  subgraph NODE["Nodo × N (uno por servidor)"]
     NA["Node agent (Go)<br/>reconciler · FakeVMM/CH"]
     VMM["Cloud Hypervisor<br/>socket /run/asp/ch-id.sock"]
     NFT["nftables redirect<br/>HTTP/DNS soft|enforce"]
@@ -45,6 +45,6 @@ flowchart TB
 
   IDE -->|"HTTPS + API key"| API
   ASP -->|"HTTPS + API key"| API
-  API -->|"mTLS desired state"| NA
+  API <-->|"mTLS en los dos sentidos<br/>estado deseado · exec"| NA
   NA -->|"attested token"| OIDC
   EP -->|"allowlist only"| NET["Internet"]

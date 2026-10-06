@@ -2,7 +2,7 @@
 
 Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecimiento post-MVP (2b–2f). Cada fase hecha incluye qué entregó, por qué importaba y gaps residuales.
 
-Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada). Red local bajo demanda (túnel completo de la sesión, default off, sin CIDR en v1): [ADR-0010](adr/0010-on-demand-local-net.md) (comandos `ip`/`wg` por sesión; sin lab de paquetes).
+Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). La parte multi-nodo de la Fase 3 (3m.*) está hecha: [ADR-0011](adr/0011-multi-node.md). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada). Red local bajo demanda (túnel completo de la sesión, default off, sin CIDR en v1): [ADR-0010](adr/0010-on-demand-local-net.md) (comandos `ip`/`wg` por sesión; sin lab de paquetes).
 
 **Dirección de producto (agentes):** el aislamiento se usa en una **sesión** larga (un sandbox: `owner_sub`, workspace del guest, egress, idle), no con create→exec→destroy por comando de shell. [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md). `asp sandbox run` sigue siendo la primitiva de CI/ops.
 
@@ -148,7 +148,7 @@ Cierre shippable del MVP:
 ## Fase 2c — Seguridad endurecida
 
 1. **Remote attestation (MVP práctico)** — `BootStatement` firmado ECDSA (`ASP_ATTEST_KEY`); APIs attest/verify; claim OIDC opcional. Interfaz `Attestor` para TPM/SEV futuro.
-2. **FenceProvider** — Noop, HTTPWebhook, Redfish/IPMI stubs; al reclaim de `running` con lease expirado.
+2. **FenceProvider** — Noop, HTTPWebhook, Redfish/IPMI stubs; al reclaim de `running` con lease expirado. Desde 3m.3 ya no hay reclaim entre nodos: lo invoca el monitor de nodos antes de fallar las sandboxes de un nodo perdido.
 3. **Proxy hardening** — token bucket; body limit; deny non-HTTP schemes; audit JSON; MITM opcional off-by-default.
 
 **Qué entregó / por qué importaba:** evidencia de boot medible en software; gancho de fence sin fingir BMC; proxy listo para abuso.
@@ -279,6 +279,10 @@ Varios servidores de microVMs ([ADR-0011](adr/0011-multi-node.md), ops: [`ops-mu
 | **3m.1** | Identidad de nodo atada al cert en cada ruta; mTLS plano de control → nodo (`--agent-tls-listen`); HTTP plano solo en loopback; secretos de fencing fuera de las respuestas | ✅ |
 | **3m.2** | Colocación por capacidad al crear (`spread`/`binpack`, CPU 4×, 503 sin hueco); trabajo solo para el nodo asignado; cordon; capacidad real del host; `asp node` | ✅ |
 | **3m.3** | Detección de nodos caídos (`offline` a 90 s, failover a 5 min), fallo de sus sandboxes, fencing, autodefensa del nodo, transiciones validadas, reinicio del agente | ✅ Sin lab KVM multi-servidor |
+| **3m.4** | Tras reiniciar, el node-agent borra lo que dejó el proceso anterior (VMs, TAPs, túneles, discos); unit systemd `asp-node-agent.service` con `KillMode=control-group` | ✅ |
+| **3m.5** | Exec en streaming sin corte en el plano de control (timeouts por fase hacia el agente) | ✅ Plano de control. Pendiente en el node-agent: corta a los 60 s y un comando sin PTY que calla 30 s recibe 502 |
+
+Relacionado, fuera de 3m: el proxy de identidad toma la sandbox de la conexión vsock del guest y limita el tamaño de sus peticiones ([ADR-0003](adr/0003-identity.md) § 2).
 
 - Métricas/SLOs; caos; fencing BMC de producción endurecido.
 - Attestors hardware (TPM/SEV) vía `Attestor`.
