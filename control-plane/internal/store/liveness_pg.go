@@ -72,7 +72,7 @@ func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince tim
 		)
 		UPDATE sandboxes s SET
 		    state = CASE WHEN v.state='stopping' THEN 'stopped' ELSE 'failed' END,
-		    state_version = s.state_version+1, updated_at=$3, node_lease_until=NULL, stop_reason=$4,
+		    state_version = s.state_version+1, updated_at=$3, stop_reason=$4,
 		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		FROM victims v WHERE s.id = v.id
@@ -125,7 +125,7 @@ func (p *PostgresStore) FailUnassignedRequested(createdBefore time.Time, reason 
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := tx.Query(ctx, `
 		UPDATE sandboxes SET state='failed', state_version=state_version+1, updated_at=$2,
-		    stop_reason=$3, node_lease_until=NULL,
+		    stop_reason=$3,
 		    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		WHERE state='requested' AND (node_id IS NULL OR node_id='') AND created_at < $1
@@ -214,7 +214,7 @@ func failRestartOrphansTx(ctx context.Context, tx pgx.Tx, nodeID string, now tim
 		)
 		UPDATE sandboxes s SET
 		    state = CASE WHEN v.state='stopping' THEN 'stopped' ELSE 'failed' END,
-		    state_version = s.state_version+1, updated_at=$2, node_lease_until=NULL, stop_reason=$3,
+		    state_version = s.state_version+1, updated_at=$2, stop_reason=$3,
 		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		FROM victims v WHERE s.id = v.id

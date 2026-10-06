@@ -4,7 +4,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 )
 
 func withAutoProvision(t *testing.T) {
@@ -365,99 +364,18 @@ func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range work {
+	for _, w := range work.Sandboxes {
 		if w.ID == sb.ID {
 			t.Fatalf("stopped sandbox still in work: %+v", w)
 		}
 	}
-}
-
-func TestMemoryStoreLeaseRenewAndExpiryReclaim(t *testing.T) {
-	t.Setenv("ASP_AUTO_PROVISION", "0")
-	s := newMemoryStoreWithNodes(t, "node-a")
-	sb, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := s.ClaimSandbox(sb.ID, "node-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claimed.NodeLeaseUntil == nil {
-		t.Fatal("expected lease after claim")
-	}
-	running, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "up")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if running.NodeLeaseUntil == nil {
-		t.Fatal("expected lease after running")
-	}
-
-	renewed, err := s.RenewSandboxLease(sb.ID, "node-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if renewed.NodeLeaseUntil == nil || !renewed.NodeLeaseUntil.After(time.Now().UTC()) {
-		t.Fatalf("renew lease: %+v", renewed.NodeLeaseUntil)
-	}
-	if _, err := s.RenewSandboxLease(sb.ID, "node-b"); err == nil {
-		t.Fatal("other node renew should conflict")
-	}
-
-	// Force expire
-	s.mu.Lock()
-	got := s.sandboxes[sb.ID]
-	past := time.Now().UTC().Add(-time.Minute)
-	got.NodeLeaseUntil = &past
-	s.sandboxes[sb.ID] = got
-	s.mu.Unlock()
-
-	reclaimed, err := s.ReclaimExpiredLeases(time.Now().UTC(), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reclaimed) != 1 || reclaimed[0].State != SandboxFailed {
-		t.Fatalf("reclaim failed: %+v", reclaimed)
-	}
-
-	// Re-request clears the node: the row is never handed to another node, since
-	// only the scheduler assigns nodes (ADR-0011).
-	sb2, err := s.CreateSandbox(CreateSandboxInput{
-		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ClaimSandbox(sb2.ID, "node-a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.UpdateSandboxStatus(sb2.ID, SandboxRunning, ""); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	got = s.sandboxes[sb2.ID]
-	got.NodeLeaseUntil = &past
-	s.sandboxes[sb2.ID] = got
-	s.mu.Unlock()
-
-	reclaimed, err = s.ReclaimExpiredLeases(time.Now().UTC(), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reclaimed) != 1 || reclaimed[0].State != SandboxRequested || reclaimed[0].NodeID != nil {
-		t.Fatalf("re-request: %+v", reclaimed)
-	}
-	if _, err := s.ClaimSandbox(sb2.ID, "node-b"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("an unassigned sandbox must not be claimable: %v", err)
-	}
-	work, _ := s.ListNodeWork("node-b")
-	if len(work) != 0 {
-		t.Fatalf("unassigned sandboxes are not handed out: %+v", work)
+	for _, id := range work.Assigned {
+		if id == sb.ID {
+			t.Fatalf("stopped sandbox still assigned to the node")
+		}
 	}
 }
+
 func TestMemoryStoreRotateAndRevokeCert(t *testing.T) {
 	s := NewMemoryStore()
 	_, err := s.EnrollNode(EnrollNodeInput{

@@ -68,7 +68,6 @@ func (m *MemoryStore) FailNodeSandboxes(nodeID, reason string, silentSince time.
 		sb.State = to
 		withdrawLocalNetFields(&sb)
 		sb.StopReason = reason
-		sb.NodeLeaseUntil = nil
 		sb.StateVersion++
 		sb.UpdatedAt = now
 		m.sandboxes[id] = sb

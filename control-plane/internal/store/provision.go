@@ -33,12 +33,6 @@ func ValidAgentTransition(from, to SandboxState) bool {
 	return true
 }
 
-// leaseRenewable: a node keeps its lease only while the sandbox is active on it.
-// A 409 on renew tells the node to stop its local VM (self-fencing).
-func leaseRenewable(state SandboxState) bool {
-	return state == SandboxStarting || state == SandboxRunning || state == SandboxStopping
-}
-
 // IsActiveLifecycle is true for states that Destroy should move to stopping.
 func IsActiveLifecycle(state SandboxState) bool {
 	switch state {

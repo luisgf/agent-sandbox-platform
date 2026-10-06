@@ -196,9 +196,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 }
 
 func (r *Reconciler) tick(ctx context.Context) {
-	// Soft lease renew for sandboxes this node already runs (multi-node fencing).
-	r.renewLocalLeases(ctx)
-
 	work, err := r.CP.ListWork(ctx, r.NodeID)
 	if err != nil {
 		if cpclient.IsNotFound(err) && r.OnUnknownNode != nil && time.Since(r.lastUnknownNode) >= unknownNodeEvery {
@@ -210,7 +207,7 @@ func (r *Reconciler) tick(ctx context.Context) {
 		r.Logger.Warn("list work failed", "error", err)
 		return
 	}
-	for _, sb := range work {
+	for _, sb := range work.Sandboxes {
 		switch sb.State {
 		case "requested", "starting", "running":
 			if sb.State == "running" && !sb.LocalNet {
@@ -225,23 +222,31 @@ func (r *Reconciler) tick(ctx context.Context) {
 			}
 		}
 	}
+	r.fenceUnassigned(ctx, work.Assigned)
 }
 
-func (r *Reconciler) renewLocalLeases(ctx context.Context) {
+// fenceUnassigned stops every local VM the control plane no longer assigns to
+// this node: it failed the sandbox over (node lost), destroyed it, or never
+// placed it here. Two copies of a sandbox must not run. A nil set comes from
+// a control plane that does not send it; then nothing is stopped.
+func (r *Reconciler) fenceUnassigned(ctx context.Context, assigned []string) {
+	if assigned == nil {
+		return
+	}
+	keep := make(map[string]bool, len(assigned))
+	for _, id := range assigned {
+		keep[id] = true
+	}
 	r.mu.Lock()
-	ids := make([]string, 0, len(r.handles))
+	var gone []string
 	for id := range r.handles {
-		ids = append(ids, id)
+		if !keep[id] {
+			gone = append(gone, id)
+		}
 	}
 	r.mu.Unlock()
-	for _, id := range ids {
-		if _, err := r.CP.RenewLease(ctx, id, r.NodeID); err != nil {
-			if cpclient.IsConflict(err) {
-				r.selfFence(ctx, id, "lease renewal refused: "+err.Error())
-				continue
-			}
-			r.Logger.Warn("renew lease failed", "sandbox_id", id, "error", err)
-		}
+	for _, id := range gone {
+		r.selfFence(ctx, id, "the control plane no longer assigns it to this node")
 	}
 }
 

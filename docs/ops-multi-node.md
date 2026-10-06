@@ -98,7 +98,7 @@ El nodo debe salir como `SCHEDULABLE yes`.
 
 - **No hay migración.** El disco del guest vive en su servidor: una sesión perdida se vuelve a abrir (`asp session start --force`). `asp session status` lo explica.
 - **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
-- **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: al renovar el lease recibe 409 y para esas VMs.
+- **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: no aparecen en el conjunto `assigned` de su siguiente sondeo de `/work` y el agente para esas VMs.
 - **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` fallan con `node_agent_restarted` y las que estaban arrancando se arrancan de nuevo. Las VMs tampoco siguen corriendo: la unit las para con el agente (`KillMode=control-group`), y el agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior: VMs, TAPs, túneles y discos ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
 
 ## Mantenimiento

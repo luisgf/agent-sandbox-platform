@@ -136,7 +136,7 @@ Cierre shippable del MVP:
 ## Fase 2b — Post-MVP slices
 
 1. **Egress HTTP forward proxy** — `--egress-proxy-listen`; DNS sink opcional; guest `HTTP_PROXY` → TAP host.
-2. **Multi-node leases** — migración `004`; claim/renew TTL 30s; **sin STONITH**.
+2. **Multi-node leases** — migración `004`; claim/renew TTL 30s; **sin STONITH**. (Retirados en 2026-10: el conjunto `assigned` del sondeo de `/work` los sustituye.)
 3. **OIDC key rotation** — `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`.
 
 **Qué entregó / por qué importaba:** el proxy dejó de ser solo “check API”; leases evitan double-claim ingenuo entre nodos.

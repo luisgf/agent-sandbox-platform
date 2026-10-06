@@ -149,7 +149,7 @@ For one-off jobs (CI, ops) there is still the single-shot primitive `asp sandbox
 
 ## Sandbox lifecycle
 
-The control plane stores *desired* state; the node agent reconciles it against what is actually running. Updates are guarded by `state_version`, and a node holds a renewable lease (~30 s) on each sandbox it claims.
+The control plane stores *desired* state; the node agent reconciles it against what is actually running. Updates are guarded by `state_version`. Each work poll also tells the node which sandboxes are still assigned to it, and the node stops any VM that is not: a sandbox failed over or destroyed never keeps running on a node that comes back.
 
 ```mermaid
 stateDiagram-v2

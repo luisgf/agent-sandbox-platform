@@ -84,9 +84,14 @@ type fakeCP struct {
 	srv   *httptest.Server
 	mu    sync.Mutex
 	boxes map[string]*fakeSandbox
-	// conflict makes renew-lease and status=running answer 409 for a sandbox,
-	// as the control plane does once it no longer assigns it to this node.
+	// conflict makes status=running answer 409 for a sandbox, as the control
+	// plane does once it no longer assigns it to this node.
 	conflict map[string]bool
+	// legacy omits the assigned set from /work, like a control plane that
+	// predates it.
+	legacy bool
+	// requests counts calls by "METHOD path".
+	requests map[string]int
 }
 
 type fakeSandbox struct {
@@ -97,7 +102,7 @@ type fakeSandbox struct {
 }
 
 func newFakeCP(t *testing.T, ids ...string) *fakeCP {
-	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}, conflict: map[string]bool{}}
+	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}, conflict: map[string]bool{}, requests: map[string]int{}}
 	for _, id := range ids {
 		f.boxes[id] = &fakeSandbox{ID: id, State: "requested"}
 	}
@@ -124,27 +129,31 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	f.requests[r.Method+" "+r.URL.Path]++
 	parts := strings.Split(r.URL.Path, "/")
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes/n1/work":
 		list := []any{}
+		assigned := []string{}
 		for _, b := range f.boxes {
-			if b.State == "requested" || b.State == "starting" || b.State == "stopping" {
+			switch b.State {
+			case "requested", "starting", "stopping":
 				list = append(list, b)
+				assigned = append(assigned, b.ID)
+			case "running", "paused":
+				assigned = append(assigned, b.ID)
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": list})
+		resp := map[string]any{"sandboxes": list}
+		if !f.legacy {
+			resp["assigned"] = assigned
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
 		b := f.boxes[parts[3]]
 		nid := "n1"
 		b.Node, b.State = &nid, "starting"
 		_ = json.NewEncoder(w).Encode(b)
-	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/renew-lease"):
-		if f.conflict[parts[3]] {
-			http.Error(w, `{"error":"conflict: not active on n1"}`, http.StatusConflict)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(f.boxes[parts[3]])
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
 		var body struct {
 			State  string `json:"state"`

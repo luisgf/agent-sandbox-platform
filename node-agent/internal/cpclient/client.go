@@ -283,31 +283,46 @@ type Sandbox struct {
 
 type workResponse struct {
 	Sandboxes []Sandbox `json:"sandboxes"`
+	Assigned  *[]string `json:"assigned"`
 }
 
-func (c *Client) ListWork(ctx context.Context, nodeID string) ([]Sandbox, error) {
+// Work is one poll of GET /v1/nodes/{id}/work.
+type Work struct {
+	// Sandboxes need this node's action: claim, start, stop, local-net.
+	Sandboxes []Sandbox
+	// Assigned lists every sandbox the control plane places on this node. Nil
+	// when the control plane predates the field: then nothing may be stopped
+	// for being missing from it.
+	Assigned []string
+}
+
+func (c *Client) ListWork(ctx context.Context, nodeID string) (Work, error) {
 	url := fmt.Sprintf("%s/v1/nodes/%s/work", c.BaseURL, nodeID)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return Work{}, err
 	}
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return Work{}, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode >= 300 {
-		return nil, httpError("work status", resp.StatusCode, raw)
+		return Work{}, httpError("work status", resp.StatusCode, raw)
 	}
 	var out workResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
+		return Work{}, err
 	}
-	if out.Sandboxes == nil {
-		return []Sandbox{}, nil
+	work := Work{Sandboxes: out.Sandboxes}
+	if work.Sandboxes == nil {
+		work.Sandboxes = []Sandbox{}
 	}
-	return out.Sandboxes, nil
+	if out.Assigned != nil {
+		work.Assigned = append([]string{}, *out.Assigned...)
+	}
+	return work, nil
 }
 
 func (c *Client) Claim(ctx context.Context, sandboxID, nodeID string) (Sandbox, error) {
@@ -382,30 +397,6 @@ func (c *Client) PublishLocalNetNode(ctx context.Context, sandboxID, publicKey s
 		return httpError("local-net node-public", resp.StatusCode, raw)
 	}
 	return nil
-}
-
-func (c *Client) RenewLease(ctx context.Context, sandboxID, nodeID string) (Sandbox, error) {
-	var out Sandbox
-	body, _ := json.Marshal(map[string]string{"node_id": nodeID})
-	url := fmt.Sprintf("%s/v1/sandboxes/%s/renew-lease", c.BaseURL, sandboxID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return out, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(httpReq)
-	if err != nil {
-		return out, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 300 {
-		return out, httpError("renew-lease status", resp.StatusCode, raw)
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return out, err
-	}
-	return out, nil
 }
 
 func (c *Client) Attest(ctx context.Context, sandboxID string, evidence any) error {

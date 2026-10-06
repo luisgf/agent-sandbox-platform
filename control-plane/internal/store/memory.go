@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -248,40 +249,6 @@ func (m *MemoryStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) AssignSandbox(id, nodeID string, state SandboxState) (Sandbox, error) {
-	m.mu.Lock()
-	sb, ok := m.sandboxes[id]
-	if !ok {
-		m.mu.Unlock()
-		return Sandbox{}, ErrNotFound
-	}
-	if nodeID == "" {
-		m.mu.Unlock()
-		return Sandbox{}, fmt.Errorf("%w: node_id required", ErrInvalidInput)
-	}
-	from := string(sb.State)
-	nid := nodeID
-	sb.NodeID = &nid
-	sb.State = state
-	sb.StateVersion++
-	sb.UpdatedAt = time.Now().UTC()
-	m.sandboxes[id] = sb
-	out := cloneSandbox(sb)
-	tenantID := sb.TenantID
-	m.mu.Unlock()
-
-	_ = m.EmitEvent(EmitEventInput{
-		SandboxID: id,
-		TenantID:  tenantID,
-		EventType: "sandbox.state_changed",
-		FromState: &from,
-		ToState:   strPtr(string(state)),
-		Actor:     "api",
-		Payload:   mustJSON(map[string]string{"node_id": nodeID}),
-	})
-	return out, nil
-}
-
 func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(nodeID) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id and node_id required", ErrInvalidInput)
@@ -303,9 +270,7 @@ func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	}
 	now := time.Now().UTC()
 	from := string(sb.State)
-	until := leaseUntil(now)
 	sb.State = SandboxStarting
-	sb.NodeLeaseUntil = &until
 	sb.StateVersion++
 	sb.UpdatedAt = now
 	m.sandboxes[id] = sb
@@ -325,25 +290,25 @@ func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
+func (m *MemoryStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	if strings.TrimSpace(nodeID) == "" {
-		return nil, fmt.Errorf("%w: node_id required", ErrInvalidInput)
+		return NodeWork{}, fmt.Errorf("%w: node_id required", ErrInvalidInput)
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]Sandbox, 0)
+	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}}
 	for _, sb := range m.sandboxes {
-		assigned := sb.NodeID != nil && *sb.NodeID == nodeID
-		switch {
-		case assigned && (sb.State == SandboxRequested || sb.State == SandboxStarting || sb.State == SandboxStopping):
-			out = append(out, cloneSandbox(sb))
-		case assigned && sb.LocalNet && sb.State == SandboxRunning:
-			// Running full-tunnel sessions stay visible so the node can move
-			// pending → up → withdrawn without ever restoring public egress.
-			out = append(out, cloneSandbox(sb))
+		if sb.NodeID == nil || *sb.NodeID != nodeID || !OccupiesNode(sb.State) {
+			continue
+		}
+		work.Assigned = append(work.Assigned, sb.ID)
+		if NeedsNodeAction(sb) {
+			work.Sandboxes = append(work.Sandboxes, cloneSandbox(sb))
 		}
 	}
-	return out, nil
+	sort.Slice(work.Sandboxes, func(i, j int) bool { return work.Sandboxes[i].CreatedAt.Before(work.Sandboxes[j].CreatedAt) })
+	sort.Strings(work.Assigned)
+	return work, nil
 }
 
 func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error) {
@@ -371,16 +336,9 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 	if state == SandboxFailed || state == SandboxStopped || state == SandboxStopping {
 		withdrawLocalNetFields(&sb)
 	}
-	if state == SandboxRunning || state == SandboxStarting {
-		until := leaseUntil(now)
-		sb.NodeLeaseUntil = &until
-	}
 	if state == SandboxRunning {
 		sb.LastActivityAt = now
 		sb.StopReason = ""
-	}
-	if state == SandboxStopped || state == SandboxFailed {
-		sb.NodeLeaseUntil = nil
 	}
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
@@ -400,82 +358,6 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		Actor:     "node-agent",
 		Payload:   mustJSON(payload),
 	})
-	return out, nil
-}
-
-func (m *MemoryStore) RenewSandboxLease(id, nodeID string) (Sandbox, error) {
-	if strings.TrimSpace(id) == "" || strings.TrimSpace(nodeID) == "" {
-		return Sandbox{}, fmt.Errorf("%w: id and node_id required", ErrInvalidInput)
-	}
-	m.mu.Lock()
-	sb, ok := m.sandboxes[id]
-	if !ok {
-		m.mu.Unlock()
-		return Sandbox{}, ErrNotFound
-	}
-	if sb.NodeID == nil || *sb.NodeID != nodeID {
-		m.mu.Unlock()
-		return Sandbox{}, fmt.Errorf("%w: not owned by %s", ErrConflict, nodeID)
-	}
-	if !leaseRenewable(sb.State) {
-		m.mu.Unlock()
-		return Sandbox{}, fmt.Errorf("%w: sandbox is %s, not active on %s", ErrConflict, sb.State, nodeID)
-	}
-	now := time.Now().UTC()
-	until := leaseUntil(now)
-	sb.NodeLeaseUntil = &until
-	sb.UpdatedAt = now
-	m.sandboxes[id] = sb
-	out := cloneSandbox(sb)
-	m.mu.Unlock()
-	return out, nil
-}
-
-func (m *MemoryStore) ReclaimExpiredLeases(now time.Time, reRequest bool) ([]Sandbox, error) {
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	m.mu.Lock()
-	type pending struct {
-		id, tenant, from string
-		to               SandboxState
-	}
-	var events []pending
-	out := make([]Sandbox, 0)
-	for id, sb := range m.sandboxes {
-		if sb.State != SandboxStarting && sb.State != SandboxRunning {
-			continue
-		}
-		if !leaseExpired(sb.NodeLeaseUntil, now) {
-			continue
-		}
-		from := string(sb.State)
-		if reRequest {
-			sb.State = SandboxRequested
-			sb.NodeID = nil
-			sb.NodeLeaseUntil = nil
-		} else {
-			sb.State = SandboxFailed
-			sb.NodeLeaseUntil = nil
-		}
-		sb.StateVersion++
-		sb.UpdatedAt = now
-		m.sandboxes[id] = sb
-		out = append(out, cloneSandbox(sb))
-		events = append(events, pending{id: id, tenant: sb.TenantID, from: from, to: sb.State})
-	}
-	m.mu.Unlock()
-	for _, e := range events {
-		_ = m.EmitEvent(EmitEventInput{
-			SandboxID: e.id,
-			TenantID:  e.tenant,
-			EventType: "sandbox.lease_expired",
-			FromState: &e.from,
-			ToState:   strPtr(string(e.to)),
-			Actor:     "lease",
-			Payload:   mustJSON(map[string]any{"re_request": reRequest}),
-		})
-	}
 	return out, nil
 }
 
@@ -614,7 +496,6 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 		sb.State = target
 		withdrawLocalNetFields(&sb)
 		sb.StopReason = StopReasonIdle
-		sb.NodeLeaseUntil = nil
 		sb.StateVersion++
 		sb.UpdatedAt = now
 		m.sandboxes[id] = sb
@@ -770,7 +651,6 @@ func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time) []l
 		sb.State = to
 		withdrawLocalNetFields(&sb)
 		sb.StopReason = StopReasonAgentRestarted
-		sb.NodeLeaseUntil = nil
 		sb.StateVersion++
 		sb.UpdatedAt = now
 		m.sandboxes[sid] = sb
@@ -1223,10 +1103,6 @@ func cloneSandbox(sb Sandbox) Sandbox {
 		nid := *sb.NodeID
 		sb.NodeID = &nid
 	}
-	if sb.NodeLeaseUntil != nil {
-		t := *sb.NodeLeaseUntil
-		sb.NodeLeaseUntil = &t
-	}
 	return sb
 }
 
@@ -1275,19 +1151,6 @@ func mustJSON(v any) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return b
-}
-
-// ExpireLeaseForTest sets node_lease_until in the past (unit tests only).
-func (m *MemoryStore) ExpireLeaseForTest(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sb, ok := m.sandboxes[id]
-	if !ok {
-		return
-	}
-	past := time.Now().UTC().Add(-time.Minute)
-	sb.NodeLeaseUntil = &past
-	m.sandboxes[id] = sb
 }
 
 func (m *MemoryStore) PutAttestation(input PutAttestationInput) (AttestationRecord, error) {

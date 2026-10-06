@@ -42,6 +42,28 @@ func occupyingStateNames() []string {
 	return out
 }
 
+// NodeWork is what a node agent gets on each poll: the sandboxes that need
+// action (NeedsNodeAction) and the ids of every sandbox assigned to the node
+// (OccupiesNode). A VM the node runs that is not in Assigned was failed over,
+// destroyed or never placed there: the node stops it.
+type NodeWork struct {
+	Sandboxes []Sandbox
+	Assigned  []string
+}
+
+// NeedsNodeAction reports whether a sandbox assigned to a node needs its node
+// agent to act: claim and start it, stop it, or follow a running full-tunnel
+// local-net session (pending → up → withdrawn).
+func NeedsNodeAction(sb Sandbox) bool {
+	switch sb.State {
+	case SandboxRequested, SandboxStarting, SandboxStopping:
+		return true
+	case SandboxRunning:
+		return sb.LocalNet
+	}
+	return false
+}
+
 // NodeUsage is what is placed on a node.
 type NodeUsage struct {
 	CPUMillis int64 `json:"cpu_millis"`

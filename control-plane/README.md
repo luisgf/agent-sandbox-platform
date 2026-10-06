@@ -15,9 +15,9 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | GET | `/v1/sandboxes/{id}` | Get |
 | GET | `/v1/sandboxes/{id}/events` | Audit trail |
 | POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`) |
-| POST | `/v1/sandboxes/{id}/claim` | Claim atómico del nodo asignado (+ lease 30s) |
+| POST | `/v1/sandboxes/{id}/claim` | Claim atómico del nodo asignado |
 | POST | `/v1/sandboxes/{id}/status` | Estado observado por el agente |
-| POST | `/v1/sandboxes/{id}/renew-lease` | Renueva `node_lease_until` |
+| POST | `/v1/sandboxes/{id}/renew-lease` | **410**: retirado; el conjunto `assigned` de `/work` lo sustituye |
 | POST | `/v1/sandboxes/{id}/attest` | Guarda evidencia de boot firmada (nodo) |
 | GET | `/v1/sandboxes/{id}/attestation` | Última atestación |
 | POST | `/v1/attestation/verify` | Verifica bundle sin persistir |
@@ -29,7 +29,7 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
 | POST | `/v1/nodes/register` | Registra/actualiza nodo |
 | POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
-| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`) |
+| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`) y `assigned`: las que el nodo debe seguir corriendo; para el resto |
 | POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin o API key de plataforma) |
 | POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin o API key de plataforma) |
 | GET | `/v1/nodes` | Lista nodos con asignado/ofrecido, si son planificables y cuándo caduca su certificado (`cert_not_after`) (admin, operador o API key de plataforma) |
@@ -103,7 +103,7 @@ Cada petición deja una línea `request` con método, ruta, estado, bytes, durac
 
 **Por qué.** Una sesión `asp session` (o un create olvidado) deja la microVM encendida hasta un `DELETE`. El reaper del control-plane marca `stopping` (o `stopped` si nunca se asignó nodo) cuando no hay actividad durante el umbral, y el reconciler del nodo apaga la VM.
 
-**Qué cuenta como actividad.** `last_activity_at` se mueve en: create, transición a `running` (start) y **exec con respuesta correcta del node-agent** (aunque el proceso del guest salga ≠ 0). No cuentan: GET, heartbeat, renovación de lease, ni un exec que ni siquiera llega al guest.
+**Qué cuenta como actividad.** `last_activity_at` se mueve en: create, transición a `running` (start) y **exec con respuesta correcta del node-agent** (aunque el proceso del guest salga ≠ 0). No cuentan: GET, heartbeat, sondeos de `/work`, ni un exec que ni siquiera llega al guest.
 
 **Cómo se configura.** Default del binario: apagado. En lab/producción:
 

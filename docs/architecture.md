@@ -32,7 +32,7 @@ Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts
 | Canal CP → nodo | `exec` sin autenticar en la red | Loopback por defecto; en otro host, mTLS con `ServerName` = node id y solo el cert del CP (ADR-0011) |
 | Egress corporativo | Guest bypasea proxy | Forward proxy + DNS sink + nft `asp_egress` (enforce en bare-metal) |
 | Atribución de flujos a humano | Tras NAT no se sabe qué empleado dialó | Futuro: ADR-0008 (proxy + IP/mark → `owner_sub`); no implementado |
-| Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Solo el nodo asignado reclama; transiciones validadas; monitor de nodos + FenceProvider; el nodo para sus VMs si el CP rechaza su lease (≠ STONITH BMC real) ([ADR-0011](adr/0011-multi-node.md)) |
+| Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Solo el nodo asignado reclama; transiciones validadas; monitor de nodos + FenceProvider; el nodo para las VMs que ya no están en su conjunto `assigned` (≠ STONITH BMC real) ([ADR-0011](adr/0011-multi-node.md)) |
 | Plano de control | API anónima / path mal cableado | API keys; `ASP_MTLS_STRICT`; rutas públicas mínimas |
 
 **No cubierto (honestidad):** TPM/SEV hardware attestation; bypass-proof nft medido en CI sin KVM; Windows guests; “Kubernetes NetworkPolicy como frontera”.
@@ -46,7 +46,7 @@ Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts
                             │ HTTPS
 ┌─ Control plane ───────────┴───────────────────────────┐
 │  Autoridad de tenancy, cuotas, JWKS, attest verify,   │
-│  leases/fence. Store Postgres (o MemoryStore lab).    │
+│  fencing. Store Postgres (o MemoryStore lab).         │
 └───────────────────────────┬───────────────────────────┘
                             │ mTLS en los dos sentidos
                             │ (cert del nodo ↔ cert del CP)
@@ -76,7 +76,7 @@ Responsabilidades:
 - Estado deseado de sandboxes y journal `sandbox_events`.
 - Inventario de nodos (enroll, register, heartbeat, rotate/revoke).
 - Planificador por capacidad: elige el nodo al crear (filtros de vida, cordon, perfil, CPU/memoria/huecos; `spread` o `binpack`) y rechaza con 503 si nada cabe ([ADR-0011](adr/0011-multi-node.md), [`ops-multi-node.md`](ops-multi-node.md)).
-- Work queue: `GET /v1/nodes/{id}/work` (solo las sandboxes de ese nodo) + claim/status/renew-lease.
+- Work queue: `GET /v1/nodes/{id}/work` (solo las sandboxes de ese nodo, y el conjunto `assigned`) + claim/status.
 - Proxy de exec hacia `agent_endpoint` del nodo (`POST /v1/sandboxes/{id}/exec`): HTTP en loopback, o HTTPS con mTLS hacia un nodo en otro host ([ADR-0011](adr/0011-multi-node.md)).
 - Egress policies por tenant; JWKS público.
 
@@ -120,10 +120,10 @@ Con `ASP_AUTO_PROVISION=0` (default prod/bare-metal):
 
 1. Cliente `POST /v1/sandboxes` → el planificador la coloca en un nodo con hueco → `requested` con `node_id` (+ eventos `sandbox.created`, `sandbox.placed`). Si ninguno cabe: **503** con los motivos; pin a un nodo desconocido o caído: **409**.
 2. El node-agent asignado (`--reconcile`) la ve en `GET …/work`; los demás nodos no.
-3. `POST …/claim` atómico, solo del nodo asignado → `starting` + lease TTL (~30s).
+3. `POST …/claim` atómico, solo del nodo asignado → `starting`.
 4. TAP (si `--tap-auto`) → VMM `Start` → dialer vsock → `POST …/status` `running`.
 5. Attestation opcional: nodo firma `BootStatement`, CP `POST …/attest`.
-6. Heartbeat + `renew-lease` mientras corre. Si el CP responde 409 (la sandbox ya no es de ese nodo), el nodo para la VM.
+6. Heartbeat y sondeo de `/work` mientras corre. Si la sandbox sale del conjunto `assigned` del nodo (o el CP responde 409 a un `status`), el nodo para la VM.
 7. `DELETE /v1/sandboxes/{id}` → `stopping` → VMM Stop + cleanup TAP/sockets → `stopped`. Antes del claim, directamente `stopped`.
 8. Si el nodo se pierde, el monitor la pasa a `failed` (`node_lost`); ver [Fallos y recuperación](#fallos-y-recuperación).
 
@@ -177,7 +177,7 @@ Tablas / entidades principales (migraciones `001`–`016`):
 
 | Entidad | Campos clave |
 |---|---|
-| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until, **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011) |
+| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until (sin uso desde 2026-10), **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011) |
 | `sandbox_events` | journal append-only; **actor_sub** (007) |
 | `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, cert_not_after (016), fence_*, revoked_at |
 | `node_events` | journal de nodos: registro, cordon, `node.offline`/`node.online`, fencing |
@@ -195,14 +195,14 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 |---|---|
 | Nodo sin señales > `ASP_NODE_STALE_AFTER` (90 s) | Sale del reparto y pasa a `offline` |
 | Nodo sin señales > `ASP_NODE_FAILOVER_AFTER` (5 min) o revocado | `FenceProvider` (si tiene sandboxes, una vez por caída); sus sandboxes → `failed` (`node_lost`), `stopping` → `stopped`. No se mueven |
-| El nodo vuelve tras una partición | Vuelve a `ready`; sus renovaciones de lease reciben 409 y para esas VMs |
+| El nodo vuelve tras una partición | Vuelve a `ready`; sus sandboxes fallidas ya no están en su conjunto `assigned` y para esas VMs |
 | Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `failed` (`node_agent_restarted`); `requested`/`starting` las arranca el proceso nuevo. Antes de registrarse, el proceso nuevo para y borra las VMs, TAPs, túneles y discos del anterior; la unit systemd (`KillMode=control-group`) ya las para con el agente |
 | Reinicio del plano de control | Gracia: el silencio se cuenta desde el arranque del monitor |
 | SoftFail TAP/nft | Log warning; CH puede fallar al abrir TAP; **no** hay frontera de red real |
 | Attest/JWKS caído | Mint OIDC falla cerrado |
 | FakeVMM dry-run | Todo el plano de control funciona; **cero** aislamiento KVM |
 
-**Lease software ≠ STONITH.** BMC out-of-band real sigue siendo ops (documentado en bare-metal §8b–8c). Detalle: [`ops-multi-node.md`](ops-multi-node.md).
+**Autodefensa del nodo ≠ STONITH.** Un nodo particionado sigue corriendo sus VMs hasta que vuelve. BMC out-of-band real sigue siendo ops (documentado en bare-metal §8b–8c). Detalle: [`ops-multi-node.md`](ops-multi-node.md).
 
 ## Dry-run vs bare-metal
 
