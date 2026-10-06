@@ -123,6 +123,9 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !sandboxVisible(w, r, sb) {
+		return
+	}
 	p, ok := IdPPrincipalFromContext(r.Context())
 	if !allowLocalNetOwner(p, ok, sb) {
 		writeError(w, http.StatusForbidden, "local_net grant requires owner_sub")
@@ -204,6 +207,9 @@ func (s *Server) HeartbeatLocalNet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !sandboxVisible(w, r, sb) {
+		return
+	}
 	p, ok := IdPPrincipalFromContext(r.Context())
 	if !allowLocalNetOwner(p, ok, sb) {
 		writeError(w, http.StatusForbidden, "local_net heartbeat requires owner_sub")
@@ -236,6 +242,9 @@ func (s *Server) DetachLocalNet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !sandboxVisible(w, r, sb) {
 		return
 	}
 	p, ok := IdPPrincipalFromContext(r.Context())

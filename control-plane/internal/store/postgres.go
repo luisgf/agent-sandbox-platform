@@ -1306,14 +1306,14 @@ func (p *PostgresStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
 func (p *PostgresStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
 	ctx := context.Background()
 	row := p.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, name, key_prefix, secret_hash,
+		SELECT id, tenant_id, name, scope, key_prefix, secret_hash,
 		       last_used_at, expires_at, revoked_at, created_at
 		FROM api_keys
 		WHERE secret_hash=$1 AND revoked_at IS NULL
 		  AND (expires_at IS NULL OR expires_at > now())`, secretHash)
 	var k ApiKey
 	err := row.Scan(
-		&k.ID, &k.TenantID, &k.Name, &k.KeyPrefix, &k.SecretHash,
+		&k.ID, &k.TenantID, &k.Name, &k.Scope, &k.KeyPrefix, &k.SecretHash,
 		&k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt, &k.CreatedAt,
 	)
 	if err != nil {
@@ -1325,9 +1325,13 @@ func (p *PostgresStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
 	return k, nil
 }
 
-func (p *PostgresStore) EnsureAPIKey(tenantID, name, keyPrefix, secretHash string) (ApiKey, error) {
+func (p *PostgresStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error) {
 	if tenantID == "" || name == "" || keyPrefix == "" || secretHash == "" {
 		return ApiKey{}, fmt.Errorf("%w: tenant_id, name, key_prefix, secret_hash required", ErrInvalidInput)
+	}
+	scope, err := normalizeScope(scope)
+	if err != nil {
+		return ApiKey{}, err
 	}
 	ctx := context.Background()
 	if err := p.ensureTenant(ctx, tenantID); err != nil {
@@ -1335,24 +1339,25 @@ func (p *PostgresStore) EnsureAPIKey(tenantID, name, keyPrefix, secretHash strin
 	}
 	// Return existing by tenant+name if present.
 	var k ApiKey
-	err := p.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, name, key_prefix, secret_hash,
+	err = p.pool.QueryRow(ctx, `
+		SELECT id, tenant_id, name, scope, key_prefix, secret_hash,
 		       last_used_at, expires_at, revoked_at, created_at
 		FROM api_keys WHERE tenant_id=$1 AND name=$2`, tenantID, name,
 	).Scan(
-		&k.ID, &k.TenantID, &k.Name, &k.KeyPrefix, &k.SecretHash,
+		&k.ID, &k.TenantID, &k.Name, &k.Scope, &k.KeyPrefix, &k.SecretHash,
 		&k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt, &k.CreatedAt,
 	)
 	if err == nil {
-		if k.SecretHash != secretHash || k.KeyPrefix != keyPrefix {
+		if k.SecretHash != secretHash || k.KeyPrefix != keyPrefix || k.Scope != scope {
 			_, uerr := p.pool.Exec(ctx, `
-				UPDATE api_keys SET secret_hash=$2, key_prefix=$3, revoked_at=NULL
-				WHERE id=$1`, k.ID, secretHash, keyPrefix)
+				UPDATE api_keys SET secret_hash=$2, key_prefix=$3, scope=$4, revoked_at=NULL
+				WHERE id=$1`, k.ID, secretHash, keyPrefix, scope)
 			if uerr != nil {
 				return ApiKey{}, uerr
 			}
 			k.SecretHash = secretHash
 			k.KeyPrefix = keyPrefix
+			k.Scope = scope
 			k.RevokedAt = nil
 		}
 		return k, nil
@@ -1363,15 +1368,15 @@ func (p *PostgresStore) EnsureAPIKey(tenantID, name, keyPrefix, secretHash strin
 	id := newID()
 	now := time.Now().UTC()
 	_, err = p.pool.Exec(ctx, `
-		INSERT INTO api_keys (id, tenant_id, name, key_prefix, secret_hash, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
-		id, tenantID, name, keyPrefix, secretHash, now,
+		INSERT INTO api_keys (id, tenant_id, name, scope, key_prefix, secret_hash, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		id, tenantID, name, scope, keyPrefix, secretHash, now,
 	)
 	if err != nil {
 		return ApiKey{}, err
 	}
 	return ApiKey{
-		ID: id, TenantID: tenantID, Name: name,
+		ID: id, TenantID: tenantID, Name: name, Scope: scope,
 		KeyPrefix: keyPrefix, SecretHash: secretHash, CreatedAt: now,
 	}, nil
 }

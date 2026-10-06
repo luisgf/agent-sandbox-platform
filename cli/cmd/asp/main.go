@@ -69,6 +69,7 @@ Usage:
 
 Global env:
   ASP_CP_URL              control-plane base URL (default http://127.0.0.1:8080)
+  ASP_TENANT              tenant for create/list/run (also --tenant); empty: your token's or key's tenant
   ASP_SESSION_DIR         named sessions dir (default ~/.cache/asp/sessions, mode 0700)
   ASP_SESSION_FILE        optional single-file override (ignores --name)
   ASP_API_KEY             Bearer API key (also --api-key) — lab without IdP
@@ -108,7 +109,7 @@ func addGlobalFlags(fs *flag.FlagSet, g *globalFlags) {
 	fs.StringVar(&g.cpURL, "cp-url", defURL, "control-plane base URL")
 	fs.StringVar(&g.apiKey, "api-key", defKey, "Bearer API key (env ASP_API_KEY)")
 	fs.StringVar(&g.idToken, "id-token", defID, "IdP access token (env ASP_ID_TOKEN)")
-	fs.StringVar(&g.tenant, "tenant", "tenant-demo", "tenant_id for create/list/run")
+	fs.StringVar(&g.tenant, "tenant", os.Getenv("ASP_TENANT"), "tenant_id for create/list/run (env ASP_TENANT); empty: the caller's tenant, or the control plane's default")
 	fs.DurationVar(&g.timeout, "timeout", 60*time.Second, "wait timeout for running state")
 	fs.BoolVar(&g.jsonOut, "json", false, "print raw JSON to stdout")
 }

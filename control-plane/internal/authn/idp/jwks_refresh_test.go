@@ -224,3 +224,47 @@ func TestRunDropsRemovedKeys(t *testing.T) {
 	}
 	t.Fatalf("a key removed from the IdP's JWKS still validates after %d fetches", js.count())
 }
+
+func TestValidateTenantClaim(t *testing.T) {
+	key := mustRSAKey(t)
+	const iss, kid = "https://idp.example.test", "k"
+	keys := map[string]*rsa.PublicKey{kid: &key.PublicKey}
+	exp := time.Now().Add(time.Hour).Unix()
+	tok := func(claims map[string]any) string {
+		claims["iss"], claims["sub"], claims["exp"] = iss, "alice", exp
+		return signRawToken(t, key, kid, claims)
+	}
+	plain, _ := NewValidatorWithPublicKeys(Config{Issuer: iss}, keys)
+	withDefault, _ := NewValidatorWithPublicKeys(Config{Issuer: iss, DefaultTenant: "acme"}, keys)
+	custom, _ := NewValidatorWithPublicKeys(Config{Issuer: iss, TenantClaim: "org"}, keys)
+
+	for _, tc := range []struct {
+		name   string
+		v      *Validator
+		claims map[string]any
+		want   string
+		err    bool
+	}{
+		{"string claim", plain, map[string]any{"tenant_id": "t1"}, "t1", false},
+		{"one-element array", plain, map[string]any{"tenant_id": []string{"t2"}}, "t2", false},
+		{"several tenants", plain, map[string]any{"tenant_id": []string{"t1", "t2"}}, "", true},
+		{"no claim, no default", plain, map[string]any{}, "", false},
+		{"no claim, default", withDefault, map[string]any{}, "acme", false},
+		{"claim wins over default", withDefault, map[string]any{"tenant_id": "t3"}, "t3", false},
+		{"custom claim name", custom, map[string]any{"org": "o1", "tenant_id": "ignored"}, "o1", false},
+	} {
+		p, err := tc.v.Validate(tok(tc.claims))
+		if (err != nil) != tc.err || p.TenantID != tc.want {
+			t.Errorf("%s: tenant=%q err=%v, want %q (error %v)", tc.name, p.TenantID, err, tc.want, tc.err)
+		}
+	}
+}
+
+func TestConfigFromEnvTenant(t *testing.T) {
+	t.Setenv("ASP_IDP_TENANT_CLAIM", "org")
+	t.Setenv("ASP_IDP_DEFAULT_TENANT", "acme")
+	cfg := ConfigFromEnv()
+	if cfg.TenantClaim != "org" || cfg.DefaultTenant != "acme" {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+}

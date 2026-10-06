@@ -82,7 +82,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	secret := "integration-bootstrap-key"
-	k, err := pg.EnsureAPIKey("default", "bootstrap", KeyPrefix(secret), HashAPIKeySecret(secret))
+	k, err := pg.EnsureAPIKey("default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), HashAPIKeySecret(secret))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,5 +121,32 @@ func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	}
 	if n, err := pg.HeartbeatNode("n1"); err != nil || n.State != "ready" {
 		t.Fatalf("heartbeat after re-enroll: node=%+v err=%v", n, err)
+	}
+}
+
+func TestPostgresAPIKeyScope(t *testing.T) {
+	pg := newPostgresTestStore(t)
+	secret := "scope-" + newID()
+	k, err := pg.EnsureAPIKey("tenant-scope", "scoped", APIKeyScopeTenant, KeyPrefix(secret), HashAPIKeySecret(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.Scope != APIKeyScopeTenant {
+		t.Fatalf("created scope=%q", k.Scope)
+	}
+	got, err := pg.LookupAPIKeyByHash(HashAPIKeySecret(secret))
+	if err != nil || got.Scope != APIKeyScopeTenant || got.TenantID != "tenant-scope" {
+		t.Fatalf("lookup: %+v %v", got, err)
+	}
+	// EnsureAPIKey promotes the same key to platform scope (the bootstrap key on upgrade).
+	if _, err := pg.EnsureAPIKey("tenant-scope", "scoped", APIKeyScopePlatform, KeyPrefix(secret), HashAPIKeySecret(secret)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = pg.LookupAPIKeyByHash(HashAPIKeySecret(secret))
+	if err != nil || got.Scope != APIKeyScopePlatform {
+		t.Fatalf("after promotion: %+v %v", got, err)
+	}
+	if _, err := pg.EnsureAPIKey("tenant-scope", "bad", "root", "x", "y"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("unknown scope: want ErrInvalidInput, got %v", err)
 	}
 }

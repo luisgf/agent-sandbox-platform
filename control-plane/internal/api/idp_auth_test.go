@@ -23,7 +23,7 @@ func testIdP(t *testing.T) (*rsa.PrivateKey, string, *idp.Validator) {
 	const iss = "https://idp.test.local"
 	const aud = "asp-api"
 	const kid = "lab-kid"
-	v, err := idp.NewValidatorWithPublicKeys(idp.Config{Issuer: iss, Audience: aud}, map[string]*rsa.PublicKey{
+	v, err := idp.NewValidatorWithPublicKeys(idp.Config{Issuer: iss, Audience: aud, DefaultTenant: "t1"}, map[string]*rsa.PublicKey{
 		kid: &key.PublicKey,
 	})
 	if err != nil {

@@ -49,7 +49,15 @@ type Config struct {
 	// AllowMissingExp accepts tokens without an exp claim (ASP_IDP_REQUIRE_EXP=0).
 	// Off by default: a token without exp would be valid forever.
 	AllowMissingExp bool
+	// TenantClaim names the claim with the user's tenant (ASP_IDP_TENANT_CLAIM,
+	// default "tenant_id"): a string, or an array with exactly one value.
+	TenantClaim string
+	// DefaultTenant is the tenant of tokens without TenantClaim
+	// (ASP_IDP_DEFAULT_TENANT), for single-tenant deployments.
+	DefaultTenant string
 }
+
+const defaultTenantClaim = "tenant_id"
 
 // Principal is the authenticated human (or service principal) from an IdP JWT.
 type Principal struct {
@@ -57,6 +65,9 @@ type Principal struct {
 	Email      string
 	Role       Role
 	DestroyAny bool // operator may destroy non-owned sandboxes (ADR-0007)
+	// TenantID is the tenant the principal acts within: TenantClaim, else
+	// DefaultTenant. Empty when neither applies; the API refuses such tokens.
+	TenantID string
 }
 
 // Validator verifies RS256 IdP JWTs against JWKS (fetched or static).
@@ -88,6 +99,8 @@ func ConfigFromEnv() Config {
 		Required: envTruthy("ASP_IDP_REQUIRED"),
 		// ASP_IDP_REQUIRE_EXP=0 is the escape hatch for IdPs that omit exp.
 		AllowMissingExp: envFalsy("ASP_IDP_REQUIRE_EXP"),
+		TenantClaim:     strings.TrimSpace(os.Getenv("ASP_IDP_TENANT_CLAIM")),
+		DefaultTenant:   strings.TrimSpace(os.Getenv("ASP_IDP_DEFAULT_TENANT")),
 	}
 	RoleConfigFromEnv(&cfg)
 	return cfg
@@ -125,6 +138,9 @@ func NewValidator(cfg Config) (*Validator, error) {
 	}
 	if strings.TrimSpace(cfg.DestroyAnyGroup) == "" {
 		cfg.DestroyAnyGroup = defaultDestroyAnyGroup
+	}
+	if strings.TrimSpace(cfg.TenantClaim) == "" {
+		cfg.TenantClaim = defaultTenantClaim
 	}
 	if len(cfg.RoleMap) == 0 && strings.TrimSpace(cfg.RolePrefix) == "" {
 		cfg.RolePrefix = defaultRolePrefix
@@ -404,7 +420,38 @@ func (v *Validator) Validate(token string) (Principal, error) {
 	}
 	roleValues := extractRoleClaim(cb, v.cfg.RoleClaim, claims)
 	role, destroyAny := v.cfg.MapRoles(roleValues)
-	return Principal{Sub: claims.Sub, Email: email, Role: role, DestroyAny: destroyAny}, nil
+	tenant, err := extractTenantClaim(cb, v.cfg.TenantClaim)
+	if err != nil {
+		return Principal{}, err
+	}
+	if tenant == "" {
+		tenant = strings.TrimSpace(v.cfg.DefaultTenant)
+	}
+	return Principal{Sub: claims.Sub, Email: email, Role: role, DestroyAny: destroyAny, TenantID: tenant}, nil
+}
+
+// extractTenantClaim reads the tenant claim: a string, or an array with one
+// value. Several values are refused rather than guessed.
+func extractTenantClaim(raw []byte, claim string) (string, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", nil
+	}
+	rb, ok := m[claim]
+	if !ok {
+		return "", nil
+	}
+	var values stringSliceFlex
+	if err := values.UnmarshalJSON(rb); err != nil {
+		return "", fmt.Errorf("jwt %s claim: %w", claim, err)
+	}
+	switch len(values) {
+	case 0:
+		return "", nil
+	case 1:
+		return strings.TrimSpace(values[0]), nil
+	}
+	return "", fmt.Errorf("jwt %s claim names %d tenants; want one", claim, len(values))
 }
 
 func extractRoleClaim(raw []byte, claim string, c claimsJSON) []string {

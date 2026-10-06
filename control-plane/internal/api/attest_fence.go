@@ -114,6 +114,18 @@ func (s *Server) GetAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
+	sb, err := s.Store.GetSandbox(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "sandbox not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !sandboxVisible(w, r, sb) {
+		return
+	}
 	rec, err := s.Store.GetAttestation(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

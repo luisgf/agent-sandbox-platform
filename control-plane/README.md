@@ -50,7 +50,11 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | `ASP_IDP_ROLE_MAP` | unset | CSV `claim:role` (admin\|operator\|viewer); si set, gana sobre prefijo |
 | `ASP_IDP_ROLE_PREFIX` | `asp-` | Prefijo → rol (`asp-admin`, …) cuando no hay map |
 | `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios si el claim lo incluye |
-| `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap` tenant `default` |
+| `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap`: ámbito `platform` (ve todos los tenants) en el tenant `default` |
+| `ASP_BOOTSTRAP_API_KEY_SCOPE` / `_TENANT` | `platform` / `default` | `tenant` la confina a `_TENANT`, como cualquier otra key |
+| `ASP_IDP_TENANT_CLAIM` | `tenant_id` | Claim del JWT con el tenant del usuario (string o array de un valor); sin tenant → 401 |
+| `ASP_IDP_DEFAULT_TENANT` | unset | Tenant de los JWT sin ese claim (un solo tenant) |
+| `ASP_DEFAULT_TENANT` | `default` | Tenant de un create sin `tenant_id` de un llamante sin tenant propio (lab abierto, key `platform`) |
 | `ASP_NODE_BOOTSTRAP_TOKEN` | unset | Token para `/v1/nodes/enroll` |
 | `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |
 | `ASP_TLS_CERT` / `ASP_TLS_KEY` | unset | TLS servidor |

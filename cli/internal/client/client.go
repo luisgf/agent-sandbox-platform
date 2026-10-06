@@ -81,7 +81,9 @@ func (s Sandbox) LostWithNode() bool {
 
 // CreateInput is POST /v1/sandboxes body.
 type CreateInput struct {
-	TenantID   string `json:"tenant_id"`
+	// TenantID empty lets the control plane use the caller's tenant (API key or
+	// IdP token), or its default tenant.
+	TenantID   string `json:"tenant_id,omitempty"`
 	ImageRef   string `json:"image_ref"`
 	CPUMillis  int    `json:"cpu_millis"`
 	MemoryMiB  int    `json:"memory_mib"`

@@ -1055,20 +1055,23 @@ func (m *MemoryStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
 	return k, nil
 }
 
-func (m *MemoryStore) EnsureAPIKey(tenantID, name, keyPrefix, secretHash string) (ApiKey, error) {
+func (m *MemoryStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error) {
 	if tenantID == "" || name == "" || keyPrefix == "" || secretHash == "" {
 		return ApiKey{}, fmt.Errorf("%w: tenant_id, name, key_prefix, secret_hash required", ErrInvalidInput)
+	}
+	scope, err := normalizeScope(scope)
+	if err != nil {
+		return ApiKey{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for hash, k := range m.apiKeys {
 		if k.TenantID == tenantID && k.Name == name {
-			if k.SecretHash != secretHash {
-				delete(m.apiKeys, hash)
-				k.SecretHash = secretHash
-				k.KeyPrefix = keyPrefix
-				m.apiKeys[secretHash] = k
-			}
+			delete(m.apiKeys, hash)
+			k.SecretHash = secretHash
+			k.KeyPrefix = keyPrefix
+			k.Scope = scope
+			m.apiKeys[secretHash] = k
 			return k, nil
 		}
 	}
@@ -1076,6 +1079,7 @@ func (m *MemoryStore) EnsureAPIKey(tenantID, name, keyPrefix, secretHash string)
 		ID:         newID(),
 		TenantID:   tenantID,
 		Name:       name,
+		Scope:      scope,
 		KeyPrefix:  keyPrefix,
 		SecretHash: secretHash,
 		CreatedAt:  time.Now().UTC(),
