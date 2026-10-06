@@ -26,7 +26,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
@@ -226,15 +225,13 @@ func (s *Service) resolveHybridSSHSock(sandboxID string) (string, bool) {
 	return s.SSHRegistry.Lookup(sandboxID), true
 }
 
-// serveIdentity serves IdentityHandler on ln. A non-empty sandboxID binds every
-// request on ln to that sandbox (identity.WithSandboxID): the hybrid
-// {muxer}_26502 acceptor only gets connections from that sandbox's VMM. The
-// global listeners pass "" and cannot tell guests apart.
+// serveIdentity serves IdentityHandler on ln, with identity.NewServer's limits
+// on guest connections. A non-empty sandboxID binds every request on ln to that
+// sandbox (identity.WithSandboxID): the hybrid {muxer}_26502 acceptor only gets
+// connections from that sandbox's VMM. The global listeners pass "" and cannot
+// tell guests apart.
 func (s *Service) serveIdentity(ln net.Listener, sandboxID string) {
-	srv := &http.Server{
-		Handler:           s.IdentityHandler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	srv := identity.NewServer(s.IdentityHandler)
 	if sandboxID != "" {
 		srv.BaseContext = func(net.Listener) context.Context {
 			return identity.WithSandboxID(context.Background(), sandboxID)

@@ -378,7 +378,7 @@ func main() {
 			idLn = ln
 			slog.Info("identity proxy listening (unix)", "path", cfg.IdentityListen)
 		} else {
-			srv, ln, err := execproxy.ListenAndServe(cfg.IdentityListen, idProxy.Handler())
+			ln, srv, err := identity.ListenTCP(cfg.IdentityListen, idProxy.Handler())
 			if err != nil {
 				slog.Error("identity proxy listen", "error", err)
 				os.Exit(1)

@@ -48,6 +48,13 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - `sandbox_id` en el body se sigue ignorando (nunca fue autoridad).
 - Un path de muxer sirve a una sola sandbox: `AttachSandbox` rechaza el muxer de otra, porque el binding depende de ello.
 
+**Límites (2026-10):** el guest no es de fiar y todas las sandboxes del nodo comparten el node-agent, así que todos los listeners de identidad acotan lo que aceptan de cada conexión:
+
+- Body de `POST /v1/tokens/oidc`: un objeto JSON de hasta 64 KiB (solo lleva `aud` y `nonce`). Más grande → **413**, sin llamar al control plane.
+- Cabeceras de hasta 16 KiB (no 1 MiB, el valor por defecto de Go) → si no, **431**.
+- La petición debe llegar entera en 10 s (las cabeceras, en 5 s); si no, **400** (body lento) o se cierra la conexión (cabeceras lentas). El mint al control plane no cuenta para esos 10 s. Una conexión keep-alive ociosa se cierra a los 30 s.
+- Los valores del guest que van al log (`X-ASP-Sandbox-ID`, `sandbox_id` y `user_sub` del body) se recortan a 128 bytes.
+
 ## Alternativas consideradas
 
 | Alternativa | Pros | Contras | Decisión |
@@ -88,7 +95,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 |---|---|
 | SSH bridge | `node-agent/internal/sshagent/` (`bridge.go`, `confirm.go`, `guest_mount.go`) |
 | Host vsock | `node-agent/internal/hostvsock/` — `AttachSandbox` hybrid `{vsock}_{26501|26502}` + AF_VSOCK / `--host-vsock-dir` lab |
-| Identity proxy | `node-agent/internal/identity/` — sandbox de la conexión (`WithSandboxID`, lo fija `hostvsock` en el acceptor hybrid) → CP mint |
+| Identity proxy | `node-agent/internal/identity/` — sandbox de la conexión (`WithSandboxID`, lo fija `hostvsock` en el acceptor hybrid) → CP mint; límites en `NewServer` y `handleToken` |
 | Guest proxy | `images/guest/cmd/vsock-ssh-agent-proxy/` + `images/guest/systemd/ssh-agent-vsock.service` |
 | OIDC signer | `control-plane/internal/oidc/` |
 | Attest | `control-plane/internal/attest/` + `node-agent/internal/attest/` |
@@ -113,6 +120,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Un par UDS hybrid por sandbox×puerto; override de `VsockPath` mid-life requiere re-Attach (hoy no).
 - El binding separa guests entre sí, no del host: un proceso del host con acceso a `{vsockPath}_26502` habla como esa sandbox.
 - El listener AF_VSOCK global no liga conexiones por CID (CH no le entrega las del guest), así que rechaza los tokens. Ligar CID → sandbox queda pendiente para un VMM que lo use.
+- No hay tope de conexiones simultáneas por sandbox al 26502 ni `WriteTimeout`: cada petición está acotada, pero un guest puede abrir muchas conexiones o dejarlas bloqueadas sin leer las respuestas.
 - No hay vault de secretos genérico dentro del guest; solo SSH bridge + OIDC corto.
 - Virtiofs SSH sigue documentado como path manual, no el automatizado.
 

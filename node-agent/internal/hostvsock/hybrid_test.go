@@ -1,6 +1,7 @@
 package hostvsock
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -188,6 +189,39 @@ func TestHybridAttachRefusesSharedMuxer(t *testing.T) {
 	svc.DetachSandbox("sb-a")
 	if err := svc.AttachSandbox("sb-b", muxer); err != nil {
 		t.Fatalf("muxer still held after detach: %v", err)
+	}
+}
+
+// The guest's identity socket refuses large headers rather than buffering them
+// (net/http's default allows 1 MiB).
+func TestHybridIdentityRefusesLargeHeaders(t *testing.T) {
+	cp, minted := mintRecorder(t)
+	svc := &Service{
+		SkipGlobalListeners: true,
+		IdentityHandler:     (&identity.Proxy{ControlPlaneURL: cp.URL, HTTP: cp.Client()}).Handler(),
+	}
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	muxer := filepath.Join(t.TempDir(), "vsock-a.sock")
+	if err := svc.AttachSandbox("sb-a", muxer); err != nil {
+		t.Fatal(err)
+	}
+	conn := dialUnixEventually(t, HybridGuestPath(muxer, PortIdentity), 2*time.Second)
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// Written in the background: the server answers before reading it all.
+	body := `{"aud":"https://api.example.com"}`
+	go fmt.Fprintf(conn, "POST /v1/tokens/oidc HTTP/1.1\r\nHost: guest\r\nX-Pad: %s\r\nContent-Length: %d\r\n\r\n%s",
+		strings.Repeat("a", 64<<10), len(body), body)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge || len(minted()) != 0 {
+		t.Fatalf("status %d, minted %v; want 431 and no token", resp.StatusCode, minted())
 	}
 }
 

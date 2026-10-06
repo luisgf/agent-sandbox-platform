@@ -1,8 +1,10 @@
 package identity
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -159,5 +161,83 @@ func TestTokenRefusesAnyOtherSandboxHeader(t *testing.T) {
 	p.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// A token request over maxTokenRequestBytes is refused before minting, wherever
+// the guest ends its JSON, and the proxy stops reading it at the limit.
+func TestTokenBodyLimit(t *testing.T) {
+	cp, minted := mintRecorder(t)
+	// sized is a valid token request of exactly n bytes.
+	sized := func(n int) string {
+		const head, tail = `{"aud":"https://api","nonce":"`, `"}`
+		return head + strings.Repeat("n", n-len(head)-len(tail)) + tail
+	}
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"small", `{"aud":"https://api"}`, http.StatusOK},
+		{"at the limit", sized(maxTokenRequestBytes), http.StatusOK},
+		{"one byte over", sized(maxTokenRequestBytes + 1), http.StatusRequestEntityTooLarge},
+		{"huge aud", `{"aud":"` + strings.Repeat("a", 4<<20) + `"}`, http.StatusRequestEntityTooLarge},
+		{"padding after the JSON", `{"aud":"https://api"}` + strings.Repeat(" ", maxTokenRequestBytes), http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Proxy{ControlPlaneURL: cp.URL, HTTP: cp.Client()}
+			body := strings.NewReader(tc.body)
+			req := httptest.NewRequest(http.MethodPost, "/v1/tokens/oidc", body)
+			req = req.WithContext(WithSandboxID(req.Context(), "sb-a"))
+			before := len(minted())
+			rr := httptest.NewRecorder()
+			p.Handler().ServeHTTP(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("status=%d want %d body=%.200s", rr.Code, tc.want, rr.Body.String())
+			}
+			if read := body.Size() - int64(body.Len()); read > maxTokenRequestBytes+1 {
+				t.Fatalf("proxy read %d bytes of the body", read)
+			}
+			want := "[]"
+			if tc.want == http.StatusOK {
+				want = "[sb-a]"
+			}
+			if got := fmt.Sprint(minted()[before:]); got != want {
+				t.Fatalf("control plane minted %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestTokenClipsGuestValuesInLogs(t *testing.T) {
+	cp, _ := mintRecorder(t)
+	long := strings.Repeat("x", 4000)
+	for name, req := range map[string]*http.Request{
+		"other sandbox header":   guestRequest("sb-a", long, `{"aud":"https://api"}`),
+		"unbound sandbox header": guestRequest("", long, `{"aud":"https://api"}`),
+		"body sandbox_id":        guestRequest("sb-a", "", `{"aud":"https://api","sandbox_id":"`+long+`"}`),
+		"body user_sub":          guestRequest("sb-a", "", `{"aud":"https://api","user_sub":"`+long+`"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			p := &Proxy{ControlPlaneURL: cp.URL, HTTP: cp.Client(), Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			p.Handler().ServeHTTP(httptest.NewRecorder(), req)
+			if line := logs.String(); !strings.Contains(line, "…(4000 bytes)") || len(line) > 1024 {
+				t.Fatalf("log: %s", line)
+			}
+		})
+	}
+}
+
+func TestClip(t *testing.T) {
+	for in, want := range map[string]string{
+		"sb-a":                   "sb-a",
+		strings.Repeat("a", 128): strings.Repeat("a", 128),
+		strings.Repeat("a", 129): strings.Repeat("a", 128) + "…(129 bytes)",
+		// 3-byte runes: cut at 126 bytes, not inside the 43rd rune.
+		strings.Repeat("€", 50): strings.Repeat("€", 42) + "…(150 bytes)",
+	} {
+		if got := clip(in); got != want {
+			t.Errorf("clip(%.20q) = %q, want %q", in, got, want)
+		}
 	}
 }
