@@ -78,12 +78,21 @@ func NewClientFromDialer(d Dialer) *Client {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return d.Dial(ctx)
 		},
+		// pod-daemon keeps buffered connections open: reuse them instead of
+		// redialling (and repeating the hybrid vsock CONNECT) for every call.
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
 	}
 	return &Client{
 		Dialer:          d,
 		HTTP:            &http.Client{Transport: transport},
 		BufferedTimeout: DefaultBufferedTimeout,
 	}
+}
+
+// CloseIdleConnections drops the kept-alive connections to pod-daemon.
+func (c *Client) CloseIdleConnections() {
+	c.HTTP.CloseIdleConnections()
 }
 
 // buffered bounds a call whose response arrives in one piece.

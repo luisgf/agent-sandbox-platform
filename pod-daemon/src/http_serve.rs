@@ -122,104 +122,150 @@ fn kill_tree(child: &mut Child) {
     let _ = child.kill();
 }
 
-/// Serve one HTTP request/response on any stream (Unix, TCP, or AF_VSOCK).
-pub fn handle_connection<S: Read + Write + PeerState>(mut stream: S, limits: ExecLimits) -> io::Result<()> {
-    let (method, path, body) = {
-        let mut reader = BufReader::new(&mut stream);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line)?;
-        if request_line.is_empty() {
+/// One parsed HTTP/1.1 request.
+struct Request {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+    /// The client asked to close the connection after the response
+    /// (`Connection: close`, or HTTP/1.0 without keep-alive).
+    close: bool,
+}
+
+/// Reads the next request on the connection. None: the client closed the
+/// connection between requests. A malformed request line comes back with an
+/// empty method.
+fn read_request<R: BufRead>(r: &mut R) -> io::Result<Option<Request>> {
+    let mut request_line = String::new();
+    loop {
+        request_line.clear();
+        if r.read_line(&mut request_line)? == 0 {
+            return Ok(None);
+        }
+        // An empty line between keep-alive requests is tolerated (RFC 9112 §2.2).
+        if !request_line.trim().is_empty() {
+            break;
+        }
+    }
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Ok(Some(Request {
+            method: String::new(),
+            path: String::new(),
+            body: Vec::new(),
+            close: true,
+        }));
+    }
+    let method = parts[0].to_string();
+    let path = parts[1].to_string();
+    let http10 = parts.get(2).is_some_and(|v| v.eq_ignore_ascii_case("HTTP/1.0"));
+    let mut content_length = 0usize;
+    let (mut conn_close, mut conn_keep_alive) = (false, false);
+    loop {
+        let mut line = String::new();
+        if r.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("content-length:") {
+            content_length = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = lower.strip_prefix("connection:") {
+            for token in rest.split(',') {
+                match token.trim() {
+                    "close" => conn_close = true,
+                    "keep-alive" => conn_keep_alive = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        r.read_exact(&mut body)?;
+    }
+    Ok(Some(Request {
+        method,
+        path,
+        body,
+        close: conn_close || (http10 && !conn_keep_alive),
+    }))
+}
+
+/// Serves HTTP/1.1 on any stream (Unix, TCP, or AF_VSOCK). Buffered requests
+/// keep the connection open for the next one unless the client asks to close
+/// it, so the node agent does not reconnect (and repeat the hybrid vsock
+/// CONNECT) for every call. A streamed exec always ends the connection: its
+/// close is how both sides know the stream is over, and how pod-daemon notices
+/// a client that went away.
+pub fn handle_connection<S: Read + Write + PeerState>(stream: S, limits: ExecLimits) -> io::Result<()> {
+    let mut conn = BufReader::new(stream);
+    loop {
+        let Some(req) = read_request(&mut conn)? else {
+            return Ok(());
+        };
+        let (path_only, stream_exec) = path_and_stream(&req.path);
+        if req.method == "POST" && path_only == "/v1/exec" && stream_exec {
+            return match parse_exec(&req.body) {
+                Err((status, body)) => write_bytes(conn.get_mut(), status, &body, false),
+                Ok(exec) => run_exec_stream(conn.get_mut(), &exec, limits.stream_idle),
+            };
+        }
+        let (status, body) = respond_buffered(&req.method, path_only, &req.body, limits.buffered);
+        let keep_alive = !req.close;
+        write_bytes(conn.get_mut(), status, &body, keep_alive)?;
+        if !keep_alive {
             return Ok(());
         }
-        let parts: Vec<&str> = request_line.trim_end().split_whitespace().collect();
-        if parts.len() < 2 {
-            return write_response(&mut stream, 400, r#"{"error":"bad request line"}"#);
-        }
-        let method = parts[0].to_string();
-        let path = parts[1].to_string();
+    }
+}
 
-        let mut content_length = 0usize;
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line)?;
-            if line == "\r\n" || line == "\n" || line.is_empty() {
-                break;
-            }
-            let lower = line.to_ascii_lowercase();
-            if let Some(rest) = lower.strip_prefix("content-length:") {
-                content_length = rest.trim().parse().unwrap_or(0);
-            }
-        }
+/// Answers every request but a streamed exec.
+fn respond_buffered(method: &str, path: &str, body: &[u8], timeout: Duration) -> (u16, Vec<u8>) {
+    match (method, path) {
+        ("", _) => (400, br#"{"error":"bad request line"}"#.to_vec()),
+        ("GET", "/healthz") => (200, br#"{"status":"ok"}"#.to_vec()),
+        ("POST", "/v1/exec/stdin") => stdin_response(body),
+        ("POST", "/v1/exec") => match parse_exec(body) {
+            Err(resp) => resp,
+            Ok(req) => match run_exec(&req, timeout) {
+                Ok(out) => json_body(200, &out),
+                Err(e) => json_body(500, &ErrorBody { error: e.to_string() }),
+            },
+        },
+        _ => (404, br#"{"error":"not found"}"#.to_vec()),
+    }
+}
 
-        let mut body = vec![0u8; content_length];
-        if content_length > 0 {
-            reader.read_exact(&mut body)?;
-        }
-        (method, path, body)
-    };
+/// Parses an exec body, or returns the 400 to answer.
+fn parse_exec(body: &[u8]) -> Result<ExecRequest, (u16, Vec<u8>)> {
+    let req: ExecRequest = serde_json::from_slice(body).map_err(|e| {
+        json_body(
+            400,
+            &ErrorBody {
+                error: format!("invalid JSON: {e}"),
+            },
+        )
+    })?;
+    if req.cmd.is_empty() {
+        return Err(json_body(
+            400,
+            &ErrorBody {
+                error: "cmd required".into(),
+            },
+        ));
+    }
+    Ok(req)
+}
 
-    let (path_only, stream_exec) = path_and_stream(&path);
-    match (method.as_str(), path_only) {
-        ("GET", "/healthz") => write_response(&mut stream, 200, r#"{"status":"ok"}"#),
-        ("POST", "/v1/exec/stdin") => handle_stdin(&mut stream, &body),
-        ("POST", "/v1/exec") if stream_exec => {
-            let req: ExecRequest = match serde_json::from_slice(&body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return write_json(
-                        &mut stream,
-                        400,
-                        &ErrorBody {
-                            error: format!("invalid JSON: {e}"),
-                        },
-                    );
-                }
-            };
-            if req.cmd.is_empty() {
-                return write_json(
-                    &mut stream,
-                    400,
-                    &ErrorBody {
-                        error: "cmd required".into(),
-                    },
-                );
-            }
-            run_exec_stream(&mut stream, &req, limits.stream_idle)
-        }
-        ("POST", "/v1/exec") => {
-            let req: ExecRequest = match serde_json::from_slice(&body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return write_json(
-                        &mut stream,
-                        400,
-                        &ErrorBody {
-                            error: format!("invalid JSON: {e}"),
-                        },
-                    );
-                }
-            };
-            if req.cmd.is_empty() {
-                return write_json(
-                    &mut stream,
-                    400,
-                    &ErrorBody {
-                        error: "cmd required".into(),
-                    },
-                );
-            }
-            match run_exec(&req, limits.buffered) {
-                Ok(resp) => write_json(&mut stream, 200, &resp),
-                Err(e) => write_json(
-                    &mut stream,
-                    500,
-                    &ErrorBody {
-                        error: e.to_string(),
-                    },
-                ),
-            }
-        }
-        _ => write_response(&mut stream, 404, r#"{"error":"not found"}"#),
+fn json_body<T: Serialize>(status: u16, body: &T) -> (u16, Vec<u8>) {
+    match serde_json::to_vec(body) {
+        Ok(b) => (status, b),
+        Err(e) => (
+            500,
+            serde_json::json!({ "error": format!("encode response: {e}") })
+                .to_string()
+                .into_bytes(),
+        ),
     }
 }
 
@@ -431,22 +477,20 @@ fn write_ready<S: Write>(out: &mut S, id: &str) -> io::Result<()> {
     write_chunk(out, line.as_bytes())
 }
 
-fn handle_stdin<S: Write>(stream: &mut S, body: &[u8]) -> io::Result<()> {
+fn stdin_response(body: &[u8]) -> (u16, Vec<u8>) {
     let req: StdinRequest = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(e) => {
-            return write_json(
-                stream,
+            return json_body(
                 400,
                 &ErrorBody {
                     error: format!("invalid JSON: {e}"),
                 },
-            );
+            )
         }
     };
     if req.exec_id.is_empty() {
-        return write_json(
-            stream,
+        return json_body(
             400,
             &ErrorBody {
                 error: "exec_id required".into(),
@@ -454,21 +498,9 @@ fn handle_stdin<S: Write>(stream: &mut S, body: &[u8]) -> io::Result<()> {
         );
     }
     match exec_session::write(&req.exec_id, req.data.as_bytes(), req.close, req.rows, req.cols) {
-        Ok(()) => write_json(stream, 200, &serde_json::json!({"ok": true})),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => write_json(
-            stream,
-            404,
-            &ErrorBody {
-                error: e.to_string(),
-            },
-        ),
-        Err(e) => write_json(
-            stream,
-            500,
-            &ErrorBody {
-                error: e.to_string(),
-            },
-        ),
+        Ok(()) => json_body(200, &serde_json::json!({"ok": true})),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => json_body(404, &ErrorBody { error: e.to_string() }),
+        Err(e) => json_body(500, &ErrorBody { error: e.to_string() }),
     }
 }
 
@@ -719,17 +751,13 @@ fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<Exe
     })
 }
 
+/// Writes a JSON response and ends the connection (the stream path's errors).
 fn write_json<S: Write, T: Serialize>(stream: &mut S, status: u16, body: &T) -> io::Result<()> {
-    let payload =
-        serde_json::to_vec(body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    write_bytes(stream, status, &payload)
+    let (status, payload) = json_body(status, body);
+    write_bytes(stream, status, &payload, false)
 }
 
-fn write_response<S: Write>(stream: &mut S, status: u16, body: &str) -> io::Result<()> {
-    write_bytes(stream, status, body.as_bytes())
-}
-
-fn write_bytes<S: Write>(stream: &mut S, status: u16, body: &[u8]) -> io::Result<()> {
+fn write_bytes<S: Write>(stream: &mut S, status: u16, body: &[u8], keep_alive: bool) -> io::Result<()> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -737,8 +765,9 @@ fn write_bytes<S: Write>(stream: &mut S, status: u16, body: &[u8]) -> io::Result
         500 => "Internal Server Error",
         _ => "Error",
     };
+    let connection = if keep_alive { "keep-alive" } else { "close" };
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes())?;
@@ -1119,6 +1148,69 @@ mod tests {
         s.read_to_end(&mut ack).unwrap();
         let saw = read_until_exit(&mut r, &mut carry);
         assert!(saw.contains("end") && saw.contains("\"exit_code\":0"), "{saw}");
+    }
+
+    /// Reads one Content-Length response off a persistent connection: the
+    /// status line plus the Connection header, and the body.
+    fn read_response(r: &mut BufReader<TcpStream>) -> (String, String) {
+        let mut status = String::new();
+        r.read_line(&mut status).unwrap();
+        let (mut len, mut connection) = (0usize, String::new());
+        loop {
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap();
+            }
+            if let Some(v) = lower.strip_prefix("connection:") {
+                connection = v.trim().to_string();
+            }
+        }
+        let mut body = vec![0u8; len];
+        r.read_exact(&mut body).unwrap();
+        (format!("{} | {connection}", status.trim()), String::from_utf8(body).unwrap())
+    }
+
+    #[test]
+    fn keep_alive_serves_several_requests_on_one_connection() {
+        let addr = serve_threaded();
+        let stream = TcpStream::connect(addr).unwrap();
+        let mut w = stream.try_clone().unwrap();
+        let mut r = BufReader::new(stream);
+
+        w.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let (head, body) = read_response(&mut r);
+        assert!(head.starts_with("HTTP/1.1 200") && head.ends_with("keep-alive"), "{head}");
+        assert!(body.contains("ok"), "{body}");
+
+        let exec = br#"{"cmd":["echo","again"]}"#;
+        let req = format!("POST /v1/exec HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", exec.len());
+        w.write_all(req.as_bytes()).unwrap();
+        w.write_all(exec).unwrap();
+        let (head, body) = read_response(&mut r);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(body.contains("again"), "{body}");
+
+        w.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+        let (head, _) = read_response(&mut r);
+        assert!(head.ends_with("close"), "{head}");
+        let mut rest = Vec::new();
+        assert_eq!(r.read_to_end(&mut rest).unwrap(), 0, "the server must close after Connection: close");
+    }
+
+    #[test]
+    fn http10_without_keep_alive_closes() {
+        let addr = serve_threaded();
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.write_all(b"GET /healthz HTTP/1.0\r\n\r\n").unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).unwrap();
+        let resp = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+        assert!(resp.contains("200") && resp.contains("connection: close"), "{resp}");
     }
 
     #[test]
