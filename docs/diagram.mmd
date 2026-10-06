@@ -1,7 +1,7 @@
 flowchart TB
   subgraph CLIENT["Cliente"]
     IDE["IDE / orquestador"]
-    ASP["CLI asp<br/>sandbox run"]
+    ASP["CLI asp<br/>session · sandbox · node"]
   end
 
   subgraph CP["Control plane (Go)"]
@@ -17,7 +17,7 @@ flowchart TB
   end
 
   subgraph NODE["Nodo × N (uno por servidor)"]
-    NA["Node agent (Go)<br/>reconciler · FakeVMM/CH"]
+    NA["Node agent (Go)<br/>reconciler · capacidad · FakeVMM/CH"]
     VMM["Cloud Hypervisor<br/>socket /run/asp/ch-id.sock"]
     NFT["nftables redirect<br/>HTTP/DNS soft|enforce"]
     EP["Egress proxy :8888<br/>DNS sink :5353"]
@@ -43,8 +43,8 @@ flowchart TB
     NFT --> EP
   end
 
-  IDE -->|"HTTPS + API key"| API
-  ASP -->|"HTTPS + API key"| API
+  IDE -->|"HTTPS + IdP JWT / API key"| API
+  ASP -->|"HTTPS + IdP JWT / API key"| API
   API <-->|"mTLS en los dos sentidos<br/>estado deseado · exec"| NA
   NA -->|"attested token"| OIDC
   EP -->|"allowlist only"| NET["Internet"]
