@@ -83,6 +83,10 @@ go test ./...
 ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
 ```
 
+## Logs y coste por petición
+
+Cada petición deja una línea `request` con método, ruta, estado, bytes, duración y origen. Los sondeos de los nodos (`/work`, heartbeats, claim, status…) y `/healthz` van a nivel Debug: con varios nodos sondeando cada 2 s taparían el resto. El middleware de API keys cuenta las claves como mucho cada 10 s y escribe `last_used_at` como mucho una vez por minuto y clave, en vez de un `count(*)` y un `UPDATE` por petición.
+
 ## Parada por inactividad
 
 **Por qué.** Una sesión `asp session` (o un create olvidado) deja la microVM encendida hasta un `DELETE`. El reaper del control-plane marca `stopping` (o `stopped` si nunca se asignó nodo) cuando no hay actividad durante el umbral, y el reconciler del nodo apaga la VM.

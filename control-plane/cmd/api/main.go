@@ -228,7 +228,7 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	server := newHTTPServer(api.AuthMiddleware(st, authCfg)(requestLog(mux)))
+	server := newHTTPServer(api.AuthMiddleware(st, authCfg)(api.RequestLog(mux)))
 	server.TLSConfig = tlsCfg
 	servers := []*trackedServer{server}
 	serveErr := make(chan error, 2)
@@ -349,7 +349,7 @@ func startEnrollPlaintext(addr string, st store.Store, authCfg api.AuthConfig, f
 	if err != nil {
 		return nil, err
 	}
-	srv := newHTTPServer(api.AuthMiddleware(st, authCfg)(requestLog(gate)))
+	srv := newHTTPServer(api.AuthMiddleware(st, authCfg)(api.RequestLog(gate)))
 	slog.Info("enroll plaintext listener (ASP_MTLS_STRICT)", "addr", ln.Addr().String(),
 		"note", "localhost-only recommended; use for bootstrap enroll / re-enroll")
 	go func() {
@@ -359,14 +359,6 @@ func startEnrollPlaintext(addr string, st store.Store, authCfg api.AuthConfig, f
 		}
 	}()
 	return srv, nil
-}
-
-func requestLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		started := time.Now()
-		next.ServeHTTP(w, r)
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(started))
-	})
 }
 
 // idleTimeoutFlag returns the value of -idle-timeout / --idle-timeout, or "".

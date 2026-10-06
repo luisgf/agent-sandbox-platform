@@ -177,14 +177,24 @@ func (s *Signer) Mint(tenantID, sandboxID, aud, nonce string) (string, Claims, e
 // actorSub, if non-empty, becomes act.sub; otherwise act.sub = userSub.
 // Empty userSub omits both claims (lab without IdP / owner).
 func (s *Signer) MintIdentity(tenantID, sandboxID, aud, nonce, userSub, actorSub string) (string, Claims, error) {
+	claims, err := s.identityClaims(tenantID, sandboxID, aud, nonce, userSub, actorSub)
+	if err != nil {
+		return "", Claims{}, err
+	}
+	token, err := s.sign(claims)
+	return token, claims, err
+}
+
+// identityClaims builds the claims MintIdentity signs.
+func (s *Signer) identityClaims(tenantID, sandboxID, aud, nonce, userSub, actorSub string) (Claims, error) {
 	if strings.TrimSpace(sandboxID) == "" {
-		return "", Claims{}, errors.New("sandbox_id required")
+		return Claims{}, errors.New("sandbox_id required")
 	}
 	if strings.TrimSpace(aud) == "" {
-		return "", Claims{}, errors.New("aud required")
+		return Claims{}, errors.New("aud required")
 	}
 	if strings.TrimSpace(tenantID) == "" {
-		return "", Claims{}, errors.New("tenant_id required")
+		return Claims{}, errors.New("tenant_id required")
 	}
 	now := time.Now().UTC()
 	ttl := s.TTL
@@ -212,26 +222,30 @@ func (s *Signer) MintIdentity(tenantID, sandboxID, aud, nonce, userSub, actorSub
 		}
 		claims.Act = &ActClaim{Sub: actSub}
 	}
-	token, err := s.sign(claims)
-	return token, claims, err
+	return claims, nil
 }
 
 // MintWithAttestation is MintIdentity plus optional x_asp_attestation when evidence is fresh.
 // userSub is authoritative owner_sub from the store (empty = omit human claims).
 func (s *Signer) MintWithAttestation(tenantID, sandboxID, aud, nonce, userSub string, attestation map[string]any) (string, Claims, error) {
-	token, claims, err := s.MintIdentity(tenantID, sandboxID, aud, nonce, userSub, "")
+	claims, err := s.identityClaims(tenantID, sandboxID, aud, nonce, userSub, "")
 	if err != nil {
 		return "", Claims{}, err
 	}
-	if len(attestation) == 0 {
-		return token, claims, nil
+	if len(attestation) > 0 {
+		claims.XAspAttestation = attestation
 	}
-	claims.XAspAttestation = attestation
-	token, err = s.sign(claims)
+	token, err := s.sign(claims) // one RSA signature, attestation included
 	return token, claims, err
 }
 
+// signHook, when set (tests), runs on every signature.
+var signHook func()
+
 func (s *Signer) sign(claims Claims) (string, error) {
+	if signHook != nil {
+		signHook()
+	}
 	s.mu.RLock()
 	key := s.key
 	kid := s.kid

@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
@@ -143,6 +145,56 @@ func PeerCertFingerprint(r *http.Request) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// keyCountTTL is how long the middleware trusts its count of API keys. Keys are
+// created at start-up (ASP_BOOTSTRAP_API_KEY), so the count rarely changes.
+const keyCountTTL = 10 * time.Second
+
+// keyTouchEvery is the most often a key's last_used_at is written.
+const keyTouchEvery = time.Minute
+
+// keyCountCache saves the SELECT count(*) every request used to run.
+type keyCountCache struct {
+	mu sync.Mutex
+	at time.Time
+	n  int64
+}
+
+func (c *keyCountCache) get(s store.Store) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.at.IsZero() && time.Since(c.at) < keyCountTTL {
+		return c.n, nil
+	}
+	n, err := s.CountAPIKeys()
+	if err != nil {
+		return 0, err
+	}
+	c.n, c.at = n, time.Now()
+	return n, nil
+}
+
+// keyTouches writes last_used_at at most every keyTouchEvery per key, instead
+// of an UPDATE on every request.
+type keyTouches struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func (k *keyTouches) touch(s store.Store, id string) {
+	now := time.Now()
+	k.mu.Lock()
+	if t, ok := k.last[id]; ok && now.Sub(t) < keyTouchEvery {
+		k.mu.Unlock()
+		return
+	}
+	if k.last == nil {
+		k.last = map[string]time.Time{}
+	}
+	k.last[id] = now
+	k.mu.Unlock()
+	_ = s.TouchAPIKey(id)
+}
+
 // AuthMiddleware enforces Bearer API keys when required or when any keys exist,
 // and validates IdP JWTs when configured (ADR-0007 phase 2).
 // /healthz, OIDC discovery/JWKS, and /v1/nodes/enroll are always public for API keys.
@@ -150,6 +202,8 @@ func PeerCertFingerprint(r *http.Request) string {
 // When RejectRevokedCerts is set, revoked fingerprints are rejected with 401.
 // Node mTLS routes never require human IdP JWTs.
 func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handler {
+	keyCount := &keyCountCache{}
+	touches := &keyTouches{}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if cfg.RejectRevokedCerts && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
@@ -198,7 +252,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 			}
 			// Lab HTTP: allow oidc mint without API key (mTLS optional); still not public to internet.
 			if r.URL.Path == "/v1/internal/oidc/token" && !cfg.Require {
-				n, _ := s.CountAPIKeys()
+				n, _ := keyCount.get(s)
 				if n == 0 {
 					next.ServeHTTP(w, r)
 					return
@@ -232,7 +286,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				return
 			}
 
-			n, err := s.CountAPIKeys()
+			n, err := keyCount.get(s)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "auth store error")
 				return
@@ -252,7 +306,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				writeError(w, http.StatusUnauthorized, "invalid api key")
 				return
 			}
-			_ = s.TouchAPIKey(key.ID)
+			touches.touch(s, key.ID)
 			ctx := context.WithValue(r.Context(), apiKeyContextKey, key)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
