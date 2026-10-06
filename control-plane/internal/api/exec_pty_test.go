@@ -48,7 +48,7 @@ func TestExecPTYAndStdinReachNodeAgent(t *testing.T) {
 	cp := httptest.NewServer(testMux(srv))
 	defer cp.Close()
 
-	creq, err := http.NewRequest(http.MethodPost, cp.URL+"/v1/sandboxes", strings.NewReader(`{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"node_id":"n"}`))
+	creq, err := http.NewRequest(http.MethodPost, cp.URL+"/v1/sandboxes", strings.NewReader(`{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64,"node_id":"n"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

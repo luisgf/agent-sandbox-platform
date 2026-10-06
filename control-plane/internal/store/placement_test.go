@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -381,4 +382,15 @@ func TestMemoryAgentTransitionsAndLeases(t *testing.T) {
 
 func TestPostgresAgentTransitionsAndLeases(t *testing.T) {
 	testAgentTransitionsAndLeases(t, newPostgresTestStore(t))
+}
+
+func TestCreateRejectsGuestsBelowTheMinimumMemory(t *testing.T) {
+	m := newMemoryStoreWithNodes(t, "n1")
+	_, err := m.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 32})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "at least 64") {
+		t.Fatalf("memory_mib 32: want invalid input naming the minimum, got %v", err)
+	}
+	if _, err := m.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: MinSandboxMemoryMiB}); err != nil {
+		t.Fatalf("memory_mib 64: %v", err)
+	}
 }

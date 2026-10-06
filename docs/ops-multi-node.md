@@ -26,6 +26,7 @@ En el plano de control:
 |---|---|---|
 | `ASP_SCHED_POLICY` | `spread` | `spread`: el nodo menos cargado tras colocar. `binpack`: el más cargado que aún cabe (deja nodos libres). |
 | `ASP_SCHED_CPU_OVERCOMMIT` | `4` | vCPU por core físico. Las sesiones de agentes esperan al modelo casi siempre. La memoria nunca se sobresuscribe. |
+| `ASP_SCHED_VM_OVERHEAD_MIB` | `64` | Memoria de cada microVM además de la del guest (VMM, colas virtio). Cuenta en `allocated.memory_mib` de `asp node list`. |
 | `ASP_NODE_STALE_AFTER` | `90s` | Sin señales durante más tiempo, el nodo deja de recibir sandboxes. |
 
 Ejemplo: un servidor de 16 cores y 64 GiB, con los valores por defecto, ofrece 64 vCPU y 58 GiB. Caben 64 sandboxes de 1 vCPU y 512 MiB, porque la CPU se acaba antes que la memoria.

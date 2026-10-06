@@ -48,7 +48,7 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 	cp := httptest.NewServer(testMux(srv))
 	defer cp.Close()
 
-	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"node_id":"exec-node","workspace_host_path":"/opt/work"}`
+	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64,"node_id":"exec-node","workspace_host_path":"/opt/work"}`
 	creq, err := http.NewRequest(http.MethodPost, cp.URL+"/v1/sandboxes", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestExecBufferedJSONUnchanged(t *testing.T) {
 	srv := NewServer(mem)
 	srv.Client = agent.Client()
 	mux := testMux(srv)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(`{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":1,"node_id":"n"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(`{"tenant_id":"t1","image_ref":"img","cpu_millis":1,"memory_mib":64,"node_id":"n"}`))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	var sb store.Sandbox

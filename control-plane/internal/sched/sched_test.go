@@ -180,3 +180,38 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Setenv(env, "")
 	}
 }
+
+// Memory is never overcommitted, so each VM's own overhead counts: a node with
+// room for the guests' memory alone is full once the overhead is added.
+func TestVMOverheadCountsAgainstMemory(t *testing.T) {
+	cfg := DefaultConfig()
+	c := node("n1")
+	c.CapMemMiB = 1024
+	c.UsedSandboxes = 3
+	c.UsedMemMiB = 3 * 256 // 768 MiB of guests + 3*64 overhead = 960 MiB held
+	if _, err := Place(cfg, req(1000, 64), []Candidate{c}, now); err == nil {
+		t.Fatal("960 MiB held + 64 asked + 64 overhead exceeds 1024 MiB")
+	}
+	cfg.VMOverheadMiB = 0
+	if _, err := Place(cfg, req(1000, 64), []Candidate{c}, now); err != nil {
+		t.Fatalf("without overhead 768+64 fits in 1024: %v", err)
+	}
+	if got := MemoryUsed(DefaultConfig(), c); got != 768+3*64 {
+		t.Fatalf("MemoryUsed=%d", got)
+	}
+}
+
+func TestConfigFromEnvVMOverhead(t *testing.T) {
+	t.Setenv(EnvVMOverhead, "")
+	if cfg, err := ConfigFromEnv(); err != nil || cfg.VMOverheadMiB != DefaultVMOverheadMiB {
+		t.Fatalf("default: %+v %v", cfg, err)
+	}
+	t.Setenv(EnvVMOverhead, "128")
+	if cfg, err := ConfigFromEnv(); err != nil || cfg.VMOverheadMiB != 128 {
+		t.Fatalf("128: %+v %v", cfg, err)
+	}
+	t.Setenv(EnvVMOverhead, "-1")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("negative overhead must be rejected")
+	}
+}
