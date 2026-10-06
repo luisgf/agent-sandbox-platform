@@ -96,6 +96,7 @@ func (f *mtlsExecFixture) sandboxOn(nodeID, endpoint string) string {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	runSandbox(f.t, f.mem, sb.ID)
 	return sb.ID
 }
 

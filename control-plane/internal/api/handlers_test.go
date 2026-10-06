@@ -36,6 +36,27 @@ func newTestStore(t *testing.T, ids ...string) *store.MemoryStore {
 	return mem
 }
 
+// runSandbox moves a placed sandbox to running, as its node agent would after
+// booting the VM. Exec only reaches the agent for a running sandbox.
+func runSandbox(t *testing.T, st store.Store, id string) {
+	t.Helper()
+	sb, err := st.GetSandbox(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.State == store.SandboxRequested {
+		if sb.NodeID == nil {
+			t.Fatalf("sandbox %s has no node", id)
+		}
+		if _, err := st.ClaimSandbox(id, *sb.NodeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.UpdateSandboxStatus(id, store.SandboxRunning, "test"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateGetListSandbox(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "1")
 	srv := NewServer(store.NewMemoryStore())
@@ -239,6 +260,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 	}
 	var sb store.Sandbox
 	_ = json.Unmarshal(rr.Body.Bytes(), &sb)
+	runSandbox(t, mem, sb.ID)
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/exec",
 		bytes.NewBufferString(`{"cmd":["echo","hello"]}`))

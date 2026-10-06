@@ -573,7 +573,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if msg := idleExecBlock(sb); msg != "" {
+	if msg := execBlock(sb); msg != "" {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
@@ -619,7 +619,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+		writeAgentError(w, resp.StatusCode, body)
 		return
 	}
 	if stream && isNDJSON(resp.Header.Get("Content-Type")) {
@@ -702,7 +702,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if msg := idleExecBlock(sb); msg != "" {
+	if msg := execBlock(sb); msg != "" {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
@@ -735,7 +735,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+		writeAgentError(w, resp.StatusCode, body)
 		return
 	}
 	_ = s.Store.TouchSandboxActivity(sb.ID)
@@ -746,6 +746,22 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// writeAgentError reports a non-2xx answer from the node agent. 404 means the
+// agent has no guest for this sandbox (the sandbox is not running there): a
+// conflict with the sandbox's state for the caller, not a gateway failure.
+func writeAgentError(w http.ResponseWriter, status int, body []byte) {
+	msg := strings.TrimSpace(string(body))
+	if status == http.StatusNotFound {
+		var ae errorResponse
+		if json.Unmarshal(body, &ae) == nil && ae.Error != "" {
+			msg = ae.Error
+		}
+		writeError(w, http.StatusConflict, "sandbox is not running on its node: "+msg)
+		return
+	}
+	writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", status, msg))
 }
 
 // agentCallContext is the context of a call to a sandbox's agent. It derives from

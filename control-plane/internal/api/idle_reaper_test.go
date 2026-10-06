@@ -60,6 +60,7 @@ func TestExecTouchesActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runSandbox(t, mem, sb.ID)
 	past := time.Now().UTC().Add(-30 * time.Minute)
 	mem.SetLastActivityForTest(sb.ID, past)
 

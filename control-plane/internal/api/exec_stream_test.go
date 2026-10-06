@@ -69,6 +69,7 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 	if sb.WorkspaceHostPath != "/opt/work" {
 		t.Fatalf("workspace=%q", sb.WorkspaceHostPath)
 	}
+	runSandbox(t, mem, sb.ID)
 
 	ereq, err := http.NewRequest(http.MethodPost, cp.URL+"/v1/sandboxes/"+sb.ID+"/exec?stream=1", bytes.NewBufferString(`{"cmd":["echo","chunk"]}`))
 	if err != nil {
@@ -136,6 +137,7 @@ func TestExecBufferedJSONUnchanged(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	var sb store.Sandbox
 	_ = json.Unmarshal(rr.Body.Bytes(), &sb)
+	runSandbox(t, mem, sb.ID)
 	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/exec", strings.NewReader(`{"cmd":["echo","full"]}`))
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)

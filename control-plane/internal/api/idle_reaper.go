@@ -41,18 +41,21 @@ func (s *Server) sweepIdle(timeout time.Duration) {
 	}
 }
 
-// idleExecBlock is non-empty when exec must not be proxied.
-func idleExecBlock(sb store.Sandbox) string {
-	if sb.StopReason == store.StopReasonIdle {
+// execBlock is non-empty when exec must not be proxied: only a running
+// sandbox has a guest the node agent can reach. The caller answers 409.
+func execBlock(sb store.Sandbox) string {
+	switch sb.StopReason {
+	case store.StopReasonIdle:
 		return store.IdleReapedMessage
-	}
-	if sb.StopReason == store.StopReasonNodeLost {
+	case store.StopReasonNodeLost, store.StopReasonAgentRestarted:
 		return store.NodeLostMessage
 	}
 	switch sb.State {
-	case store.SandboxStopped, store.SandboxStopping, store.SandboxFailed:
-		return "sandbox is " + string(sb.State)
-	default:
+	case store.SandboxRunning:
 		return ""
+	case store.SandboxRequested, store.SandboxScheduled, store.SandboxStarting:
+		return "sandbox is " + string(sb.State) + "; wait until it is running"
+	default:
+		return "sandbox is " + string(sb.State)
 	}
 }
