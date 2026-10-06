@@ -5,7 +5,6 @@ use std::io::{self, Read, Write};
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::thread;
-use std::time::Duration;
 
 const AF_VSOCK: i32 = 40;
 const SOCK_STREAM: i32 = 1;
@@ -142,6 +141,12 @@ impl VsockStream {
     }
 }
 
+impl crate::http_serve::PeerState for VsockStream {
+    fn peer_closed(&self) -> bool {
+        crate::http_serve::fd_peer_closed(self.fd.as_raw_fd())
+    }
+}
+
 impl Read for VsockStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = unsafe { read(self.fd.as_raw_fd(), buf.as_mut_ptr(), buf.len()) };
@@ -168,15 +173,14 @@ impl Write for VsockStream {
     }
 }
 
-pub fn serve(port: u32, exec_timeout: Duration) -> io::Result<()> {
+pub fn serve(port: u32, limits: crate::http_serve::ExecLimits) -> io::Result<()> {
     let listener = VsockListener::bind(port)?;
     println!("listening on vsock://*:{port} (HTTP JSON, AF_VSOCK)");
     loop {
         match listener.accept() {
             Ok(stream) => {
-                let timeout = exec_timeout;
                 thread::spawn(move || {
-                    if let Err(err) = crate::http_serve::handle_connection(stream, timeout) {
+                    if let Err(err) = crate::http_serve::handle_connection(stream, limits) {
                         eprintln!("connection error: {err}");
                     }
                 });

@@ -360,7 +360,7 @@ If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when
 - One session per agent. Two OpenCode instances with different `ASP_SESSION_NAME` values get two independent sandboxes.
 - If no node has room, `session start` fails with `no capacity` and the reason (for example `2 max_sandboxes`). `asp node list` shows what each node has in use.
 - If the session's node is lost, the sandbox fails with `node_lost` and `session status` says so; its disk lived on that server, so run `asp session start --force`.
-- The pod-daemon kills a command after its exec timeout (30 s by default, `--exec-timeout-secs` in the guest image). Raise it in the image for long builds or test suites.
+- A buffered exec (`--buffered`, `--json`, `asp sandbox run`) is killed after the pod-daemon's `--exec-timeout-secs` (30 s by default in the guest image). A streamed exec, the default of `asp session exec`, has no time limit: it ends when the command exits or when the client goes away, and then the guest kills the command. `--stream-idle-timeout-secs` in the guest image adds an inactivity limit.
 - Guest images built before `workspace-virtiofs.service` don't auto-mount `/workspace`. Run `mkdir -p /workspace && mount -t virtiofs workspace /workspace` once through the wrapper, or rebuild the rootfs.
 - No `--workspace`? The agent still works, but only on the guest's own disk; the host-side edit tools and the shell will see different files.
 
@@ -412,7 +412,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | nftables | `soft` mode tolerates missing root; `enforce` needs privileges. CI does not prove bypass resistance. |
 | Attestation | Software signature (`ASP_ATTEST_KEY`), not TPM/SEV. |
 | Fencing | Lost-node failover calls a `FenceProvider` (the webhook works; Redfish and IPMI are stubs). Not real BMC STONITH. |
-| Exec timeouts | The node agent still ends a streamed exec after 60 s, a non-PTY command silent for 30 s gets a 502, and the guest kills commands after `--exec-timeout-secs` (30 s). See [timeouts](control-plane/README.md#timeouts-hacia-el-node-agent). |
+| Exec timeouts | Only buffered execs have a time limit (30 s in the control plane and the guest's `--exec-timeout-secs`). Streams and PTY sessions last as long as the command. See [timeouts](control-plane/README.md#timeouts-hacia-el-node-agent). |
 | Idle timeout | Off by default. Does not delete the local session file. |
 | `--local-net` | Real `ip`/`wg` commands on node and client; needs `wireguard-tools` and `CAP_NET_ADMIN`. End-to-end packet flow not yet lab-tested. |
 | Workspace (virtiofs) | Auto-mount ships in newly built guest images; older images need `mount -t virtiofs workspace /workspace`. No KVM test in CI. |

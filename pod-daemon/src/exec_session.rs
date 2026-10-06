@@ -7,24 +7,43 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::process::ChildStdin;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 pub enum StdinSlot {
     Pipe(Mutex<Option<ChildStdin>>),
     Pty(Mutex<File>),
 }
 
-fn sessions() -> &'static Mutex<HashMap<String, Arc<StdinSlot>>> {
-    static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<StdinSlot>>>> = OnceLock::new();
+struct Session {
+    slot: StdinSlot,
+    /// Last stdin write or resize: the stream's idle timeout counts input as
+    /// activity, so a user typing into a silent command keeps it alive.
+    last_input: Mutex<Instant>,
+}
+
+fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<Session>>>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn register(slot: StdinSlot) -> String {
     let id = new_id();
+    let session = Session {
+        slot,
+        last_input: Mutex::new(Instant::now()),
+    };
     sessions()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(id.clone(), Arc::new(slot));
+        .insert(id.clone(), Arc::new(session));
     id
+}
+
+/// When the session last got stdin or a resize; None for an unknown id.
+pub fn last_input(id: &str) -> Option<Instant> {
+    let map = sessions().lock().unwrap_or_else(|p| p.into_inner());
+    map.get(id)
+        .map(|s| *s.last_input.lock().unwrap_or_else(|p| p.into_inner()))
 }
 
 pub fn remove(id: &str) {
@@ -35,13 +54,14 @@ pub fn remove(id: &str) {
 }
 
 pub fn write(id: &str, data: &[u8], close: bool, rows: u16, cols: u16) -> io::Result<()> {
-    let slot = {
+    let session = {
         let map = sessions().lock().unwrap_or_else(|p| p.into_inner());
         map.get(id)
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown exec_id"))?
     };
-    match slot.as_ref() {
+    *session.last_input.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
+    match &session.slot {
         StdinSlot::Pipe(slot) => {
             let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
             let Some(w) = guard.as_mut() else {

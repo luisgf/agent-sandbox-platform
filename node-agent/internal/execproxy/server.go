@@ -310,6 +310,11 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request, client
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	// Send the headers now: a command that stays silent must not look like an
+	// agent that never answered to the control plane's response-header timeout.
+	if flusher != nil {
+		flusher.Flush()
+	}
 	buf := make([]byte, 4096)
 	for {
 		n, rerr := resp.Body.Read(buf)

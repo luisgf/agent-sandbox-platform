@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 )
@@ -108,5 +109,75 @@ func TestExecStreamFallsBackToBufferedJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "burst") || !strings.Contains(resp.Header.Get("Content-Type"), "ndjson") {
 		t.Fatalf("ct=%s body=%s", resp.Header.Get("Content-Type"), body)
+	}
+}
+
+// A stream through the proxy that outlasts the pod-daemon client's buffered
+// limit reaches the caller whole (the client used to cut it at 60 s).
+func TestExecStreamOutlastsTheBufferedLimit(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fl, _ := w.(http.Flusher)
+		for i := 0; i < 5; i++ {
+			_, _ = io.WriteString(w, "{\"type\":\"stdout\",\"data\":\"tick\\n\"}\n")
+			if fl != nil {
+				fl.Flush()
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		_, _ = io.WriteString(w, "{\"type\":\"exit\",\"exit_code\":0}\n")
+	})}
+	go func() { _ = guest.Serve(ln) }()
+	defer guest.Close()
+
+	pod := poddaemon.NewClientFromDialer(tcpDialer{addr: ln.Addr().String()})
+	pod.BufferedTimeout = 150 * time.Millisecond
+	proxy := httptest.NewServer((&Server{Pod: pod}).Handler())
+	defer proxy.Close()
+
+	resp, err := http.Post(proxy.URL+"/v1/internal/exec?stream=1", "application/json", strings.NewReader(`{"sandbox_id":"sb","cmd":["x"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || !strings.Contains(string(body), `"exit_code":0`) || strings.Count(string(body), "tick") != 5 {
+		t.Fatalf("stream cut: err=%v body=%q", err, body)
+	}
+}
+
+// The proxy sends the stream's headers as soon as the guest does, so a command
+// that prints nothing for a while does not trip the caller's response-header
+// timeout (the control plane waits 30 s for them).
+func TestExecStreamSendsHeadersBeforeTheFirstOutput(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(400 * time.Millisecond)
+		_, _ = io.WriteString(w, "{\"type\":\"exit\",\"exit_code\":0}\n")
+	})}
+	go func() { _ = guest.Serve(ln) }()
+	defer guest.Close()
+
+	proxy := httptest.NewServer((&Server{Pod: poddaemon.NewClientFromDialer(tcpDialer{addr: ln.Addr().String()})}).Handler())
+	defer proxy.Close()
+	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 150 * time.Millisecond}}
+	resp, err := client.Post(proxy.URL+"/v1/internal/exec?stream=1", "application/json", strings.NewReader(`{"sandbox_id":"sb","cmd":["sleep"]}`))
+	if err != nil {
+		t.Fatalf("headers did not arrive before the first output: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"exit_code":0`) {
+		t.Fatalf("body=%q", body)
 	}
 }

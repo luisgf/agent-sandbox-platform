@@ -280,7 +280,7 @@ Varios servidores de microVMs ([ADR-0011](adr/0011-multi-node.md), ops: [`ops-mu
 | **3m.2** | Colocación por capacidad al crear (`spread`/`binpack`, CPU 4×, 503 sin hueco); trabajo solo para el nodo asignado; cordon; capacidad real del host; `asp node` | ✅ |
 | **3m.3** | Detección de nodos caídos (`offline` a 90 s, failover a 5 min), fallo de sus sandboxes, fencing, autodefensa del nodo, transiciones validadas, reinicio del agente | ✅ Sin lab KVM multi-servidor |
 | **3m.4** | Tras reiniciar, el node-agent borra lo que dejó el proceso anterior (VMs, TAPs, túneles, discos); unit systemd `asp-node-agent.service` con `KillMode=control-group` | ✅ |
-| **3m.5** | Exec en streaming sin corte en el plano de control (timeouts por fase hacia el agente) | ✅ Plano de control. Pendiente en el node-agent: corta a los 60 s y un comando sin PTY que calla 30 s recibe 502 |
+| **3m.5** | Exec en streaming sin corte en el plano de control (timeouts por fase hacia el agente) | ✅ Plano de control, node-agent y pod-daemon: el stream dura lo que el comando, las cabeceras salen al arrancar y el guest mata el comando si el cliente se va |
 
 Relacionado, fuera de 3m: el proxy de identidad toma la sandbox de la conexión vsock del guest y limita el tamaño de sus peticiones ([ADR-0003](adr/0003-identity.md) § 2).
 

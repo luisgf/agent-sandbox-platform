@@ -4,18 +4,16 @@ use crate::http_serve;
 use std::io;
 use std::net::TcpListener;
 use std::thread;
-use std::time::Duration;
 
-pub fn serve(addr: &str, exec_timeout: Duration) -> io::Result<()> {
+pub fn serve(addr: &str, limits: http_serve::ExecLimits) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     println!("listening on tcp://{} (HTTP JSON)", addr);
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let timeout = exec_timeout;
                 thread::spawn(move || {
-                    if let Err(err) = http_serve::handle_connection(stream, timeout) {
+                    if let Err(err) = http_serve::handle_connection(stream, limits) {
                         eprintln!("connection error: {err}");
                     }
                 });
