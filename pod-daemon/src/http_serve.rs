@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
 use std::thread;
@@ -189,6 +189,7 @@ fn spawn_command(req: &ExecRequest) -> io::Result<std::process::Child> {
     let mut command = Command::new(&req.cmd[0]);
     command
         .args(&req.cmd[1..])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_cwd_env(&mut command, req);
@@ -436,78 +437,147 @@ fn run_exec(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
     if req.pty {
         return run_exec_pty_buffered(req, timeout);
     }
-    if req.stdin.is_some() {
-        return run_exec_buffered_stdin(req, timeout);
-    }
-    let mut command = Command::new(&req.cmd[0]);
-    command
-        .args(&req.cmd[1..])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    apply_cwd_env(&mut command, req);
+    let child = if req.stdin.is_some() {
+        spawn_with_stdin_pipe(req)?
+    } else {
+        spawn_command(req)?
+    };
+    collect_output(child, req.stdin.as_deref(), timeout)
+}
 
-    let mut child = command.spawn()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait()? {
-            Some(status) => {
-                let stdout = read_pipe(child.stdout.take())?;
-                let stderr = read_pipe(child.stderr.take())?;
-                let exit_code = status.code().unwrap_or(128);
-                return Ok(ExecResponse {
-                    stdout,
-                    stderr,
-                    exit_code,
-                });
-            }
-            None => {
-                if started.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Ok(ExecResponse {
-                        stdout: String::new(),
-                        stderr: format!("exec timed out after {}s", timeout.as_secs()),
-                        exit_code: 124,
-                    });
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
+/// How long the buffered exec keeps reading after the command exits. A
+/// background job that inherited stdout or stderr keeps the pipe open: its
+/// later output is not waited for.
+const AFTER_EXIT_GRACE: Duration = Duration::from_secs(1);
+/// After a timeout kill, how long to keep collecting output already in flight.
+const AFTER_KILL_GRACE: Duration = Duration::from_millis(200);
+const POLL_EVERY: Duration = Duration::from_millis(20);
+
+#[derive(Default)]
+struct Collected {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+impl Collected {
+    fn push(&mut self, kind: &str, data: &[u8]) {
+        if kind == "stderr" {
+            self.stderr.extend_from_slice(data);
+        } else {
+            self.stdout.extend_from_slice(data);
         }
     }
 }
 
-fn run_exec_buffered_stdin(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
-    let mut child = spawn_with_stdin_pipe(req)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(data) = &req.stdin {
-            stdin.write_all(data.as_bytes())?;
-        }
-        // drop closes the pipe → EOF
+/// Runs a spawned child to completion for the buffered JSON exec. stdout and
+/// stderr are read while the child runs and stdin is written from its own
+/// thread, so a command that writes more than a pipe holds (64 KiB on Linux),
+/// or that echoes its input as it reads it, never blocks on a full pipe. On
+/// timeout the child is killed and what it wrote so far comes back with exit
+/// code 124.
+fn collect_output(mut child: Child, stdin: Option<&str>, timeout: Duration) -> io::Result<ExecResponse> {
+    let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>)>();
+    if let Some(mut pipe) = child.stdout.take() {
+        let tx = tx.clone();
+        thread::spawn(move || pump_pipe(&mut pipe, "stdout", &tx));
     }
-    wait_child_buffered(child, timeout)
+    if let Some(mut pipe) = child.stderr.take() {
+        let tx = tx.clone();
+        thread::spawn(move || pump_pipe(&mut pipe, "stderr", &tx));
+    }
+    drop(tx);
+    if let Some(mut pipe) = child.stdin.take() {
+        let data = stdin.unwrap_or_default().as_bytes().to_vec();
+        // A child that exits without reading its input makes this write fail
+        // with EPIPE: that is the command's business, not an exec error.
+        // Dropping the pipe afterwards is the EOF.
+        thread::spawn(move || {
+            let _ = pipe.write_all(&data);
+        });
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut out = Collected::default();
+    let mut pipes_open = true;
+    let mut exited: Option<(ExitStatus, Instant)> = None;
+    loop {
+        if pipes_open {
+            match rx.recv_timeout(POLL_EVERY) {
+                Ok((kind, data)) => out.push(kind, &data),
+                Err(RecvTimeoutError::Timeout) => {}
+                // Both pipes reached EOF and everything they carried was received.
+                Err(RecvTimeoutError::Disconnected) => pipes_open = false,
+            }
+        } else {
+            thread::sleep(POLL_EVERY);
+        }
+        if exited.is_none() {
+            if let Some(status) = child.try_wait()? {
+                exited = Some((status, Instant::now()));
+            }
+        }
+        let now = Instant::now();
+        match exited {
+            Some((status, at)) => {
+                if !pipes_open || now >= at + AFTER_EXIT_GRACE || now >= deadline {
+                    return Ok(ExecResponse {
+                        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                        exit_code: status.code().unwrap_or(128),
+                    });
+                }
+            }
+            None if now >= deadline => break,
+            None => {}
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    drain_for(&rx, &mut out, AFTER_KILL_GRACE);
+    let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    if !stderr.is_empty() && !stderr.ends_with('\n') {
+        stderr.push('\n');
+    }
+    stderr.push_str(&format!("exec timed out after {}s", timeout.as_secs()));
+    Ok(ExecResponse {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr,
+        exit_code: 124,
+    })
+}
+
+/// Collects what the pipe readers still hold, for at most `grace`. A process
+/// that outlived the killed command can keep a pipe open; it is not waited for.
+fn drain_for(rx: &mpsc::Receiver<(&'static str, Vec<u8>)>, out: &mut Collected, grace: Duration) {
+    let until = Instant::now() + grace;
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        match rx.recv_timeout(left) {
+            Ok((kind, data)) => out.push(kind, &data),
+            Err(_) => return,
+        }
+    }
 }
 
 fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
-    let (mut child, mut master) = pty::spawn(PtyCommand {
+    let (mut child, master) = pty::spawn(PtyCommand {
         cmd: req.cmd.clone(),
         cwd: req.cwd.clone(),
         env: req.env.clone(),
         rows: req.rows,
         cols: req.cols,
     })?;
-    if let Some(data) = &req.stdin {
-        if !data.is_empty() {
-            master.write_all(data.as_bytes())?;
-        }
-        // Ctrl-D so a canonical reader sees EOF after the buffered bytes.
-        let _ = master.write_all(&[0x04, 0x04]);
-        let _ = master.flush();
-    }
+    // Read the master before writing to it: with echo on, input comes back as
+    // output, and a master nobody reads stops accepting writes.
+    let mut reader = master.try_clone()?;
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         let mut buf = [0u8; 1024];
         loop {
-            match master.read(&mut buf) {
+            match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if tx.send(buf[..n].to_vec()).is_err() {
@@ -517,6 +587,17 @@ fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<Exe
             }
         }
     });
+    if let Some(data) = req.stdin.clone() {
+        let mut writer = master;
+        thread::spawn(move || {
+            if !data.is_empty() {
+                let _ = writer.write_all(data.as_bytes());
+            }
+            // Ctrl-D so a canonical reader sees EOF after the buffered bytes.
+            let _ = writer.write_all(&[0x04, 0x04]);
+            let _ = writer.flush();
+        });
+    }
     let started = Instant::now();
     let mut stdout = Vec::new();
     loop {
@@ -554,43 +635,6 @@ fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<Exe
         stderr: format!("exec timed out after {}s", timeout.as_secs()),
         exit_code: 124,
     })
-}
-
-fn wait_child_buffered(mut child: std::process::Child, timeout: Duration) -> io::Result<ExecResponse> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait()? {
-            Some(status) => {
-                let stdout = read_pipe(child.stdout.take())?;
-                let stderr = read_pipe(child.stderr.take())?;
-                return Ok(ExecResponse {
-                    stdout,
-                    stderr,
-                    exit_code: status.code().unwrap_or(128),
-                });
-            }
-            None => {
-                if started.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Ok(ExecResponse {
-                        stdout: String::new(),
-                        stderr: format!("exec timed out after {}s", timeout.as_secs()),
-                        exit_code: 124,
-                    });
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
-}
-
-fn read_pipe<T: Read>(pipe: Option<T>) -> io::Result<String> {
-    let mut buf = String::new();
-    if let Some(mut p) = pipe {
-        p.read_to_string(&mut buf)?;
-    }
-    Ok(buf)
 }
 
 fn write_json<S: Write, T: Serialize>(stream: &mut S, status: u16, body: &T) -> io::Result<()> {
@@ -795,6 +839,90 @@ mod tests {
             assert!(saw.contains(&format!("hello-{label}")), "{label} saw={saw}");
             assert!(saw.contains("\"exit_code\":0"), "{label} saw={saw}");
         }
+    }
+
+    fn buffered(cmd: &[&str], stdin: Option<&str>, pty: bool, timeout: Duration) -> ExecResponse {
+        let req = ExecRequest {
+            cmd: cmd.iter().map(|s| s.to_string()).collect(),
+            env: None,
+            cwd: None,
+            pty,
+            rows: 0,
+            cols: 0,
+            stdin: stdin.map(str::to_string),
+            stdin_stream: false,
+        };
+        run_exec(&req, timeout).unwrap()
+    }
+
+    #[test]
+    fn buffered_exec_returns_stdout_larger_than_a_pipe() {
+        let started = Instant::now();
+        let resp = buffered(
+            &["/bin/sh", "-c", "head -c 300000 /dev/zero | tr '\\000' a"],
+            None,
+            false,
+            Duration::from_secs(20),
+        );
+        assert_eq!(resp.exit_code, 0, "stderr={}", resp.stderr);
+        assert_eq!(resp.stdout.len(), 300_000);
+        assert!(resp.stdout.bytes().all(|b| b == b'a'));
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn buffered_exec_returns_stderr_larger_than_a_pipe() {
+        let resp = buffered(
+            &["/bin/sh", "-c", "head -c 300000 /dev/zero | tr '\\000' e 1>&2"],
+            None,
+            false,
+            Duration::from_secs(20),
+        );
+        assert_eq!(resp.exit_code, 0);
+        assert_eq!(resp.stderr.len(), 300_000);
+        assert!(resp.stdout.is_empty(), "stdout={:?}", resp.stdout);
+    }
+
+    #[test]
+    fn buffered_exec_echoes_stdin_larger_than_a_pipe() {
+        let input = "x".repeat(300_000);
+        let resp = buffered(&["/bin/sh", "-c", "cat"], Some(&input), false, Duration::from_secs(20));
+        assert_eq!(resp.exit_code, 0, "stderr={}", resp.stderr);
+        assert_eq!(resp.stdout.len(), input.len());
+        assert!(resp.stdout == input);
+    }
+
+    #[test]
+    fn buffered_exec_timeout_keeps_partial_output() {
+        let resp = buffered(
+            &["/bin/sh", "-c", "echo started; exec sleep 30"],
+            None,
+            false,
+            Duration::from_millis(500),
+        );
+        assert_eq!(resp.exit_code, 124);
+        assert!(resp.stdout.contains("started"), "stdout={:?}", resp.stdout);
+        assert!(resp.stderr.contains("exec timed out"), "stderr={:?}", resp.stderr);
+    }
+
+    #[test]
+    fn buffered_exec_does_not_wait_for_background_jobs() {
+        let started = Instant::now();
+        let resp = buffered(&["/bin/sh", "-c", "sleep 30 & echo done"], None, false, Duration::from_secs(20));
+        assert_eq!(resp.exit_code, 0);
+        assert!(resp.stdout.contains("done"), "stdout={:?}", resp.stdout);
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn buffered_pty_exec_with_stdin_larger_than_the_tty_buffers() {
+        let mut input = String::new();
+        for i in 0..2000 {
+            input.push_str(&format!("line{i:04}-{}\n", "y".repeat(40)));
+        }
+        let resp = buffered(&["/bin/sh", "-c", "cat"], Some(&input), true, Duration::from_secs(20));
+        assert_eq!(resp.exit_code, 0, "stderr={:?}", resp.stderr);
+        assert!(resp.stdout.contains("line1999"));
     }
 
     #[test]
