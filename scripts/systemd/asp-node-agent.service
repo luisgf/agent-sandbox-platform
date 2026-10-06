@@ -1,0 +1,56 @@
+# Template: ASP node-agent on a KVM host (one cloud-hypervisor per sandbox).
+# Install (on the node):
+#   sudo install -m 0755 build/node-agent /usr/local/bin/node-agent
+#   sudo install -d -m 0750 /etc/asp
+#   sudo install -m 0600 /dev/null /etc/asp/node-agent.env   # then edit it, see below
+#   sudo cp scripts/systemd/asp-node-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now asp-node-agent.service
+#
+# /etc/asp/node-agent.env (mode 600) holds this node's settings and overrides
+# the Environment= lines below. For example:
+#   CONTROL_PLANE_URL=https://cp.example.corp:8443
+#   ASP_CONTROL_PLANE_CA=/etc/asp/cp-ca.pem
+#   ASP_AGENT_TLS_LISTEN=0.0.0.0:9443
+#   NODE_ENDPOINT=https://node1.example.corp:9443
+#   ASP_GUEST_SUBNET=10.200.16.0/20
+# First start only: add ASP_ENROLL=1 and ASP_NODE_BOOTSTRAP_TOKEN=..., and
+# remove both once the journal says "enrolled" (the token must not stay here).
+#
+# Runs as root: TAPs, nftables and WireGuard need CAP_NET_ADMIN, the VMs /dev/kvm.
+# One node-agent per host (it removes every asp-* TAP and wg-asp-* tunnel
+# another process left). Docs: docs/bare-metal-ch.md §5.6, docs/ops-multi-node.md
+[Unit]
+Description=ASP node-agent (Cloud Hypervisor sandboxes)
+Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/docs/bare-metal-ch.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CH_SOCKET_DIR=/run/asp
+Environment=ASP_DISK_DIR=/var/lib/asp/disks
+Environment=ASP_LOCAL_NET_KEY_DIR=/var/lib/asp/local-net
+Environment=ASP_CERT_DIR=/var/lib/asp/node-certs
+Environment=ASP_MTLS=1
+Environment=ASP_RECONCILE=1
+Environment=ASP_TAP_AUTO=1
+Environment=ASP_HOST_VSOCK=1
+Environment=ASP_EGRESS_ENFORCE=1
+EnvironmentFile=/etc/asp/node-agent.env
+ExecStart=/usr/local/bin/node-agent
+# The VMs are children of the agent, and a new agent process does not adopt
+# them: the control plane fails them as node_agent_restarted. control-group
+# stops every cloud-hypervisor and virtiofsd together with the agent (on stop,
+# on restart and when the agent dies), so none is left running for nobody.
+# Do not change it to process or none.
+KillMode=control-group
+TimeoutStopSec=30
+# Then remove what those VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs
+# copies. The agent does the same when it starts (--reap-leftovers=on).
+ExecStopPost=-/usr/local/bin/node-agent --reap-only
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -315,6 +315,56 @@ func TestPerSandboxSpawnStartStop(t *testing.T) {
 	}
 }
 
+// The reaper finds the VMs a previous agent left by the argv Start runs. Spawn
+// through the real path: that argv, and nothing else, names the sandbox.
+func TestSpawnedSandboxMatchesWhatStartRuns(t *testing.T) {
+	// A short directory: unix socket paths are limited to 104 bytes on macOS.
+	dir, err := os.MkdirTemp("", "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("/usr/local/bin/cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	ctx := context.Background()
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := ch.Start(ctx, MicroVMConfig{ID: id, KernelPath: "/k"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ch.Stop(ctx, id) })
+
+	runner.mu.Lock()
+	s := runner.starts[0]
+	runner.mu.Unlock()
+	argv := append([]string{s.Name}, s.Args...)
+	if got, ok := SpawnedSandbox(argv, dir); !ok || got != id {
+		t.Fatalf("SpawnedSandbox(%q) = %q %v, want %s", argv, got, ok, id)
+	}
+	sock := ch.SocketPath(id)
+	if got, ok := ParseAPISocketName(filepath.Base(sock)); !ok || got != id {
+		t.Fatalf("socket %s parses as %q %v", sock, got, ok)
+	}
+
+	for _, tc := range []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"cloud-hypervisor", "--api-socket=" + sock}, true},
+		{[]string{"cloud-hypervisor", "--api-socket", "path=" + sock}, true},
+		{[]string{"cloud-hypervisor", "--api-socket", filepath.Join(dir+"-other", APISocketName(id))}, false},
+		{[]string{"cloud-hypervisor", "--api-socket", "/run/cloud-hypervisor/api.sock"}, false},
+		{[]string{"cloud-hypervisor", "--api-socket", filepath.Join(dir, "api.sock")}, false},
+		{[]string{"curl", "--unix-socket", sock, "http://localhost/api/v1/vmm.ping"}, false},
+		{[]string{"cloud-hypervisor"}, false},
+	} {
+		if _, ok := SpawnedSandbox(tc.argv, dir); ok != tc.want {
+			t.Errorf("SpawnedSandbox(%q) = %v, want %v", tc.argv, ok, tc.want)
+		}
+	}
+}
+
 func TestPerSandboxStartRequiresID(t *testing.T) {
 	ch := NewSpawningCloudHypervisor("cloud-hypervisor", t.TempDir())
 	ch.Runner = &fakeCHRunner{}

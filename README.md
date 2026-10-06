@@ -412,7 +412,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Harness integration | No plugin; a wrapper script is the integration point. |
 | Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |
 | Kubernetes | Optional, only to deploy the API. Sandboxes are not Pods. |
-| Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Agents do not adopt running VMs after a restart. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
+| Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Agents do not adopt running VMs after a restart: the systemd unit stops them with the agent, and a starting agent removes whatever a previous one left (VMs, TAPs, tunnels, disks). One node-agent per server. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
 
 ---
 

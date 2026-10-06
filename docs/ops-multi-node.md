@@ -55,6 +55,8 @@ node-agent \
   --local-net-dial=node2.ejemplo.corp
 ```
 
+En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)): los mismos ajustes van en `/etc/asp/node-agent.env` como variables de entorno. Un solo node-agent por servidor.
+
 Después, desde un puesto con rol admin u operador:
 
 ```bash
@@ -86,13 +88,14 @@ El nodo debe salir como `SCHEDULABLE yes`.
 - **No hay migración.** El disco del guest vive en su servidor: una sesión perdida se vuelve a abrir (`asp session start --force`). `asp session status` lo explica.
 - **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
 - **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: al renovar el lease recibe 409 y para esas VMs.
-- **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` fallan con `node_agent_restarted` y las que estaban arrancando se arrancan de nuevo. Los procesos de Cloud Hypervisor que sobrevivan quedan huérfanos; un reinicio limpio del servicio los mata.
+- **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` fallan con `node_agent_restarted` y las que estaban arrancando se arrancan de nuevo. Las VMs tampoco siguen corriendo: la unit las para con el agente (`KillMode=control-group`), y el agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior: VMs, TAPs, túneles y discos ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
 
 ## Mantenimiento
 
 - **Sacar un nodo del reparto:** `asp node cordon node2`. Las sandboxes que ya corren siguen ahí; no se colocan nuevas.
 - **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor.
 - **Volver al reparto:** `asp node uncordon node2`.
+- **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
 - **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
 
 **Orden de actualización:** primero los node-agents y después el plano de control. Un agente antiguo declara siempre 4 cores y 8 GiB, y el planificador nuevo aplica esos valores.
@@ -109,12 +112,15 @@ El nodo debe salir como `SCHEDULABLE yes`.
 | `403 client certificate is for node …` | El agente usa un `--node-id` distinto del CN de su certificado. Quita `--node-id` o re-enrola. |
 | El agente no arranca: `node certificate cannot serve TLS` | Certificado anterior a ADR-0011. Re-enrola con `--enroll` o `rotate-cert`. |
 | `sandbox was lost with its node` | El nodo llevaba más de `ASP_NODE_FAILOVER_AFTER` sin señales (o fue revocado). Abre una sesión nueva. |
-| `stop_reason=node_agent_restarted` | El node-agent se reinició y no adopta VMs. Abre una sesión nueva. |
+| `stop_reason=node_agent_restarted` | El node-agent se reinició: no adopta VMs, y las suyas se pararon con él. Abre una sesión nueva. |
+| El agente no arranca: `refusing to start … node-agent.lock is held by pid N` | Ya corre otro node-agent con ese `--ch-socket-dir` (p. ej. el servicio, si lo lanzaste a mano). |
 | `self-fencing` en el log del agente | El plano de control ya no le asigna esa sandbox (failover o destroy); el agente paró la VM. Esperado tras una partición. |
 
 ## Límites
 
 - No hay migración: si un servidor se pierde, sus sesiones se pierden con él.
+- Tampoco sobreviven a un reinicio del node-agent, ni a una actualización.
+- Un node-agent por servidor: al arrancar borra todos los TAPs `asp-*` y túneles `wg-asp-*` del servidor, también los de otro agente.
 - Con varias réplicas del plano de control, cada una corre su monitor; es seguro, pero el fencing podría repetirse.
 - No se ha probado todavía en un lab con varios servidores KVM reales; el smoke usa dos agentes en dry-run.
 - La colocación no mira `--workspace`: la ruta debe existir en el nodo elegido. Con varios nodos, fija el nodo (`--node-id`) o comparte la ruta en todos.

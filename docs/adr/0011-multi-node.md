@@ -93,6 +93,7 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - **Autodefensa del nodo:** si renovar el lease o reportar `running` devuelve 409, el node-agent para la VM local sin reportar estado. Un nodo que vuelve tras una partición no deja copias vivas.
 - **Transiciones validadas:** `stopped` es final, `failed` solo va a `stopped`, `stopping` solo termina. Un informe tardío no resucita nada.
 - **Reinicio del agente:** cada proceso envía un `agent_instance_id` aleatorio. Si cambia, las sandboxes `running`/`paused` del nodo fallan con `node_agent_restarted` (el agente no adopta VMs); `requested` y `starting` las arranca el proceso nuevo.
+- **Lo que deja un agente anterior se borra:** antes de registrarse, el proceso nuevo para los `cloud-hypervisor` y `virtiofsd` de su `--ch-socket-dir` (por el socket de su argv) y borra sus TAPs, túneles local-net, sockets y copias del rootfs. Así, cuando el plano de control da una sandbox por fallida, su VM ya no corre. La unit de systemd (`KillMode=control-group`) las para incluso antes, con el agente. Un `flock` en el directorio de sockets impide que un segundo agente tome por restos las VMs de uno vivo ([bare-metal §5.6](../bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
 - **Filas antiguas** `requested` sin nodo (de antes de la colocación al crear) fallan como `unscheduled`.
 
 ## Alternativas consideradas
@@ -105,6 +106,7 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - **Contadores de uso por nodo.** Se desincronizan con cada caída o reintento. Sumar las filas cuesta una consulta indexada (`sandboxes_node_state_idx`).
 - **Failover por caducidad del lease de cada sandbox.** Las renovaciones comparten el tick del reconciler, y un arranque de VM puede bloquearlo hasta 30 s: se fallarían VMs sanas. La señal de vida es del nodo (heartbeat y sondeos).
 - **Recolocar en otro nodo las sandboxes `requested` de un nodo perdido.** No se sabe si el usuario fijó ese nodo; fallar es honesto y el cliente puede reintentar.
+- **Adoptar las VMs vivas tras reiniciar el agente** (reengancharse al socket de API de cada CH y conservar el `agent_instance_id`). Aplazada. `/work` no devuelve las sandboxes `running` sin local-net. Con el id conservado, una VM que no sobrevivió al reinicio seguiría `running` en el plano de control sin que nadie la falle, porque el lease caducado no falla sandboxes. Haría falta que el registro declare qué sandboxes sigue llevando el agente, y que el plano de control falle el resto. Además, el handle se reconstruye con estado que CH no guarda: el `owner_sub` del SSH agent, la política de egress, los listeners guest→host (mueren con el proceso) y la reserva de CID y /30. Con la unit de systemd (`KillMode=control-group`) ninguna VM sobrevive al agente, así que adoptar solo serviría con `KillMode=process`.
 
 ## Consecuencias
 
@@ -132,4 +134,5 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - La colocación no conoce `--workspace`: la ruta tiene que existir en el nodo elegido.
 - Sin migración: el disco del guest vive en su nodo.
 - Con varias réplicas del plano de control, cada una corre su monitor: el CAS lo hace seguro, pero el fencing podría repetirse.
-- El agente no adopta VMs tras reiniciar: las sandboxes fallan (sin mentir), pero los procesos de Cloud Hypervisor que sobrevivan quedan huérfanos en el host.
+- El agente no adopta VMs tras reiniciar: las sandboxes fallan (sin mentir) y sus VMs se paran, también al actualizar el agente. Hay que drenar el nodo antes.
+- Un node-agent por host: al arrancar borra todos los TAPs `asp-*` y túneles `wg-asp-*`, que son del host entero.
