@@ -36,7 +36,8 @@ type sandboxHybrid struct {
 // (identity HTTP). Safe to call before or after the VMM binds the muxer UDS
 // itself — those are distinct paths.
 //
-// Idempotent: re-attach with the same id replaces previous listeners.
+// Idempotent: re-attach with the same id replaces previous listeners, which
+// are closed first; on error the sandbox is left detached.
 // Identity requests on {muxerPath}_26502 are bound to sandboxID, so a muxer
 // path that another sandbox holds is refused.
 func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
@@ -57,6 +58,13 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 	if holder := s.muxerHolder(muxerPath); holder != "" && holder != sandboxID {
 		return fmt.Errorf("muxer %s is attached to sandbox %s", muxerPath, holder)
 	}
+	// Close the previous listeners before binding: closing one unlinks its
+	// path, which is the new listener's when the muxer path is unchanged.
+	s.mu.Lock()
+	old := s.hybrids[sandboxID]
+	delete(s.hybrids, sandboxID)
+	s.mu.Unlock()
+	closeHybrid(old)
 
 	sshPath := HybridGuestPath(muxerPath, PortSSHAgent)
 	idPath := HybridGuestPath(muxerPath, PortIdentity)
@@ -85,9 +93,6 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 	s.mu.Lock()
 	if s.hybrids == nil {
 		s.hybrids = make(map[string]*sandboxHybrid)
-	}
-	if old, ok := s.hybrids[sandboxID]; ok {
-		closeHybrid(old)
 	}
 	s.hybrids[sandboxID] = h
 	closed := s.closed
