@@ -89,11 +89,7 @@ func handle(client net.Conn, upstream string, cid, port uint32) {
 
 func dialUpstream(upstream string, cid, port uint32) (net.Conn, error) {
 	if upstream != "" {
-		path := upstream
-		if strings.HasPrefix(path, "unix:") {
-			path = strings.TrimPrefix(path, "unix:")
-		}
-		return net.Dial("unix", path)
+		return net.Dial("unix", strings.TrimPrefix(upstream, "unix:"))
 	}
 	return vsock.Dial(cid, port, nil)
 }

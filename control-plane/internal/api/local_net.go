@@ -280,8 +280,6 @@ func writeLocalNetErr(w http.ResponseWriter, err error) {
 	}
 }
 
-func tunnelIface(id string) string { return store.LocalNetIface(id) }
-
 // RegisterLocalNetNode is POST /v1/sandboxes/{id}/local-net/node-public.
 // The node-agent publishes the device public key. The guest cannot call it.
 // It does not turn local_net on and it does not move the tunnel state.

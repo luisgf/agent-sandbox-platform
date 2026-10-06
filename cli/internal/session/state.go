@@ -81,20 +81,6 @@ func NamedPath(dir, name string) (string, error) {
 	return filepath.Join(dir, name+".json"), nil
 }
 
-// DefaultPath returns ~/.cache/asp/session.json, or ASP_SESSION_FILE when set.
-// Empty string if the home directory cannot be resolved and no override is set.
-// Prefer NamedPath. DefaultPath remains the explicit single-file override.
-func DefaultPath() string {
-	if p := strings.TrimSpace(os.Getenv("ASP_SESSION_FILE")); p != "" {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".cache", "asp", "session.json")
-}
-
 // Load reads a session file. Missing file returns ErrNoSession.
 func Load(path string) (State, error) {
 	path = strings.TrimSpace(path)

@@ -66,8 +66,8 @@ type guestTokenRequest struct {
 	Aud       string `json:"aud"`
 	Nonce     string `json:"nonce,omitempty"`
 	SandboxID string `json:"sandbox_id,omitempty"` // ignored for authority; logged if mismatch
-	UserSub   string `json:"user_sub,omitempty"`  // ignored — CP derives from owner_sub
-	Act       any    `json:"act,omitempty"`       // ignored — CP derives from owner_sub
+	UserSub   string `json:"user_sub,omitempty"`   // ignored — CP derives from owner_sub
+	Act       any    `json:"act,omitempty"`        // ignored — CP derives from owner_sub
 }
 
 type mintRequest struct {

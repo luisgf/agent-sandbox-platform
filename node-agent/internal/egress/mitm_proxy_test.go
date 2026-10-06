@@ -3,7 +3,6 @@ package egress
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -86,7 +85,6 @@ func TestForwardProxyMITMCONNECT(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
-	_ = fmt.Sprintf("%s", body)
 }
 
 func mustSelfSigned(t *testing.T, cn string) tls.Certificate {

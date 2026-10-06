@@ -35,10 +35,24 @@ jobs:
         with:
           go-version-file: ${{ matrix.module }}/go.mod
           cache-dependency-path: ${{ matrix.module }}/go.*
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi
       - name: go vet
         run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
       - name: go test
-        run: go test ./...
+        # The control plane and the node agent have concurrency tests (store,
+        # api, reconciler worker pool): run them under the race detector.
+        env:
+          MODULE: ${{ matrix.module }}
+        run: |
+          case "$MODULE" in
+            control-plane|node-agent) go test -race ./... ;;
+            *) go test ./... ;;
+          esac
 
   postgres:
     name: Go (control-plane store on Postgres)

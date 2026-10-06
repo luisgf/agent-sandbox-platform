@@ -563,11 +563,8 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if _, ok := keys["local_net"]; ok || guestCaller(r) && forbiddenLocalNetKey(keys) != "" {
-		writeError(w, http.StatusForbidden, "guest cannot set local_net")
-		return
-	}
-	if k := forbiddenLocalNetKey(keys); k != "" {
+	// exec never changes local_net, for any caller.
+	if _, ok := keys["local_net"]; ok || forbiddenLocalNetKey(keys) != "" {
 		writeError(w, http.StatusForbidden, "guest cannot set local_net")
 		return
 	}
