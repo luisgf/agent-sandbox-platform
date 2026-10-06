@@ -44,6 +44,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return authCmd(args[1:], stdout, stderr)
 	case "node":
 		return nodeCmd(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printRootUsage(stderr)
@@ -62,6 +64,7 @@ Usage:
   asp sandbox delete <id>
   asp sandbox run (--cmd '…' | -- argv…) [flags]
   asp session start|exec|status|stop|local-net [--name] [--local-net] [flags]
+  asp mcp [--name] [--start [--workspace DIR]] [--stop-on-exit]   MCP server (stdio) on a session's sandbox
   asp auth login|logout|status [flags]
   asp node list [--json]
   asp node cordon|uncordon <id>
