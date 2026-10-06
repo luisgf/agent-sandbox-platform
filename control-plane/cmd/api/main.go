@@ -5,11 +5,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,37 +29,55 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
 
+// EnvShutdownTimeout bounds how long SIGTERM waits for in-flight requests.
+const EnvShutdownTimeout = "ASP_SHUTDOWN_TIMEOUT"
+
+const defaultShutdownTimeout = 30 * time.Second
+
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:]); err != nil {
+		slog.Error("control plane stopped", "error", err)
+		stop()
+		os.Exit(1)
+	}
+}
+
+// run starts the control plane and serves until ctx is cancelled (SIGINT or
+// SIGTERM in main), then shuts down: the listeners stop accepting, in-flight
+// requests (streamed execs included) get up to ASP_SHUTDOWN_TIMEOUT to finish,
+// the background loops stop with ctx, and the Postgres pool closes last.
+func run(ctx context.Context, args []string) error {
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
+	shutdownTimeout, err := shutdownTimeoutFromEnv()
+	if err != nil {
+		return err
+	}
 
-	ctx := context.Background()
 	var st store.Store
 	storeName := "memory"
 
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		pool, err := pgxpool.New(ctx, dbURL)
 		if err != nil {
-			slog.Error("connect postgres", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("connect postgres: %w", err)
 		}
 		defer pool.Close()
 		if err := pool.Ping(ctx); err != nil {
-			slog.Error("ping postgres", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("ping postgres: %w", err)
 		}
 		if err := store.ApplyMigrations(ctx, pool, migrations.FS, "."); err != nil {
-			slog.Error("migrations", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("migrations: %w", err)
 		}
 		pg := store.NewPostgresStore(pool)
 		if store.AutoProvisionEnabled() {
 			// Only the stub provisioner uses the local-dev row.
 			if err := pg.EnsureBootstrapNode(ctx); err != nil {
-				slog.Error("bootstrap node", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("bootstrap node: %w", err)
 			}
 		}
 		st = pg
@@ -71,8 +93,7 @@ func main() {
 
 	schedCfg, err := sched.ConfigFromEnv()
 	if err != nil {
-		slog.Error("scheduler config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("scheduler config: %w", err)
 	}
 	if sc, ok := st.(interface{ SetSchedConfig(sched.Config) }); ok {
 		sc.SetSchedConfig(schedCfg)
@@ -83,8 +104,7 @@ func main() {
 	if secret := os.Getenv("ASP_BOOTSTRAP_API_KEY"); secret != "" {
 		key, err := api.BootstrapAPIKey(st, secret)
 		if err != nil {
-			slog.Error("bootstrap api key", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("bootstrap api key: %w", err)
 		}
 		if key.ID != "" {
 			slog.Info("bootstrap api key ready", "tenant", key.TenantID, "name", key.Name, "prefix", key.KeyPrefix)
@@ -93,22 +113,17 @@ func main() {
 
 	ca, err := pki.LoadOrCreateDevCA(pki.PathsFromEnv())
 	if err != nil {
-		slog.Error("load/create CA", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("load/create CA: %w", err)
 	}
 	slog.Info("enrollment CA ready", "fingerprint", pki.Fingerprint(ca.Cert))
 
 	issuer := strings.TrimSpace(os.Getenv("ASP_OIDC_ISSUER"))
 	if issuer == "" {
 		issuer = "http://127.0.0.1" + addr
-		if strings.HasPrefix(addr, ":") {
-			issuer = "http://127.0.0.1" + addr
-		}
 	}
 	oidcSigner, err := oidc.LoadOrCreate(issuer)
 	if err != nil {
-		slog.Error("oidc signer", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("oidc signer: %w", err)
 	}
 	slog.Info("oidc signer ready", "issuer", oidcSigner.Issuer, "kid", oidcSigner.KID(), "key_path", oidcSigner.KeyPath, "prev_key", oidcSigner.PrevPath != "")
 
@@ -122,8 +137,7 @@ func main() {
 	srv.OIDC = oidcSigner
 	attestor, err := attest.LoadOrCreate()
 	if err != nil {
-		slog.Error("attestor", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("attestor: %w", err)
 	}
 	srv.Attestor = attestor
 	srv.Fence = fence.FromEnv()
@@ -131,8 +145,7 @@ func main() {
 	authCfg := api.AuthConfigFromEnv()
 	idpVal, idpCfg, err := idp.FromEnv()
 	if err != nil {
-		slog.Error("idp config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("idp config: %w", err)
 	}
 	authCfg.IdP = idpVal
 	authCfg.IdPRequired = idpCfg.Required
@@ -140,10 +153,9 @@ func main() {
 		go idpVal.Run(ctx)
 	}
 
-	idleTimeout, err := store.ResolveIdleTimeout(os.Getenv(store.EnvSandboxIdleTimeout), idleTimeoutFlag(os.Args[1:]))
+	idleTimeout, err := store.ResolveIdleTimeout(os.Getenv(store.EnvSandboxIdleTimeout), idleTimeoutFlag(args))
 	if err != nil {
-		slog.Error("idle timeout", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("idle timeout: %w", err)
 	}
 	if idleTimeout > 0 {
 		sweep := store.IdleSweepInterval(os.Getenv(store.EnvSandboxIdleSweep))
@@ -156,8 +168,7 @@ func main() {
 	}
 	monCfg, err := api.NodeMonitorConfigFromEnv(schedCfg.StaleAfter)
 	if err != nil {
-		slog.Error("node monitor config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("node monitor config: %w", err)
 	}
 	go srv.RunNodeMonitor(ctx, monCfg)
 	slog.Info("node monitor enabled", "interval", monCfg.Interval.String(), "stale_after", monCfg.StaleAfter.String(),
@@ -175,32 +186,23 @@ func main() {
 
 	mux := srv.Routes()
 
-	handler := api.AuthMiddleware(st, authCfg)(requestLog(mux))
-
 	tlsCert := strings.TrimSpace(os.Getenv("ASP_TLS_CERT"))
 	tlsKey := strings.TrimSpace(os.Getenv("ASP_TLS_KEY"))
 	clientCAPath := strings.TrimSpace(os.Getenv("ASP_CLIENT_CA"))
 	mtlsStrict := api.EnvTruthy("ASP_MTLS_STRICT")
+	useTLS := tlsCert != "" && tlsKey != ""
 
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	if tlsCert != "" && tlsKey != "" {
-		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	var tlsCfg *tls.Config
+	if useTLS {
+		tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12}
 		if clientCAPath != "" {
 			pemBytes, err := os.ReadFile(clientCAPath)
 			if err != nil {
-				slog.Error("read ASP_CLIENT_CA", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("read ASP_CLIENT_CA: %w", err)
 			}
 			pool := x509.NewCertPool()
 			if !pool.AppendCertsFromPEM(pemBytes) {
-				slog.Error("ASP_CLIENT_CA has no certificates")
-				os.Exit(1)
+				return errors.New("ASP_CLIENT_CA has no certificates")
 			}
 			tlsCfg.ClientCAs = pool
 			if mtlsStrict {
@@ -217,45 +219,120 @@ func main() {
 			}
 			authCfg.RequireNodeClientCert = true
 			authCfg.RejectRevokedCerts = true
-			handler = api.AuthMiddleware(st, authCfg)(requestLog(mux))
-			server.Handler = handler
 		}
-		server.TLSConfig = tlsCfg
-
-		if mtlsStrict {
-			enrollAddr := strings.TrimSpace(os.Getenv("ASP_ENROLL_LISTEN"))
-			if enrollAddr == "" {
-				enrollAddr = "127.0.0.1:8081"
-			}
-			go serveEnrollPlaintext(enrollAddr, st, authCfg, mux)
-		}
-
-		slog.Info("control-plane API listening (TLS)", "addr", addr, "store", storeName,
-			"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
-			"mtls_strict", mtlsStrict, "idle_timeout", idleTimeout.String())
-		if err := server.ListenAndServeTLS(tlsCert, tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("API stopped", "error", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if mtlsStrict {
+	} else if mtlsStrict {
 		slog.Warn("ASP_MTLS_STRICT ignored without ASP_TLS_CERT/ASP_TLS_KEY")
 	}
 
-	slog.Info("control-plane API listening", "addr", addr, "store", storeName,
-		"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "idle_timeout", idleTimeout.String())
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("API stopped", "error", err)
-		os.Exit(1)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	server := newHTTPServer(api.AuthMiddleware(st, authCfg)(requestLog(mux)))
+	server.TLSConfig = tlsCfg
+	servers := []*trackedServer{server}
+	serveErr := make(chan error, 2)
+	go func() {
+		if useTLS {
+			serveErr <- server.ServeTLS(ln, tlsCert, tlsKey)
+		} else {
+			serveErr <- server.Serve(ln)
+		}
+	}()
+
+	if useTLS && mtlsStrict {
+		enrollAddr := strings.TrimSpace(os.Getenv("ASP_ENROLL_LISTEN"))
+		if enrollAddr == "" {
+			enrollAddr = "127.0.0.1:8081"
+		}
+		enroll, err := startEnrollPlaintext(enrollAddr, st, authCfg, mux, serveErr)
+		if err != nil {
+			slog.Error("enroll plaintext listen", "addr", enrollAddr, "error", err)
+		} else {
+			servers = append(servers, enroll)
+		}
+	}
+
+	slog.Info("control-plane API listening", "addr", ln.Addr().String(), "tls", useTLS, "store", storeName,
+		"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
+		"mtls_strict", mtlsStrict, "idle_timeout", idleTimeout.String(), "shutdown_timeout", shutdownTimeout.String())
+
+	select {
+	case err := <-serveErr:
+		shutdownAll(servers, shutdownTimeout)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("API stopped: %w", err)
+		}
+	case <-ctx.Done():
+		slog.Info("shutting down: waiting for in-flight requests", "timeout", shutdownTimeout.String())
+		shutdownAll(servers, shutdownTimeout)
+		slog.Info("control-plane API stopped")
+	}
+	return nil
+}
+
+// shutdownTimeoutFromEnv reads ASP_SHUTDOWN_TIMEOUT (default 30s).
+func shutdownTimeoutFromEnv() (time.Duration, error) {
+	v := strings.TrimSpace(os.Getenv(EnvShutdownTimeout))
+	if v == "" {
+		return defaultShutdownTimeout, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s=%q: want a duration greater than 0 (e.g. 30s)", EnvShutdownTimeout, v)
+	}
+	return d, nil
+}
+
+// trackedServer is an http.Server that counts its open connections, so a
+// shutdown that runs out of time can say how many it is cutting.
+type trackedServer struct {
+	*http.Server
+	open atomic.Int64
+}
+
+func newHTTPServer(h http.Handler) *trackedServer {
+	s := &trackedServer{Server: &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}}
+	s.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			s.open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			s.open.Add(-1)
+		}
+	}
+	return s
+}
+
+// shutdownAll stops accepting on every server and waits up to timeout for the
+// requests in flight; whatever is still open then is closed.
+func shutdownAll(servers []*trackedServer, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan struct{}, len(servers))
+	for _, s := range servers {
+		go func(s *trackedServer) {
+			defer func() { done <- struct{}{} }()
+			if err := s.Shutdown(ctx); err != nil {
+				slog.Warn("shutdown timeout reached; closing the connections still open",
+					"open_connections", s.open.Load(), "error", err)
+				_ = s.Close()
+			}
+		}(s)
+	}
+	for range servers {
+		<-done
 	}
 }
 
-// serveEnrollPlaintext binds a localhost-only plaintext listener for bootstrap
+// startEnrollPlaintext binds a localhost-only plaintext listener for bootstrap
 // enrollment when the main TLS listener requires client certs (ASP_MTLS_STRICT).
 // Only /healthz and POST /v1/nodes/enroll are exposed.
-func serveEnrollPlaintext(addr string, st store.Store, authCfg api.AuthConfig, fullMux http.Handler) {
+func startEnrollPlaintext(addr string, st store.Store, authCfg api.AuthConfig, fullMux http.Handler, serveErr chan<- error) (*trackedServer, error) {
 	gate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/healthz":
@@ -268,22 +345,20 @@ func serveEnrollPlaintext(addr string, st store.Store, authCfg api.AuthConfig, f
 			_, _ = w.Write([]byte(`{"error":"enroll listener only serves /healthz and POST /v1/nodes/enroll"}` + "\n"))
 		}
 	})
-	handler := api.AuthMiddleware(st, authCfg)(requestLog(gate))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		slog.Error("enroll plaintext listen", "addr", addr, "error", err)
-		return
+		return nil, err
 	}
-	srv := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	slog.Info("enroll plaintext listener (ASP_MTLS_STRICT)", "addr", addr,
+	srv := newHTTPServer(api.AuthMiddleware(st, authCfg)(requestLog(gate)))
+	slog.Info("enroll plaintext listener (ASP_MTLS_STRICT)", "addr", ln.Addr().String(),
 		"note", "localhost-only recommended; use for bootstrap enroll / re-enroll")
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("enroll plaintext stopped", "error", err)
-	}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("enroll plaintext stopped", "error", err)
+			serveErr <- err
+		}
+	}()
+	return srv, nil
 }
 
 func requestLog(next http.Handler) http.Handler {
