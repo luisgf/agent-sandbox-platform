@@ -136,6 +136,20 @@ func tunnelSlot(id string) int {
 type Cmd struct {
 	Name string
 	Args []string
+	// Stdin is a file whose content reaches the command through a pipe. wg
+	// reads the private key from /dev/stdin that way: Ubuntu's AppArmor
+	// profile for wg only lets it open files under /etc/wireguard, and a pipe
+	// is not a file it opens by path.
+	Stdin string
+}
+
+// Line is c as a shell line, for logs and errors.
+func (c Cmd) Line() string {
+	l := c.Name + " " + strings.Join(c.Args, " ")
+	if c.Stdin != "" {
+		return "cat " + c.Stdin + " | " + l
+	}
+	return l
 }
 
 // Argv is the host recipe for a non-public plan. KindPublic returns nil:
@@ -156,10 +170,10 @@ func Argv(p Plan) []Cmd {
 			cmds = append(cmds, Cmd{Name: "wg", Args: []string{
 				"set", p.Iface,
 				"listen-port", strconv.Itoa(p.ListenPort),
-				"private-key", p.KeyPath,
+				"private-key", "/dev/stdin",
 				"peer", p.PeerPublic,
 				"allowed-ips", "0.0.0.0/0,::/0",
-			}})
+			}, Stdin: p.KeyPath})
 		}
 		table := strconv.Itoa(p.TableID)
 		cmds = append(cmds,
@@ -210,7 +224,7 @@ func Commands(p Plan) []string {
 func joinCmds(cmds []Cmd) []string {
 	out := make([]string, 0, len(cmds))
 	for _, c := range cmds {
-		out = append(out, c.Name+" "+strings.Join(c.Args, " "))
+		out = append(out, c.Line())
 	}
 	return out
 }

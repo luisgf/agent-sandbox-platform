@@ -1,6 +1,7 @@
 package localnet
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -57,9 +58,25 @@ func shortID(id string) string {
 type cmd struct {
 	name string
 	args []string
+	// stdin is a file whose content reaches the command through a pipe. wg
+	// reads the private key from /dev/stdin that way: Ubuntu's AppArmor
+	// profile for wg only lets it open files under /etc/wireguard, and a pipe
+	// is not a file it opens by path.
+	stdin string
 }
 
-func (c cmd) line() string { return c.name + " " + strings.Join(c.args, " ") }
+func (c cmd) line() string {
+	l := c.name + " " + strings.Join(c.args, " ")
+	if c.stdin != "" {
+		return "cat " + c.stdin + " | " + l
+	}
+	return l
+}
+
+// guestPool is the node's default guest subnet (--guest-subnet). The guest
+// keeps its own address in the tunnel, so the replies to it go back through
+// the device; the macOS client routes the same prefix.
+const guestPool = "10.200.0.0/16"
 
 // Commands is the exact argv used when the device is applied.
 // It does not route 0.0.0.0/0 in the main table and it does not mention :8888.
@@ -77,19 +94,22 @@ func (d ClientDevice) linuxCommands() []cmd {
 	if strings.TrimSpace(d.Iface) == "" {
 		return nil
 	}
-	cmds = append(cmds, cmd{"ip", []string{"link", "delete", "dev", d.Iface}})
-	cmds = append(cmds, cmd{"ip", []string{"link", "add", "dev", d.Iface, "type", "wireguard"}})
+	cmds = append(cmds, cmd{name: "ip", args: []string{"link", "delete", "dev", d.Iface}})
+	cmds = append(cmds, cmd{name: "ip", args: []string{"link", "add", "dev", d.Iface, "type", "wireguard"}})
 	if d.Address != "" {
-		cmds = append(cmds, cmd{"ip", []string{"address", "add", d.Address, "dev", d.Iface}})
+		cmds = append(cmds, cmd{name: "ip", args: []string{"address", "add", d.Address, "dev", d.Iface}})
 	}
 	if d.KeyPath != "" && d.NodePublic != "" {
-		args := []string{"set", d.Iface, "private-key", d.KeyPath, "peer", d.NodePublic, "allowed-ips", "0.0.0.0/0,::/0"}
+		args := []string{"set", d.Iface, "private-key", "/dev/stdin", "peer", d.NodePublic, "allowed-ips", "0.0.0.0/0,::/0"}
 		if d.Endpoint != "" {
 			args = append(args, "endpoint", d.Endpoint, "persistent-keepalive", "25")
 		}
-		cmds = append(cmds, cmd{"wg", args})
+		cmds = append(cmds, cmd{name: "wg", args: args, stdin: d.KeyPath})
 	}
-	cmds = append(cmds, cmd{"ip", []string{"link", "set", d.Iface, "up"}})
+	cmds = append(cmds, cmd{name: "ip", args: []string{"link", "set", d.Iface, "up"}})
+	// Return path for guest sources. Not a default route. One session per
+	// laptop holds it: another session's add finds it present and keeps it.
+	cmds = append(cmds, cmd{name: "ip", args: []string{"route", "add", guestPool, "dev", d.Iface}})
 	return cmds
 }
 
@@ -266,11 +286,11 @@ func TearDown(stderr io.Writer, iface, sessionPath string) error {
 			return nil
 		}
 	}
-	if err := run(cmd{"ip", []string{"link", "delete", "dev", iface}}, true); err != nil {
+	if err := run(cmd{name: "ip", args: []string{"link", "delete", "dev", iface}}, true); err != nil {
 		return err
 	}
 	if _, err := exec.LookPath("nft"); err == nil {
-		_ = run(cmd{"nft", []string{"delete", "table", "ip", nftTable(iface)}}, true)
+		_ = run(cmd{name: "nft", args: []string{"delete", "table", "ip", nftTable(iface)}}, true)
 	}
 	return nil
 }
@@ -291,12 +311,12 @@ func nftTable(iface string) string {
 func nftCmds(iface string, del bool) []cmd {
 	table := nftTable(iface)
 	if del {
-		return []cmd{{"nft", []string{"delete", "table", "ip", table}}}
+		return []cmd{{name: "nft", args: []string{"delete", "table", "ip", table}}}
 	}
 	return []cmd{
-		{"nft", []string{"add", "table", "ip", table}},
-		{"nft", []string{"add", "chain", "ip", table, "postrouting", "{", "type", "nat", "hook", "postrouting", "priority", "100", ";", "}"}},
-		{"nft", []string{"add", "rule", "ip", table, "postrouting", "iifname", iface, "masquerade"}},
+		{name: "nft", args: []string{"add", "table", "ip", table}},
+		{name: "nft", args: []string{"add", "chain", "ip", table, "postrouting", "{", "type", "nat", "hook", "postrouting", "priority", "100", ";", "}"}},
+		{name: "nft", args: []string{"add", "rule", "ip", table, "postrouting", "iifname", iface, "masquerade"}},
 	}
 }
 
@@ -309,6 +329,14 @@ func printCmds(stderr io.Writer, cmds []cmd) {
 
 func run(c cmd, soft bool) error {
 	cmd := exec.Command(c.name, c.args...)
+	if c.stdin != "" {
+		b, err := os.ReadFile(c.stdin)
+		if err != nil {
+			return fmt.Errorf("%s: %w", c.line(), err)
+		}
+		// A reader that is not an *os.File reaches the command through a pipe.
+		cmd.Stdin = bytes.NewReader(b)
+	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil

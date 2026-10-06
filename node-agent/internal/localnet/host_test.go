@@ -56,10 +56,13 @@ func TestHostApplyMockPath(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// wg logs the size of what it reads on stdin: the private key arrives
+	// through a pipe, never as a path (Ubuntu's AppArmor profile denies those).
 	script := "#!/bin/sh\n" +
 		"n=$0; n=${n##*/}\n" +
 		"printf '%s' \"$n\" >> \"$ASP_MOCK_LOG\"\n" +
 		"for a in \"$@\"; do printf ' %s' \"$a\" >> \"$ASP_MOCK_LOG\"; done\n" +
+		"if [ \"$n\" = wg ]; then IFS= read -r k; printf ' <stdin:%s>' \"${#k}\" >> \"$ASP_MOCK_LOG\"; fi\n" +
 		"printf '\\n' >> \"$ASP_MOCK_LOG\"\n" +
 		"exit 0\n"
 	for _, name := range []string{"ip", "wg"} {
@@ -103,7 +106,7 @@ func TestHostApplyMockPath(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ip link add dev wg-asp-abcdef01 type wireguard",
-		"wg set wg-asp-abcdef01 listen-port 51024 private-key " + keyPath + " peer " + up.PeerPublic + " allowed-ips 0.0.0.0/0,::/0",
+		"wg set wg-asp-abcdef01 listen-port 51024 private-key /dev/stdin peer " + up.PeerPublic + " allowed-ips 0.0.0.0/0,::/0 <stdin:44>",
 		"ip route replace default dev wg-asp-abcdef01 table 13853",
 		"ip rule add iif asp-abcdef01 lookup 13853 priority 13853",
 		"ip route replace 10.200.0.0/16 dev asp-abcdef01 table 13853",
