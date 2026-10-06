@@ -1,0 +1,70 @@
+#!/bin/sh
+# asp-opencode-shell: OpenCode's "shell". Runs each bash tool command with
+# /bin/sh -c inside an ASP session and returns the command's exit code.
+#
+#   ASP_SESSION_NAME     session name (default: opencode)
+#   ASP_WORKSPACE_HOST   host path given to --workspace; a cwd under it maps into the guest
+#   ASP_WORKSPACE_GUEST  guest mount point (default: /workspace)
+#   ASP_GUEST_CWD        guest directory set by the asp-sandbox plugin from `workdir`
+#   ASP_GUEST_AS_ROOT=1  run as root in the guest instead of as the owner of the workspace
+#   ASP_BIN              asp binary (default: asp)
+#   ASP_SSH              user@host: run asp there, for a control plane only reachable from it
+#   ASP_REMOTE_EXEC      command that runs this script on that host in --remote-exec mode
+#                        (default: asp-opencode-shell --remote-exec)
+#
+# Usage errors of this script exit 125 and ssh errors exit 255. Errors of asp
+# itself (no active session, 401, network) exit 1, like a failing command.
+NAME="${ASP_SESSION_NAME:-opencode}"
+GUEST_ROOT="${ASP_WORKSPACE_GUEST:-/workspace}"
+ASP="${ASP_BIN:-asp}"
+
+# The ssh hop: --remote-exec NAME CWD, with the guest script on stdin.
+if [ "$1" = "--remote-exec" ] && [ $# -eq 3 ]; then
+  script=$(cat)
+  exec "$ASP" session exec --name "$2" --cwd "$3" --no-pty -- /bin/sh -c "$script" < /dev/null
+fi
+
+# Map OpenCode's working directory on the host to the same place in the guest.
+cwd="$GUEST_ROOT"
+if [ -n "$ASP_GUEST_CWD" ]; then
+  cwd="$ASP_GUEST_CWD"
+elif [ -n "$ASP_WORKSPACE_HOST" ]; then
+  case "$PWD/" in
+    "$ASP_WORKSPACE_HOST"/*) cwd="$GUEST_ROOT${PWD#"$ASP_WORKSPACE_HOST"}" ;;
+  esac
+fi
+
+if [ $# -eq 0 ]; then
+  # OpenCode's interactive terminal: a login shell in the guest with a PTY.
+  if [ -n "$ASP_SSH" ]; then
+    echo "asp-opencode-shell: the interactive terminal needs asp on this machine, not ASP_SSH" >&2
+    exit 125
+  fi
+  exec "$ASP" session exec --name "$NAME" --cwd "$cwd" -- /bin/bash -l
+fi
+if [ "$1" != "-c" ] || [ $# -ne 2 ]; then
+  echo "asp-opencode-shell: expected -c <command>" >&2
+  exit 125
+fi
+
+script=$2
+if [ "${ASP_GUEST_AS_ROOT:-0}" != 1 ]; then
+  # virtiofs does not map ids: run as the owner of the workspace so new files
+  # keep the host user's uid. Falls back to root when the owner is root or the
+  # workspace is not mounted.
+  q=$(printf '%s' "$2" | sed "s/'/'\\\\''/g")
+  script="if o=\$(stat -c %u:%g $GUEST_ROOT 2>/dev/null) && [ \"\${o%%:*}\" != 0 ]; then exec setpriv --reuid=\"\${o%%:*}\" --regid=\"\${o#*:}\" --clear-groups env HOME=/tmp /bin/sh -c '$q'; fi; exec /bin/sh -c '$q'"
+fi
+
+if [ -n "$ASP_SSH" ]; then
+  # ssh joins its arguments into one remote command line: allow only plain names.
+  case "$NAME$cwd" in
+    *[!A-Za-z0-9_./-]*)
+      echo "asp-opencode-shell: session name or guest cwd has characters the ssh hop cannot pass: $NAME $cwd" >&2
+      exit 125
+      ;;
+  esac
+  printf '%s' "$script" | ssh -o BatchMode=yes "$ASP_SSH" "${ASP_REMOTE_EXEC:-asp-opencode-shell --remote-exec}" "$NAME" "$cwd"
+  exit $?
+fi
+exec "$ASP" session exec --name "$NAME" --cwd "$cwd" --no-pty -- /bin/sh -c "$script"
