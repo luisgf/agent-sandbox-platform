@@ -42,13 +42,18 @@ type Evidence struct {
 // certificate the request comes with), else ASP_ATTEST_KEY, whose public key
 // the control plane must trust.
 type Signer struct {
-	key *ecdsa.PrivateKey
-	kid string
+	key func() *ecdsa.PrivateKey
 }
 
 // NewSigner signs with key.
 func NewSigner(key *ecdsa.PrivateKey) *Signer {
-	return &Signer{key: key, kid: kidOf(&key.PublicKey)}
+	return &Signer{key: func() *ecdsa.PrivateKey { return key }}
+}
+
+// NewKeySigner signs with the key that key returns at signing time, such as
+// the node certificate's key, which renewal replaces.
+func NewKeySigner(key func() *ecdsa.PrivateKey) *Signer {
+	return &Signer{key: key}
 }
 
 // LoadKeyFile reads an ECDSA private key PEM (SEC 1 or PKCS #8), such as the
@@ -66,7 +71,12 @@ func LoadKeyFile(path string) (*Signer, error) {
 }
 
 // KeyID identifies the signing key (truncated SHA-256 of its SPKI).
-func (s *Signer) KeyID() string { return s.kid }
+func (s *Signer) KeyID() string {
+	if k := s.key(); k != nil {
+		return kidOf(&k.PublicKey)
+	}
+	return ""
+}
 
 func LoadOrCreate() (*Signer, error) {
 	path := strings.TrimSpace(os.Getenv("ASP_ATTEST_KEY"))
@@ -78,7 +88,7 @@ func LoadOrCreate() (*Signer, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Signer{key: key, kid: kidOf(&key.PublicKey)}, nil
+		return NewSigner(key), nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -97,30 +107,34 @@ func LoadOrCreate() (*Signer, error) {
 	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
 		return nil, err
 	}
-	return &Signer{key: key, kid: kidOf(&key.PublicKey)}, nil
+	return NewSigner(key), nil
 }
 
 func (s *Signer) Sign(stmt BootStatement) (Evidence, error) {
 	if stmt.TS == "" {
 		stmt.TS = time.Now().UTC().Format(time.RFC3339)
 	}
+	key := s.key()
+	if key == nil {
+		return Evidence{}, errors.New("no ECDSA signing key")
+	}
 	canonical, err := json.Marshal(stmt)
 	if err != nil {
 		return Evidence{}, err
 	}
 	sum := sha256.Sum256(canonical)
-	r, ss, err := ecdsa.Sign(rand.Reader, s.key, sum[:])
+	r, ss, err := ecdsa.Sign(rand.Reader, key, sum[:])
 	if err != nil {
 		return Evidence{}, err
 	}
 	sig := append(pad32(r.Bytes()), pad32(ss.Bytes())...)
-	pubDER, _ := x509.MarshalPKIXPublicKey(&s.key.PublicKey)
+	pubDER, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 	return Evidence{
 		Statement:    stmt,
 		Signature:    base64.RawURLEncoding.EncodeToString(sig),
 		Alg:          "ES256",
-		KeyID:        s.kid,
+		KeyID:        kidOf(&key.PublicKey),
 		PublicKeyPEM: string(pubPEM),
 	}, nil
 }

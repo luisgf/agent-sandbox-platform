@@ -1020,10 +1020,10 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 			UPDATE nodes SET
 				name=$2, endpoint=$3, agent_endpoint=$4, state='ready', vmm_profiles=$5,
 				capacity_cpu=$6, capacity_mem_mib=$7, cert_fingerprint=$8, cert_serial=$9,
-				enrolled_at=$10, last_seen_at=$10, updated_at=$10, revoked_at=NULL
+				enrolled_at=$10, last_seen_at=$10, updated_at=$10, revoked_at=NULL, cert_not_after=$11
 			WHERE id=$1`,
 			id, name, input.Endpoint, agentEndpoint, profiles,
-			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now,
+			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now, cert.notAfterPtr(),
 		)
 	} else {
 		var tag pgconn.CommandTag
@@ -1031,11 +1031,11 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, cert_fingerprint, cert_serial, enrolled_at,
-				last_seen_at, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10)
+				last_seen_at, created_at, updated_at, cert_not_after
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10,$11)
 			ON CONFLICT (id) DO NOTHING`,
 			id, name, input.Endpoint, agentEndpoint, profiles,
-			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now,
+			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now, cert.notAfterPtr(),
 		)
 		if err == nil && tag.RowsAffected() == 0 {
 			// Another enrollment created the node first.
@@ -1107,8 +1107,8 @@ func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, erro
 		}
 	}
 	_, err = tx.Exec(ctx, `
-		UPDATE nodes SET cert_fingerprint=$2, cert_serial=$3, updated_at=$4
-		WHERE id=$1`, nodeID, fp, serial, now)
+		UPDATE nodes SET cert_fingerprint=$2, cert_serial=$3, updated_at=$4, cert_not_after=$5
+		WHERE id=$1`, nodeID, fp, serial, now, cert.notAfterPtr())
 	if err != nil {
 		return Node{}, err
 	}
@@ -1506,7 +1506,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 // nodeColumns is the column list scanNode reads, in order.
 const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
 		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial, agent_instance_id,
-		cert_fingerprint, cert_serial, fence_token, fence_endpoint, enrolled_at,
+		cert_fingerprint, cert_serial, cert_not_after, fence_token, fence_endpoint, enrolled_at,
 		revoked_at, last_seen_at, created_at, updated_at`
 
 func scanNode(row scannable) (Node, error) {
@@ -1514,7 +1514,7 @@ func scanNode(row scannable) (Node, error) {
 	err := row.Scan(
 		&n.ID, &n.Name, &n.Endpoint, &n.AgentEndpoint, &n.State, &n.VMMProfiles,
 		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial, &n.AgentInstanceID,
-		&n.CertFingerprint, &n.CertSerial, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
+		&n.CertFingerprint, &n.CertSerial, &n.CertNotAfter, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
 		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt,
 	)
 	if err != nil {

@@ -94,6 +94,8 @@ type Node struct {
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	CertFingerprint string `json:"cert_fingerprint,omitempty"`
 	CertSerial      string `json:"cert_serial,omitempty"`
+	// CertNotAfter is when the current node certificate expires (016).
+	CertNotAfter *time.Time `json:"cert_not_after,omitempty"`
 	// Fence credentials can power the node off; they never leave the control plane.
 	FenceToken    string     `json:"-"`
 	FenceEndpoint string     `json:"-"`
@@ -229,6 +231,16 @@ type EnrollNodeResult struct {
 type CertMeta struct {
 	Fingerprint string
 	Serial      string
+	NotAfter    time.Time // zero: unknown
+}
+
+// notAfterPtr returns the expiry to store, nil when unknown.
+func (c CertMeta) notAfterPtr() *time.Time {
+	if c.NotAfter.IsZero() {
+		return nil
+	}
+	t := c.NotAfter.UTC()
+	return &t
 }
 
 // EgressRule is one allowlist entry for a tenant.

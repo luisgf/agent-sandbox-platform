@@ -863,6 +863,7 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth Enro
 		AcceptsWork:     true,
 		CertFingerprint: fp,
 		CertSerial:      strings.TrimSpace(cert.Serial),
+		CertNotAfter:    cert.notAfterPtr(),
 		EnrolledAt:      &enrolled,
 		LastSeenAt:      &seen,
 		CreatedAt:       now,
@@ -923,6 +924,7 @@ func (m *MemoryStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, error)
 	}
 	n.CertFingerprint = fp
 	n.CertSerial = strings.TrimSpace(cert.Serial)
+	n.CertNotAfter = cert.notAfterPtr()
 	n.UpdatedAt = now
 	delete(m.revokedCerts, fp)
 	m.nodes[nodeID] = n
@@ -1237,6 +1239,10 @@ func cloneNode(n Node) Node {
 	if n.EnrolledAt != nil {
 		t := *n.EnrolledAt
 		n.EnrolledAt = &t
+	}
+	if n.CertNotAfter != nil {
+		t := *n.CertNotAfter
+		n.CertNotAfter = &t
 	}
 	if n.RevokedAt != nil {
 		t := *n.RevokedAt

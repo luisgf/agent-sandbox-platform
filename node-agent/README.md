@@ -81,6 +81,8 @@ ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (sin fa
 
 Agente SSH ([ADR-0003](../docs/adr/0003-identity.md) § 1, [ADR-0005](../docs/adr/0005-fase-2d-hardening.md) § 3): todas las rutas pasan por un proxy que lee mensaje a mensaje y solo reenvía `REQUEST_IDENTITIES`, `SIGN_REQUEST` y la extensión `query`. Añadir, borrar o bloquear claves recibe `SSH_AGENT_FAILURE` sin llegar al agente del host. Con `--ssh-agent-confirm`, cada acceptor `{vsock}_26501` solo firma con aprobaciones de su sandbox.
 
+Renovación del certificado de nodo ([ADR-0005](../docs/adr/0005-fase-2d-hardening.md) § 1): con mTLS contra un control plane `https://`, el agente revisa su certificado al arrancar y cada 24 h. Con menos de un tercio de vida por delante pide uno nuevo con `POST /v1/nodes/{id}/rotate-cert`, autenticado por el certificado actual, lo escribe en `--cert-dir` de forma atómica y lo usa sin reiniciar (cliente del control plane, listener `--agent-tls-listen` y firma de atestaciones). Si falla con menos de 30 días por delante, avisa en el log en cada intento.
+
 Atestación de arranque ([ADR-0003](../docs/adr/0003-identity.md) § 2): tras `running` el reconciler firma un `BootStatement` y lo envía al control plane, que solo acepta claves que conoce. Con mTLS a un control plane `https://` firma con la clave del certificado de nodo (`--cert-dir`/`client.key`); si el control plane la rechaza, prueba con `ASP_ATTEST_KEY` (por defecto `$TMPDIR/asp-attest-key.pem`, el mismo fichero que usa el control plane en un lab de un host).
 
 Guest→host: ver [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).

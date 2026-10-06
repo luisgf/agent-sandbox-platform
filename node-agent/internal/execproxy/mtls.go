@@ -46,9 +46,23 @@ func MTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load node certificate: %w", err)
 	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("parse node certificate: %w", err)
+	return MTLSConfigFor(func() *tls.Certificate { return &pair }, caFile)
+}
+
+// MTLSConfigFor is MTLSConfig with the server certificate read from cert at
+// each handshake, so a renewed node certificate is served without a restart.
+// The certificate in use when the config is built must allow server auth.
+func MTLSConfigFor(cert func() *tls.Certificate, caFile string) (*tls.Config, error) {
+	cur := cert()
+	if cur == nil || len(cur.Certificate) == 0 {
+		return nil, errors.New("no node certificate")
+	}
+	leaf := cur.Leaf
+	if leaf == nil {
+		var err error
+		if leaf, err = x509.ParseCertificate(cur.Certificate[0]); err != nil {
+			return nil, fmt.Errorf("parse node certificate: %w", err)
+		}
 	}
 	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) {
 		return nil, ErrNoServerAuth
@@ -62,10 +76,10 @@ func MTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 		return nil, fmt.Errorf("no CA certificates in %s", caFile)
 	}
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{pair},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
+		MinVersion:     tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert(), nil },
+		ClientAuth:     tls.RequireAndVerifyClientCert,
+		ClientCAs:      pool,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
 				return errors.New("client certificate required")
