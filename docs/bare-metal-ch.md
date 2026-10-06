@@ -664,7 +664,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 
 ### Remote attestation (MVP software)
 
-1. Comparte `ASP_ATTEST_KEY` (PEM ECDSA P-256) entre node-agent y control-plane, o deja que cada lado use el PEM embebido en el bundle (`public_key_pem`) en lab.
+1. El control plane solo acepta claves que conoce; la que trae el bundle (`public_key_pem`) no vale. Con mTLS (`ASP_CLIENT_CA` y `https://`) el node-agent firma con la clave de su certificado de nodo y no hace falta nada más. Sin mTLS, comparte `ASP_ATTEST_KEY` (PEM ECDSA P-256) entre node-agent y control-plane, o da de alta la clave pública de cada nodo en `ASP_ATTEST_TRUSTED_PUBS`.
 2. Tras `running`, el reconciler firma `BootStatement` y hace `POST /v1/sandboxes/{id}/attest`.
 3. Consulta: `GET /v1/sandboxes/{id}/attestation`; verificación sin store: `POST /v1/attestation/verify`.
 4. Mint OIDC incluye `x_asp_attestation` si la evidencia está dentro de `ASP_ATTEST_MAX_AGE` (default 10m).

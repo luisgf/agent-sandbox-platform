@@ -24,10 +24,15 @@ import (
 )
 
 const (
-	AlgES256       = "ES256"
-	DefaultMaxAge  = 10 * time.Minute
-	DefaultKeyPath = "/tmp/asp-attest-key.pem"
+	AlgES256      = "ES256"
+	DefaultMaxAge = 10 * time.Minute
 )
+
+// defaultKeyPath is where a lab key lives without ASP_ATTEST_KEY: the same
+// place the node-agent puts its own, so a single-host lab shares one key.
+func defaultKeyPath() string {
+	return filepath.Join(os.TempDir(), "asp-attest-key.pem")
+}
 
 // BootStatement is the canonical sandbox boot evidence payload.
 type BootStatement struct {
@@ -57,21 +62,28 @@ type Attestor interface {
 	Verify(ctx context.Context, ev Evidence) error
 }
 
-// SoftwareAttestor signs/verifies boot statements with an ECDSA P-256 key
-// (ASP_ATTEST_KEY) — the practical stand-in for node mTLS / dedicated attest key.
+// SoftwareAttestor signs/verifies boot statements with ECDSA P-256 keys.
+//
+// It verifies against configured keys only: the public key of ASP_ATTEST_KEY
+// (or ASP_ATTEST_PUB, which replaces it), the keys in ASP_ATTEST_TRUSTED_PUBS,
+// and, per request, the key of the node certificate the request was
+// authenticated with (VerifyWithNodeKey). The public key inside the evidence
+// is never trusted: anyone can sign with a fresh key and attach it.
 type SoftwareAttestor struct {
-	mu     sync.RWMutex
-	key    *ecdsa.PrivateKey
-	pub    *ecdsa.PublicKey
-	kid    string
-	MaxAge time.Duration
+	mu      sync.RWMutex
+	key     *ecdsa.PrivateKey
+	pub     *ecdsa.PublicKey
+	kid     string
+	trusted []*ecdsa.PublicKey
+	MaxAge  time.Duration
 }
 
-// LoadOrCreate loads ASP_ATTEST_KEY PEM or creates a lab key.
+// LoadOrCreate loads ASP_ATTEST_KEY PEM (or creates a lab key there), then the
+// optional ASP_ATTEST_PUB and ASP_ATTEST_TRUSTED_PUBS verification keys.
 func LoadOrCreate() (*SoftwareAttestor, error) {
 	path := strings.TrimSpace(os.Getenv("ASP_ATTEST_KEY"))
 	if path == "" {
-		path = DefaultKeyPath
+		path = defaultKeyPath()
 	}
 	a := &SoftwareAttestor{MaxAge: DefaultMaxAge}
 	if raw := strings.TrimSpace(os.Getenv("ASP_ATTEST_MAX_AGE")); raw != "" {
@@ -79,15 +91,44 @@ func LoadOrCreate() (*SoftwareAttestor, error) {
 			a.MaxAge = d
 		}
 	}
+	key, err := loadOrCreateKey(path)
+	if err != nil {
+		return nil, err
+	}
+	a.key = key
+	a.pub = &key.PublicKey
+	a.kid = keyID(a.pub)
+
+	// Optional verify-only public key, replacing the signing key's.
+	if pubPath := strings.TrimSpace(os.Getenv("ASP_ATTEST_PUB")); pubPath != "" {
+		pubPEM, err := os.ReadFile(pubPath)
+		if err != nil {
+			return nil, fmt.Errorf("read ASP_ATTEST_PUB: %w", err)
+		}
+		pub, err := parseECPublicKey(pubPEM)
+		if err != nil {
+			return nil, fmt.Errorf("parse ASP_ATTEST_PUB: %w", err)
+		}
+		a.pub = pub
+		a.kid = keyID(pub)
+	}
+	if bundle := strings.TrimSpace(os.Getenv("ASP_ATTEST_TRUSTED_PUBS")); bundle != "" {
+		keys, err := LoadPublicKeys(bundle)
+		if err != nil {
+			return nil, fmt.Errorf("ASP_ATTEST_TRUSTED_PUBS: %w", err)
+		}
+		a.trusted = keys
+	}
+	return a, nil
+}
+
+func loadOrCreateKey(path string) (*ecdsa.PrivateKey, error) {
 	if data, err := os.ReadFile(path); err == nil {
 		key, err := parseECPrivateKey(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse ASP_ATTEST_KEY: %w", err)
 		}
-		a.key = key
-		a.pub = &key.PublicKey
-		a.kid = keyID(a.pub)
-		return a, nil
+		return key, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -105,24 +146,57 @@ func LoadOrCreate() (*SoftwareAttestor, error) {
 	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
 		return nil, err
 	}
-	a.key = key
-	a.pub = &key.PublicKey
-	a.kid = keyID(a.pub)
+	return key, nil
+}
 
-	// Optional: load verify-only public key override.
-	if pubPath := strings.TrimSpace(os.Getenv("ASP_ATTEST_PUB")); pubPath != "" {
-		pubPEM, err := os.ReadFile(pubPath)
-		if err != nil {
-			return nil, fmt.Errorf("read ASP_ATTEST_PUB: %w", err)
-		}
-		pub, err := parseECPublicKey(pubPEM)
-		if err != nil {
-			return nil, fmt.Errorf("parse ASP_ATTEST_PUB: %w", err)
-		}
-		a.pub = pub
-		a.kid = keyID(pub)
+// LoadPublicKeys reads a PEM bundle of ECDSA P-256 verification keys: PUBLIC
+// KEY blocks and/or CERTIFICATE blocks (their subject key).
+func LoadPublicKeys(path string) ([]*ecdsa.PublicKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
-	return a, nil
+	var keys []*ecdsa.PublicKey
+	for {
+		var block *pem.Block
+		block, data = pem.Decode(data)
+		if block == nil {
+			break
+		}
+		var k any
+		switch block.Type {
+		case "PUBLIC KEY":
+			k, err = x509.ParsePKIXPublicKey(block.Bytes)
+		case "CERTIFICATE":
+			var cert *x509.Certificate
+			cert, err = x509.ParseCertificate(block.Bytes)
+			if err == nil {
+				k = cert.PublicKey
+			}
+		default:
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s block: %w", block.Type, err)
+		}
+		pub, ok := k.(*ecdsa.PublicKey)
+		if !ok || pub.Curve != elliptic.P256() {
+			return nil, fmt.Errorf("%s block: not an ECDSA P-256 key", block.Type)
+		}
+		keys = append(keys, pub)
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("no PUBLIC KEY or CERTIFICATE block")
+	}
+	return keys, nil
+}
+
+// AddTrustedKey adds a verification key (tests and callers that load keys
+// themselves).
+func (a *SoftwareAttestor) AddTrustedKey(pub *ecdsa.PublicKey) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.trusted = append(a.trusted, pub)
 }
 
 // NewSoftwareAttestorFromKey is for tests.
@@ -169,24 +243,33 @@ func (a *SoftwareAttestor) Attest(_ context.Context, stmt BootStatement) (Eviden
 	}, nil
 }
 
-func (a *SoftwareAttestor) Verify(_ context.Context, ev Evidence) error {
+// Verify checks ev against the configured keys only.
+func (a *SoftwareAttestor) Verify(ctx context.Context, ev Evidence) error {
+	return a.VerifyWithNodeKey(ctx, ev, nil)
+}
+
+// VerifyWithNodeKey is Verify that also accepts a signature by nodeKey: the
+// public key of the node certificate the request was authenticated with over
+// mTLS. The caller must have checked that the certificate names
+// ev.Statement.NodeID.
+func (a *SoftwareAttestor) VerifyWithNodeKey(_ context.Context, ev Evidence, nodeKey *ecdsa.PublicKey) error {
 	if err := validateStatement(ev.Statement); err != nil {
 		return err
 	}
 	if ev.Alg != "" && ev.Alg != AlgES256 {
 		return fmt.Errorf("unsupported alg %q", ev.Alg)
 	}
-	pubs := make([]*ecdsa.PublicKey, 0, 2)
+	a.mu.RLock()
+	pubs := append([]*ecdsa.PublicKey(nil), a.trusted...)
 	if a.pub != nil {
 		pubs = append(pubs, a.pub)
 	}
-	if ev.PublicKeyPEM != "" {
-		if p, err := parseECPublicKey([]byte(ev.PublicKeyPEM)); err == nil {
-			pubs = append(pubs, p)
-		}
+	a.mu.RUnlock()
+	if nodeKey != nil {
+		pubs = append(pubs, nodeKey)
 	}
 	if len(pubs) == 0 {
-		return errors.New("no attestation public key")
+		return errors.New("no trusted attestation key: set ASP_ATTEST_KEY, ASP_ATTEST_PUB or ASP_ATTEST_TRUSTED_PUBS")
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(ev.Signature)
 	if err != nil || len(sig) != 64 {
@@ -211,7 +294,11 @@ func (a *SoftwareAttestor) Verify(_ context.Context, ev Evidence) error {
 		}
 	}
 	if !ok {
-		return errors.New("attestation signature invalid")
+		kid := ev.KeyID
+		if len(kid) > 64 {
+			kid = kid[:64]
+		}
+		return fmt.Errorf("attestation signature does not verify with any trusted key (evidence key_id %q): sign with ASP_ATTEST_KEY, a key in ASP_ATTEST_TRUSTED_PUBS, or the node certificate over mTLS", kid)
 	}
 	return a.checkFreshness(ev.Statement)
 }

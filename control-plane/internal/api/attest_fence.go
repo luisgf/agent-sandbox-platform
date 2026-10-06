@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -75,7 +76,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 	if ev.Alg == "" {
 		ev.Alg = attest.AlgES256
 	}
-	if err := s.Attestor.Verify(r.Context(), ev); err != nil {
+	if err := s.Attestor.VerifyWithNodeKey(r.Context(), ev, peerNodeKey(r)); err != nil {
 		writeError(w, http.StatusBadRequest, "attestation verify: "+err.Error())
 		return
 	}
@@ -105,6 +106,18 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		Payload:   mustJSONPayload(map[string]any{"node_id": rec.NodeID, "image_digest": rec.ImageDigest, "cid": rec.CID}),
 	})
 	writeJSON(w, http.StatusOK, rec)
+}
+
+// peerNodeKey returns the ECDSA key of the node certificate a request was
+// authenticated with (mTLS, ASP_CLIENT_CA), or nil. StoreAttestation already
+// checked that the certificate names the statement's node, so a signature by
+// this key binds the evidence to that node's enrolled identity.
+func peerNodeKey(r *http.Request) *ecdsa.PublicKey {
+	if _, ok := NodeIdentityFromContext(r.Context()); !ok || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+	pub, _ := r.TLS.PeerCertificates[0].PublicKey.(*ecdsa.PublicKey)
+	return pub
 }
 
 // GetAttestation returns the latest stored evidence for a sandbox.

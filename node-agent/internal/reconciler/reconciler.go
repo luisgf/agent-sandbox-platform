@@ -99,6 +99,11 @@ type Reconciler struct {
 	// identity under Cloud Hypervisor hybrid vsock.
 	GuestHost GuestHostAcceptor
 
+	// Attest signs boot attestations, tried in order until the control plane
+	// accepts one (the node certificate key over mTLS, then ASP_ATTEST_KEY).
+	// Empty uses ASP_ATTEST_KEY (attest.SignNow).
+	Attest []*attest.Signer
+
 	// VirtiofsdBin is the virtiofsd executable. Empty means "virtiofsd" on PATH.
 	// Used only when the sandbox spec has a workspace_host_path.
 	VirtiofsdBin string
@@ -418,16 +423,34 @@ func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h
 	if profile == "" {
 		profile = "cloud-hypervisor"
 	}
-	ev, err := attest.SignNow(sb.ID, r.NodeID, digest, profile, h.CID)
-	if err != nil {
-		r.Logger.Warn("attest sign", "sandbox_id", sb.ID, "error", err)
+	if len(r.Attest) == 0 {
+		ev, err := attest.SignNow(sb.ID, r.NodeID, digest, profile, h.CID)
+		if err != nil {
+			r.Logger.Warn("attest sign", "sandbox_id", sb.ID, "error", err)
+			return
+		}
+		if err := r.CP.Attest(ctx, sb.ID, ev); err != nil {
+			r.Logger.Warn("attest post", "sandbox_id", sb.ID, "error", err)
+			return
+		}
+		r.Logger.Info("attestation posted", "sandbox_id", sb.ID, "cid", h.CID, "key_id", ev.KeyID)
 		return
 	}
-	if err := r.CP.Attest(ctx, sb.ID, ev); err != nil {
-		r.Logger.Warn("attest post", "sandbox_id", sb.ID, "error", err)
-		return
+	for i, s := range r.Attest {
+		ev, err := s.SignBoot(sb.ID, r.NodeID, digest, profile, h.CID)
+		if err == nil {
+			err = r.CP.Attest(ctx, sb.ID, ev)
+		}
+		if err == nil {
+			r.Logger.Info("attestation posted", "sandbox_id", sb.ID, "cid", h.CID, "key_id", s.KeyID())
+			return
+		}
+		if i == len(r.Attest)-1 {
+			r.Logger.Warn("attest post", "sandbox_id", sb.ID, "key_id", s.KeyID(), "error", err)
+		} else {
+			r.Logger.Info("attestation refused; trying the next key", "sandbox_id", sb.ID, "key_id", s.KeyID(), "error", err)
+		}
 	}
-	r.Logger.Info("attestation posted", "sandbox_id", sb.ID, "cid", h.CID)
 }
 
 func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) error {

@@ -2,6 +2,9 @@ package reconciler
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
@@ -435,5 +439,72 @@ func TestReconcilerLocalNetDisconnectDoesNotUsePublicProxy(t *testing.T) {
 		if strings.Contains(c, "8888") || strings.Contains(c, "asp_egress") {
 			t.Fatalf("public fallback command %s", c)
 		}
+	}
+}
+
+// The reconciler signs boot attestations with its signers in order, moving
+// to the next key when the control plane refuses one.
+func TestReconcilerSignsAttestationsWithItsSigner(t *testing.T) {
+	var mu sync.Mutex
+	state := "requested"
+	var posted attest.Evidence
+	var refusedKID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		node := "n1"
+		sb := map[string]any{"id": "sb-1", "node_id": &node, "state": state, "image_ref": "img", "cpu_millis": 500, "memory_mib": 256}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes/n1/work":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": []any{sb}})
+		case r.URL.Path == "/v1/sandboxes/sb-1/claim":
+			state = "starting"
+			sb["state"] = state
+			_ = json.NewEncoder(w).Encode(sb)
+		case r.URL.Path == "/v1/sandboxes/sb-1/status":
+			var body struct {
+				State string `json:"state"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			state = body.State
+			sb["state"] = state
+			_ = json.NewEncoder(w).Encode(sb)
+		case r.URL.Path == "/v1/sandboxes/sb-1/attest":
+			var ev attest.Evidence
+			_ = json.NewDecoder(r.Body).Decode(&ev)
+			if ev.KeyID == refusedKID {
+				http.Error(w, `{"error":"attestation verify: not trusted"}`, http.StatusBadRequest)
+				return
+			}
+			posted = ev
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := New(cpclient.New(srv.URL, srv.Client()), "n1", vmm.NewFakeVMM(nil), nil, time.Hour)
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := attest.NewSigner(other)
+	refusedKID = refused.KeyID()
+	rec.Attest = []*attest.Signer{refused, attest.NewSigner(key)}
+	rec.tick(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if state != "running" {
+		t.Fatalf("want running, got %s", state)
+	}
+	if posted.KeyID != rec.Attest[1].KeyID() || posted.Statement.SandboxID != "sb-1" || posted.Statement.NodeID != "n1" {
+		t.Fatalf("attestation posted: %+v", posted)
 	}
 }

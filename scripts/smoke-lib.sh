@@ -26,3 +26,19 @@ sys.exit(0 if any(n["id"] == node and n.get("schedulable") for n in nodes) else 
 json_field() {
   python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print("" if v is None else v)' "$1"
 }
+
+# wait_fresh_attestation <cp_url> <sandbox_id> [timeout_s]
+# The node posts a signed boot attestation right after reporting running; the
+# control plane stores it only if a trusted key signed it.
+wait_fresh_attestation() {
+  local cp="$1" sb="$2" timeout="${3:-10}" i
+  for ((i = 0; i < timeout * 10; i++)); do
+    if curl -fsS "$cp/v1/sandboxes/$sb/attestation" 2>/dev/null | grep -q '"fresh":true'; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "sandbox $sb has no fresh attestation:" >&2
+  curl -sS "$cp/v1/sandboxes/$sb/attestation" >&2 || true
+  return 1
+}

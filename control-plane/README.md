@@ -74,7 +74,9 @@ Administrar nodos (listar, cordon, uncordon, revoke, rotate-cert) nunca acepta u
 | `ASP_OIDC_KEY` | `/tmp/asp-oidc-key.pem` | PEM RSA de firma actual (auto-create; mint) |
 | `ASP_OIDC_KEY_PREV` | unset | PEM RSA previa (solo JWKS durante rotación) |
 | `ASP_OIDC_ISSUER` | `http://127.0.0.1$LISTEN_ADDR` | Issuer OIDC |
-| `ASP_ATTEST_KEY` | `/tmp/asp-attest-key.pem` | PEM ECDSA firma/verificación atestación |
+| `ASP_ATTEST_KEY` | `$TMPDIR/asp-attest-key.pem` | PEM ECDSA P-256 de atestación; su clave pública es de confianza (lab de un host: el node-agent usa el mismo fichero) |
+| `ASP_ATTEST_PUB` | — | PEM de clave pública que sustituye a la de `ASP_ATTEST_KEY` para verificar |
+| `ASP_ATTEST_TRUSTED_PUBS` | — | Bundle PEM (`PUBLIC KEY` y/o `CERTIFICATE`) de más claves de confianza. La clave que trae la evidencia (`public_key_pem`) nunca vale; por mTLS vale además la del certificado del nodo que llama |
 | `ASP_ATTEST_MAX_AGE` | `10m` | Freshness para verify + claim OIDC |
 | `ASP_FENCE_PROVIDER` | `noop` | `noop`\|`http_webhook`\|`redfish`\|`ipmi` |
 | `ASP_FENCE_USER` | | Usuario Redfish/IPMI |

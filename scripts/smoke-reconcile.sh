@@ -15,6 +15,9 @@ export ASP_CA_CERT="$WORKDIR/ca.crt"
 export ASP_CA_KEY="$WORKDIR/ca.key"
 # Real reconciler path: no sync stub provisioner.
 export ASP_AUTO_PROVISION=0
+# Dry-run lab without mTLS: control plane and node share the attestation key
+# (the control plane only trusts keys it is configured with).
+export ASP_ATTEST_KEY="$WORKDIR/attest.pem"
 
 cleanup() {
   [[ -n "${NA_PID:-}" ]] && kill "$NA_PID" 2>/dev/null || true
@@ -74,6 +77,9 @@ for i in $(seq 1 40); do
 done
 [[ "$OK" == "1" ]] || { echo "timeout waiting running"; cat "$NA_LOG"; cat "$CP_LOG"; exit 1; }
 echo "$GOT" | grep -q smoke-rec-node
+
+echo "==> boot attestation posted and fresh"
+wait_fresh_attestation http://127.0.0.1:18082 "$SID" || { echo "no fresh attestation"; cat "$NA_LOG"; cat "$CP_LOG"; exit 1; }
 
 echo "==> destroy → stopping → wait stopped"
 curl -sf -X DELETE "http://127.0.0.1:18082/v1/sandboxes/${SID}" | grep -q stopping
