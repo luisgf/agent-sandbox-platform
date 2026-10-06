@@ -389,18 +389,26 @@ func ListenAndServe(addr string, h http.Handler) (*http.Server, net.Listener, er
 	return srv, ln, nil
 }
 
+// handleSSHAgentApprove issues a one-shot approval for the next SIGN_REQUEST
+// from one sandbox (--ssh-agent-confirm). Approvals are bound to sandbox_id:
+// only a sign arriving through that sandbox's host-vsock acceptor consumes
+// it. Without sandbox_id → 400, unless --insecure-ssh-agent-global-approvals
+// lets listeners that cannot tell guests apart use an unscoped approval.
 func (s *Server) handleSSHAgentApprove(w http.ResponseWriter, r *http.Request) {
 	if s.SSHApprover == nil {
 		writeErr(w, http.StatusServiceUnavailable, "ssh-agent confirmation gate not enabled (--ssh-agent-confirm)")
 		return
 	}
-	ttl := 30 * time.Second
 	var body struct {
 		TTLSeconds int    `json:"ttl_seconds"`
 		ActorSub   string `json:"actor_sub"`
 		SandboxID  string `json:"sandbox_id"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	ttl := 30 * time.Second
 	if body.TTLSeconds > 0 {
 		ttl = time.Duration(body.TTLSeconds) * time.Second
 	}
@@ -408,30 +416,42 @@ func (s *Server) handleSSHAgentApprove(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = r.Header.Get("X-ASP-Actor-Sub")
 	}
-	token, exp := s.SSHApprover.Approve(ttl)
+	id, exp, err := s.SSHApprover.Approve(body.SandboxID, ttl)
+	if errors.Is(err, sshagent.ErrSandboxRequired) {
+		writeErr(w, http.StatusBadRequest, "sandbox_id required: an approval only unlocks a sign from its sandbox (--insecure-ssh-agent-global-approvals allows unscoped approvals for listeners that cannot tell guests apart; lab only)")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	log := s.Logger
 	if log == nil {
 		log = slog.Default()
 	}
 	log.Info("ssh-agent approve issued",
+		"approval_id", id,
 		"actor_sub", actor,
 		"sandbox_id", body.SandboxID,
 		"expires_at", exp.UTC().Format(time.RFC3339),
 		"one_shot", true,
 	)
-	w.Header().Set("Content-Type", "application/json")
 	out := map[string]any{
-		"token":      token,
-		"expires_at": exp.UTC().Format(time.RFC3339),
-		"one_shot":   true,
-		"note":       "next SignRequest on the bridged agent consumes this approval",
+		"approval_id": id,
+		"expires_at":  exp.UTC().Format(time.RFC3339),
+		"one_shot":    true,
+	}
+	if body.SandboxID != "" {
+		out["sandbox_id"] = body.SandboxID
+		out["note"] = "the next SignRequest from this sandbox consumes this approval; approval_id is an audit id (logged here and on the sign it unlocks), not a credential"
+	} else {
+		out["scope"] = "global"
+		out["note"] = "the next SignRequest on a listener that cannot tell guests apart (--ssh-agent-bridge, global host-vsock) consumes this approval, whichever guest sends it; approval_id is an audit id, not a credential"
 	}
 	if actor != "" {
 		out["actor_sub"] = actor
 	}
-	if body.SandboxID != "" {
-		out["sandbox_id"] = body.SandboxID
-	}
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 

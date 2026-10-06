@@ -22,8 +22,9 @@ Sin ese listener, CH/Firecracker responden RST al guest.
 
 - Por sandbox, al `Start` del reconciler: listeners unix en
   `{VsockPath}_26501` (SSH) y `{VsockPath}_26502` (identity).
-- Mismo handler que el path global: `sshagent.ServeConnWithConfirm` /
-  `IdentityHandler`.
+- Mismo handler que el path global: `sshagent.ServeConn` /
+  `IdentityHandler`, pero ligado a la sandbox: el token de identidad es el
+  suyo y las firmas solo consumen aprobaciones suyas.
 - `DetachSandbox` al stop limpia sockets.
 - AF_VSOCK / `--host-vsock-dir` siguen disponibles (lab, VMM que sí bridgee
   AF_VSOCK); dry-run FakeVMM con `PodDaemonUnix` **no** adjunta hybrid.

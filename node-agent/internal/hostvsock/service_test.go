@@ -12,6 +12,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent/agenttest"
 )
 
 func TestServiceSSHAgentFake(t *testing.T) {
@@ -50,6 +51,45 @@ func TestServiceSSHAgentFake(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("count=%d", count)
+	}
+}
+
+// The global listener cannot tell guests apart: a sandbox's approval does not
+// unlock a sign there, and a global one needs GlobalApprovals.
+func TestServiceGlobalSSHListenerNeedsGlobalApprovals(t *testing.T) {
+	for _, global := range []bool{false, true} {
+		dir := t.TempDir()
+		up := agenttest.Start(t, filepath.Join(dir, "operator-agent.sock"))
+		ap := sshagent.NewApprover(time.Minute)
+		ap.GlobalApprovals = global
+		factory := UnixFactory{Dir: dir}
+		svc := &Service{Factory: factory, SSHHostSock: up.Path, SSHConfirm: ap}
+		if err := svc.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ap.Approve("sb-a", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		want := byte(agenttest.Failure)
+		if global {
+			if _, _, err := ap.Approve("", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			want = agenttest.SignResponse
+		}
+		c := dialUnixEventually(t, factory.PathFor(PortSSHAgent), 2*time.Second)
+		got, err := agenttest.Request(c, agenttest.SignRequestMsg())
+		c.Close()
+		svc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("GlobalApprovals=%v: sign on the global listener got %d, want %d", global, got, want)
+		}
+		if ap.PendingCount("sb-a") != 1 {
+			t.Fatalf("GlobalApprovals=%v: the global listener used sb-a's approval", global)
+		}
 	}
 }
 

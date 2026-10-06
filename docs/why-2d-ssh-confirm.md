@@ -16,12 +16,13 @@ Pero si el guest está comprometido, puede enviar `SSH2_AGENTC_SIGN_REQUEST` en 
 ```bash
 curl -s -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \
   -H 'Content-Type: application/json' \
-  -d '{"ttl_seconds":30}'
+  -d '{"ttl_seconds":30,"sandbox_id":"sb-1"}'
 ```
 
 - Sin approve vigente → respuesta `SSH_AGENT_FAILURE` (auto-deny).
-- Listar identidades y mensajes que no son sign **siguen** funcionando (el gate no rompe discovery).
-- Aplica al bridge unix y al path host-vsock.
+- La aprobación es de **una sandbox**: solo la consume una firma que llegue por el acceptor host-vsock de `sb-1`. Sin `sandbox_id` → 400.
+- Listar identidades **sigue** funcionando (el gate no rompe discovery). Añadir, borrar o bloquear claves no llega nunca al agente del host, con o sin gate.
+- `--ssh-agent-bridge` y el listener host-vsock global no distinguen guests: con el gate, sus firmas se deniegan salvo `--insecure-ssh-agent-global-approvals` (lab), que acepta aprobaciones sin `sandbox_id` para esos listeners.
 
 ## Cómo encaja con 2e
 
@@ -29,10 +30,10 @@ El mount automático en guest (`vsock-ssh-agent-proxy`, ADR-0006) **no** desacti
 
 ## Límites honestos
 
-- Es all-or-nothing por proceso node-agent (no hay allowlist de fingerprints de clave todavía).
+- La aprobación es por sandbox, pero no por clave: no hay allowlist de fingerprints todavía.
 - Automatizaciones que firman en bucle necesitan un supervisor que renueve approves, o desactivar el flag en lab.
 - El endpoint de approve vive en el exec proxy localhost (`--agent-listen`); no lo expongas fuera del host.
 
 ## Multi-user (ADR-0007 fase 4)
 
-Con `ASP_MULTI_USER=1`, `ASP_IDP_REQUIRED=1` o `ASP_SSH_AGENT_SOCK_TEMPLATE`, el confirm gate queda **default-on**. El approve acepta `actor_sub` / `X-ASP-Actor-Sub` para audit. El scoping de claves es por template de UDS (no por este gate solo): ver [`why-multi-user-identity.md`](why-multi-user-identity.md).
+Con `ASP_MULTI_USER=1`, `ASP_IDP_REQUIRED=1` o `ASP_SSH_AGENT_SOCK_TEMPLATE`, el confirm gate queda **default-on**. El approve exige `sandbox_id` y acepta `actor_sub` / `X-ASP-Actor-Sub` para audit. El scoping de claves es por template de UDS (no por este gate solo): ver [`why-multi-user-identity.md`](why-multi-user-identity.md).

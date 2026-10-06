@@ -70,6 +70,7 @@ type config struct {
 	EgressMITMCA         string
 	EgressMITM           bool
 	SSHAgentConfirm      bool
+	SSHGlobalApprovals   bool   // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
 	SSHAgentSockTemplate string // ASP_SSH_AGENT_SOCK_TEMPLATE
 	MultiUser            bool   // ASP_MULTI_USER=1 → confirm default-on + scoped SSH
 	EgressNFTRedirect    bool
@@ -115,6 +116,7 @@ func main() {
 		"egress_dns_sink", cfg.EgressDNSSink,
 		"egress_mitm", cfg.EgressMITM,
 		"ssh_agent_confirm", cfg.SSHAgentConfirm,
+		"insecure_ssh_agent_global_approvals", cfg.SSHGlobalApprovals,
 		"ssh_agent_sock_template", cfg.SSHAgentSockTemplate,
 		"multi_user", cfg.MultiUser,
 		"egress_nft_redirect", cfg.EgressNFTRedirect,
@@ -341,10 +343,20 @@ func main() {
 	var sshApprover *sshagent.Approver
 	if cfg.SSHAgentConfirm {
 		sshApprover = sshagent.NewApprover(30 * time.Second)
+		sshApprover.GlobalApprovals = cfg.SSHGlobalApprovals
 		proxy.SSHApprover = sshApprover
 		slog.Info("ssh-agent confirmation gate enabled",
 			"approve", "POST /v1/internal/ssh-agent/approve",
+			"approvals", "per sandbox (sandbox_id)",
 			"multi_user", cfg.MultiUser)
+		switch {
+		case cfg.SSHGlobalApprovals:
+			slog.Warn("--insecure-ssh-agent-global-approvals: an approval without sandbox_id unlocks one sign on --ssh-agent-bridge or the global host-vsock listener, from whichever guest asks first (lab only)")
+		case cfg.SSHAgentBridge != "":
+			slog.Warn("--ssh-agent-bridge cannot tell guests apart: with --ssh-agent-confirm every sign through it is denied; guests sign through their sandbox's host-vsock acceptor, or use --insecure-ssh-agent-global-approvals (lab only)")
+		}
+	} else if cfg.SSHGlobalApprovals {
+		slog.Warn("--insecure-ssh-agent-global-approvals has no effect without --ssh-agent-confirm")
 	}
 
 	var sshBridge *sshagent.Bridge
@@ -627,7 +639,8 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.TapAuto, "tap-auto", getenv("ASP_TAP_AUTO", "") == "1", "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
 	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "guest→host SSH(26501)+identity(26502): AF_VSOCK/unix lab + per-sandbox CH hybrid {vsock}_{port}")
 	flag.StringVar(&cfg.HostVsockDir, "host-vsock-dir", os.Getenv("ASP_HOST_VSOCK_DIR"), "if set, use unix sockets under this dir instead of AF_VSOCK (lab)")
-	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", false, "require POST /v1/internal/ssh-agent/approve before SignRequest (one-shot TTL); default on in multi-user")
+	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", false, "require POST /v1/internal/ssh-agent/approve with the signing sandbox's sandbox_id before each SignRequest (one-shot TTL); default on in multi-user")
+	flag.BoolVar(&cfg.SSHGlobalApprovals, "insecure-ssh-agent-global-approvals", getenv("ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS", "") == "1", "with --ssh-agent-confirm, accept approvals without sandbox_id; they unlock one sign on listeners that cannot tell guests apart (--ssh-agent-bridge, global --host-vsock), from whichever guest asks first (lab only)")
 	flag.StringVar(&cfg.SSHAgentSockTemplate, "ssh-agent-sock-template", os.Getenv("ASP_SSH_AGENT_SOCK_TEMPLATE"), "per-sandbox SSH agent upstream path template ({owner_sub}/{sandbox_id}/{id}); missing → FakeAgent")
 	flag.BoolVar(&cfg.MultiUser, "multi-user", getenv("ASP_MULTI_USER", "") == "1" || getenv("ASP_IDP_REQUIRED", "") == "1", "multi-user profile: SSH confirm default-on + prefer scoped agent socks")
 	flag.BoolVar(&cfg.EgressNFTRedirect, "egress-nft-redirect", getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1" || getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1", "apply nftables guest HTTP+DNS redirect (see --nft-egress-mode)")

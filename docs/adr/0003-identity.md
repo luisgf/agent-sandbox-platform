@@ -28,6 +28,19 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - En el guest, `vsock-ssh-agent-proxy` (+ `ssh-agent-vsock.service`) materializa `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock` dialando `2:26501` (Fase 2e, `--guest-ssh-agent-auto`) — sin cambios en el guest entre AF_VSOCK global y hybrid attach.
 - Opcional: `--ssh-agent-confirm` exige `POST /v1/internal/ssh-agent/approve` (TTL one-shot) antes de cada `SSH2_AGENTC_SIGN_REQUEST`; sin approve → `SSH_AGENT_FAILURE`.
 
+**Actualizado 2026-10:** el bridge copiaba bytes en los dos sentidos, así que el guest podía mandar al agente del operador cualquier petición del protocolo: añadir su propia clave (persistencia), borrar todas o bloquear el agente (denegación de servicio). Ahora todas las rutas (`--ssh-agent-bridge`, host-vsock global y acceptors hybrid) pasan por el mismo proxy, que lee mensaje a mensaje y solo reenvía al agente del host:
+
+| Petición del guest | Qué hace el proxy |
+|---|---|
+| `11 REQUEST_IDENTITIES` | la reenvía |
+| `13 SIGN_REQUEST` | la reenvía si no hay confirm gate, o si hay una aprobación para la sandbox de la conexión (§ ADR-0005 3) |
+| `27 EXTENSION` con nombre `query` | la reenvía |
+| Cualquier otra: `ADD_IDENTITY` (17), `ADD_ID_CONSTRAINED` (25), `REMOVE_IDENTITY` (18), `REMOVE_ALL_IDENTITIES` (19), `LOCK` (22), `UNLOCK` (23), otras extensiones… | `SSH_AGENT_FAILURE`, sin llegar al agente del host |
+
+- Una petición, una respuesta. Sin agente en el host (o socket ausente) el proxy contesta como un agente sin claves: lista vacía y `FAILURE` para firmar.
+- La primera petición rechazada de cada conexión va al log como aviso; el resto, en debug, para que un guest no inunde el log.
+- El proxy nunca toma `SSH_AUTH_SOCK` del proceso: el node-agent le pasa el socket explícitamente.
+
 ### 2) OIDC ligado a atestación / sandbox
 
 - El guest solo puede pedir token vía socket de identidad: `POST /v1/tokens/oidc` con body **`{ "aud": "…" }`** (y opcionalmente nonce).

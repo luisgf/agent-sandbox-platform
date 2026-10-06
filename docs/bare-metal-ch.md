@@ -726,12 +726,14 @@ Multi-user (ADR-0007 fase 4): `ASP_SSH_AGENT_SOCK_TEMPLATE=/run/asp/ssh-agents/{
 
 
 ```bash
-node-agent ... --ssh-agent-confirm --ssh-agent-bridge=/run/asp/ssh-agent.sock
-# Antes de que el guest firme:
+node-agent ... --ssh-agent-confirm --host-vsock --reconcile
+# Antes de que el guest de sb-1 firme (por su {vsock}_26501):
 curl -fsS -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \
-  -d '{"ttl_seconds":60}'
+  -d '{"ttl_seconds":60,"sandbox_id":"sb-1"}'
 # Sin approve → SignRequest = SSH_AGENT_FAILURE
 ```
+
+La aprobación solo vale para la sandbox que nombra. `--ssh-agent-bridge` y el listener host-vsock global no saben qué guest llama: con `--ssh-agent-confirm` deniegan toda firma, salvo `--insecure-ssh-agent-global-approvals` (lab). Por cualquier ruta, el guest solo puede listar claves y firmar: añadir, borrar o bloquear claves del agente del host devuelve `SSH_AGENT_FAILURE`.
 
 ### nftables anti-bypass (sketch 2d → completo en §8e)
 
