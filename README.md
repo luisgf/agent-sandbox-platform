@@ -256,17 +256,35 @@ Step-by-step walkthrough and troubleshooting: [`docs/mvp-smoke.md`](docs/mvp-smo
 
 ## Using ASP with OpenCode
 
-ASP does not ship a harness plugin. The integration point is the shell: [OpenCode](https://opencode.ai) runs every bash tool call as `<shell> -c "<command>"`, and its `shell` config option lets you choose that binary. Point it at a small wrapper and every command the model runs goes to `asp session exec` and executes inside the microVM.
+[OpenCode](https://opencode.ai) runs every bash tool call as `<shell> -c "<command>"`, and its `shell` config option picks that binary. [`integrations/opencode/`](integrations/opencode/) points it at ASP, so every command the model runs goes to `asp session exec` and executes inside the microVM:
+
+| File | What it does |
+|---|---|
+| `asp-opencode-shell` | The `shell`. Runs each command with `/bin/sh -c` in the session and returns the guest command's exit code. |
+| `plugins/asp-sandbox.ts` | OpenCode plugin. Refuses to fall back to the host shell when the wrapper is missing, maps `workdir` into the guest, and tells the model the bash tool runs on Linux in the sandbox. |
+| `instructions/*.md` | What the model needs to know about the sandbox, one file per setup. |
+| `opencode.*.json` | Example project configs, one per setup. |
 
 ```mermaid
 flowchart LR
-  M["model"] -->|"bash tool call"| OC["OpenCode"]
+  M["model"] -->|"bash tool call"| OC["OpenCode<br/>+ asp-sandbox plugin"]
   OC -->|"asp-opencode-shell -c '…'"| W["wrapper"]
   W -->|"asp session exec -- /bin/sh -c '…'"| CP["control plane"]
-  CP --> VM["microVM<br/>/workspace = your repo"]
-  OC -. "read / edit / write tools<br/>(on the host)" .-> REPO[("repo on host")]
+  CP --> VM["microVM<br/>/workspace"]
+  OC -. "read / edit / write tools<br/>(same-host setup only)" .-> REPO[("repo on the node")]
   REPO <-. "virtiofs" .-> VM
 ```
+
+### Pick a setup
+
+| | Bash only | Same host |
+|---|---|---|
+| Where OpenCode runs | Any machine, for example your laptop | The node that runs the session |
+| Where the repository lives | In the sandbox: a `--workspace` directory on the node, or the guest's own disk | On the node, shared into the guest with `--workspace` |
+| OpenCode's read / edit / write / glob / grep / list tools | Denied. The model reads and edits files with bash, in the sandbox | On the host, on the same files the guest sees through virtiofs |
+| Files | `opencode.bash-only.json`, `instructions/bash-only.md` | `opencode.same-host.json`, `instructions/same-host.md` |
+
+The bash-only setup was tested end to end with OpenCode 1.18.34: from a laptop against a node, with the task, the `workdir` mapping, the missing-wrapper guard and file ownership all checked.
 
 ### 1. Install the CLI and authenticate
 
@@ -278,9 +296,9 @@ asp auth login                                          # IdP setups
 # or, in a lab without an IdP:  export ASP_API_KEY=…
 ```
 
-### 2. Start a session for the repository
+### 2. Start a session
 
-Run this from the repository you want the agent to work on. `--workspace` shares it into the guest at `/workspace`.
+`--workspace` shares a directory of the node into the guest at `/workspace`. In the same-host setup, run this from the repository:
 
 ```bash
 cd ~/src/my-project
@@ -289,57 +307,54 @@ asp session start --name opencode --workspace "$PWD" --timeout=120s
 
 Against the dry-run stack from the [Quickstart](#quickstart-dry-run-no-kvm) nothing else is needed: the control plane places the session on a node with room. With several nodes, pin one with `--node-id` if the `--workspace` path only exists there. Add `--local-net` if the agent must reach your LAN.
 
-### 3. Install the shell wrapper
+### 3. Install the wrapper
 
-Save as `~/.local/bin/asp-opencode-shell` and `chmod +x` it:
-
-```sh
-#!/bin/sh
-# OpenCode shell that runs every command inside an ASP session.
-NAME="${ASP_SESSION_NAME:-opencode}"
-HOST_ROOT="${ASP_WORKSPACE_HOST:-}"           # same path you passed to --workspace
-GUEST_ROOT="${ASP_WORKSPACE_GUEST:-/workspace}"
-
-# Map OpenCode's working directory on the host to the same place in the guest.
-cwd="$GUEST_ROOT"
-if [ -n "$HOST_ROOT" ]; then
-  case "$PWD/" in
-    "$HOST_ROOT"/*) cwd="$GUEST_ROOT${PWD#"$HOST_ROOT"}" ;;
-  esac
-fi
-
-if [ "$1" = "-c" ]; then
-  # Tool call. --cmd only splits words, so run through sh to keep pipes, && and redirects.
-  exec asp session exec --name "$NAME" --cwd "$cwd" --no-pty -- /bin/sh -c "$2"
-fi
-
-# No -c: OpenCode's interactive terminal. Open a login shell in the guest with a PTY.
-exec asp session exec --name "$NAME" --cwd "$cwd" -- /bin/bash -l
+```bash
+install -m 0755 integrations/opencode/asp-opencode-shell ~/.local/bin/asp-opencode-shell
 ```
 
-`--no-pty` keeps stdout and stderr separate for the model. The exit code returned to OpenCode is the guest command's exit code.
+The wrapper runs commands as the owner of `/workspace` (`setpriv` in the guest), so files the agent creates keep your uid on the host: virtiofs does not map ids. `ASP_GUEST_AS_ROOT=1` keeps root. Guest images built before [#83](https://github.com/luisgf/agent-sandbox-platform/pull/83) have `/` at mode 0700 and only root can run anything there: rebuild the rootfs, or set `ASP_GUEST_AS_ROOT=1`. The header of the script lists its other variables.
 
-### 4. Tell OpenCode to use it
+### 4. Add the plugin, the instructions and the config to the project
 
-In the project's `opencode.json` (or globally in `~/.config/opencode/opencode.json`). The path must be absolute:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "shell": "/home/you/.local/bin/asp-opencode-shell"
-}
+```bash
+cd ~/src/my-project
+ASP_KIT=~/src/agent-sandbox-platform/integrations/opencode
+mkdir -p .opencode/plugins
+cp "$ASP_KIT/plugins/asp-sandbox.ts" .opencode/plugins/
+cp "$ASP_KIT/instructions/bash-only.md" .opencode/asp-sandbox.md   # or same-host.md
+cp "$ASP_KIT/opencode.bash-only.json" opencode.json                # or opencode.same-host.json
 ```
 
-Then launch OpenCode from the same repository, with the wrapper's variables in its environment:
+Set `"shell"` in `opencode.json` to the wrapper's absolute path. Keep the plugin in the project, not in `~/.config/opencode/plugins`: it treats any configured `shell` as the ASP wrapper.
+
+What the example configs set, and why:
+
+- **`external_directory`.** OpenCode checks the paths in bash commands against the project directory on the host, so `/workspace/...` looks like an outside path. Bash only: `allow`, because every bash path is a guest path and the file tools are off. Same host: `/workspace` and `/tmp` are allowed and everything else asks, because the file tools still work on the host.
+- **`webfetch: ask`.** `webfetch` runs on the host, outside the session's egress policy.
+- **`lsp` and `formatter` off.** They run host binaries on the repository.
+
+### 5. Launch OpenCode
 
 ```bash
 export ASP_SESSION_NAME=opencode ASP_WORKSPACE_HOST="$PWD"
 opencode
 ```
 
-**Check it:** ask the agent to run `hostname && pwd && ls /workspace`. You should see the guest's hostname and `/workspace`, not your machine.
+**Check it:** ask the agent to run `hostname && id && pwd`. You should see the guest's hostname, your uid and `/workspace`, not your machine.
 
-### 5. Stop the session
+In scripts, give `opencode run` an empty stdin: `opencode run "…" < /dev/null`. Without a terminal it waits for EOF on stdin.
+
+**Control plane only reachable from the node** (for example a lab with the API on loopback): set `ASP_SSH`. The wrapper then sends each command over ssh and runs itself on the node with `--remote-exec`. `ASP_REMOTE_EXEC` is that remote command, with the environment `asp` needs there:
+
+```bash
+export ASP_SSH=ubuntu@node1
+export ASP_REMOTE_EXEC='env ASP_CP_URL=http://127.0.0.1:18112 /home/ubuntu/.local/bin/asp-opencode-shell --remote-exec'
+```
+
+Over ssh, session names and guest directories may only use `A-Z a-z 0-9 _ . / -`, and there is no interactive terminal.
+
+### 6. Stop the session
 
 ```bash
 asp session stop --name opencode
@@ -351,8 +366,9 @@ If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when
 
 | | Where it runs |
 |---|---|
-| Bash tool calls (`npm test`, `git`, `curl`, …) | **In the microVM**, with the session's egress policy and host-held SSH agent. |
-| OpenCode's built-in read / edit / write / grep tools | **On the host**, directly on the repository. With `--workspace` the guest sees the same files through virtiofs. |
+| Bash tool calls and `!` commands (`npm test`, `git`, `curl`, …) | **In the microVM**, as the owner of `/workspace`, with the session's egress policy and host-held SSH agent. |
+| OpenCode's read / edit / write / glob / grep / list tools | Bash only: denied. Same host: **on the host**, on the shared repository. |
+| `webfetch` | On the host, after you approve it. |
 | OpenCode itself, the LLM API calls and your credentials | On the host. They never enter the guest. |
 
 **Practical notes**
@@ -361,8 +377,11 @@ If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when
 - If no node has room, `session start` fails with `no capacity` and the reason (for example `2 max_sandboxes`). `asp node list` shows what each node has in use.
 - If the session's node is lost, the sandbox fails with `node_lost` and `session status` says so; its disk lived on that server, so run `asp session start --force`.
 - A buffered exec (`--buffered`, `--json`, `asp sandbox run`) is killed after the pod-daemon's `--exec-timeout-secs` (30 s by default in the guest image). A streamed exec, the default of `asp session exec`, has no time limit: it ends when the command exits or when the client goes away, and then the guest kills the command. `--stream-idle-timeout-secs` in the guest image adds an inactivity limit.
-- Guest images built before `workspace-virtiofs.service` don't auto-mount `/workspace`. Run `mkdir -p /workspace && mount -t virtiofs workspace /workspace` once through the wrapper, or rebuild the rootfs.
-- No `--workspace`? The agent still works, but only on the guest's own disk; the host-side edit tools and the shell will see different files.
+- OpenCode merges stdout and stderr. An `asp` error (`no active session`, 401, network) exits 1 like a failing command; the model tells them apart by the message. Usage errors of the wrapper exit 125 and ssh errors 255.
+- The plugin edits the system prompt through OpenCode's experimental `experimental.chat.system.transform` hook. Pin OpenCode, and after an upgrade check that the model still sees `/workspace` and `Platform: linux`.
+- The plugin moves `workdir` from the tool call to the wrapper, so the call shown in the session no longer has it.
+- Guest images built before `workspace-virtiofs.service` don't auto-mount `/workspace`. Run `mkdir -p /workspace && mount -t virtiofs workspace /workspace` once through the wrapper with `ASP_GUEST_AS_ROOT=1`, or rebuild the rootfs.
+- No `--workspace`? The bash-only setup still works on the guest's own disk. In the same-host setup, the host-side file tools and the shell would see different files.
 
 Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs/ops-asp-session.md). Any other harness that lets you replace its shell works the same way.
 
@@ -419,7 +438,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Idle timeout | Off by default. Does not delete the local session file. |
 | `--local-net` | Real `ip`/`wg` commands on node and client; needs `wireguard-tools` and `CAP_NET_ADMIN`. End-to-end packet flow not yet lab-tested. |
 | Workspace (virtiofs) | Auto-mount ships in newly built guest images; older images need `mount -t virtiofs workspace /workspace`. No KVM test in CI. |
-| Harness integration | No plugin; a wrapper script is the integration point. |
+| Harness integration | A shell wrapper is the integration point; for OpenCode, `integrations/opencode/` adds a plugin, instructions and example configs. |
 | Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |
 | Kubernetes | Optional, only to deploy the API. Sandboxes are not Pods. |
 | Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Agents do not adopt running VMs after a restart: the systemd unit stops them with the agent, and a starting agent removes whatever a previous one left (VMs, TAPs, tunnels, disks). One node-agent per server. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
@@ -435,6 +454,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 ├── node-agent/       reconciler, VMM drivers, capacity, host cleanup, TAP, nft, egress proxy, vsock, virtiofs, WireGuard
 ├── pod-daemon/       in-guest exec daemon (Rust)
 ├── images/guest/     Debian rootfs, systemd/OpenRC units, vsock SSH-agent proxy
+├── integrations/opencode/  OpenCode shell wrapper, plugin, model instructions, example configs
 ├── scripts/          smoke tests, rootfs build, release pack, nft helpers, systemd units, diagram generation
 ├── docs/             architecture, ADRs, ops guides, design notes
 ├── docker-compose.yml  Postgres for local development

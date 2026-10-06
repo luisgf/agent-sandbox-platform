@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "shell": "/home/you/.local/bin/asp-opencode-shell",
+  "instructions": [
+    ".opencode/asp-sandbox.md"
+  ],
+  "lsp": false,
+  "formatter": false,
+  "permission": {
+    "bash": "allow",
+    "external_directory": "allow",
+    "read": "deny",
+    "edit": "deny",
+    "glob": "deny",
+    "grep": "deny",
+    "list": "deny",
+    "webfetch": "ask"
+  }
+}

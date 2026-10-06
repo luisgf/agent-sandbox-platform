@@ -40,7 +40,7 @@ Dos nombres son dos sandboxes. No comparten disco ni egress.
 
 | Límite | Realidad |
 |---|---|
-| No es un plugin de OpenCode | No registra tools ni habla el protocolo del harness. Es un binario que el harness **exec**. El wrapper de abajo es un ejemplo, no se instala solo. |
+| La CLI no es un plugin de OpenCode | No registra tools ni habla el protocolo del harness. Es un binario que el harness **exec**. El wrapper y el plugin de [`integrations/opencode/`](../integrations/opencode/) se instalan aparte. |
 | El nombre es local | Otro host, otro contenedor o un `HOME` distinto no ve el directorio. El CP sí sigue teniendo el sandbox. El nombre no es un id global. |
 | Imagen vieja no auto-monta | El dispositivo sí se crea cuando hay workspace y `virtiofsd` está en el nodo. El tag es `workspace` y el punto de montaje es `/workspace`. La imagen **nueva** lo monta al boot (`workspace-virtiofs.service`, oneshot, sale 0 si el tag no está). Una imagen construida antes de esa unidad no ejecuta el `mount`: el exec sigue viendo solo el disco del guest hasta el comando manual, o hasta reconstruir el rootfs. |
 | La ruta es la del nodo | El CLI comprueba que el path exista en **su** máquina. Si el node-agent corre en otro host, la cadena guardada puede no existir allí. El CP no hace `stat`, y con varios nodos el planificador no sabe en cuáles existe: fija el nodo con `--node-id` o comparte la ruta en todos ([`ops-multi-node.md`](ops-multi-node.md)). |
@@ -56,7 +56,7 @@ Dos nombres son dos sandboxes. No comparten disco ni egress.
 ## Alternativas que descartamos (y la consecuencia)
 
 1. **Seguir solo con `asp sandbox run`.** Máximo aislamiento por comando y cero estado local. Consecuencia: cada tool espera create+boot+destroy. Sigue siendo el comando de CI. No lo quitamos. Su exec sigue siendo el JSON acumulado (no hace falta stream para un one-shot que igual espera al final).
-2. **Plugin OpenCode que hable HTTP con el CP.** Evitaría el wrapper shell. Consecuencia: duplicar auth, wait y el cliente; este repo no mantiene ese plugin. La CLI es el contrato estable. El ejemplo de abajo es el sustituto.
+2. **Plugin OpenCode que hable HTTP con el CP.** Evitaría el wrapper shell. Consecuencia: duplicar auth, wait y el cliente; este repo no mantiene ese plugin. La CLI es el contrato estable. El plugin de `integrations/opencode/` no habla con el CP: solo ajusta cómo OpenCode llama al wrapper y lo que le cuenta al modelo.
 3. **SSH largo al guest como sustituto del exec.** Un PTY sobre el exec NDJSON evita abrir otra superficie de auth. Consecuencia: no es un terminal completo (sin SIGWINCH, stderr mezclado en el PTY, EOF por Ctrl-D). SSH al guest sigue fuera.
 4. **Un solo `session.json`.** Menos flags. Consecuencia: dos agentes se pisan. Por eso el directorio y `--name`. El fichero explícito queda como override, no como default.
 5. **Guardar el JWT en el JSON.** Arranque más simple sin `asp auth`. Consecuencia: un fichero robado es un token. Prohibido.
@@ -85,46 +85,19 @@ Diagnóstico (ids, transiciones, errores) va a **stderr**. El id de `start`/`sto
 
 ## Cómo lo apuntaría OpenCode
 
-OpenCode lanza cada llamada a la herramienta bash como `<shell> -c "<comando del modelo>"` en el host, y la opción `"shell"` de `opencode.json` elige ese binario (ruta absoluta). Para que el tool entre al sandbox hay que **sustituir ese shell** por un wrapper. No hay plugin en este repo. Guía paso a paso (en inglés): [README § Using ASP with OpenCode](../README.md#using-asp-with-opencode).
+OpenCode lanza cada llamada a la herramienta bash como `<shell> -c "<comando del modelo>"` en el host, y la opción `"shell"` de `opencode.json` elige ese binario (ruta absoluta). Para que el tool entre al sandbox hay que **sustituir ese shell** por un wrapper. El kit está en [`integrations/opencode/`](../integrations/opencode/), y la guía paso a paso (en inglés) en [README § Using ASP with OpenCode](../README.md#using-asp-with-opencode):
 
-**`--cmd` no es un shell.** Solo separa palabras con comillas simples y dobles; no interpreta `|`, `&&`, `;`, redirecciones ni variables. El modelo genera esas construcciones todo el rato, así que el wrapper debe pasar el comando a `/bin/sh -c` **dentro del guest**. Un wrapper con `--cmd "$*"` rompe cualquier tubería.
+- `asp-opencode-shell`: el wrapper. Pasa el comando a `asp session exec --no-pty -- /bin/sh -c` y devuelve el exit code del guest. Ejecuta como el dueño de `/workspace` (`setpriv`), para que los ficheros nuevos conserven el uid del host: virtiofs no traduce ids.
+- `plugins/asp-sandbox.ts`: un plugin de OpenCode. Se niega a ejecutar si falta el wrapper (OpenCode caería sin avisar al shell del host), traduce `workdir` a un directorio del guest y le dice al modelo que bash corre en Linux dentro del sandbox.
+- `instructions/` y `opencode.*.json`: instrucciones para el modelo y configuración de ejemplo para dos montajes. En **solo bash**, OpenCode corre en otra máquina y sus herramientas de ficheros quedan denegadas. En **mismo host**, OpenCode corre en el nodo y edita el repo compartido por virtiofs.
 
-Wrapper (cópialo fuera de git si lo modificas; este no lleva secretos). Usa el exec en streaming (el default: no pongas `--buffered` si quieres ver la salida según sale) y `--no-pty` para que stdout y stderr lleguen separados al modelo:
+**`--cmd` no es un shell.** Solo separa palabras con comillas simples y dobles; no interpreta `|`, `&&`, `;`, redirecciones ni variables. El modelo genera esas construcciones todo el rato, así que el wrapper pasa el comando a `/bin/sh -c` **dentro del guest**. Un wrapper con `--cmd "$*"` rompe cualquier tubería.
 
-```sh
-#!/bin/sh
-# asp-opencode-shell — la sesión ya tiene que estar arrancada:
-#   asp session start --name opencode --workspace /ruta/absoluta/del/repo …
-# Caso típico del tool:  asp-opencode-shell -c "ls | grep x && echo ok"
-NAME="${ASP_SESSION_NAME:-opencode}"
-HOST_ROOT="${ASP_WORKSPACE_HOST:-}"           # la misma ruta que se pasó a --workspace
-GUEST_ROOT="${ASP_WORKSPACE_GUEST:-/workspace}"
+Lo que no arregla el kit:
 
-# Traduce el directorio de trabajo de OpenCode en el host al mismo sitio en el guest.
-cwd="$GUEST_ROOT"
-if [ -n "$HOST_ROOT" ]; then
-  case "$PWD/" in
-    "$HOST_ROOT"/*) cwd="$GUEST_ROOT${PWD#"$HOST_ROOT"}" ;;
-  esac
-fi
-
-if [ "$1" = "-c" ]; then
-  # Llamada del tool: sh dentro del guest para conservar tuberías, && y redirecciones.
-  exec asp session exec --name "$NAME" --cwd "$cwd" --no-pty -- /bin/sh -c "$2"
-fi
-
-# Sin -c: terminal interactivo de OpenCode. Login shell en el guest con PTY.
-exec asp session exec --name "$NAME" --cwd "$cwd" -- /bin/bash -l
-```
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "shell": "/home/tu-usuario/.local/bin/asp-opencode-shell"
-}
-```
-
-Lanza OpenCode desde el repo con `ASP_SESSION_NAME` y `ASP_WORKSPACE_HOST="$PWD"` en el entorno. Las herramientas de lectura y edición de OpenCode **no** pasan por el wrapper: tocan el repo en el host, y el guest ve los mismos ficheros por virtiofs.
+- **Mismo exit code.** OpenCode junta stdout y stderr, y un error de `asp` (`no active session`, 401, red) sale con 1, igual que un comando que falla. El modelo distingue el caso por el mensaje. Los errores de uso del wrapper salen con 125 y los de ssh con 255.
+- **Ficheros sin compartir.** Sin virtiofs entre la máquina de OpenCode y el nodo, las herramientas de ficheros no pueden ver el repo del guest. Por eso el montaje solo bash las deniega.
+- **`opencode run` sin terminal.** Espera EOF en stdin. En scripts hay que añadir `< /dev/null`.
 
 Secuencia de operador / agente:
 
