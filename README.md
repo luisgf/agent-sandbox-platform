@@ -89,11 +89,11 @@ flowchart LR
 
 | Component | Path | Language | Responsibility |
 |---|---|---|---|
-| **Control plane** | [`control-plane/`](control-plane/) | Go | Multi-tenant API, desired state, event journal, node enrollment (PKI + mTLS both ways), capacity scheduler, node monitor (lost-node failover and fencing), exec proxy, egress policies, OIDC mint/JWKS, software attestation, idle reaper. |
+| **Control plane** | [`control-plane/`](control-plane/) | Go | Multi-tenant API, desired state, event journal, node enrollment (PKI + mTLS both ways), capacity scheduler, node monitor (lost-node failover and fencing), exec proxy, egress policies, OIDC mint/JWKS, software attestation, idle reaper. Node administration (list, cordon, revoke, rotate-cert) takes an IdP admin or a platform-scoped API key, never a tenant key. |
 | **Node agent** | [`node-agent/`](node-agent/) | Go | Reports the host's capacity, polls the control plane for the sandboxes placed on it, spawns one Cloud Hypervisor per sandbox, creates TAP devices, applies nftables, runs the egress proxy and DNS sink, bridges SSH agent / OIDC over vsock, starts `virtiofsd`, sets up per-session WireGuard, and removes a previous agent's leftovers on start. |
 | **pod-daemon** | [`pod-daemon/`](pod-daemon/) | Rust | Runs inside the guest. Executes commands received over vsock (buffered JSON or streamed NDJSON, optional PTY). |
 | **Guest image** | [`images/guest/`](images/guest/) | Dockerfile / shell | Minimal Debian rootfs with systemd/OpenRC units for pod-daemon, the SSH-agent vsock proxy and the virtiofs workspace mount. |
-| **CLI `asp`** | [`cli/`](cli/) | Go | `sandbox`, `session`, `auth` and `node` commands; resolves IdP tokens transparently. |
+| **CLI `asp`** | [`cli/`](cli/) | Go | `sandbox`, `session`, `auth` and `node` commands (`node` needs an IdP admin, or operator to list, or a platform-scoped API key); resolves IdP tokens transparently. |
 
 **vsock ports** (local to the node, never exposed on the network):
 

@@ -97,7 +97,8 @@ El nodo debe salir como `SCHEDULABLE yes`.
 - **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor.
 - **Volver al reparto:** `asp node uncordon node2`.
 - **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
-- **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
+- **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`, con un admin del IdP o una API key de plataforma. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
+- **Quién administra nodos:** listar, cordon, uncordon, revoke y rotate-cert piden un admin del IdP (operador basta para listar) o una API key de plataforma. Una API key de tenant recibe 403.
 
 **Orden de actualización:** primero los node-agents y después el plano de control. Un agente antiguo declara siempre 4 cores y 8 GiB, y el planificador nuevo aplica esos valores.
 

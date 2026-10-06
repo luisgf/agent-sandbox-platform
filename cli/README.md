@@ -15,7 +15,7 @@ export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
 
 Subcomandos: `sandbox create|get|list|exec|delete|run`, `session start|exec|status|stop`, `auth login|logout|status`, `node list|cordon|uncordon`.
 
-`--node-id` es opcional: sin él, el plano de control elige un nodo con hueco. Si no hay ninguno, `create`, `run` y `session start` fallan con «no capacity» y el motivo. `asp node list` muestra el uso de cada nodo (admin u operador); `asp node cordon|uncordon <id>` lo saca o lo devuelve al reparto (admin). Ver [`docs/ops-multi-node.md`](../docs/ops-multi-node.md).
+`--node-id` es opcional: sin él, el plano de control elige un nodo con hueco. Si no hay ninguno, `create`, `run` y `session start` fallan con «no capacity» y el motivo. `asp node list` muestra el uso de cada nodo (admin u operador); `asp node cordon|uncordon <id>` lo saca o lo devuelve al reparto (admin). Con API key, los comandos `node` necesitan una clave de plataforma: los nodos los comparten todos los tenants, así que una clave de tenant recibe 403. Ver [`docs/ops-multi-node.md`](../docs/ops-multi-node.md).
 
 Documentación: [`docs/why-cli-asp.md`](../docs/why-cli-asp.md),
 [`docs/ops-asp-agent-runner.md`](../docs/ops-asp-agent-runner.md),

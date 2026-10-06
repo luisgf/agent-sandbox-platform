@@ -45,11 +45,10 @@ func (s *Server) nodeView(n store.Node, u store.NodeUsage, now time.Time) nodeVi
 	}
 }
 
-// ListNodes returns registered nodes with their allocation, sorted by id. With an
-// IdP principal it needs admin or operator.
+// ListNodes returns registered nodes with their allocation, sorted by id. It
+// needs an IdP admin or operator, or a platform-scoped API key.
 func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
-	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !canViewNodes(p) {
-		forbid(w, "admin or operator role required to list nodes")
+	if !authorizeNodeView(w, r) {
 		return
 	}
 	list, err := s.Store.ListNodes()
@@ -82,8 +81,7 @@ func (s *Server) UncordonNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordoned bool) {
-	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !canManageNodes(p) {
-		forbid(w, "admin role required to cordon or uncordon nodes")
+	if !authorizeNodeAdmin(w, r, "cordon or uncordon nodes", false) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))

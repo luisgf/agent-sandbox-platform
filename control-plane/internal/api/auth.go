@@ -98,13 +98,24 @@ func isPublicPath(path string) bool {
 	}
 }
 
-// isNodeCertAdminPath is authorized inside the handler (bootstrap token or API key).
-// Middleware must not require a stored API key alone, or bootstrap-only ops break.
-func isNodeCertAdminPath(path string) bool {
+// isRotateCertPath is POST /v1/nodes/{id}/rotate-cert, which also takes the
+// node bootstrap token (a node re-keying itself).
+func isRotateCertPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/rotate-cert")
+}
+
+// isNodeAdminPath is node administration: cordon, uncordon, revoke and
+// rotate-cert. Handlers allow an IdP admin or a platform-scoped API key.
+func isNodeAdminPath(path string) bool {
 	if !strings.HasPrefix(path, "/v1/nodes/") {
 		return false
 	}
-	return strings.HasSuffix(path, "/rotate-cert") || strings.HasSuffix(path, "/revoke")
+	for _, suffix := range []string{"/cordon", "/uncordon", "/revoke", "/rotate-cert"} {
+		if strings.HasSuffix(path, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // isNodeAgentPath is protected by mTLS client certs when RequireNodeClientCert.
@@ -125,12 +136,9 @@ func isNodeAgentPath(path string) bool {
 }
 
 // isUserFacingPath is the IdP JWT surface: sandbox create/list/get/exec/destroy/events,
-// the node inventory and cordon/uncordon. Node claim/status/attest/renew-lease stay on mTLS / internal auth.
+// the node inventory and node administration. Node claim/status/attest/renew-lease stay on mTLS / internal auth.
 func isUserFacingPath(path string) bool {
-	if path == "/v1/sandboxes" || path == "/v1/nodes" {
-		return true
-	}
-	if strings.HasPrefix(path, "/v1/nodes/") && (strings.HasSuffix(path, "/cordon") || strings.HasSuffix(path, "/uncordon")) {
+	if path == "/v1/sandboxes" || path == "/v1/nodes" || isNodeAdminPath(path) {
 		return true
 	}
 	if !strings.HasPrefix(path, "/v1/sandboxes/") {
@@ -252,8 +260,10 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			// rotate-cert / revoke: handler checks bootstrap token or API key.
-			if isNodeCertAdminPath(r.URL.Path) {
+			// rotate-cert also takes the node bootstrap token, which is not an API
+			// key; the handler checks it again. Every other credential, and every
+			// other node admin route, goes through the checks below.
+			if isRotateCertPath(r.URL.Path) && checkBootstrapToken(r) {
 				next.ServeHTTP(w, r)
 				return
 			}

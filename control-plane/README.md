@@ -24,14 +24,16 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | PUT/GET | `/v1/tenants/{id}/egress` | Allowlist de egress |
 | POST | `/v1/tenants/{id}/egress/check` | Helper de evaluación |
 | POST | `/v1/nodes/enroll` | Bootstrap token → client cert PEMs |
-| POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (bootstrap o API key); revoca fingerprint anterior |
-| POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados |
+| POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (admin, API key de plataforma o bootstrap token); revoca fingerprint anterior |
+| POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
 | POST | `/v1/nodes/register` | Registra/actualiza nodo |
 | POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
 | GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`) |
-| POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin) |
-| POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin) |
-| GET | `/v1/nodes` | Lista nodos con asignado/ofrecido y si son planificables (admin u operador) |
+| POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin o API key de plataforma) |
+| POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin o API key de plataforma) |
+| GET | `/v1/nodes` | Lista nodos con asignado/ofrecido y si son planificables (admin, operador o API key de plataforma) |
+
+Administrar nodos (listar, cordon, uncordon, revoke, rotate-cert) nunca acepta una API key de tenant: los nodos los comparten todos los tenants (403). Con `ASP_IDP_REQUIRED=1` hace falta un token del IdP con rol admin (operador para listar). `rotate-cert` acepta además el bootstrap token, para que un nodo se re-emita el certificado; `revoke` no, porque ese token lo tienen todos los nodos. En el lab abierto (sin API keys ni IdP) estas rutas quedan abiertas como el resto, salvo `rotate-cert`, que sigue pidiendo el bootstrap token porque entrega la clave privada de un nodo.
 
 ## Variables de entorno
 
