@@ -5,6 +5,8 @@ Daemon Rust dentro de la microVM. Sirve HTTP/1.1 JSON:
 - `GET /healthz` → `{"status":"ok"}`
 - `POST /v1/exec` body `{"cmd":["echo","hi"],"env":{},"cwd":""}` → `{"stdout","stderr","exit_code"}` (sync + timeout)
 
+El exec acumulado lee stdout y stderr mientras el comando corre y escribe `stdin` desde otro hilo, así que no se bloquea por mucha salida ni por mucha entrada. Cuando el comando termina, espera como mucho 1 s a que se cierren sus pipes: un proceso que lanzó en segundo plano y que heredó stdout no lo retiene. Si vence `--exec-timeout-secs`, mata el comando y devuelve lo que llevaba escrito con `exit_code` 124 y el aviso al final de `stderr`.
+
 ## Listen modes
 
 | `--listen` | Flag extra | Uso |
