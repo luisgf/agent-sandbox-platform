@@ -31,8 +31,8 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix sock de pod-daemon (dry-run / fallback) |
 | `--pod-daemon-port` | | `26500` — puerto guest vsock/TCP para HTTP |
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check denegado |
-| `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | forward proxy HTTP(S) (p.ej. `:8888`) |
-| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | UDP DNS sink NXDOMAIN (p.ej. `:5353`) |
+| `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | forward proxy HTTP(S) (p.ej. `:8888`). `ASP_EGRESS_MAX_BODY` (8 MiB) limita el body de las peticiones HTTP (413); las respuestas pasan enteras, como por un túnel CONNECT. No reenvía cabeceras hop-by-hop (`Connection`, `Upgrade`, `Keep-Alive`, `Proxy-Authorization`…) |
+| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | UDP DNS sink (p.ej. `:5353`): NXDOMAIN para nombres no permitidos |
 | `--egress-mitm` | `ASP_EGRESS_MITM=1` | CONNECT TLS bump (default off; corp caution) |
 | `--egress-mitm-ca` | `ASP_EGRESS_MITM_CA` | PEM CA MITM (generate/load) |
 | `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix sock bridge → `SSH_AUTH_SOCK` / FakeAgent |
