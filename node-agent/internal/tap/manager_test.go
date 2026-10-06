@@ -127,3 +127,62 @@ func TestCreateWithCIDR(t *testing.T) {
 		t.Fatalf("addr=%s", rec.Calls[2])
 	}
 }
+
+// failingRunner records calls and fails the ones containing failOn.
+type failingRunner struct {
+	calls  []string
+	failOn string
+}
+
+func (r *failingRunner) Run(name string, args ...string) error {
+	line := name + " " + strings.Join(args, " ")
+	r.calls = append(r.calls, line)
+	if r.failOn != "" && strings.Contains(line, r.failOn) {
+		return errors.New("boom")
+	}
+	return nil
+}
+
+func TestCreateReturnsErrorsAndRemovesAHalfMadeDevice(t *testing.T) {
+	r := &failingRunner{failOn: "addr add"}
+	m := &Manager{Runner: r, SysClassNet: t.TempDir()}
+	if err := m.CreateWithCIDR("asp-half0001", "10.200.0.1/30"); err == nil {
+		t.Fatal("a failed step must fail the create when SoftFail is off")
+	}
+	if last := r.calls[len(r.calls)-1]; last != "ip link delete asp-half0001" {
+		t.Fatalf("half-made TAP not removed; calls=%v", r.calls)
+	}
+
+	r = &failingRunner{failOn: "tuntap add"}
+	m = &Manager{Runner: r, SysClassNet: t.TempDir()}
+	if err := m.CreateWithCIDR("asp-none0001", "10.200.0.1/30"); err == nil || len(r.calls) != 1 {
+		t.Fatalf("failed tuntap add: err=%v calls=%v (nothing to remove)", err, r.calls)
+	}
+}
+
+func TestCreateSoftFailSwallowsErrors(t *testing.T) {
+	r := &failingRunner{failOn: "tuntap add"}
+	m := &Manager{Runner: r, SoftFail: true, SysClassNet: t.TempDir()}
+	if err := m.CreateWithCIDR("asp-soft0001", "10.200.0.1/30"); err != nil {
+		t.Fatalf("SoftFail (dry-run) must log, not fail: %v", err)
+	}
+}
+
+func TestCreateRefusesAnExistingDevice(t *testing.T) {
+	sys := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sys, "asp-dup00001"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &failingRunner{}
+	m := &Manager{Runner: r, SysClassNet: sys}
+	if err := m.CreateWithCIDR("asp-dup00001", "10.200.0.1/30"); !errors.Is(err, ErrDeviceExists) {
+		t.Fatalf("want ErrDeviceExists, got %v", err)
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("an existing device must not be touched: %v", r.calls)
+	}
+	m.SoftFail = true
+	if err := m.CreateWithCIDR("asp-dup00001", "10.200.0.1/30"); err != nil || len(r.calls) != 0 {
+		t.Fatalf("SoftFail: err=%v calls=%v", err, r.calls)
+	}
+}

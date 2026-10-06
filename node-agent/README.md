@@ -41,7 +41,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--insecure-identity-sandbox-header` | `ASP_INSECURE_IDENTITY_SANDBOX_HEADER=1` | los listeners de identidad sin binding (`--identity-listen`, host-vsock global) toman la sandbox de `X-ASP-Sandbox-ID`: quien llegue a ellos pide el token de cualquier sandbox (solo lab) |
 | `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop VMM |
 | `--reconcile-interval` | | default `2s` |
-| `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra TAP `asp-{shortid}` con su propia /30 de `--guest-subnet` (soft-fail sin perms) |
+| `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra TAP `asp-{shortid}` con su propia /30 de `--guest-subnet`. Si el TAP no se puede crear (permisos, nombre ya en uso) la sandbox pasa a `failed`; solo `--dry-run` sigue sin TAP |
 | `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — copia privada del rootfs por sandbox (`rootfs-{id}.img`), borrada al parar; no aplica con `--dry-run` |
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest CID 2) |
 | `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix bajo este dir en vez de AF_VSOCK |

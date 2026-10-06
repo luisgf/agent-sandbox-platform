@@ -493,7 +493,7 @@ func main() {
 		}
 		rec.TapAuto = cfg.TapAuto
 		if cfg.TapAuto {
-			rec.Tap = &tap.Manager{Logger: slog.Default(), SoftFail: true}
+			rec.Tap = tapManager(cfg)
 			subnet, err := netip.ParsePrefix(strings.TrimSpace(cfg.GuestSubnet))
 			if err != nil {
 				slog.Error("invalid --guest-subnet", "value", cfg.GuestSubnet, "error", err)
@@ -715,6 +715,12 @@ func loadConfig() config {
 		}
 	}
 	return cfg
+}
+
+// tapManager builds the reconciler's TAP manager. Only a dry-run agent shrugs
+// off a failed TAP: a real VM must not boot without its network device.
+func tapManager(cfg config) *tap.Manager {
+	return &tap.Manager{Logger: slog.Default(), SoftFail: cfg.DryRun}
 }
 
 // registerRequest is what the node tells the control plane on every register.
