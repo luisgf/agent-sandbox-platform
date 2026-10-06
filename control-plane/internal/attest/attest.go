@@ -28,9 +28,13 @@ const (
 	DefaultMaxAge = 10 * time.Minute
 )
 
-// defaultKeyPath is where a lab key lives without ASP_ATTEST_KEY: the same
-// place the node-agent puts its own, so a single-host lab shares one key.
-func defaultKeyPath() string {
+// KeyPathFromEnv is where the attestation key lives: ASP_ATTEST_KEY, else a
+// lab key in the temporary directory, the same place the node-agent puts its
+// own, so a single-host lab shares one key.
+func KeyPathFromEnv() string {
+	if path := strings.TrimSpace(os.Getenv("ASP_ATTEST_KEY")); path != "" {
+		return path
+	}
 	return filepath.Join(os.TempDir(), "asp-attest-key.pem")
 }
 
@@ -81,10 +85,7 @@ type SoftwareAttestor struct {
 // LoadOrCreate loads ASP_ATTEST_KEY PEM (or creates a lab key there), then the
 // optional ASP_ATTEST_PUB and ASP_ATTEST_TRUSTED_PUBS verification keys.
 func LoadOrCreate() (*SoftwareAttestor, error) {
-	path := strings.TrimSpace(os.Getenv("ASP_ATTEST_KEY"))
-	if path == "" {
-		path = defaultKeyPath()
-	}
+	path := KeyPathFromEnv()
 	a := &SoftwareAttestor{MaxAge: DefaultMaxAge}
 	if raw := strings.TrimSpace(os.Getenv("ASP_ATTEST_MAX_AGE")); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {

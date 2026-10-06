@@ -23,6 +23,9 @@ export ASP_OIDC_KEY="$WORKDIR/oidc.pem"
 # attestation key, because the control plane only trusts configured keys.
 export ASP_ATTEST_KEY="$WORKDIR/attest.pem"
 export ASP_AUTO_PROVISION=0
+# With DATABASE_URL the control plane runs in production mode; the smoke keeps
+# its keys in WORKDIR on purpose.
+export ASP_ALLOW_TMP_KEYS=1
 export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTERVAL=1s
 
 cleanup() {

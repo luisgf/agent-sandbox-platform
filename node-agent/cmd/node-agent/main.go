@@ -97,6 +97,10 @@ type config struct {
 
 func main() {
 	cfg := loadConfig()
+	if err := checkNodeKeyLocations(cfg); err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(2)
+	}
 	if cfg.ReapOnly {
 		os.Exit(reapOnly(cfg))
 	}
@@ -866,6 +870,11 @@ func attestSigners(cfg config, nodeCert *cpclient.NodeCert) []*attest.Signer {
 		})
 		slog.Info("attestations signed with the node certificate key", "key_id", s.KeyID())
 		out = append(out, s)
+	}
+	if prod, _ := nodeProdMode(cfg); prod && strings.TrimSpace(os.Getenv("ASP_ATTEST_KEY")) == "" {
+		// No lab key in the temporary directory on a production node.
+		slog.Info("ASP_ATTEST_KEY unset: no fallback attestation key (set it to a persistent path the control plane trusts to have one)")
+		return out
 	}
 	s, err := attest.LoadOrCreate()
 	if err != nil {

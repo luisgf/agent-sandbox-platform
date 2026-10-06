@@ -40,6 +40,10 @@ func main() {
 	if err := run(ctx, os.Args[1:]); err != nil {
 		slog.Error("control plane stopped", "error", err)
 		stop()
+		var cfgErr configError
+		if errors.As(err, &cfgErr) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -55,6 +59,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
 	if err != nil {
+		return err
+	}
+	if err := checkKeyLocations(); err != nil {
 		return err
 	}
 

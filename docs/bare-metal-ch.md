@@ -597,24 +597,26 @@ Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`).
 3. **Assets**
    - [ ] `/opt/sandbox/vmlinux` y `/opt/sandbox/rootfs.img` resolubles
    - [ ] TAP `asp-<short>` vía `--tap-auto` o creado a mano antes del claim
-4. **Control-plane**
+4. **Claves persistentes**
+   - [ ] `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY`, `ASP_ATTEST_KEY` (control plane) y `--cert-dir` (node-agent) fuera de `/tmp`, `/var/tmp`, `/dev/shm` y `$TMPDIR`. En modo producción el arranque falla si no (`ASP_ALLOW_TMP_KEYS=1` lo fuerza); en lab solo avisa.
+5. **Control-plane**
    - [ ] Postgres up; `ASP_AUTO_PROVISION=0`
    - [ ] `GET /healthz` OK; TLS/mTLS según corp
-5. **Node-agent**
+6. **Node-agent**
    - [ ] Enroll + register; certs en `ASP_CERT_DIR`
    - [ ] `--reconcile` sin `--dry-run`; opcional `--tap-auto --host-vsock`
    - [ ] ping CH sin warning persistente (solo shared)
-6. **Ciclo sandbox**
+7. **Ciclo sandbox**
    - [ ] `POST /v1/sandboxes` → `requested`, colocada en un nodo con hueco (503 si ninguno cabe)
    - [ ] Reconciler claim → `starting` → VMM Start → `running`
    - [ ] `GET /v1/sandboxes/{id}/events` muestra transiciones
    - [ ] `POST .../exec` vía hybrid vsock (guest `--listen vsock`) o unix en dry-run
    - [ ] (opcional) guest dial CID 2:26502 identity / 26501 SSH
    - [ ] `DELETE /v1/sandboxes/{id}` → `stopping` → Stop/Delete → `stopped`
-7. **Egress (política)**
+8. **Egress (política)**
    - [ ] `PUT /v1/tenants/{id}/egress` + check allow/deny
    - [ ] Node `--egress-enforce`
-8. **Varios nodos (si aplica)** — [`ops-multi-node.md`](ops-multi-node.md)
+9. **Varios nodos (si aplica)** — [`ops-multi-node.md`](ops-multi-node.md)
    - [ ] `asp node list`: cada nodo `SCHEDULABLE yes`, con la capacidad esperada
    - [ ] CP en otro host: `--agent-tls-listen` en el nodo y exec por mTLS (sin `9100` abierto)
    - [ ] `asp node cordon` → las sandboxes nuevas van a otro nodo; `uncordon` lo devuelve
@@ -819,8 +821,8 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 ## 10. Procedimiento end-to-end (checklist ops)
 
 1. Instalar CH pinneado + assets (`vmlinux`, `rootfs.img` vía `build-guest-rootfs.sh`) → symlinks `/opt/sandbox/*`.
-2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens.
-3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`), como servicio: [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) (§5.6).
+2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens. Claves fuera de `/tmp`: `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` y `ASP_ATTEST_KEY` en almacenamiento persistente (p. ej. `/var/lib/asp`; las que falten se crean ahí). Con `DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1` el control plane no arranca (código 2) si alguna está en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`.
+3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`), con `--cert-dir` (y `ASP_ATTEST_KEY` o `--egress-mitm-ca` si los usas) fuera de `/tmp`: un nodo de producción no arranca con ellos en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`. Como servicio: [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) (§5.6).
 4. `POST /v1/sandboxes` → reconciler claim → TAP `asp-*` → CH spawn → `running`.
 5. `POST /v1/sandboxes/{id}/exec` → hybrid CONNECT 26500 → guest pod-daemon.
 6. Desde guest: dial CID 2 ports 26501/26502 (o socat); mint OIDC / SSH agent.
