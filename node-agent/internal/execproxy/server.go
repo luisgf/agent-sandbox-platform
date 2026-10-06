@@ -102,6 +102,21 @@ func (s *Server) clientFor(sandboxID string) (*poddaemon.Client, error) {
 
 var errPodUnavailable = &podErr{msg: "pod-daemon client not configured"}
 
+// writeNoClient answers a request for a sandbox without a pod-daemon client:
+// 404 when the sandbox is not running on this node (the control plane turns
+// it into 409), 503 when exec is not configured at all.
+func writeNoClient(w http.ResponseWriter, err error) {
+	if errors.Is(err, poddaemon.ErrUnknownSandbox) {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	msg := "pod-daemon client not configured"
+	if err != nil {
+		msg = err.Error()
+	}
+	writeErr(w, http.StatusServiceUnavailable, msg)
+}
+
 type podErr struct{ msg string }
 
 func (e *podErr) Error() string { return e.msg }
@@ -116,19 +131,15 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "cmd required")
 		return
 	}
+	client, err := s.clientFor(body.SandboxID)
+	if err != nil || client == nil {
+		writeNoClient(w, err)
+		return
+	}
 	if body.EgressAllowlist != nil {
 		// The control plane attaches the tenant policy to every exec; the
 		// proxy applies it only to traffic from this sandbox's prefix.
 		s.PolicyCache.Set(body.SandboxID, s.allowlistFromDTO(body.EgressAllowlist))
-	}
-	client, err := s.clientFor(body.SandboxID)
-	if err != nil || client == nil {
-		msg := "pod-daemon client not configured"
-		if err != nil {
-			msg = err.Error()
-		}
-		writeErr(w, http.StatusServiceUnavailable, msg)
-		return
 	}
 	if wantsStream(r) {
 		s.handleExecStream(w, r, client, body)
@@ -238,11 +249,7 @@ func (s *Server) handleExecStdin(w http.ResponseWriter, r *http.Request) {
 	}
 	client, err := s.clientFor(body.SandboxID)
 	if err != nil || client == nil {
-		msg := "pod-daemon client not configured"
-		if err != nil {
-			msg = err.Error()
-		}
-		writeErr(w, http.StatusServiceUnavailable, msg)
+		writeNoClient(w, err)
 		return
 	}
 	if err := client.WriteStdin(r.Context(), poddaemon.StdinMessage{

@@ -634,6 +634,17 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 	return out, nil
 }
 
+// SetStateForTest forces a sandbox state that no API path sets, such as
+// paused (unit tests only).
+func (m *MemoryStore) SetStateForTest(id string, state SandboxState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sb, ok := m.sandboxes[id]; ok {
+		sb.State = state
+		m.sandboxes[id] = sb
+	}
+}
+
 // SetLastActivityForTest pins last_activity_at (unit tests only).
 func (m *MemoryStore) SetLastActivityForTest(id string, at time.Time) {
 	m.mu.Lock()

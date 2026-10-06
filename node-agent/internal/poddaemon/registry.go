@@ -1,9 +1,14 @@
 package poddaemon
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrUnknownSandbox: no endpoint is registered for the sandbox (it is not
+// running on this node) and there is no fallback.
+var ErrUnknownSandbox = errors.New("no pod-daemon endpoint for sandbox")
 
 // Transport names for Endpoint.Mode.
 const (
@@ -84,7 +89,7 @@ func (r *Registry) DialerFor(sandboxID string) (Dialer, error) {
 	if r.Fallback != nil {
 		return r.Fallback, nil
 	}
-	return nil, fmt.Errorf("no pod-daemon endpoint for sandbox %s", sandboxID)
+	return nil, fmt.Errorf("%w %s", ErrUnknownSandbox, sandboxID)
 }
 
 // ClientFor builds an HTTP client bound to the sandbox dialer.

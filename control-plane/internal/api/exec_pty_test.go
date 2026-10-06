@@ -62,6 +62,7 @@ func TestExecPTYAndStdinReachNodeAgent(t *testing.T) {
 	if err := json.Unmarshal(raw, &sb); err != nil {
 		t.Fatal(err)
 	}
+	runSandbox(t, mem, sb.ID)
 	ereq, err := http.NewRequest(http.MethodPost, cp.URL+"/v1/sandboxes/"+sb.ID+"/exec?stream=1", strings.NewReader(`{"cmd":["sh"],"pty":true,"rows":24,"cols":80}`))
 	if err != nil {
 		t.Fatal(err)
