@@ -202,18 +202,27 @@ func TestProcFSTerminatesRealProcesses(t *testing.T) {
 				}
 			})
 			fs := ProcFS{}
-			procs, err := fs.List()
-			if err != nil {
-				t.Fatal(err)
-			}
+			// Start returns after fork; until the child execs sh, /proc shows an
+			// empty or inherited command line. Wait for its own argv.
 			var child Proc
-			for _, p := range procs {
-				if p.PID == cmd.Process.Pid {
-					child = p
+			for deadline := time.Now().Add(2 * time.Second); ; {
+				procs, err := fs.List()
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if child.PID == 0 || !slices.Contains(child.Argv, tc.script) {
-				t.Fatalf("child %d not listed with its argv: %+v", cmd.Process.Pid, child)
+				child = Proc{}
+				for _, p := range procs {
+					if p.PID == cmd.Process.Pid {
+						child = p
+					}
+				}
+				if child.PID != 0 && slices.Contains(child.Argv, tc.script) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("child %d not listed with its argv: %+v", cmd.Process.Pid, child)
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 			if err := fs.Signal(Proc{PID: child.PID, Start: child.Start + 1}, syscall.SIGTERM); !errors.Is(err, ErrGone) {
 				t.Fatalf("signal with a stale start time = %v, want ErrGone", err)
