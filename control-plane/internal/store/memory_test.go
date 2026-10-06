@@ -152,7 +152,7 @@ func TestMemoryStoreAPIKey(t *testing.T) {
 	s := NewMemoryStore()
 	secret := "asp_test_secret_value"
 	hash := HashAPIKeySecret(secret)
-	k, err := s.EnsureAPIKey("default", "bootstrap", KeyPrefix(secret), hash)
+	k, err := s.EnsureAPIKey("default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestMemoryStoreAPIKey(t *testing.T) {
 		t.Fatalf("count=%d err=%v", n, err)
 	}
 	// Ensure is idempotent by name
-	k2, err := s.EnsureAPIKey("default", "bootstrap", KeyPrefix(secret), hash)
+	k2, err := s.EnsureAPIKey("default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), hash)
 	if err != nil || k2.ID != k.ID {
 		t.Fatalf("ensure again: %+v", k2)
 	}

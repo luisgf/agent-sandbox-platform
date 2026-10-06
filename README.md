@@ -385,6 +385,8 @@ Only the most common settings. Full lists live in each component's README.
 |---|---|---|
 | `ASP_CP_URL` | CLI | Control-plane URL (default `http://127.0.0.1:8080`). |
 | `ASP_ID_TOKEN` / `ASP_API_KEY` | CLI | Bearer credential (IdP token preferred; API key for labs without an IdP). |
+| `ASP_TENANT` | CLI | Tenant for create/list/run; empty uses the caller's tenant (token claim or key). |
+| `ASP_IDP_TENANT_CLAIM` / `ASP_IDP_DEFAULT_TENANT` | CP | Where a user's tenant comes from (claim `tenant_id` by default); every request is confined to it. |
 | `ASP_IDP_REQUIRED` | CLI, CP | Require an IdP token. |
 | `ASP_SESSION_DIR` | CLI | Where session files live (default `~/.cache/asp/sessions`, mode `0700`). |
 | `LISTEN_ADDR` | CP | API listen address. |

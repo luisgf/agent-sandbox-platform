@@ -88,7 +88,9 @@ type Store interface {
 	ListEvents(sandboxID string) ([]SandboxEvent, error)
 
 	LookupAPIKeyByHash(secretHash string) (ApiKey, error)
-	EnsureAPIKey(tenantID, name, keyPrefix, secretHash string) (ApiKey, error)
+	// EnsureAPIKey creates or updates the key named name in tenantID with the
+	// given scope (APIKeyScopeTenant or APIKeyScopePlatform).
+	EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error)
 	CountAPIKeys() (int64, error)
 	TouchAPIKey(id string) error
 

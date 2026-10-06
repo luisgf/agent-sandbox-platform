@@ -104,10 +104,18 @@ type Node struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+// API key scopes: a tenant key acts only within its tenant; a platform key
+// (operations tooling, the bootstrap key) sees every tenant.
+const (
+	APIKeyScopeTenant   = "tenant"
+	APIKeyScopePlatform = "platform"
+)
+
 type ApiKey struct {
 	ID         string     `json:"id"`
 	TenantID   string     `json:"tenant_id"`
 	Name       string     `json:"name"`
+	Scope      string     `json:"scope"`
 	KeyPrefix  string     `json:"key_prefix"`
 	SecretHash string     `json:"-"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`

@@ -10,7 +10,7 @@ make asp
 
 # Lab IdP (ncc1701d) — el agente solo pasa el comando
 export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
-./build/asp sandbox run --tenant=default --cmd 'echo hello'
+./build/asp sandbox run --tenant=default --cmd 'echo hello'   # --tenant/ASP_TENANT optional: by default, your token's or key's tenant
 ```
 
 Subcomandos: `sandbox create|get|list|exec|delete|run`, `session start|exec|status|stop`, `auth login|logout|status`, `node list|cordon|uncordon`.

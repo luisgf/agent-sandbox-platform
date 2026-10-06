@@ -91,6 +91,13 @@ Config ops prevista (nombres ilustrativos): `ASP_IDP_ISSUER`, `ASP_IDP_AUDIENCE`
 
 Política por defecto recomendada para destroy de `operator`: **solo sandboxes propios** salvo claim/grupo `sandbox:destroy-any`.
 
+**Aislamiento entre tenants (hecho, 2026-10).** Todo llamante con credencial queda confinado a un tenant y los handlers lo comprueban:
+
+- **JWT del IdP:** el tenant sale del claim `ASP_IDP_TENANT_CLAIM` (por defecto `tenant_id`; un string o un array con un solo valor) o, si no viene, de `ASP_IDP_DEFAULT_TENANT` (despliegues de un solo tenant). Un token sin tenant, o con varios, recibe 401. Los roles (`admin`, `operator`, `viewer`) valen **dentro** de ese tenant.
+- **API keys:** columna `scope` (migración 014). Una key `tenant` actúa solo en su `tenant_id`; una key `platform` ve todos los tenants (herramientas de operación). La key de `ASP_BOOTSTRAP_API_KEY` es `platform` en el tenant `default` salvo `ASP_BOOTSTRAP_API_KEY_SCOPE=tenant` / `ASP_BOOTSTRAP_API_KEY_TENANT`.
+- **Comprobaciones:** get, events, attestation, exec, exec/stdin, destroy, local-net y el mint OIDC con credencial de usuario responden **404** para un sandbox de otro tenant (no se distingue de uno inexistente); create con otro `tenant_id`, list filtrando por otro tenant y las rutas de egress de otro tenant responden **403**. Un create sin `tenant_id` va al tenant del llamante (o a `ASP_DEFAULT_TENANT`, `default`, si el llamante ve todos). El list de un llamante confinado devuelve solo su tenant.
+- **Sin cambios:** el lab abierto (sin keys ni IdP) no tiene tenants; las rutas de nodo (mTLS) se autorizan por identidad de nodo, no por tenant.
+
 **Elección fase 3 (list):** operator y viewer ven **tenant-wide** (todos los sandboxes del `tenant_id` consultado), no filtro a propios. ADR permitía «todos o filtro» para operator; elegimos **todos** para que un operator pueda descubrir sandboxes del tenant sin ser admin. El aislamiento fino queda en **exec/destroy** (owner o rol). Viewer es RO sobre esa misma visibilidad.
 
 

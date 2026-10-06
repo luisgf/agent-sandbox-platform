@@ -650,7 +650,7 @@ func TestRotateWithBootstrapWhenAPIKeysExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	_, err = mem.EnsureAPIKey("default", "k", "asp_test", store.HashAPIKeySecret("not-the-bootstrap"))
+	_, err = mem.EnsureAPIKey("default", "k", store.APIKeyScopePlatform, "asp_test", store.HashAPIKeySecret("not-the-bootstrap"))
 	if err != nil {
 		t.Fatal(err)
 	}

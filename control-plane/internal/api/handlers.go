@@ -156,6 +156,13 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	input.TenantID = strings.TrimSpace(input.TenantID)
+	if input.TenantID == "" {
+		input.TenantID = createTenant(r)
+	}
+	if !authorizeTenant(w, r, input.TenantID) {
+		return
+	}
 	input.OwnerSub = strings.TrimSpace(input.OwnerSub)
 	input.OwnerEmail = strings.TrimSpace(input.OwnerEmail)
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {
@@ -234,6 +241,9 @@ func (s *Server) GetSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !sandboxVisible(w, r, sb) {
+		return
+	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
 		if !canGet(p, sb) {
 			forbid(w, "forbidden: insufficient role to get sandbox")
@@ -254,6 +264,13 @@ func (s *Server) ListSandboxes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if own, ok := CallerTenant(r.Context()); ok {
+		// A caller confined to a tenant lists that tenant, whatever it asks.
+		if tenantID != "" && !authorizeTenant(w, r, tenantID) {
+			return
+		}
+		tenantID = own
+	}
 	list, err := s.Store.ListSandboxes(tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -282,6 +299,9 @@ func (s *Server) ListSandboxEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !sandboxVisible(w, r, sb) {
 		return
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
@@ -567,6 +587,9 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !sandboxVisible(w, r, sb) {
+		return
+	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
 		if !canExec(p, sb) {
 			forbid(w, "forbidden: exec requires owner, admin, or operator")
@@ -694,6 +717,9 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !sandboxVisible(w, r, sb) {
 		return
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
@@ -888,6 +914,9 @@ func (s *Server) GetTenantEgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "tenant id required")
 		return
 	}
+	if !authorizeTenant(w, r, id) {
+		return
+	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
 		if !canManageEgress(p) {
 			forbid(w, "forbidden: egress policy requires admin role")
@@ -918,6 +947,9 @@ func (s *Server) PutTenantEgress(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "tenant id required")
+		return
+	}
+	if !authorizeTenant(w, r, id) {
 		return
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
@@ -964,6 +996,9 @@ func (s *Server) CheckTenantEgress(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "tenant id required")
+		return
+	}
+	if !authorizeTenant(w, r, id) {
 		return
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
@@ -1113,6 +1148,9 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !authorizeSandboxNode(w, r, sb) {
+		return
+	}
+	if !sandboxVisible(w, r, sb) {
 		return
 	}
 	attClaim := s.attestationClaim(sb.ID)
@@ -1334,6 +1372,9 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !sandboxVisible(w, r, existing) {
 		return
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {

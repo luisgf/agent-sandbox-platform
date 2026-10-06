@@ -22,6 +22,7 @@ const (
 	apiKeyContextKey ctxKey = 1
 	idpPrincipalKey  ctxKey = 2
 	nodeIdentityKey  ctxKey = 3
+	callerTenantKey  ctxKey = 4
 )
 
 // AuthConfig controls optional Bearer API-key middleware, IdP JWT (ADR-0007), and mTLS route policy.
@@ -70,6 +71,18 @@ func IdPPrincipalFromContext(ctx context.Context) (idp.Principal, bool) {
 func NodeIdentityFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(nodeIdentityKey).(string)
 	return id, ok && id != ""
+}
+
+// CallerTenant returns the tenant a request is confined to: the tenant of a
+// tenant-scoped API key, or of an IdP principal. ok is false for callers that
+// see every tenant: the open lab (no keys, no IdP) and platform-scoped keys.
+func CallerTenant(ctx context.Context) (string, bool) {
+	t, ok := ctx.Value(callerTenantKey).(string)
+	return t, ok && t != ""
+}
+
+func withCallerTenant(ctx context.Context, tenant string) context.Context {
+	return context.WithValue(ctx, callerTenantKey, tenant)
 }
 
 // publicPaths never require API keys.
@@ -271,7 +284,13 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 					writeError(w, http.StatusUnauthorized, "invalid idp token")
 					return
 				}
+				if strings.TrimSpace(p.TenantID) == "" {
+					// Without a tenant the principal would see every tenant.
+					writeError(w, http.StatusUnauthorized, "idp token names no tenant: add the tenant claim (ASP_IDP_TENANT_CLAIM) or set ASP_IDP_DEFAULT_TENANT")
+					return
+				}
 				ctx := context.WithValue(r.Context(), idpPrincipalKey, p)
+				ctx = withCallerTenant(ctx, strings.TrimSpace(p.TenantID))
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -308,6 +327,9 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 			}
 			touches.touch(s, key.ID)
 			ctx := context.WithValue(r.Context(), apiKeyContextKey, key)
+			if key.Scope != store.APIKeyScopePlatform {
+				ctx = withCallerTenant(ctx, key.TenantID)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -325,15 +347,27 @@ func bearerToken(h string) string {
 	return strings.TrimSpace(h[len(prefix):])
 }
 
-// BootstrapAPIKey ensures a key for tenant "default" when ASP_BOOTSTRAP_API_KEY is set.
+// BootstrapAPIKey ensures the key ASP_BOOTSTRAP_API_KEY names: the operator's
+// key, platform-scoped (it sees every tenant) in tenant "default". A lab can
+// make it a tenant key with ASP_BOOTSTRAP_API_KEY_SCOPE=tenant and pick the
+// tenant with ASP_BOOTSTRAP_API_KEY_TENANT.
 func BootstrapAPIKey(s store.Store, secret string) (store.ApiKey, error) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return store.ApiKey{}, nil
 	}
+	tenant := strings.TrimSpace(os.Getenv("ASP_BOOTSTRAP_API_KEY_TENANT"))
+	if tenant == "" {
+		tenant = "default"
+	}
+	scope := strings.TrimSpace(os.Getenv("ASP_BOOTSTRAP_API_KEY_SCOPE"))
+	if scope == "" {
+		scope = store.APIKeyScopePlatform
+	}
 	return s.EnsureAPIKey(
-		"default",
+		tenant,
 		"bootstrap",
+		scope,
 		store.KeyPrefix(secret),
 		store.HashAPIKeySecret(secret),
 	)

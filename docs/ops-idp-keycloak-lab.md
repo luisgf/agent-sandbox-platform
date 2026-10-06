@@ -77,6 +77,7 @@ Internet / operadores
 | `ASP_IDP_ROLE_CLAIM` | `groups` | Lee grupos del token |
 | `ASP_IDP_ROLE_PREFIX` | `asp-` | `asp-operator` → rol operator |
 | `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios |
+| `ASP_IDP_DEFAULT_TENANT` | `default` | Tenant de los tokens del realm, que no traen claim `tenant_id`. **Obligatorio** desde el aislamiento entre tenants: sin tenant, 401 |
 
 Código: `control-plane/internal/authn/idp` + middleware en `internal/api/auth.go`.
 
@@ -100,6 +101,7 @@ ASP_IDP_REQUIRED=1
 ASP_IDP_ROLE_CLAIM=groups
 ASP_IDP_ROLE_PREFIX=asp-
 ASP_IDP_DESTROY_ANY_GROUP=sandbox:destroy-any
+ASP_IDP_DEFAULT_TENANT=default   # the realm's tokens carry no tenant_id claim
 ```
 
 ---
