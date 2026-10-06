@@ -271,6 +271,16 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
+			// A node renews its certificate with the current one: bind the verified
+			// node identity (not required here: admins call this route too) and let
+			// the handler check it names the node being rotated.
+			if cfg.RequireNodeClientCert && isRotateCertPath(r.URL.Path) && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+				leaf := r.TLS.PeerCertificates[0]
+				if nodeID := strings.TrimSpace(leaf.Subject.CommonName); nodeID != "" && slices.Contains(leaf.Subject.OrganizationalUnit, pki.OUNodes) {
+					next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), nodeIdentityKey, nodeID)))
+					return
+				}
+			}
 			// Node agent routes authenticated via mTLS skip API key / IdP when client cert present.
 			if cfg.RequireNodeClientCert && isNodeAgentPath(r.URL.Path) &&
 				r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {

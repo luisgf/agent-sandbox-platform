@@ -374,6 +374,7 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	node, err := s.Store.EnrollNode(input, store.CertMeta{
 		Fingerprint: issued.Fingerprint,
 		Serial:      issued.Serial,
+		NotAfter:    issued.NotAfter,
 	}, auth)
 	if err != nil {
 		writeEnrollError(w, nodeID, err)
@@ -391,12 +392,18 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RotateNodeCert issues a replacement node certificate. It takes an IdP
-// admin, a platform-scoped API key or the node bootstrap token (a node
-// re-keying itself).
+// RotateNodeCert issues a replacement node certificate. It takes the node's
+// own, still valid certificate over mTLS (node agents renew before expiry),
+// an IdP admin, a platform-scoped API key or the node bootstrap token.
 func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
-	if !checkBootstrapToken(r) && !authorizeNodeAdmin(w, r, "rotate node certificates",
-		"an idp admin token, a platform api key or the node bootstrap token is required to rotate node certificates") {
+	if certID, ok := NodeIdentityFromContext(r.Context()); ok {
+		// A node certificate only renews itself.
+		if certID != strings.TrimSpace(r.PathValue("id")) {
+			writeError(w, http.StatusForbidden, "node "+certID+" cannot rotate the certificate of node "+r.PathValue("id"))
+			return
+		}
+	} else if !checkBootstrapToken(r) && !authorizeNodeAdmin(w, r, "rotate node certificates",
+		"an idp admin token, a platform api key, the node bootstrap token or the node's own certificate (mTLS) is required to rotate node certificates") {
 		return
 	}
 	if s.CA == nil {
@@ -429,6 +436,7 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 	node, err := s.Store.RotateNodeCert(id, store.CertMeta{
 		Fingerprint: issued.Fingerprint,
 		Serial:      issued.Serial,
+		NotAfter:    issued.NotAfter,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

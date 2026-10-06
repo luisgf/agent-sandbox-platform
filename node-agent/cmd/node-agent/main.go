@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/capacity"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/certrenew"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress/mitm"
@@ -158,15 +161,24 @@ func main() {
 		cfg.NodeID = nodeID
 	}
 
-	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS, cfg.ControlPlaneCA)
+	httpClient, nodeCert, err := cpclient.LoadMTLSClientCert(cfg.CertDir, cfg.MTLS, cfg.ControlPlaneCA)
 	if err != nil {
 		slog.Error("load mTLS client", "error", err)
 		os.Exit(1)
 	}
-	if mtls {
-		slog.Info("using mTLS client certs", "cert_dir", cfg.CertDir)
+	if nodeCert != nil {
+		slog.Info("using mTLS client certs", "cert_dir", cfg.CertDir, "cert_not_after", nodeCert.Leaf().NotAfter)
 	}
 	cp := cpclient.New(cfg.ControlPlaneURL, httpClient)
+	if nodeCert != nil && isHTTPS(cfg.ControlPlaneURL) {
+		// Renew a third of the lifetime ahead, authenticated by the current
+		// certificate; new connections present the renewed one.
+		renewer := &certrenew.Renewer{
+			CP: cp, Cert: nodeCert, NodeID: cfg.NodeID, Logger: slog.Default(),
+			OnRotate: httpClient.CloseIdleConnections,
+		}
+		go renewer.Run(ctx)
+	}
 
 	var engine vmm.VMM
 	if cfg.DryRun {
@@ -217,11 +229,18 @@ func main() {
 	slog.Info("exec proxy listening", "addr", ln.Addr().String())
 
 	if cfg.AgentTLSListen != "" {
-		tlsCfg, err := execproxy.MTLSConfig(
-			filepath.Join(cfg.CertDir, "client.crt"),
-			filepath.Join(cfg.CertDir, "client.key"),
-			filepath.Join(cfg.CertDir, "ca.crt"),
-		)
+		var tlsCfg *tls.Config
+		var err error
+		if nodeCert != nil {
+			// Read at each handshake: a renewed certificate is served at once.
+			tlsCfg, err = execproxy.MTLSConfigFor(nodeCert.Current, filepath.Join(cfg.CertDir, "ca.crt"))
+		} else {
+			tlsCfg, err = execproxy.MTLSConfig(
+				filepath.Join(cfg.CertDir, "client.crt"),
+				filepath.Join(cfg.CertDir, "client.key"),
+				filepath.Join(cfg.CertDir, "ca.crt"),
+			)
+		}
 		if err != nil {
 			slog.Error("--agent-tls-listen needs the enrolled node certificate (run with --enroll)", "cert_dir", cfg.CertDir, "error", err)
 			os.Exit(1)
@@ -502,7 +521,7 @@ func main() {
 		rec.Egress = policyCache
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
-		rec.Attest = attestSigners(cfg, mtls)
+		rec.Attest = attestSigners(cfg, nodeCert)
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
 		if !cfg.DryRun {
 			// Never boot the shared image writable: every VM gets its own copy.
@@ -835,18 +854,18 @@ func readNodeCert(certDir string) *x509.Certificate {
 // they are tried. Over mTLS to an https control plane the node certificate's
 // key comes first: the control plane verifies it with the certificate the
 // request comes with (ASP_CLIENT_CA), so a node can only attest as itself.
+// The key is read at signing time, so it follows certificate renewal.
 // ASP_ATTEST_KEY follows; the control plane must trust its public key
 // (shared in a single-host lab, or listed in ASP_ATTEST_TRUSTED_PUBS).
-func attestSigners(cfg config, mtls bool) []*attest.Signer {
+func attestSigners(cfg config, nodeCert *cpclient.NodeCert) []*attest.Signer {
 	var out []*attest.Signer
-	if mtls && strings.HasPrefix(strings.ToLower(cfg.ControlPlaneURL), "https://") {
-		s, err := attest.LoadKeyFile(filepath.Join(cfg.CertDir, "client.key"))
-		if err == nil {
-			slog.Info("attestations signed with the node certificate key", "key_id", s.KeyID())
-			out = append(out, s)
-		} else {
-			slog.Warn("cannot sign attestations with the node certificate key", "error", err)
-		}
+	if nodeCert != nil && isHTTPS(cfg.ControlPlaneURL) {
+		s := attest.NewKeySigner(func() *ecdsa.PrivateKey {
+			k, _ := nodeCert.Current().PrivateKey.(*ecdsa.PrivateKey)
+			return k
+		})
+		slog.Info("attestations signed with the node certificate key", "key_id", s.KeyID())
+		out = append(out, s)
 	}
 	s, err := attest.LoadOrCreate()
 	if err != nil {
@@ -855,6 +874,10 @@ func attestSigners(cfg config, mtls bool) []*attest.Signer {
 	}
 	slog.Info("attestations can be signed with ASP_ATTEST_KEY: the control plane must trust its public key", "key_id", s.KeyID())
 	return append(out, s)
+}
+
+func isHTTPS(rawURL string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawURL)), "https://")
 }
 
 // certNodeID returns the CN of the enrolled node certificate in certDir, or "".

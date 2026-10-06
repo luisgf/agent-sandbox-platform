@@ -70,24 +70,33 @@ func New(baseURL string, httpClient *http.Client) *Client {
 // verified against cpCAFile when set (--control-plane-ca), else against the
 // enrollment CA in certDir/ca.crt when present, else the system roots.
 func LoadMTLSClient(certDir string, force bool, cpCAFile string) (*http.Client, bool, error) {
+	c, nc, err := LoadMTLSClientCert(certDir, force, cpCAFile)
+	return c, nc != nil, err
+}
+
+// LoadMTLSClientCert is LoadMTLSClient that also returns the node certificate
+// the client presents (nil without one). The client reads it at each
+// handshake: after NodeCert.Reload and CloseIdleConnections, new connections
+// present the renewed certificate.
+func LoadMTLSClientCert(certDir string, force bool, cpCAFile string) (*http.Client, *NodeCert, error) {
 	certPath := filepath.Join(certDir, "client.crt")
 	keyPath := filepath.Join(certDir, "client.key")
 	caPath := filepath.Join(certDir, "ca.crt")
 	have := fileExists(certPath) && fileExists(keyPath)
 	if !have && !force {
 		c, err := NewEnrollHTTPClient(cpCAFile)
-		return c, false, err
+		return c, nil, err
 	}
 	if !have {
-		return nil, false, fmt.Errorf("mTLS required but certs missing in %s", certDir)
+		return nil, nil, fmt.Errorf("mTLS required but certs missing in %s", certDir)
 	}
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	nc, err := LoadNodeCert(certDir)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		GetClientCertificate: nc.GetClientCertificate,
+		MinVersion:           tls.VersionTLS12,
 	}
 	rootsFile := cpCAFile
 	if rootsFile == "" && fileExists(caPath) {
@@ -96,7 +105,7 @@ func LoadMTLSClient(certDir string, force bool, cpCAFile string) (*http.Client, 
 	if rootsFile != "" {
 		pool, err := loadCertPool(rootsFile)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -105,7 +114,7 @@ func LoadMTLSClient(certDir string, force bool, cpCAFile string) (*http.Client, 
 		Transport: &http.Transport{
 			TLSClientConfig: tlsCfg,
 		},
-	}, true, nil
+	}, nc, nil
 }
 
 // NewEnrollHTTPClient is the client for calls made before the node has a
@@ -225,20 +234,20 @@ func statusIs(err error, code int) bool {
 }
 
 // WriteCerts persists enrollment PEMs into certDir.
+// Each file is replaced atomically (temporary file and rename); the key is
+// written before the certificate, so the window in which they do not match
+// is the gap between two renames.
 func WriteCerts(certDir, clientCert, clientKey, caCert string) error {
 	if err := os.MkdirAll(certDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(certDir, "client.crt"), []byte(clientCert), 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(certDir, "ca.crt"), []byte(caCert), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(certDir, "client.key"), []byte(clientKey), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(certDir, "client.key"), []byte(clientKey), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(certDir, "ca.crt"), []byte(caCert), 0o644); err != nil {
-		return err
-	}
-	return nil
+	return writeFileAtomic(filepath.Join(certDir, "client.crt"), []byte(clientCert), 0o644)
 }
 
 func fileExists(path string) bool {

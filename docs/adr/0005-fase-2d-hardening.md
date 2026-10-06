@@ -52,6 +52,13 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 - Errores: token usado, caducado o desconocido (o bootstrap token incorrecto) → **401**; token fijado a otro id → **403**.
 - El plano de control comprueba todo esto antes de emitir el certificado y lo vuelve a comprobar al guardarlo. Si al final lo rechaza, el certificado se descarta: su clave privada nunca sale del proceso.
 - El node-agent arrancado otra vez con `--enroll` recibe 409 y sigue con el certificado de `--cert-dir` si es de ese nodo y no ha caducado. `--enroll-token` (`ASP_NODE_ENROLL_TOKEN`) pasa un token de enroll en vez del bootstrap token.
+
+**Actualizado 2026-10 (renovación):** los certificados de nodo duran 365 días y nada los renovaba: `rotate-cert` pedía un token o una API key que el nodo no tiene, así que al año todos los nodos fallaban el handshake mTLS sin aviso. Ahora:
+
+- `rotate-cert` acepta también el **certificado vigente del propio nodo** por mTLS (`ASP_CLIENT_CA`): el middleware liga la identidad aunque la ruta no la exija (los admins la usan sin certificado de cliente), y el handler responde **403** si el certificado es de otro nodo. Un certificado ya revocado no puede rotar (**401**).
+- El node-agent, con mTLS contra un control plane `https://`, revisa su certificado al arrancar y cada 24 h. Si le queda menos de un tercio de vida (unos 122 días con 365), pide uno nuevo, lo escribe en `--cert-dir` de forma atómica (fichero temporal + rename) y lo usa sin reiniciar: el cliente del control plane y el listener `--agent-tls-listen` leen el certificado en cada handshake, y las conexiones ociosas se cierran para que las nuevas presenten el renovado. La firma de atestaciones con la clave del certificado también sigue al nuevo.
+- Si la renovación falla y quedan menos de 30 días, cada intento deja un aviso en el log; caducado, un error.
+- El control plane guarda cuándo caduca el certificado vigente (`nodes.cert_not_after`, migración `016`), y `GET /v1/nodes` y `asp node list` lo muestran.
 - Migración: `control-plane/migrations/006_node_cert_rotation.sql`.
 
 ### 2) mTLS estricto (`ASP_MTLS_STRICT=1`)

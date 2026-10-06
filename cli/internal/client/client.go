@@ -46,6 +46,7 @@ type Node struct {
 	CapacityMemMiB      int        `json:"capacity_mem_mib"`
 	MaxSandboxes        int        `json:"max_sandboxes"`
 	LastSeenAt          *time.Time `json:"last_seen_at"`
+	CertNotAfter        *time.Time `json:"cert_not_after,omitempty"`
 	Allocated           NodeUsage  `json:"allocated"`
 	Allocatable         NodeUsage  `json:"allocatable"` // 0 = not enforced
 	Schedulable         bool       `json:"schedulable"`

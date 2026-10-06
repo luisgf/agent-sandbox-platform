@@ -108,6 +108,7 @@ El nodo debe salir como `SCHEDULABLE yes`.
 - **Volver al reparto:** `asp node uncordon node2`.
 - **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
 - **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`, con un admin del IdP o una API key de plataforma. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
+- **Certificados de nodo:** caducan al año y el node-agent los renueva solo, con un tercio de vida por delante, si habla mTLS con un control plane `https://` que tenga `ASP_CLIENT_CA`. La columna `CERT EXPIRES` de `asp node list` muestra cuánto queda; menos de 30 días significa que la renovación está fallando (mira el log del agente). Sin mTLS no hay renovación automática: usa `rotate-cert` o un token fijado al nodo antes de que caduque.
 - **Quién administra nodos:** listar, cordon, uncordon, revoke y rotate-cert piden un admin del IdP (operador basta para listar) o una API key de plataforma. Una API key de tenant recibe 403.
 
 **Orden de actualización:** primero los node-agents y después el plano de control. Un agente antiguo declara siempre 4 cores y 8 GiB, y el planificador nuevo aplica esos valores.

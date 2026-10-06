@@ -214,3 +214,23 @@ func TestPostgresEnrollTokens(t *testing.T) {
 		t.Fatalf("expired token: want ErrEnrollTokenInvalid, got %v", err)
 	}
 }
+
+func TestPostgresNodeCertNotAfter(t *testing.T) {
+	pg := newPostgresTestStore(t)
+	first := time.Now().Add(365 * 24 * time.Hour).UTC().Truncate(time.Second)
+	if _, err := pg.EnrollNode(EnrollNodeInput{ID: "exp", AgentEndpoint: "http://127.0.0.1:9100"},
+		CertMeta{Fingerprint: "fp-exp-1", NotAfter: first}, EnrollAuth{}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := pg.GetNode("exp")
+	if err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(first) {
+		t.Fatalf("after enroll: cert_not_after=%v err=%v", n.CertNotAfter, err)
+	}
+	second := first.Add(30 * 24 * time.Hour)
+	if _, err := pg.RotateNodeCert("exp", CertMeta{Fingerprint: "fp-exp-2", NotAfter: second}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err = pg.GetNode("exp"); err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(second) {
+		t.Fatalf("after rotate: cert_not_after=%v err=%v", n.CertNotAfter, err)
+	}
+}

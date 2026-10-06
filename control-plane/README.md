@@ -25,14 +25,14 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | POST | `/v1/tenants/{id}/egress/check` | Helper de evaluación |
 | POST | `/v1/nodes/enroll` | Bootstrap token o token de enroll → PEMs del cert de nodo. El bootstrap token solo enrola un id sin certificado o un nodo revocado; re-enrolar un nodo vivo pide un token fijado a él (409) |
 | POST | `/v1/nodes/enroll-tokens` | Token de enroll de un solo uso (admin o API key de plataforma); `node_id` lo fija a un nodo, `ttl_seconds` (1 h por defecto, 7 días máx.) |
-| POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (admin, API key de plataforma o bootstrap token); revoca fingerprint anterior |
+| POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (admin, API key de plataforma, bootstrap token o el certificado vigente del propio nodo por mTLS: así lo renuevan los node-agents); revoca fingerprint anterior |
 | POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
 | POST | `/v1/nodes/register` | Registra/actualiza nodo |
 | POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
 | GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`) |
 | POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin o API key de plataforma) |
 | POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin o API key de plataforma) |
-| GET | `/v1/nodes` | Lista nodos con asignado/ofrecido y si son planificables (admin, operador o API key de plataforma) |
+| GET | `/v1/nodes` | Lista nodos con asignado/ofrecido, si son planificables y cuándo caduca su certificado (`cert_not_after`) (admin, operador o API key de plataforma) |
 
 Administrar nodos (listar, cordon, uncordon, revoke, rotate-cert) nunca acepta una API key de tenant: los nodos los comparten todos los tenants (403). Con `ASP_IDP_REQUIRED=1` hace falta un token del IdP con rol admin (operador para listar). `rotate-cert` acepta además el bootstrap token, para que un nodo se re-emita el certificado; `revoke` no, porque ese token lo tienen todos los nodos. En el lab abierto (sin API keys ni IdP) estas rutas quedan abiertas como el resto, salvo `rotate-cert`, que sigue pidiendo el bootstrap token porque entrega la clave privada de un nodo.
 

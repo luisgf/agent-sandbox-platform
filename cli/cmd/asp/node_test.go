@@ -22,6 +22,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 	mux.HandleFunc("GET /v1/nodes", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"nodes":[
 			{"id":"node-a","state":"ready","schedulable":true,"last_seen_at":"` + time.Now().UTC().Add(-3*time.Second).Format(time.RFC3339) + `",
+			 "cert_not_after":"` + time.Now().UTC().Add(200*24*time.Hour+time.Hour).Format(time.RFC3339) + `",
 			 "allocated":{"cpu_millis":1500,"memory_mib":1024,"sandboxes":1},"allocatable":{"cpu_millis":16000,"memory_mib":7168,"sandboxes":0}},
 			{"id":"node-b","state":"ready","cordoned":true,"schedulable":false,"unschedulable_reason":"cordoned","last_seen_at":null,
 			 "allocated":{"cpu_millis":0,"memory_mib":0,"sandboxes":0},"allocatable":{"cpu_millis":0,"memory_mib":0,"sandboxes":4}}]}`))
@@ -46,7 +47,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 		t.Fatalf("list exit=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never"} {
+	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("node list missing %q:\n%s", want, out)
 		}
@@ -164,5 +165,23 @@ func TestNodeEnrollToken(t *testing.T) {
 	}
 	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "extra"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("extra argument must be a usage error, got %d", code)
+	}
+}
+
+func TestExpiryText(t *testing.T) {
+	now := time.Now()
+	at := func(d time.Duration) *time.Time { v := now.Add(d); return &v }
+	for _, tc := range []struct {
+		t    *time.Time
+		want string
+	}{
+		{nil, "-"},
+		{at(-time.Hour), "EXPIRED"},
+		{at(10*24*time.Hour + time.Hour), "in 10d (renewal failing?)"},
+		{at(100*24*time.Hour + time.Hour), "in 100d"},
+	} {
+		if got := expiryText(tc.t, now); got != tc.want {
+			t.Errorf("expiryText(%v) = %q, want %q", tc.t, got, tc.want)
+		}
 	}
 }

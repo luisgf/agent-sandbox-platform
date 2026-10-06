@@ -64,18 +64,19 @@ func cmdNodeList(args []string, stdout, stderr io.Writer) int {
 // writeNodeTable prints used/offered per node; "-" means not enforced.
 func writeNodeTable(w io.Writer, nodes []client.Node, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tLAST SEEN")
+	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tLAST SEEN\tCERT EXPIRES")
 	for _, n := range nodes {
 		sched := "yes"
 		if !n.Schedulable {
 			sched = "no: " + n.UnschedulableReason
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			n.ID, n.State, sched,
 			usedOf(float64(n.Allocated.CPUMillis)/1000, float64(n.Allocatable.CPUMillis)/1000, "%.1f"),
 			usedOf(float64(n.Allocated.MemoryMiB), float64(n.Allocatable.MemoryMiB), "%.0f"),
 			usedOf(float64(n.Allocated.Sandboxes), float64(n.Allocatable.Sandboxes), "%.0f"),
-			sinceText(n.LastSeenAt, now))
+			sinceText(n.LastSeenAt, now),
+			expiryText(n.CertNotAfter, now))
 	}
 	_ = tw.Flush()
 }
@@ -85,6 +86,22 @@ func usedOf(used, offered float64, format string) string {
 		return fmt.Sprintf(format+"/-", used)
 	}
 	return fmt.Sprintf(format+"/"+format, used, offered)
+}
+
+// expiryText says when the node certificate expires: node agents renew it a
+// third of its lifetime ahead, so a short time left means renewal is failing.
+func expiryText(t *time.Time, now time.Time) string {
+	switch {
+	case t == nil:
+		return "-"
+	case !t.After(now):
+		return "EXPIRED"
+	}
+	days := int(t.Sub(now).Hours() / 24)
+	if days < 30 {
+		return fmt.Sprintf("in %dd (renewal failing?)", days)
+	}
+	return fmt.Sprintf("in %dd", days)
 }
 
 func sinceText(t *time.Time, now time.Time) string {
