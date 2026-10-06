@@ -45,5 +45,5 @@ mount -t virtiofs workspace /workspace
 - Sin tag (no hubo `--workspace`, o `virtiofsd` no está y el start ni siquiera llegó a `running`) `/workspace` es un directorio vacío del disco del guest. El helper no falla el boot por eso.
 - El rootfs que **ya** está arrancado no se reescribe. Hasta `build-guest-rootfs.sh` y un symlink nuevo, el comando manual sigue siendo el camino.
 - `virtiofsd` va con `--sandbox none` y `--cache never`. No hay user namespace. El binario esperado es el Rust (`--socket-path` / `--shared-dir`), no el helper C.
-- El PTY no es un terminal de producto: stderr mezclado, sin SIGWINCH desde el CLI, sin bytes opacos, y el proceso muere a los `--exec-timeout-secs` del pod-daemon (default 30). Una sesión interactiva larga exige subir ese timeout en la imagen.
+- El PTY no es un terminal de producto: stderr mezclado, sin SIGWINCH desde el CLI, sin bytes opacos, y la sesión dura lo que el proceso: sin timeout total (solo el opcional `--stream-idle-timeout-secs` del pod-daemon); si el cliente se va, el guest mata el proceso.
 - El reaper no entiende «hay un PTY abierto» salvo por los POST de stdin que sí refrescan actividad, y por el final del stream.

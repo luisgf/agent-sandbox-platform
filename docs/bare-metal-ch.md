@@ -839,7 +839,7 @@ mount -t virtiofs workspace /workspace
 
 Sin ese mount (imagen vieja) el exec ve el disco del guest. FakeVMM no bootea; los tests afirman socket, tag, y que el helper sale 0 si `mount` falla. Detalle: [`ops-asp-session.md`](ops-asp-session.md), [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
 
-El exec con PTY también viaja por el vsock **26500** (`POST /v1/exec?stream=1` y `POST /v1/exec/stdin`). La imagen tiene que llevar el pod-daemon de este corte; si no, no hay `ready` y el node-agent degrada a un JSON final reescrito como un solo burst. El proceso del guest sigue sujeto a `--exec-timeout-secs` (default 30).
+El exec con PTY también viaja por el vsock **26500** (`POST /v1/exec?stream=1` y `POST /v1/exec/stdin`). La imagen tiene que llevar el pod-daemon de este corte; si no, no hay `ready` y el node-agent degrada a un JSON final reescrito como un solo burst. El stream no tiene timeout total en el guest: `--exec-timeout-secs` (default 30) solo limita el exec acumulado, y `--stream-idle-timeout-secs` añade, si se pone, un límite por inactividad.
 
 ## Referencias rápidas
 

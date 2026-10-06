@@ -41,9 +41,15 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:26500")]
     tcp_addr: String,
 
-    /// Default exec timeout in seconds.
+    /// Timeout of a buffered exec (POST /v1/exec without ?stream=1), in seconds.
+    /// A streamed exec has no overall timeout.
     #[arg(long, default_value_t = 30)]
     exec_timeout_secs: u64,
+
+    /// Kill a streamed exec after this many seconds without output and without
+    /// stdin. 0 (default): a stream lasts as long as its command and its client.
+    #[arg(long, default_value_t = 0)]
+    stream_idle_timeout_secs: u64,
 
     /// Expose host SSH agent at --ssh-auth-socket via vsock CID ASP_HOST_CID:26501
     /// (or ASP_SSH_AGENT_UPSTREAM=unix:/path for lab). Prefer systemd unit
@@ -74,12 +80,13 @@ fn main() -> io::Result<()> {
         let _ = sock;
     }
     println!(
-        "pod-daemon v{} starting: transport={:?}, vsock_port={}, tcp_addr={}, exec_timeout_secs={}, ssh_auth_bridge={}, identity_socket={}, asp_host_cid={}",
+        "pod-daemon v{} starting: transport={:?}, vsock_port={}, tcp_addr={}, exec_timeout_secs={}, stream_idle_timeout_secs={}, ssh_auth_bridge={}, identity_socket={}, asp_host_cid={}",
         env!("CARGO_PKG_VERSION"),
         args.listen,
         args.vsock_port,
         args.tcp_addr,
         args.exec_timeout_secs,
+        args.stream_idle_timeout_secs,
         args.ssh_auth_bridge,
         args.identity_socket.display(),
         host_cid
@@ -96,14 +103,17 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let timeout = Duration::from_secs(args.exec_timeout_secs);
+    let limits = http_serve::ExecLimits {
+        buffered: Duration::from_secs(args.exec_timeout_secs),
+        stream_idle: (args.stream_idle_timeout_secs > 0).then(|| Duration::from_secs(args.stream_idle_timeout_secs)),
+    };
     match args.listen {
-        ListenMode::Unix => http_unix::serve(args.unix_socket, timeout),
-        ListenMode::Tcp => http_tcp::serve(&args.tcp_addr, timeout),
+        ListenMode::Unix => http_unix::serve(args.unix_socket, limits),
+        ListenMode::Tcp => http_tcp::serve(&args.tcp_addr, limits),
         ListenMode::Vsock => {
             #[cfg(target_os = "linux")]
             {
-                vsock_linux::serve(args.vsock_port, timeout)
+                vsock_linux::serve(args.vsock_port, limits)
             }
             #[cfg(not(target_os = "linux"))]
             {

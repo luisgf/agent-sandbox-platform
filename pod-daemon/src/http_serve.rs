@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
@@ -59,8 +61,69 @@ struct ErrorBody {
     error: String,
 }
 
+/// Time limits of the exec endpoints.
+#[derive(Clone, Copy, Debug)]
+pub struct ExecLimits {
+    /// Kills a buffered exec (`POST /v1/exec` without `?stream=1`) after this long.
+    pub buffered: Duration,
+    /// Kills a streamed exec after this long without output and without stdin.
+    /// None: a stream lasts as long as its command and its client.
+    pub stream_idle: Option<Duration>,
+}
+
+/// Lets the stream path notice a client that closed the connection while the
+/// command is silent: a write would only fail on the next output, and an
+/// interactive shell can stay silent for hours.
+pub trait PeerState {
+    fn peer_closed(&self) -> bool {
+        false
+    }
+}
+
+impl PeerState for std::os::unix::net::UnixStream {
+    fn peer_closed(&self) -> bool {
+        fd_peer_closed(self.as_raw_fd())
+    }
+}
+
+impl PeerState for std::net::TcpStream {
+    fn peer_closed(&self) -> bool {
+        fd_peer_closed(self.as_raw_fd())
+    }
+}
+
+/// Linux reports POLLRDHUP once the peer closed the connection or shut down
+/// its side (TCP, Unix and AF_VSOCK alike).
+#[cfg(target_os = "linux")]
+pub fn fd_peer_closed(fd: RawFd) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLRDHUP,
+        revents: 0,
+    };
+    let n = unsafe { libc::poll(&mut pfd, 1, 0) };
+    n > 0 && pfd.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn fd_peer_closed(_fd: RawFd) -> bool {
+    false
+}
+
+/// Kills the command and the processes it started: non-PTY commands get their
+/// own process group, PTY commands lead their own session (and group).
+fn kill_tree(child: &mut Child) {
+    let pid = child.id() as libc::pid_t;
+    if pid > 0 {
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
 /// Serve one HTTP request/response on any stream (Unix, TCP, or AF_VSOCK).
-pub fn handle_connection<S: Read + Write>(mut stream: S, exec_timeout: Duration) -> io::Result<()> {
+pub fn handle_connection<S: Read + Write + PeerState>(mut stream: S, limits: ExecLimits) -> io::Result<()> {
     let (method, path, body) = {
         let mut reader = BufReader::new(&mut stream);
         let mut request_line = String::new();
@@ -121,7 +184,7 @@ pub fn handle_connection<S: Read + Write>(mut stream: S, exec_timeout: Duration)
                     },
                 );
             }
-            run_exec_stream(&mut stream, &req, exec_timeout)
+            run_exec_stream(&mut stream, &req, limits.stream_idle)
         }
         ("POST", "/v1/exec") => {
             let req: ExecRequest = match serde_json::from_slice(&body) {
@@ -145,7 +208,7 @@ pub fn handle_connection<S: Read + Write>(mut stream: S, exec_timeout: Duration)
                     },
                 );
             }
-            match run_exec(&req, exec_timeout) {
+            match run_exec(&req, limits.buffered) {
                 Ok(resp) => write_json(&mut stream, 200, &resp),
                 Err(e) => write_json(
                     &mut stream,
@@ -191,7 +254,8 @@ fn spawn_command(req: &ExecRequest) -> io::Result<std::process::Child> {
         .args(&req.cmd[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
     apply_cwd_env(&mut command, req);
     command.spawn()
 }
@@ -202,7 +266,8 @@ fn spawn_with_stdin_pipe(req: &ExecRequest) -> io::Result<std::process::Child> {
         .args(&req.cmd[1..])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
     apply_cwd_env(&mut command, req);
     command.spawn()
 }
@@ -220,7 +285,7 @@ struct ChildGuard(Option<std::process::Child>);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
-            let _ = child.kill();
+            kill_tree(&mut child);
             let _ = child.wait();
         }
     }
@@ -230,7 +295,12 @@ impl Drop for ChildGuard {
 /// and a final `{"type":"exit","exit_code":N}`. When `pty` or `stdin_stream` is
 /// set, the first line is `{"type":"ready","exec_id":"..."}` and stdin arrives
 /// on POST /v1/exec/stdin. The buffered JSON path is unchanged.
-fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) -> io::Result<()> {
+///
+/// A stream has no overall deadline: an interactive shell lasts as long as its
+/// user. It ends when the command exits, when the client closes the connection
+/// (the command is killed: nobody is left to read it), or, with `idle` set,
+/// after that long without output and without stdin (exit code 124).
+fn run_exec_stream<S: Write + PeerState>(out: &mut S, req: &ExecRequest, idle: Option<Duration>) -> io::Result<()> {
     let mut session = SessionGuard(None);
     let mut pty_reader: Option<File> = None;
     let child = if req.pty {
@@ -306,22 +376,33 @@ fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) 
     if let Some(id) = session.0.as_ref() {
         write_ready(out, id)?;
     }
-    let started = Instant::now();
-    let mut killed = false;
+    let mut last_output = Instant::now();
+    let mut killed_at: Option<Instant> = None;
     loop {
         match rx.recv_timeout(Duration::from_millis(30)) {
             Ok((kind, data)) => {
+                last_output = Instant::now();
                 write_stream_event(out, kind, &data)?;
             }
             Err(RecvTimeoutError::Timeout) => {
-                if !killed && started.elapsed() > timeout {
-                    if let Some(child) = guard.0.as_mut() {
-                        let _ = child.kill();
-                    }
-                    killed = true;
+                if out.peer_closed() {
+                    // The client went away while the command was silent.
+                    // ChildGuard kills it and its group on the way out.
+                    return Ok(());
                 }
-                if killed && started.elapsed() > timeout + Duration::from_secs(2) {
-                    break;
+                match (killed_at, idle) {
+                    (Some(at), _) if at.elapsed() > Duration::from_secs(2) => break,
+                    (Some(_), _) | (None, None) => {}
+                    (None, Some(idle)) => {
+                        let input = session.0.as_deref().and_then(exec_session::last_input);
+                        let last = input.map_or(last_output, |i| i.max(last_output));
+                        if last.elapsed() > idle {
+                            if let Some(child) = guard.0.as_mut() {
+                                kill_tree(child);
+                            }
+                            killed_at = Some(Instant::now());
+                        }
+                    }
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -329,13 +410,14 @@ fn run_exec_stream<S: Write>(out: &mut S, req: &ExecRequest, timeout: Duration) 
     }
     let mut child = guard.0.take().unwrap();
     let status = child.wait()?;
+    let killed = killed_at.is_some();
     let code = if killed {
         124
     } else {
         status.code().unwrap_or(128)
     };
-    if killed {
-        let msg = format!("exec timed out after {}s", timeout.as_secs());
+    if let (true, Some(idle)) = (killed, idle) {
+        let msg = format!("exec stopped after {idle:?} without output or input");
         write_stream_event(out, "stderr", msg.as_bytes())?;
     }
     let exit_line = format!("{{\"type\":\"exit\",\"exit_code\":{code}}}\n");
@@ -531,7 +613,7 @@ fn collect_output(mut child: Child, stdin: Option<&str>, timeout: Duration) -> i
             None => {}
         }
     }
-    let _ = child.kill();
+    kill_tree(&mut child);
     let _ = child.wait();
     drain_for(&rx, &mut out, AFTER_KILL_GRACE);
     let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -622,7 +704,7 @@ fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<Exe
                     stdout.extend_from_slice(&chunk);
                 }
                 if started.elapsed() > timeout {
-                    let _ = child.kill();
+                    kill_tree(&mut child);
                     let _ = child.wait();
                     break;
                 }
@@ -673,6 +755,15 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
+    impl PeerState for Cursor<Vec<u8>> {}
+
+    fn limits(buffered_secs: u64) -> ExecLimits {
+        ExecLimits {
+            buffered: Duration::from_secs(buffered_secs),
+            stream_idle: None,
+        }
+    }
+
     #[test]
     fn healthz_over_tcp() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -681,7 +772,7 @@ mod tests {
         thread::spawn(move || {
             ready_tx.send(()).ok();
             let (stream, _) = listener.accept().unwrap();
-            handle_connection(stream, Duration::from_secs(5)).unwrap();
+            handle_connection(stream, limits(5)).unwrap();
         });
         ready_rx.recv().unwrap();
         let mut stream = TcpStream::connect(addr).unwrap();
@@ -703,7 +794,7 @@ mod tests {
         thread::spawn(move || {
             ready_tx.send(()).ok();
             let (stream, _) = listener.accept().unwrap();
-            handle_connection(stream, Duration::from_secs(5)).unwrap();
+            handle_connection(stream, limits(5)).unwrap();
         });
         ready_rx.recv().unwrap();
         let mut stream = TcpStream::connect(addr).unwrap();
@@ -726,18 +817,36 @@ mod tests {
     }
 
     fn serve_threaded() -> std::net::SocketAddr {
+        serve_with(limits(5))
+    }
+
+    fn serve_with(limits: ExecLimits) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(stream) = stream {
-                    thread::spawn(move || {
-                        let _ = handle_connection(stream, Duration::from_secs(5));
-                    });
-                }
+            for stream in listener.incoming().flatten() {
+                thread::spawn(move || {
+                    let _ = handle_connection(stream, limits);
+                });
             }
         });
         addr
+    }
+
+    /// Reads NDJSON lines until the exit event (or the end of the body).
+    fn read_until_exit(r: &mut BufReader<TcpStream>, carry: &mut Vec<u8>) -> String {
+        let mut saw = String::new();
+        loop {
+            let line = next_ndjson(r, carry);
+            if line.is_empty() {
+                return saw;
+            }
+            saw.push_str(&line);
+            saw.push('\n');
+            if line.contains("\"type\":\"exit\"") {
+                return saw;
+            }
+        }
     }
 
     fn read_headers(r: &mut BufReader<TcpStream>) {
@@ -925,12 +1034,99 @@ mod tests {
         assert!(resp.stdout.contains("line1999"));
     }
 
+    // The buffered exec timeout does not apply to a stream.
+    #[test]
+    fn stream_exec_outlives_the_buffered_timeout() {
+        let addr = serve_with(ExecLimits {
+            buffered: Duration::from_millis(300),
+            stream_idle: None,
+        });
+        let stream = post(addr, "/v1/exec?stream=1", r#"{"cmd":["/bin/sh","-c","sleep 1; echo done"]}"#);
+        let mut r = BufReader::new(stream);
+        read_headers(&mut r);
+        let saw = read_until_exit(&mut r, &mut Vec::new());
+        assert!(saw.contains("done"), "{saw}");
+        assert!(saw.contains("\"exit_code\":0"), "{saw}");
+    }
+
+    // A client that closes the connection while the command is silent takes
+    // the command down with it.
+    #[test]
+    fn closing_the_client_kills_a_silent_stream() {
+        let addr = serve_with(limits(30));
+        let stream = post(addr, "/v1/exec?stream=1", r#"{"cmd":["/bin/sh","-c","echo $$; exec sleep 30"]}"#);
+        let mut r = BufReader::new(stream);
+        read_headers(&mut r);
+        let line = next_ndjson(&mut r, &mut Vec::new());
+        let ev: serde_json::Value = serde_json::from_str(&line).expect("stdout event");
+        let pid: i32 = ev["data"].as_str().unwrap().trim().parse().expect("pid");
+        drop(r);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "pid {pid} still alive after the client left");
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn stream_idle_timeout_stops_a_silent_command_only() {
+        let addr = serve_with(ExecLimits {
+            buffered: Duration::from_secs(30),
+            stream_idle: Some(Duration::from_millis(500)),
+        });
+        let started = Instant::now();
+        let stream = post(addr, "/v1/exec?stream=1", r#"{"cmd":["/bin/sh","-c","exec sleep 10"]}"#);
+        let mut r = BufReader::new(stream);
+        read_headers(&mut r);
+        let saw = read_until_exit(&mut r, &mut Vec::new());
+        assert!(saw.contains("\"exit_code\":124"), "{saw}");
+        assert!(saw.contains("without output or input"), "{saw}");
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+
+        let chatty = r#"{"cmd":["/bin/sh","-c","for i in 1 2 3 4 5 6; do echo tick$i; sleep 0.2; done"]}"#;
+        let stream = post(addr, "/v1/exec?stream=1", chatty);
+        let mut r = BufReader::new(stream);
+        read_headers(&mut r);
+        let saw = read_until_exit(&mut r, &mut Vec::new());
+        assert!(saw.contains("tick6") && saw.contains("\"exit_code\":0"), "{saw}");
+    }
+
+    // Typing into a silent command is activity too.
+    #[test]
+    fn stream_idle_timeout_counts_stdin() {
+        let addr = serve_with(ExecLimits {
+            buffered: Duration::from_secs(30),
+            stream_idle: Some(Duration::from_millis(500)),
+        });
+        let stream = post(
+            addr,
+            "/v1/exec?stream=1",
+            r#"{"cmd":["/bin/sh","-c","cat >/dev/null; echo end"],"stdin_stream":true}"#,
+        );
+        let mut r = BufReader::new(stream);
+        read_headers(&mut r);
+        let mut carry = Vec::new();
+        let ready = next_ndjson(&mut r, &mut carry);
+        let exec_id = ready.split("exec_id\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+        for _ in 0..6 {
+            let mut s = post(addr, "/v1/exec/stdin", &format!(r#"{{"exec_id":"{exec_id}","data":"x\n"}}"#));
+            let mut ack = Vec::new();
+            s.read_to_end(&mut ack).unwrap();
+            thread::sleep(Duration::from_millis(200));
+        }
+        let mut s = post(addr, "/v1/exec/stdin", &format!(r#"{{"exec_id":"{exec_id}","close":true}}"#));
+        let mut ack = Vec::new();
+        s.read_to_end(&mut ack).unwrap();
+        let saw = read_until_exit(&mut r, &mut carry);
+        assert!(saw.contains("end") && saw.contains("\"exit_code\":0"), "{saw}");
+    }
+
     #[test]
     fn bad_request_line() {
         let cur = Cursor::new(Vec::<u8>::new());
         // Empty body after drop — just ensure empty request is ok.
         let empty = Cursor::new(Vec::<u8>::new());
-        handle_connection(empty, Duration::from_secs(1)).unwrap();
+        handle_connection(empty, limits(1)).unwrap();
         let _ = cur;
     }
 }

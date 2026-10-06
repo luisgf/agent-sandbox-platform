@@ -6,9 +6,8 @@ use std::io;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
 
-pub fn serve(path: PathBuf, exec_timeout: Duration) -> io::Result<()> {
+pub fn serve(path: PathBuf, limits: http_serve::ExecLimits) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -21,9 +20,8 @@ pub fn serve(path: PathBuf, exec_timeout: Duration) -> io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let timeout = exec_timeout;
                 thread::spawn(move || {
-                    if let Err(err) = http_serve::handle_connection(stream, timeout) {
+                    if let Err(err) = http_serve::handle_connection(stream, limits) {
                         eprintln!("connection error: {err}");
                     }
                 });
@@ -41,6 +39,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn healthz_and_exec_echo() {
@@ -52,12 +51,15 @@ mod tests {
         let _ = fs::remove_file(&sock);
         let listener = UnixListener::bind(&sock).unwrap();
         let (ready_tx, ready_rx) = mpsc::channel();
-        let timeout = Duration::from_secs(5);
+        let limits = http_serve::ExecLimits {
+            buffered: Duration::from_secs(5),
+            stream_idle: None,
+        };
         thread::spawn(move || {
             ready_tx.send(()).ok();
             for _ in 0..2 {
                 let (stream, _) = listener.accept().expect("accept");
-                http_serve::handle_connection(stream, timeout).expect("handle");
+                http_serve::handle_connection(stream, limits).expect("handle");
             }
         });
         ready_rx.recv().unwrap();

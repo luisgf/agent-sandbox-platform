@@ -51,10 +51,19 @@ type ExecResponse struct {
 // Client dials pod-daemon via an injectable Dialer (Unix / hybrid vsock / AF_VSOCK).
 type Client struct {
 	Dialer Dialer
-	HTTP   *http.Client
+	// HTTP has no overall timeout: it would also cover reading the body and cut
+	// a streamed exec or a PTY session while output is still flowing.
+	HTTP *http.Client
 	// Socket is retained for backward-compatible logging when using UnixDialer.
 	Socket string
+	// BufferedTimeout bounds a buffered call (exec without stream, stdin,
+	// healthz), response included. A stream has no deadline here: it lasts as
+	// long as the command, and the caller cancelling its context ends it.
+	BufferedTimeout time.Duration
 }
+
+// DefaultBufferedTimeout is the limit of a buffered call to pod-daemon.
+const DefaultBufferedTimeout = 60 * time.Second
 
 // NewClient builds a Unix-socket client (dry-run / --pod-daemon-sock).
 func NewClient(socket string) *Client {
@@ -71,15 +80,23 @@ func NewClientFromDialer(d Dialer) *Client {
 		},
 	}
 	return &Client{
-		Dialer: d,
-		HTTP: &http.Client{
-			Transport: transport,
-			Timeout:   60 * time.Second,
-		},
+		Dialer:          d,
+		HTTP:            &http.Client{Transport: transport},
+		BufferedTimeout: DefaultBufferedTimeout,
 	}
 }
 
+// buffered bounds a call whose response arrives in one piece.
+func (c *Client) buffered(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.BufferedTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, c.BufferedTimeout)
+}
+
 func (c *Client) Healthz(ctx context.Context) error {
+	ctx, cancel := c.buffered(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://pod-daemon/healthz", nil)
 	if err != nil {
 		return err
@@ -96,6 +113,8 @@ func (c *Client) Healthz(ctx context.Context) error {
 }
 
 func (c *Client) Exec(ctx context.Context, in ExecRequest) (ExecResponse, error) {
+	ctx, cancel := c.buffered(ctx)
+	defer cancel()
 	body, err := json.Marshal(in)
 	if err != nil {
 		return ExecResponse{}, err
@@ -126,7 +145,8 @@ var ErrStreamUnsupported = fmt.Errorf("pod-daemon exec stream not supported")
 
 // OpenExecStream POSTs /v1/exec?stream=1 and returns the response on success.
 // The caller must Close the body. A 404 is ErrStreamUnsupported so the proxy
-// can fall back to the buffered JSON exec.
+// can fall back to the buffered JSON exec. No timeout applies: the stream lasts
+// as long as ctx, which the control plane cancels when its caller goes away.
 func (c *Client) OpenExecStream(ctx context.Context, in ExecRequest) (*http.Response, error) {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -156,6 +176,8 @@ func (c *Client) OpenExecStream(ctx context.Context, in ExecRequest) (*http.Resp
 
 // WriteStdin delivers bytes or EOF to a streaming exec identified by ExecID.
 func (c *Client) WriteStdin(ctx context.Context, in StdinMessage) error {
+	ctx, cancel := c.buffered(ctx)
+	defer cancel()
 	body, err := json.Marshal(in)
 	if err != nil {
 		return err

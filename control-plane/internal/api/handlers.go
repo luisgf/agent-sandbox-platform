@@ -795,6 +795,9 @@ func proxyExecStream(w http.ResponseWriter, body io.Reader) error {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush() // the caller sees the stream start before the first output
+	}
 	buf := make([]byte, 4096)
 	for {
 		n, err := body.Read(buf)

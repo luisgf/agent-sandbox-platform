@@ -250,8 +250,7 @@ El spec `workspace_host_path` sin daemon era una etiqueta: el guest no veía el 
 - No hay `SIGWINCH`. El tamaño se fija al empezar; un `rows`/`cols` posterior en `/exec/stdin` sí hace `TIOCSWINSZ`, pero el CLI no lo manda al cambiar la ventana.
 - El EOF del PTY es Ctrl-D, no un hangup. Un programa en raw mode no ve fin de stdin. Para un pipe de verdad: `--no-pty`.
 - Los bytes van en un string JSON (UTF-8 con reemplazo). No es un pipe opaco.
-- El pod-daemon mata el proceso a los `--exec-timeout-secs` (default 30). Una shell larga hay que subirla en la imagen. El stream del CLI ya no hereda el timeout de 60s del cliente JSON; cada POST de stdin sí usa ese cliente.
-- El plano de control tampoco corta el stream: solo espera 30 s a que el agente empiece a responder ([timeouts hacia el node-agent](../control-plane/README.md#timeouts-hacia-el-node-agent)). El node-agent sí: llama al pod-daemon con un timeout total de 60 s.
+- El stream no tiene límite de tiempo en ningún tramo: CLI, plano de control ([timeouts hacia el node-agent](../control-plane/README.md#timeouts-hacia-el-node-agent)), node-agent y pod-daemon lo dejan durar lo que el comando. Si el CLI se va, el guest mata el comando. `--exec-timeout-secs` (default 30) solo limita el exec acumulado (`--buffered`, `--json`); `--stream-idle-timeout-secs` en la imagen añade un límite por inactividad (sin salida ni stdin). Cada POST de stdin sí usa el cliente JSON con su timeout.
 - El reaper sigue contando el exec al terminar el stream. Las teclas refrescan actividad; un PTY en silencio, no.
 - Hace falta el pod-daemon de este corte. Uno viejo ignora `pty` y no emite `ready`: el stdin no se reenvía y el stream se degrada al burst NDJSON.
 - FakeVMM no crea el árbol dentro de un guest. Registra la ruta y, si el test (o un launcher) rellena el socket, el tag. No bootea KVM.

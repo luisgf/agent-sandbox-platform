@@ -114,7 +114,7 @@ La unit `scripts/systemd/asp-control-plane.service` fija `2h`. Los tests y smoke
 
 Un stream no tiene límite total: dura lo que el comando. Si el cliente cuelga, el plano de control cancela la llamada al agente. Si el nodo desaparece a mitad de stream, lo detecta el keep-alive de TCP en unos minutos.
 
-**Límites.** El agente responde a un `exec` acumulado cuando el comando termina, así que ese `exec` sigue limitado a 30 s, como antes; para algo más largo, el stream (`asp session exec` lo usa por defecto). Un stream recibe las cabeceras con su primer evento: un PTY o un `stdin_stream` empiezan con `ready`, pero un comando sin PTY que no escribe nada en 30 s recibe 502. Los valores no se configuran por entorno. Más abajo hay otros cortes: el node-agent llama al pod-daemon con un timeout total de 60 s, y el pod-daemon mata el proceso a los `--exec-timeout-secs` (default 30).
+**Límites.** El agente responde a un `exec` acumulado cuando el comando termina, así que ese `exec` sigue limitado a 30 s, como antes; para algo más largo, el stream (`asp session exec` lo usa por defecto). El node-agent y el plano de control envían las cabeceras del stream en cuanto el comando arranca, así que un comando que no escribe nada no agota esos 30 s. Los valores no se configuran por entorno. Por debajo, el node-agent limita a 60 s solo las llamadas acumuladas al pod-daemon, y el pod-daemon solo mata el exec acumulado a los `--exec-timeout-secs` (default 30). Un stream dura lo que el comando: termina si el cliente se va (el guest mata el comando y su grupo de procesos) y, con `--stream-idle-timeout-secs`, tras ese tiempo sin salida ni entrada.
 
 ## Lab IdP (Keycloak)
 
