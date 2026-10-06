@@ -123,6 +123,18 @@ type Reconciler struct {
 	// applier (FakeVMM): it does not install kernel routes or WireGuard.
 	LocalNet localnet.Applier
 
+	// Workers bounds how many sandboxes are started or stopped at once
+	// (ASP_RECONCILE_WORKERS, default DefaultWorkers). A slow boot (CH ready
+	// timeout, a multi-GB rootfs copy) no longer delays every other item.
+	Workers int
+
+	// inflight holds the sandboxes a worker is handling (mu); the next poll
+	// skips them, so one id is never handled by two workers, and a stopping
+	// that arrives during a start is handled once the start is done.
+	inflight map[string]bool
+	sem      chan struct{}
+	work     sync.WaitGroup
+
 	mu      sync.Mutex
 	handles map[string]Handle
 	nextCID uint32 // next guest CID to assign (starts at 3)
@@ -184,25 +196,73 @@ func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Lo
 // unknownNodeEvery rate-limits OnUnknownNode.
 const unknownNodeEvery = 10 * time.Second
 
+// DefaultWorkers is how many sandboxes the reconciler handles at once.
+const DefaultWorkers = 4
+
 // Run loops until ctx is cancelled.
 func (r *Reconciler) Run(ctx context.Context) {
 	r.Logger.Info("reconciler started", "interval", r.Every.String(), "node_id", r.NodeID, "tap_auto", r.TapAuto)
 	ticker := time.NewTicker(r.Every)
 	defer ticker.Stop()
-	// Immediate first pass.
-	r.tick(ctx)
+	// Immediate first pass. Polls do not wait for the workers: a sandbox still
+	// being handled is skipped until it is done.
+	r.poll(ctx)
 	for {
 		select {
 		case <-ctx.Done():
+			r.work.Wait()
 			r.Logger.Info("reconciler stopped")
 			return
 		case <-ticker.C:
-			r.tick(ctx)
+			r.poll(ctx)
 		}
 	}
 }
 
+// tick is one poll and the work it started (tests).
 func (r *Reconciler) tick(ctx context.Context) {
+	r.poll(ctx)
+	r.work.Wait()
+}
+
+// dispatch runs fn for sandbox id on a worker, unless a worker already
+// handles id. It returns whether fn was scheduled.
+func (r *Reconciler) dispatch(id string, fn func()) bool {
+	r.mu.Lock()
+	if r.inflight == nil {
+		r.inflight = make(map[string]bool)
+	}
+	if r.inflight[id] {
+		r.mu.Unlock()
+		return false
+	}
+	r.inflight[id] = true
+	if r.sem == nil {
+		n := r.Workers
+		if n <= 0 {
+			n = DefaultWorkers
+		}
+		r.sem = make(chan struct{}, n)
+	}
+	sem := r.sem
+	r.mu.Unlock()
+
+	r.work.Add(1)
+	go func() {
+		defer r.work.Done()
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		defer func() {
+			r.mu.Lock()
+			delete(r.inflight, id)
+			r.mu.Unlock()
+		}()
+		fn()
+	}()
+	return true
+}
+
+func (r *Reconciler) poll(ctx context.Context) {
 	work, err := r.CP.ListWork(ctx, r.NodeID)
 	if err != nil {
 		if cpclient.IsNotFound(err) && r.OnUnknownNode != nil && time.Since(r.lastUnknownNode) >= unknownNodeEvery {
@@ -215,18 +275,23 @@ func (r *Reconciler) tick(ctx context.Context) {
 		return
 	}
 	for _, sb := range work.Sandboxes {
+		sb := sb
 		switch sb.State {
 		case "requested", "starting", "running":
 			if sb.State == "running" && !sb.LocalNet {
 				continue
 			}
-			if err := r.ensureRunning(ctx, sb); err != nil {
-				r.Logger.Warn("ensure running failed", "sandbox_id", sb.ID, "error", err)
-			}
+			r.dispatch(sb.ID, func() {
+				if err := r.ensureRunning(ctx, sb); err != nil {
+					r.Logger.Warn("ensure running failed", "sandbox_id", sb.ID, "error", err)
+				}
+			})
 		case "stopping":
-			if err := r.ensureStopped(ctx, sb); err != nil {
-				r.Logger.Warn("ensure stopped failed", "sandbox_id", sb.ID, "error", err)
-			}
+			r.dispatch(sb.ID, func() {
+				if err := r.ensureStopped(ctx, sb); err != nil {
+					r.Logger.Warn("ensure stopped failed", "sandbox_id", sb.ID, "error", err)
+				}
+			})
 		}
 	}
 	r.fenceUnassigned(ctx, work.Assigned)
@@ -297,7 +362,12 @@ func (r *Reconciler) fenceUnassigned(ctx context.Context, assigned []string) {
 	}
 	r.mu.Unlock()
 	for _, id := range gone {
-		r.selfFence(ctx, id, "the control plane no longer assigns it to this node")
+		id := id
+		// A worker that is starting or stopping id finishes first; the next
+		// poll fences what is left.
+		r.dispatch(id, func() {
+			r.selfFence(ctx, id, "the control plane no longer assigns it to this node")
+		})
 	}
 }
 
@@ -566,19 +636,18 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string) {
 		}
 	}
 	r.Egress.Forget(id)
-	if r.LocalNet != nil {
-		_ = r.LocalNet.Clear(id)
-	}
+	_ = r.localApplier().Clear(id)
 	r.mu.Lock()
 	delete(r.localNetDone, id)
 	r.mu.Unlock()
 }
 
 func (r *Reconciler) localApplier() localnet.Applier {
-	if r.LocalNet != nil {
-		return r.LocalNet
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.LocalNet == nil {
+		r.LocalNet = localnet.NewMemory()
 	}
-	r.LocalNet = localnet.NewMemory()
 	return r.LocalNet
 }
 

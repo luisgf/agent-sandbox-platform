@@ -67,6 +67,7 @@ type config struct {
 	TrustSandboxHeader   bool // --insecure-identity-sandbox-header: unbound identity listeners trust X-ASP-Sandbox-ID (lab)
 	Reconcile            bool
 	ReconcileEvery       time.Duration
+	ReconcileWorkers     int // --reconcile-workers: sandboxes started/stopped at once
 	TapAuto              bool
 	HostVsock            bool
 	HostVsockDir         string // unix factory fallback when AF_VSOCK unavailable / lab
@@ -496,6 +497,11 @@ func main() {
 			os.Exit(1)
 		}
 		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
+		rec.Workers = cfg.ReconcileWorkers
+		if cfg.CHAPISocket != "" {
+			// One shared Cloud Hypervisor API socket runs one VM at a time.
+			rec.Workers = 1
+		}
 		rec.OnUnknownNode = func(ctx context.Context) {
 			if err := register(ctx); err != nil {
 				slog.Warn("re-register failed", "error", err)
@@ -666,6 +672,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest pool: each TAP gets its own /30 from it; also the nft --egress-nft-redirect match")
 	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
 	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
+	flag.IntVar(&cfg.ReconcileWorkers, "reconcile-workers", getenvInt("ASP_RECONCILE_WORKERS", reconciler.DefaultWorkers), "sandboxes the reconciler starts or stops at once (1 with --ch-api-socket)")
 	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")
 	flag.Parse()
 	cfg.HeartbeatEvery = *hb

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // DefaultHostCIDR is the host-side address Create applies when HostCIDR is
@@ -35,11 +36,14 @@ func (ExecRunner) Run(name string, args ...string) error {
 
 // RecordingRunner records calls and returns InjectedErr (tests).
 type RecordingRunner struct {
+	mu          sync.Mutex // the reconciler runs several workers
 	Calls       []string
 	InjectedErr error
 }
 
 func (r *RecordingRunner) Run(name string, args ...string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.Calls = append(r.Calls, name+" "+strings.Join(args, " "))
 	return r.InjectedErr
 }

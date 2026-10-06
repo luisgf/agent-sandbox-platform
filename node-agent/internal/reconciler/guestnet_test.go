@@ -170,8 +170,10 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 			Detail string `json:"detail"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.State == "running" && f.conflict[parts[3]] {
-			http.Error(w, `{"error":"conflict: cannot move sandbox from failed to running"}`, http.StatusConflict)
+		cur := f.boxes[parts[3]].State
+		if body.State == "running" && (f.conflict[parts[3]] || cur == "stopping" || cur == "stopped" || cur == "failed") {
+			// Like the control plane's ValidAgentTransition.
+			http.Error(w, `{"error":"conflict: cannot move sandbox from `+cur+` to running"}`, http.StatusConflict)
 			return
 		}
 		b := f.boxes[parts[3]]
