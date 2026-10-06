@@ -26,7 +26,9 @@ type ReapConfig struct {
 	// SocketDir is --ch-socket-dir. Cloud Hypervisor and virtiofsd processes
 	// are matched by the sockets they serve here, and the per-sandbox sockets
 	// and links are removed: ch-{id}.sock, vsock-{id}.sock and its
-	// {port} hybrid listeners, virtiofs-{id}.sock, ssh-agent-{id}.sock.
+	// {port} hybrid listeners, virtiofs-{id}.sock, ssh-agent-{id}.sock. So
+	// are the files those processes leave next to their sockets:
+	// ch-{id}.sock.lock and virtiofs-{id}.sock.pid.
 	SocketDir string
 	// DiskDir holds the rootfs copies (rootfs-{id}.img). Empty skips them.
 	DiskDir string
@@ -58,8 +60,9 @@ type ReapReport struct {
 	// device without a node key.
 	LocalNet []string
 	Taps     []string
-	Sockets  []string
-	Disks    []string
+	// Sockets are the sockets, links, and lock and pid files in SocketDir.
+	Sockets []string
+	Disks   []string
 	// Err joins every leftover it could not list, stop or remove.
 	Err error
 }
@@ -69,6 +72,7 @@ type ReapedProcess struct {
 	hostproc.Proc
 	Kind      string // "cloud-hypervisor" or "virtiofsd"
 	SandboxID string
+	Socket    string // the socket it serves in SocketDir
 }
 
 const defaultReapGrace = 5 * time.Second
@@ -108,6 +112,9 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 		}
 	}
 
+	// Sockets of processes that outlived SIGKILL. The lock or pid file next
+	// to such a socket is still the process's own and stays.
+	running := map[string]bool{}
 	if cfg.Procs != nil {
 		procs, err := orphanProcesses(cfg.Procs, socketDir, keep)
 		fail("list processes", err)
@@ -123,6 +130,11 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 				grace = defaultReapGrace
 			}
 			fail("stop processes", hostproc.Terminate(ctx, cfg.Procs, stop, grace))
+			for _, p := range procs {
+				if cfg.Procs.Alive(p.Proc) {
+					running[p.Socket] = true
+				}
+			}
 		}
 	}
 
@@ -157,18 +169,21 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 		}
 	}
 
-	socks, err := leftoverSockets(socketDir, keep)
+	socks, err := leftoverSockets(socketDir, keep, running)
 	fail("list "+socketDir, err)
-	// Sockets and links are small and many (up to six per sandbox): debug
-	// unless the operator asked for the list.
+	// Sockets, links and runtime files are small and many (up to eight per
+	// sandbox): debug unless the operator asked for the list.
 	sockLevel := slog.LevelDebug
 	if cfg.Report {
 		sockLevel = slog.LevelInfo
 	}
 	for _, p := range socks {
 		kind := "socket"
-		if mode, _ := socketDirKind(filepath.Base(p)); mode == fs.ModeSymlink {
+		switch mode, _ := socketDirKind(filepath.Base(p)); mode {
+		case fs.ModeSymlink:
 			kind = "link"
+		case 0:
+			kind = "file"
 		}
 		log.Log(ctx, sockLevel, msg, "kind", kind, "path", p)
 		if !cfg.Report {
@@ -214,8 +229,9 @@ func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool) (
 			continue
 		}
 		if id, ok := vmm.SpawnedSandbox(p.Argv, socketDir); ok {
-			if isSandboxID(id) && !keep[filepath.Join(socketDir, vmm.APISocketName(id))] {
-				out = append(out, ReapedProcess{Proc: p, Kind: "cloud-hypervisor", SandboxID: id})
+			sock := filepath.Join(socketDir, vmm.APISocketName(id))
+			if isSandboxID(id) && !keep[sock] {
+				out = append(out, ReapedProcess{Proc: p, Kind: "cloud-hypervisor", SandboxID: id, Socket: sock})
 			}
 			continue
 		}
@@ -224,7 +240,8 @@ func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool) (
 			continue
 		}
 		if id, ok := between(filepath.Base(sock), virtiofsPrefix, ".sock"); ok && isSandboxID(id) {
-			out = append(out, ReapedProcess{Proc: p, Kind: "virtiofsd", SandboxID: id})
+			sock = filepath.Join(socketDir, filepath.Base(sock))
+			out = append(out, ReapedProcess{Proc: p, Kind: "virtiofsd", SandboxID: id, Socket: sock})
 		}
 	}
 	return out, nil
@@ -264,9 +281,11 @@ func localNetLeftovers(h *localnet.Host, sysClassNet string) ([]string, error) {
 	return ids, errors.Join(errs...)
 }
 
-// leftoverSockets lists the per-sandbox sockets and links in socketDir. A
-// directory or a regular file with such a name is not ours and stays.
-func leftoverSockets(socketDir string, keep map[string]bool) ([]string, error) {
+// leftoverSockets lists the per-sandbox sockets and links in socketDir, and
+// the lock and pid files next to them. A name of another file type (a
+// directory, a regular file named like a socket) is not ours and stays. A lock
+// or pid file stays with its socket when that is kept or its process running.
+func leftoverSockets(socketDir string, keep, running map[string]bool) ([]string, error) {
 	entries, err := os.ReadDir(socketDir)
 	if err != nil {
 		return nil, err
@@ -274,17 +293,28 @@ func leftoverSockets(socketDir string, keep map[string]bool) ([]string, error) {
 	var out []string
 	for _, e := range entries {
 		path := filepath.Join(socketDir, e.Name())
-		if want, ok := socketDirKind(e.Name()); ok && e.Type() == want && !keep[path] {
-			out = append(out, path)
+		want, ok := socketDirKind(e.Name())
+		if !ok || e.Type() != want || keep[path] {
+			continue
 		}
+		if sock, ok := runtimeFileOf(e.Name()); ok {
+			if sock = filepath.Join(socketDir, sock); keep[sock] || running[sock] {
+				continue
+			}
+		}
+		out = append(out, path)
 	}
 	return out, nil
 }
 
-// socketDirKind maps a per-sandbox name in SocketDir to the file type the
-// agent leaves there. Global sockets (the SSH bridge, identity, host-vsock)
-// and the lock never match.
+// socketDirKind maps a per-sandbox name in SocketDir to the file type left
+// there: 0 for the regular lock and pid files of runtimeFileOf. Global sockets
+// (the SSH bridge, identity, host-vsock) and node-agent.lock never match.
 func socketDirKind(name string) (fs.FileMode, bool) {
+	if sock, ok := runtimeFileOf(name); ok {
+		_, ours := socketDirKind(sock)
+		return 0, ours
+	}
 	if id, ok := vmm.ParseAPISocketName(name); ok {
 		return fs.ModeSocket, isSandboxID(id)
 	}
@@ -306,6 +336,22 @@ func socketDirKind(name string) (fs.FileMode, bool) {
 		}
 	}
 	return 0, false
+}
+
+// runtimeFileOf returns the socket name a file in SocketDir sits next to when
+// it is one the process serving that socket creates and does not remove on
+// exit: Cloud Hypervisor's ch-{id}.sock.lock, virtiofsd's
+// virtiofs-{id}.sock.pid.
+func runtimeFileOf(name string) (string, bool) {
+	if sock, ok := strings.CutSuffix(name, vmm.APISocketLockSuffix); ok {
+		_, ok = vmm.ParseAPISocketName(sock)
+		return sock, ok
+	}
+	if sock, ok := strings.CutSuffix(name, virtiofs.PIDFileSuffix); ok {
+		_, ok = between(sock, virtiofsPrefix, ".sock")
+		return sock, ok
+	}
+	return "", false
 }
 
 // leftoverDisks lists the rootfs copies in diskDir. The base image stays even

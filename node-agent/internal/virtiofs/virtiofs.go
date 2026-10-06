@@ -28,6 +28,11 @@ type Config struct {
 	SharedDir string
 }
 
+// PIDFileSuffix is appended to the socket path for the pid file virtiofsd
+// writes and locks next to its socket (virtiofs-{id}.sock.pid). virtiofsd does
+// not remove it when it exits.
+const PIDFileSuffix = ".pid"
+
 // DaemonArgs is the argv virtiofsd gets after the binary name.
 // --sandbox none avoids needing a user namespace inside the node-agent
 // process; the share is still only SharedDir. --cache never keeps the guest
@@ -49,8 +54,8 @@ func SocketPathOf(argv []string) (string, bool) {
 }
 
 // Start launches virtiofsd and waits until the socket exists.
-// The returned function kills the daemon and removes the socket. It is safe
-// to call more than once.
+// The returned function kills the daemon and removes the socket, and the pid
+// file once the daemon has exited. It is safe to call more than once.
 func Start(ctx context.Context, cfg Config) (func(), error) {
 	if cfg.SocketPath == "" {
 		return nil, fmt.Errorf("virtiofs: socket path required")
@@ -82,8 +87,10 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("virtiofs: start %s: %w", path, err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
+	var waitErr error
+	exited := make(chan struct{})
+	go func() { waitErr = cmd.Wait(); close(exited) }()
+	pidFile := cfg.SocketPath + PIDFileSuffix
 
 	stop := func() {
 		if cmd.Process != nil {
@@ -91,6 +98,8 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 		}
 		select {
 		case <-exited:
+			// virtiofsd holds a lock on its pid file while it runs.
+			_ = os.Remove(pidFile)
 		case <-time.After(2 * time.Second):
 		}
 		_ = os.Remove(cfg.SocketPath)
@@ -110,8 +119,10 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 			return stop, nil
 		}
 		select {
-		case err := <-exited:
+		case <-exited:
 			_ = os.Remove(cfg.SocketPath)
+			_ = os.Remove(pidFile)
+			err := waitErr
 			if err == nil {
 				err = fmt.Errorf("exited before creating %s", cfg.SocketPath)
 			}

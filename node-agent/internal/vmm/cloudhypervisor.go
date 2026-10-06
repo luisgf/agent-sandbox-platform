@@ -38,7 +38,8 @@ const (
 //   - Per-sandbox (default when not dry-run): SocketDir is set and APISocket empty →
 //     Start spawns `cloud-hypervisor --api-socket <SocketDir>/ch-{id}.sock`,
 //     waits until Ping succeeds, then CreateVM+Boot. Stop deletes the VM, kills
-//     the process, and removes the socket.
+//     the process, and removes the socket and, once the process has exited,
+//     the lock file CH keeps next to it.
 type CloudHypervisor struct {
 	BinaryPath string
 	// APISocket is the shared --api-socket path (legacy). Non-empty → shared mode.
@@ -96,6 +97,12 @@ func NewCloudHypervisorWithClient(apiSocket string, client *http.Client) *CloudH
 func APISocketName(sandboxID string) string {
 	return "ch-" + sandboxID + ".sock"
 }
+
+// APISocketLockSuffix is appended to an API socket path for the lock file
+// Cloud Hypervisor creates next to it (ch-{id}.sock.lock). CH does not remove
+// it when it exits, so whoever removes the socket removes the lock too, once
+// the process holding it is gone.
+const APISocketLockSuffix = ".lock"
 
 // ParseAPISocketName returns the sandbox an APISocketName belongs to.
 func ParseAPISocketName(name string) (string, bool) {
@@ -421,6 +428,7 @@ func (c *CloudHypervisor) cleanupFailed(proc Process, sock string) {
 		_ = proc.Wait()
 	}
 	_ = os.Remove(sock)
+	_ = os.Remove(sock + APISocketLockSuffix)
 }
 
 func (c *CloudHypervisor) waitReady(ctx context.Context, client *http.Client) error {
@@ -479,6 +487,7 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 	if err := c.deleteWith(ctx, inst.client); err != nil {
 		errs = append(errs, fmt.Errorf("vm.delete: %w", err))
 	}
+	exited := true
 	if inst.proc != nil {
 		if err := inst.proc.Kill(); err != nil {
 			errs = append(errs, fmt.Errorf("kill: %w", err))
@@ -491,13 +500,22 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 		select {
 		case <-done:
 		case <-time.After(3 * time.Second):
+			exited = false
 			errs = append(errs, fmt.Errorf("process wait timed out"))
 		case <-ctx.Done():
+			exited = false
 			errs = append(errs, ctx.Err())
 		}
 	}
 	if err := os.Remove(inst.socketPath); err != nil && !os.IsNotExist(err) {
 		errs = append(errs, fmt.Errorf("remove socket: %w", err))
+	}
+	// The lock belongs to a CH that may still run until Wait returns; the
+	// host cleanup of the next agent start removes it otherwise.
+	if exited {
+		if err := os.Remove(inst.socketPath + APISocketLockSuffix); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove socket lock: %w", err))
+		}
 	}
 	c.logger().Info("CH stopped", "sandbox_id", id, "socket", inst.socketPath)
 	if len(errs) > 0 {
