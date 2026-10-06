@@ -130,7 +130,7 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 
 - La identidad solo se exige con `ASP_CLIENT_CA`. En el lab abierto cualquiera que alcance el plano de control puede hablar como cualquier nodo, como antes.
 - El certificado del plano de control vive en memoria. Varias réplicas del plano de control se emiten cada una el suyo, todos de la misma CA.
-- El timeout de 30 s del cliente hacia el agente sigue cortando `exec` largos en streaming (fallo previo, fuera de este cambio).
+- El plano de control ya no corta un `exec` en streaming: limita cada fase de la llamada al agente hasta que este empieza a responder, no el stream ([detalle](../../control-plane/README.md#timeouts-hacia-el-node-agent)). El node-agent sí lo corta a los 60 s: es el timeout total de su cliente hacia el pod-daemon.
 - La colocación no conoce `--workspace`: la ruta tiene que existir en el nodo elegido.
 - Sin migración: el disco del guest vive en su nodo.
 - Con varias réplicas del plano de control, cada una corre su monitor: el CAS lo hace seguro, pero el fencing podría repetirse.
