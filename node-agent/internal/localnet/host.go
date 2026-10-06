@@ -171,6 +171,19 @@ func (h *Host) Clear(sandboxID string) error {
 	return nil
 }
 
+// Healthy reports whether the device of the applied plan still exists: one
+// `ip link show` for a tunnel. Other plans have no device to lose.
+func (h *Host) Healthy(sandboxID string) bool {
+	p, ok := h.Current(sandboxID)
+	if !ok {
+		return false
+	}
+	if p.Kind != KindTunnel {
+		return true
+	}
+	return ifaceUp(p.Iface)
+}
+
 func (h *Host) Current(sandboxID string) (Plan, bool) {
 	if h == nil {
 		return Plan{}, false

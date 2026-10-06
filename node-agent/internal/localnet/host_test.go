@@ -168,3 +168,48 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// Healthy is one `ip link show` for a tunnel; plans without a device are
+// always healthy, and an unknown sandbox is not.
+func TestHostHealthy(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ip succeeds unless the device is listed in $ASP_MOCK_GONE.
+	script := "#!/bin/sh\n" +
+		"if [ \"$1 $2\" = \"link show\" ] && [ \"$4\" = \"$ASP_MOCK_GONE\" ]; then exit 1; fi\n" +
+		"exit 0\n"
+	for _, name := range []string{"ip", "wg"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("ASP_MOCK_GONE", "")
+
+	h := NewHost(filepath.Join(dir, "keys"))
+	if h.Healthy("unknown") {
+		t.Fatal("a sandbox without a plan is not healthy")
+	}
+	id := "abcdef012345"
+	up := Decide(id, "owner-a", true, "up")
+	up.PeerPublic = "cHVibGljAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if err := h.Apply(up); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Healthy(id) {
+		t.Fatal("tunnel device present: healthy")
+	}
+	t.Setenv("ASP_MOCK_GONE", up.Iface)
+	if h.Healthy(id) {
+		t.Fatal("tunnel device gone: not healthy")
+	}
+	if err := h.Apply(Decide("blackhole0001", "owner-a", true, "pending")); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Healthy("blackhole0001") {
+		t.Fatal("a blackhole has no device to lose")
+	}
+}

@@ -82,6 +82,10 @@ type Reconciler struct {
 	// Egress, when set, learns each sandbox's /30 so the forward proxy and
 	// the DNS sink apply that sandbox's policy to its traffic.
 	Egress *egress.PolicyCache
+	// localNetDone is the local-net plan applied to each sandbox (mu).
+	localNetDone map[string]*localNetApplied
+	// now is the clock (tests); nil is time.Now.
+	now func() time.Time
 
 	// SSHAgentShared is the host bridge socket path (--ssh-agent-bridge).
 	// When set (and no per-sandbox registry path), Start creates
@@ -385,6 +389,9 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	if err != nil {
 		r.removeRootFS(rootfs)
 		_ = r.localApplier().Clear(sb.ID)
+		r.mu.Lock()
+		delete(r.localNetDone, sb.ID)
+		r.mu.Unlock()
 		if stopFS != nil {
 			stopFS()
 		}
@@ -515,6 +522,9 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string) {
 	if r.LocalNet != nil {
 		_ = r.LocalNet.Clear(id)
 	}
+	r.mu.Lock()
+	delete(r.localNetDone, id)
+	r.mu.Unlock()
 }
 
 func (r *Reconciler) localApplier() localnet.Applier {
@@ -533,22 +543,55 @@ func (r *Reconciler) localApplier() localnet.Applier {
 func (r *Reconciler) applyLocalNet(ctx context.Context, sb cpclient.Sandbox) error {
 	plan := localnet.Decide(sb.ID, sb.OwnerSub, sb.LocalNet, sb.LocalNetState)
 	plan.PeerPublic = strings.TrimSpace(sb.LocalNetClientPublic)
-	if sb.LocalNet {
-		if ks, ok := r.LocalNet.(localnet.NodeKeyer); ok {
-			pub, _, _, err := ks.EnsureNodeKey(sb.ID)
-			if err != nil {
-				return err
-			}
-			if r.CP != nil && pub != "" {
-				if err := r.CP.PublishLocalNetNode(ctx, sb.ID, pub); err != nil {
-					r.Logger.Warn("local-net node public", "sandbox_id", sb.ID, "error", err)
-				}
+	keyer, hasKeys := r.localApplier().(localnet.NodeKeyer)
+	needKey := sb.LocalNet && hasKeys
+	now := r.clock()
+
+	r.mu.Lock()
+	prev := r.localNetDone[sb.ID]
+	r.mu.Unlock()
+	// The plan is applied on every running local-net sandbox's work item,
+	// every tick. Its recipe is about 15 processes: run it only when the plan
+	// changed, and check that the device survived every localNetVerifyEvery.
+	if prev != nil && samePlan(prev.plan, plan) && (!needKey || prev.published != "") {
+		if now.Sub(prev.checked) < localNetVerifyEvery {
+			return nil
+		}
+		if v, ok := r.localApplier().(localnet.Verifier); !ok || v.Healthy(sb.ID) {
+			r.mu.Lock()
+			prev.checked = now
+			r.mu.Unlock()
+			return nil
+		}
+		r.Logger.Warn("local-net device missing; applying the plan again", "sandbox_id", sb.ID, "iface", plan.Iface)
+	}
+
+	published := ""
+	if prev != nil {
+		published = prev.published
+	}
+	if needKey {
+		pub, _, _, err := keyer.EnsureNodeKey(sb.ID)
+		if err != nil {
+			return err
+		}
+		if r.CP != nil && pub != "" && pub != published {
+			if err := r.CP.PublishLocalNetNode(ctx, sb.ID, pub); err != nil {
+				r.Logger.Warn("local-net node public", "sandbox_id", sb.ID, "error", err)
+			} else {
+				published = pub
 			}
 		}
 	}
 	if err := r.localApplier().Apply(plan); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	if r.localNetDone == nil {
+		r.localNetDone = make(map[string]*localNetApplied)
+	}
+	r.localNetDone[sb.ID] = &localNetApplied{plan: plan, published: published, checked: now}
+	r.mu.Unlock()
 	r.Logger.Info("local-net plan",
 		"sandbox_id", sb.ID,
 		"owner_sub", sb.OwnerSub,
@@ -559,6 +602,31 @@ func (r *Reconciler) applyLocalNet(ctx context.Context, sb cpclient.Sandbox) err
 		"iface", plan.Iface,
 	)
 	return nil
+}
+
+// localNetVerifyEvery is how often an unchanged local-net plan's device is
+// checked (one `ip link show`) and re-created if it is gone.
+const localNetVerifyEvery = 30 * time.Second
+
+// localNetApplied is what the reconciler last applied for a sandbox.
+type localNetApplied struct {
+	plan      localnet.Plan
+	published string    // node public key the control plane accepted
+	checked   time.Time // last apply or device check
+}
+
+// samePlan compares plans as the reconciler computes them: the host fills
+// KeyPath in while applying.
+func samePlan(a, b localnet.Plan) bool {
+	a.KeyPath, b.KeyPath = "", ""
+	return a == b
+}
+
+func (r *Reconciler) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 func (r *Reconciler) linkSSHAgent(sandboxID string) string {
