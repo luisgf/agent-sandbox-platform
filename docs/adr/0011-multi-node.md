@@ -30,7 +30,7 @@ Con `ASP_CLIENT_CA` configurado, el middleware toma el CN del certificado client
 | `status`, `POST /v1/internal/oidc/token`, `local-net/node-public` | `node_id` de la sandbox |
 | `attest` | `node_id` de la sandbox y `statement.node_id` |
 
-Si no coincide: **403**. En el lab abierto o con API key (sin certificado verificado) el comportamiento no cambia. Los certificados existentes ya llevan CN = node id y OU `nodes`: no hace falta re-enrolar para esto.
+Si no coincide: **403**. En el lab abierto o con API key (sin certificado verificado) el comportamiento no cambia. Dentro de un nodo, qué sandbox pide un token OIDC lo decide el node-agent por la conexión vsock del guest ([0003](0003-identity.md) § 2). Los certificados existentes ya llevan CN = node id y OU `nodes`: no hace falta re-enrolar para esto.
 
 Un nodo revocado recibe **409** en heartbeat y register hasta que vuelve a enrolar (ADR-0005: revocar exige re-enroll).
 

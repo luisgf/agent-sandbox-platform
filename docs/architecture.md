@@ -145,8 +145,8 @@ Nunca se copia la clave privada. Confirm: ADR-0005. Auto mount: ADR-0006.
 
 ```text
 guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}   # user_sub/act ignorados si vienen
-  → unix/vsock identity (26502)
-    → node-agent identity proxy (inyecta sandbox/tenant)
+  → vsock identity 26502 (CH: {vsock}_26502 de su sandbox)
+    → node-agent identity proxy (sandbox = el de la conexión; X-ASP-Sandbox-ID de otra → 403)
       → CP POST /v1/internal/oidc/token
         → JWT corto + claims server-side; JWKS en /oidc/jwks.json
 ```

@@ -31,10 +31,22 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 ### 2) OIDC ligado a atestación / sandbox
 
 - El guest solo puede pedir token vía socket de identidad: `POST /v1/tokens/oidc` con body **`{ "aud": "…" }`** (y opcionalmente nonce).
-- El node-agent (`--identity-listen` o host-vsock **26502**, en CH via `{vsockPath}_26502` + mismo dial guest CID 2:26502) fija `tenant_id`, `sandbox_id`, nodo, TTL y claims de autoridad a partir de la conexión / headers internos / store — **el guest no los elige**.
+- El node-agent fija el `sandbox_id` a partir de **la conexión**: en CH el guest diala CID 2:26502 y el VMM conecta al UDS `{vsockPath}_26502`, que el node-agent abre para esa sandbox y que solo usa su VM. El control plane saca `tenant_id`, `user_sub`, TTL y el resto de claims del store — **el guest no los elige**.
 - El control plane firma JWT de corta vida (`ASP_OIDC_KEY`) y publica JWKS (`GET /oidc/jwks.json`) + discovery.
 - Rotación básica: `ASP_OIDC_KEY` (mint) + `ASP_OIDC_KEY_PREV` (overlap en JWKS).
 - Tras Fase 2c, el mint puede exigir evidencia de attestation fresca (`x_asp_attestation`).
+
+**Actualizado 2026-10:** el proxy tomaba el sandbox de la cabecera `X-ASP-Sandbox-ID`, que escribe el guest. Un guest podía pedir el token de cualquier otra sandbox de su nodo, y el control plane no lo ve: con mTLS comprueba que la sandbox sea del nodo que llama ([0011](0011-multi-node.md)), y lo es. Ahora el acceptor hybrid de cada sandbox liga su id a cada petición, en el contexto de la petición y no en una cabecera:
+
+| Listener | Sandbox del token | `X-ASP-Sandbox-ID` |
+|---|---|---|
+| `{vsockPath}_26502` (CH, `--host-vsock --reconcile`) | el de la conexión | opcional; si nombra otra sandbox → **403** |
+| Sin binding: `--identity-listen` (unix/TCP), host-vsock global (AF_VSOCK, `--host-vsock-dir`) | — | **403**, con o sin cabecera |
+| Sin binding, con `--insecure-identity-sandbox-header` (lab) | la cabecera; si falta, `--default-sandbox-id` | se confía: quien alcance el listener pide el token de cualquier sandbox |
+
+- El flag de lab no afecta al acceptor hybrid: ahí manda siempre la conexión.
+- `sandbox_id` en el body se sigue ignorando (nunca fue autoridad).
+- Un path de muxer sirve a una sola sandbox: `AttachSandbox` rechaza el muxer de otra, porque el binding depende de ello.
 
 ## Alternativas consideradas
 
@@ -51,7 +63,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 ### Positivas
 
 - Claves privadas nunca cruzan la frontera de la microVM.
-- Claims de tenancy son **server-side**; un guest roto no se auto-promociona de tenant.
+- Claims de tenancy son **server-side**; un guest roto no se auto-promociona de tenant ni pide el token de otra sandbox de su nodo.
 - Confirm gate añade fricción humana/API intencional ante firmas sensibles.
 - Mismo modelo de puertos vsock documentado (26500/26501/26502) en diagrama y smokes.
 
@@ -60,6 +72,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Dependencia de vsock / host-vsock correctamente cableado (en CH: `AttachSandbox` por sandbox); sin unidad guest, no hay `SSH_AUTH_SOCK`.
 - Confirm gate puede romper automatizaciones que firman en bucle → hay que aprobar o desactivar el flag en lab.
 - Indisponibilidad de JWKS/atestación → **falla cerrada** (no hay token de respaldo persistente).
+- Desde 2026-10, `--identity-listen` y los listeners host-vsock globales devuelven 403 a los tokens salvo con `--insecure-identity-sandbox-header` (lab); `--default-sandbox-id` solo aplica con ese flag.
 - Attestation MVP es software-signed (ECDSA `ASP_ATTEST_KEY`), no TPM/SEV.
 
 ### Follow-ups
@@ -75,14 +88,14 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 |---|---|
 | SSH bridge | `node-agent/internal/sshagent/` (`bridge.go`, `confirm.go`, `guest_mount.go`) |
 | Host vsock | `node-agent/internal/hostvsock/` — `AttachSandbox` hybrid `{vsock}_{26501|26502}` + AF_VSOCK / `--host-vsock-dir` lab |
-| Identity proxy | `node-agent/internal/identity/` — unix/TCP → CP mint |
+| Identity proxy | `node-agent/internal/identity/` — sandbox de la conexión (`WithSandboxID`, lo fija `hostvsock` en el acceptor hybrid) → CP mint |
 | Guest proxy | `images/guest/cmd/vsock-ssh-agent-proxy/` + `images/guest/systemd/ssh-agent-vsock.service` |
 | OIDC signer | `control-plane/internal/oidc/` |
 | Attest | `control-plane/internal/attest/` + `node-agent/internal/attest/` |
 | Mint | `POST /v1/internal/oidc/token` (nodo/lab); guest vía identity proxy |
 | JWKS / discovery | `GET /oidc/jwks.json`, `GET /.well-known/openid-configuration` |
 | Approve SSH | `POST /v1/internal/ssh-agent/approve` (node-agent) |
-| Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--guest-ssh-agent-auto`, `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY` |
+| Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--insecure-identity-sandbox-header` (lab), `--default-sandbox-id` (lab), `--guest-ssh-agent-auto`, `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY` |
 | Notas vsock | `scripts/guest-vsock-notes.md`, `docs/why-ch-hybrid-guest-host.md` |
 | Smoke | `scripts/smoke-identity-egress.sh` |
 
@@ -98,6 +111,8 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - El socket Unix en el guest con permisos de fichero **no** es la autorización real; lo es el node-agent + CP.
 - FakeAgent (0 keys) en dry-run sin `SSH_AUTH_SOCK` — útil para protocolo, inútil para git real.
 - Un par UDS hybrid por sandbox×puerto; override de `VsockPath` mid-life requiere re-Attach (hoy no).
+- El binding separa guests entre sí, no del host: un proceso del host con acceso a `{vsockPath}_26502` habla como esa sandbox.
+- El listener AF_VSOCK global no liga conexiones por CID (CH no le entrega las del guest), así que rechaza los tokens. Ligar CID → sandbox queda pendiente para un VMM que lo use.
 - No hay vault de secretos genérico dentro del guest; solo SSH bridge + OIDC corto.
 - Virtiofs SSH sigue documentado como path manual, no el automatizado.
 

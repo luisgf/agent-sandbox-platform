@@ -92,6 +92,7 @@ echo "==> start node-agent (enroll + reconcile + egress-enforce + ssh bridge + i
   --egress-enforce \
   --ssh-agent-bridge="$SSH_BRIDGE" \
   --identity-listen="$ID_SOCK" \
+  --insecure-identity-sandbox-header \
   --heartbeat-interval=1h \
   >"$NA_LOG" 2>&1 &
 NA_PID=$!
@@ -133,7 +134,8 @@ echo "$MINT" | grep -q access_token
 echo "$MINT" | grep -q '"tenant_id":"smoke"'
 
 echo "==> identity proxy (guest-facing) forwards mint"
-# Set sandbox via header; guest body aud only
+# --identity-listen has no sandbox binding (a guest's own vsock 26502 does): the
+# header names the sandbox only because of --insecure-identity-sandbox-header (lab).
 TOK=$(curl -sf --unix-socket "$ID_SOCK" \
   -X POST http://localhost/v1/tokens/oidc \
   -H "Content-Type: application/json" \

@@ -59,6 +59,7 @@ type config struct {
 	SSHAgentBridge       string
 	IdentityListen       string
 	DefaultSandboxID     string
+	TrustSandboxHeader   bool // --insecure-identity-sandbox-header: unbound identity listeners trust X-ASP-Sandbox-ID (lab)
 	Reconcile            bool
 	ReconcileEvery       time.Duration
 	TapAuto              bool
@@ -101,6 +102,7 @@ func main() {
 		"egress_enforce", cfg.EgressEnforce,
 		"ssh_agent_bridge", cfg.SSHAgentBridge,
 		"identity_listen", cfg.IdentityListen,
+		"insecure_identity_sandbox_header", cfg.TrustSandboxHeader,
 		"reconcile", cfg.Reconcile,
 		"tap_auto", cfg.TapAuto,
 		"host_vsock", cfg.HostVsock,
@@ -349,10 +351,19 @@ func main() {
 	}
 
 	idProxy := &identity.Proxy{
-		ControlPlaneURL:  cfg.ControlPlaneURL,
-		HTTP:             httpClient,
-		DefaultSandboxID: cfg.DefaultSandboxID,
-		Logger:           slog.Default(),
+		ControlPlaneURL:    cfg.ControlPlaneURL,
+		HTTP:               httpClient,
+		TrustSandboxHeader: cfg.TrustSandboxHeader,
+		DefaultSandboxID:   cfg.DefaultSandboxID,
+		Logger:             slog.Default(),
+	}
+	// Only the per-sandbox hybrid acceptors know which guest is calling;
+	// --identity-listen and the global host-vsock listeners do not.
+	if cfg.TrustSandboxHeader {
+		slog.Warn("--insecure-identity-sandbox-header: identity listeners without a sandbox binding trust the client's X-ASP-Sandbox-ID; anyone who reaches them can mint any sandbox's token (lab only)")
+	} else if cfg.IdentityListen != "" || cfg.DefaultSandboxID != "" {
+		slog.Warn("--identity-listen is not bound to a sandbox and --default-sandbox-id is ignored: token requests there get 403 without --insecure-identity-sandbox-header (lab only); guests use their sandbox's host-vsock port 26502",
+			"identity_listen", cfg.IdentityListen, "default_sandbox_id", cfg.DefaultSandboxID)
 	}
 
 	var idLn interface{ Close() error }
@@ -600,7 +611,8 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.EgressMITM, "egress-mitm", getenv("ASP_EGRESS_MITM", "") == "1", "ENABLE CONNECT TLS bump (corp caution; default off)")
 	flag.StringVar(&cfg.SSHAgentBridge, "ssh-agent-bridge", os.Getenv("ASP_SSH_AGENT_BRIDGE"), "unix socket path for SSH agent bridge (proxies SSH_AUTH_SOCK or FakeAgent)")
 	flag.StringVar(&cfg.IdentityListen, "identity-listen", os.Getenv("ASP_IDENTITY_LISTEN"), "unix path (.sock) or TCP addr for guest OIDC identity proxy")
-	flag.StringVar(&cfg.DefaultSandboxID, "default-sandbox-id", os.Getenv("ASP_SANDBOX_ID"), "default sandbox id for identity proxy dry-run")
+	flag.StringVar(&cfg.DefaultSandboxID, "default-sandbox-id", os.Getenv("ASP_SANDBOX_ID"), "sandbox for identity requests without X-ASP-Sandbox-ID on listeners not bound to a sandbox; only with --insecure-identity-sandbox-header (dry-run)")
+	flag.BoolVar(&cfg.TrustSandboxHeader, "insecure-identity-sandbox-header", getenv("ASP_INSECURE_IDENTITY_SANDBOX_HEADER", "") == "1", "let identity listeners not bound to a sandbox (--identity-listen, global --host-vsock) take the sandbox from the client's X-ASP-Sandbox-ID, then --default-sandbox-id; anyone who reaches them can mint any sandbox's token (lab only)")
 	flag.BoolVar(&cfg.Reconcile, "reconcile", getenv("ASP_RECONCILE", "") == "1", "poll control-plane work and drive VMM lifecycle")
 	flag.BoolVar(&cfg.TapAuto, "tap-auto", getenv("ASP_TAP_AUTO", "") == "1", "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
 	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "guest→host SSH(26501)+identity(26502): AF_VSOCK/unix lab + per-sandbox CH hybrid {vsock}_{port}")

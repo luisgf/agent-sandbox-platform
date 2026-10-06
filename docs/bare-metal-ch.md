@@ -362,7 +362,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest→CID 2) |
 | `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix `host-vsock-{port}.sock` en vez de AF_VSOCK |
 | `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix bridge + symlinks `ssh-agent-{id}.sock` |
-| `--identity-listen` | `ASP_IDENTITY_LISTEN` | unix/TCP identity (además de host-vsock 26502) |
+| `--identity-listen` | `ASP_IDENTITY_LISTEN` | unix/TCP identity sin binding de sandbox: 403 salvo `--insecure-identity-sandbox-header` (lab). Los guests usan `{vsock}_26502` |
 
 ### 5.2 Arrancar CH (per-sandbox vs shared)
 
@@ -416,9 +416,9 @@ export CH_SOCKET_DIR=/run/asp
   --egress-enforce \
   --tap-auto \
   --host-vsock \
-  --ssh-agent-bridge=/run/asp/ssh-agent.sock \
-  --identity-listen=/run/asp/identity.sock)
+  --ssh-agent-bridge=/run/asp/ssh-agent.sock)
 # sin --dry-run; sin --ch-api-socket → spawn per-sandbox
+# identity del guest: {vsock}_26502 por sandbox (--host-vsock --reconcile); sin --identity-listen
 ```
 
 En modo shared (`--ch-api-socket` set), si CH no escucha: warning `CH ping failed (is cloud-hypervisor running with --api-socket?)`. En modo per-sandbox no hay ping al arrancar (el Ping ocurre dentro de cada `Start`).
@@ -529,7 +529,9 @@ guest AF_VSOCK connect(cid=2, port=26501) → node-agent SSH agent pump
 guest AF_VSOCK connect(cid=2, port=26502) → identity HTTP POST /v1/tokens/oidc
 ```
 
-También: unix `--ssh-agent-bridge` / `--identity-listen`; reconciler crea `/run/asp/ssh-agent-{id}.sock` → bridge.
+En CH el VMM conecta esas llamadas a `{vsock}_26501` / `{vsock}_26502` de la sandbox; el token es siempre el de esa sandbox y un `X-ASP-Sandbox-ID` de otra da 403 ([ADR-0003](adr/0003-identity.md) § 2).
+
+También: unix `--ssh-agent-bridge` / `--identity-listen` (este sin binding de sandbox: solo lab, con `--insecure-identity-sandbox-header`); reconciler crea `/run/asp/ssh-agent-{id}.sock` → bridge.
 
 **Fase 2e — SSH auto en guest:** habilita `ssh-agent-vsock.service` en la imagen (vsock CID2:26501 → `/run/agent-sandbox/ssh-agent.sock`). Flag host `--guest-ssh-agent-auto` (default con `--host-vsock`). Virtiofs = alternativa ops manual. Ver [`guest-vsock-notes.md`](../scripts/guest-vsock-notes.md), [`why-2e-ssh-guest-mount.md`](why-2e-ssh-guest-mount.md).
 

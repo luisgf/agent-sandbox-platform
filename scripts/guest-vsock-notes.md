@@ -51,6 +51,10 @@ node-agent --host-vsock --host-vsock-dir=/run/asp ...
 # → unix sockets /run/asp/host-vsock-26501.sock and host-vsock-26502.sock
 ```
 
+The global listeners cannot tell guests apart, so identity there refuses tokens
+(403) unless `--insecure-identity-sandbox-header` (lab) trusts the
+`X-ASP-Sandbox-ID` header.
+
 Env in guest: `ASP_HOST_CID=2` (default in image).
 
 ### Identity from guest (example with socat + curl)
@@ -60,11 +64,14 @@ Env in guest: `ASP_HOST_CID=2` (default in image).
 socat TCP-LISTEN:18080,reuseaddr,fork VSOCK-CONNECT:${ASP_HOST_CID:-2}:26502 &
 curl -sS -X POST http://127.0.0.1:18080/v1/tokens/oidc \
   -H 'Content-Type: application/json' \
-  -H "X-ASP-Sandbox-ID: $ASP_SANDBOX_ID" \
   -d '{"aud":"https://api.example.com"}'
 ```
 
 Or a tiny Go/Rust client dialing `vsock.Dial(2, 26502)`.
+
+The token is always for the sandbox of the connection: under CH the VMM
+connects to that sandbox's `…/vsock-{sandboxID}.sock_26502`. `X-ASP-Sandbox-ID`
+is optional; naming another sandbox gets 403 (ADR-0003 § 2).
 
 ### SSH agent from guest (Fase 2e — automated)
 

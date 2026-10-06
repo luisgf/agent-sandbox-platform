@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 )
 
 // HybridGuestPath returns the host Unix socket Cloud Hypervisor / Firecracker
@@ -36,6 +37,8 @@ type sandboxHybrid struct {
 // itself — those are distinct paths.
 //
 // Idempotent: re-attach with the same id replaces previous listeners.
+// Identity requests on {muxerPath}_26502 are bound to sandboxID, so a muxer
+// path that another sandbox holds is refused.
 func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 	if sandboxID == "" {
 		return fmt.Errorf("sandboxID required")
@@ -45,6 +48,14 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 	}
 	if s.Logger == nil {
 		s.Logger = slog.Default()
+	}
+
+	// Held until the new listeners are registered: the check below must not
+	// race another attach for the same path.
+	s.attachMu.Lock()
+	defer s.attachMu.Unlock()
+	if holder := s.muxerHolder(muxerPath); holder != "" && holder != sandboxID {
+		return fmt.Errorf("muxer %s is attached to sandbox %s", muxerPath, holder)
 	}
 
 	sshPath := HybridGuestPath(muxerPath, PortSSHAgent)
@@ -92,7 +103,7 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 
 	go s.acceptSSHUpstream(sshLn, hostSock, scoped)
 	if s.IdentityHandler != nil {
-		go s.serveIdentity(idLn)
+		go s.serveIdentity(idLn, sandboxID)
 	} else {
 		go s.acceptDrain(idLn, "identity-hybrid")
 	}
@@ -123,6 +134,18 @@ func (s *Service) DetachSandbox(sandboxID string) {
 	if s.Logger != nil {
 		s.Logger.Info("hybrid guest→host acceptors detached", "sandbox_id", sandboxID, "muxer", h.muxerPath)
 	}
+}
+
+// muxerHolder returns the sandbox attached to muxerPath, or "".
+func (s *Service) muxerHolder(muxerPath string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, h := range s.hybrids {
+		if filepath.Clean(h.muxerPath) == filepath.Clean(muxerPath) {
+			return id
+		}
+	}
+	return ""
 }
 
 func closeHybrid(h *sandboxHybrid) {

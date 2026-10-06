@@ -2,6 +2,7 @@ package hostvsock
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 )
 
@@ -105,6 +107,35 @@ func TestServiceIdentityHTTP(t *testing.T) {
 	// empty body → identity proxy would 400; our stub accepts anyway
 	if resp2.StatusCode != 200 {
 		t.Fatalf("token status=%d", resp2.StatusCode)
+	}
+}
+
+// The global listeners cannot tell guests apart: identity there refuses tokens
+// unless the lab flag trusts X-ASP-Sandbox-ID.
+func TestServiceGlobalIdentityIsUnbound(t *testing.T) {
+	for _, trust := range []bool{false, true} {
+		cp, minted := mintRecorder(t)
+		factory := UnixFactory{Dir: t.TempDir()}
+		svc := &Service{
+			Factory: factory,
+			IdentityHandler: (&identity.Proxy{
+				ControlPlaneURL:    cp.URL,
+				HTTP:               cp.Client(),
+				TrustSandboxHeader: trust,
+			}).Handler(),
+		}
+		if err := svc.Start(); err != nil {
+			t.Fatal(err)
+		}
+		status, _ := requestToken(t, factory.PathFor(PortIdentity), "sb-b")
+		_ = svc.Close()
+		want, wantMinted := http.StatusForbidden, "[]"
+		if trust {
+			want, wantMinted = http.StatusOK, "[sb-b]"
+		}
+		if status != want || fmt.Sprint(minted()) != wantMinted {
+			t.Errorf("trust header %v: status %d, minted %v; want %d, %s", trust, status, minted(), want, wantMinted)
+		}
 	}
 }
 

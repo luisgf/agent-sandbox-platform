@@ -253,7 +253,9 @@ curl -s -X POST http://127.0.0.1:8080/v1/internal/oidc/token \
   -H 'Content-Type: application/json' \
   -d '{"sandbox_id":"SANDBOX_ID","aud":"https://api.example.com","nonce":"n1"}'
 
-# Identity proxy en node-agent (--identity-listen=/tmp/identity.sock):
+# Identity proxy en node-agent (--identity-listen=/tmp/identity.sock --insecure-identity-sandbox-header).
+# Este socket no está ligado a una sandbox: la cabecera solo vale con el flag de lab
+# (ADR-0003 § 2). El guest real usa su vsock 26502 y no puede nombrar otra sandbox.
 curl -s --unix-socket /tmp/identity.sock \
   -X POST http://localhost/v1/tokens/oidc \
   -H 'Content-Type: application/json' \
