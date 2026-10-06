@@ -25,8 +25,8 @@ func HybridGuestPath(muxerPath string, port uint32) string {
 type sandboxHybrid struct {
 	muxerPath string
 	sandboxID string
-	hostSock  string // resolved upstream at Attach; empty + scoped → FakeAgent
-	scoped    bool   // true → ServeConnScoped (no env SSH_AUTH_SOCK fallback)
+	hostSock  string // resolved upstream at Attach; empty → FakeAgent
+	scoped    bool   // true → hostSock comes from the per-sandbox registry
 	sshLn     net.Listener
 	idLn      net.Listener
 }
@@ -38,8 +38,9 @@ type sandboxHybrid struct {
 //
 // Idempotent: re-attach with the same id replaces previous listeners, which
 // are closed first; on error the sandbox is left detached.
-// Identity requests on {muxerPath}_26502 are bound to sandboxID, so a muxer
-// path that another sandbox holds is refused.
+// Both acceptors are bound to sandboxID: identity requests on
+// {muxerPath}_26502 get its token and signs on {muxerPath}_26501 consume its
+// approvals, so a muxer path that another sandbox holds is refused.
 func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 	if sandboxID == "" {
 		return fmt.Errorf("sandboxID required")
@@ -106,7 +107,7 @@ func (s *Service) AttachSandbox(sandboxID, muxerPath string) error {
 		return fmt.Errorf("hostvsock service closed")
 	}
 
-	go s.acceptSSHUpstream(sshLn, hostSock, scoped)
+	go s.acceptSSHUpstream(sshLn, hostSock, sandboxID)
 	if s.IdentityHandler != nil {
 		go s.serveIdentity(idLn, sandboxID)
 	} else {

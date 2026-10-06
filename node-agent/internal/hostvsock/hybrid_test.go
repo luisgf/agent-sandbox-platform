@@ -18,6 +18,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent/agenttest"
 )
 
 func TestHybridGuestPath(t *testing.T) {
@@ -449,5 +450,52 @@ func TestHybridAttachTemplateMissingIsFakeAgent(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("FakeAgent count=%d", count)
+	}
+}
+
+// Each hybrid acceptor signs only with approvals for its own sandbox, and
+// requests that would change the host agent never reach it.
+func TestHybridSSHApprovalsAreScopedToTheSandbox(t *testing.T) {
+	dir := t.TempDir()
+	up := agenttest.Start(t, filepath.Join(dir, "operator-agent.sock"))
+	ap := sshagent.NewApprover(time.Minute)
+	svc := &Service{SkipGlobalListeners: true, SSHHostSock: up.Path, SSHConfirm: ap}
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	paths := map[string]string{}
+	for _, id := range []string{"sb-a", "sb-b"} {
+		muxer := filepath.Join(dir, "vsock-"+id+".sock")
+		if err := svc.AttachSandbox(id, muxer); err != nil {
+			t.Fatal(err)
+		}
+		paths[id] = HybridGuestPath(muxer, PortSSHAgent)
+	}
+	request := func(sandboxID string, msg []byte) byte {
+		t.Helper()
+		c := dialUnixEventually(t, paths[sandboxID], 2*time.Second)
+		defer c.Close()
+		reply, err := agenttest.Request(c, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reply
+	}
+
+	if _, _, err := ap.Approve("sb-a", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if got := request("sb-b", agenttest.SignRequestMsg()); got != agenttest.Failure {
+		t.Fatalf("sb-b signed with sb-a's approval: reply %d", got)
+	}
+	if got := request("sb-a", agenttest.SignRequestMsg()); got != agenttest.SignResponse {
+		t.Fatalf("sb-a with its approval: reply %d, want SIGN_RESPONSE", got)
+	}
+	if got := request("sb-a", []byte{agenttest.RemoveAllIdentities}); got != agenttest.Failure {
+		t.Fatalf("remove_all_identities through the acceptor: reply %d", got)
+	}
+	if seen := up.Seen(); string(seen) != string([]byte{agenttest.SignRequest}) {
+		t.Fatalf("upstream received types %v, want only sb-a's sign", seen)
 	}
 }

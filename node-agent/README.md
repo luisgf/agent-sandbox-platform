@@ -35,7 +35,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | UDP DNS sink (p.ej. `:5353`): NXDOMAIN para nombres no permitidos |
 | `--egress-mitm` | `ASP_EGRESS_MITM=1` | CONNECT TLS bump (default off; corp caution) |
 | `--egress-mitm-ca` | `ASP_EGRESS_MITM_CA` | PEM CA MITM (generate/load) |
-| `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix sock bridge → `SSH_AUTH_SOCK` / FakeAgent |
+| `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix sock bridge → `SSH_AUTH_SOCK` / FakeAgent. Solo reenvía listar claves y firmar |
 | `--identity-listen` | `ASP_IDENTITY_LISTEN` | unix `.sock` o TCP para `POST /v1/tokens/oidc`; sin binding de sandbox: 403 salvo `--insecure-identity-sandbox-header` |
 | `--default-sandbox-id` | `ASP_SANDBOX_ID` | sandbox de las peticiones sin `X-ASP-Sandbox-ID` en listeners sin binding; solo con `--insecure-identity-sandbox-header` |
 | `--insecure-identity-sandbox-header` | `ASP_INSECURE_IDENTITY_SANDBOX_HEADER=1` | los listeners de identidad sin binding (`--identity-listen`, host-vsock global) toman la sandbox de `X-ASP-Sandbox-ID`: quien llegue a ellos pide el token de cualquier sandbox (solo lab) |
@@ -45,7 +45,8 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — copia privada del rootfs por sandbox (`rootfs-{id}.img`), borrada al parar; no aplica con `--dry-run` |
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest CID 2) |
 | `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix bajo este dir en vez de AF_VSOCK |
-| `--ssh-agent-confirm` | `ASP_SSH_AGENT_CONFIRM` | exige approve one-shot; default on si multi-user/template (`=0` fuerza off) |
+| `--ssh-agent-confirm` | `ASP_SSH_AGENT_CONFIRM` | exige approve one-shot con el `sandbox_id` que va a firmar; default on si multi-user/template (`=0` fuerza off) |
+| `--insecure-ssh-agent-global-approvals` | `ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS=1` | con confirm, acepta approves sin `sandbox_id`; solo los usan `--ssh-agent-bridge` y el host-vsock global, para el primer guest que firme (solo lab) |
 | `--ssh-agent-sock-template` | `ASP_SSH_AGENT_SOCK_TEMPLATE` | path template por sandbox (`{owner_sub}`/`{sandbox_id}`); missing → FakeAgent |
 | `--multi-user` | `ASP_MULTI_USER=1` (o `ASP_IDP_REQUIRED=1`) | perfil multi-user: confirm default-on |
 | `--egress-nft-redirect` / `--nft-egress-redirect` | `ASP_EGRESS_NFT_REDIRECT` / `ASP_NFT_EGRESS_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect |
@@ -69,13 +70,15 @@ go run ./cmd/node-agent \
   --tap-auto
 ```
 
-Endpoints internos (`--agent-listen`, loopback): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con confirm; body/header `actor_sub` audit).
+Endpoints internos (`--agent-listen`, loopback): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con confirm; `sandbox_id` obligatorio, 400 sin él; body/header `actor_sub` audit; devuelve un `approval_id` de auditoría).
 
 `--agent-tls-listen` solo sirve `GET /healthz`, `POST /v1/internal/exec` y `POST /v1/internal/exec/stdin` al plano de control (CN `asp-control-plane`). Necesita un cert de nodo con uso de servidor: los enrolados antes de [ADR-0011](../docs/adr/0011-multi-node.md) deben re-enrolar o rotar.
 
 Identidad del guest ([ADR-0003](../docs/adr/0003-identity.md) § 2): el token es siempre el de la sandbox de la conexión. Con `--host-vsock --reconcile` cada sandbox tiene su `{vsock}_26502`, y el proxy liga ese id a cada petición; si el guest manda un `X-ASP-Sandbox-ID` de otra sandbox, 403. `--identity-listen` y los listeners host-vsock globales no saben qué guest llama: devuelven 403 salvo con `--insecure-identity-sandbox-header` (lab), que vuelve a confiar en la cabecera.
 
-ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (ServeConnScoped, sin fallback a `SSH_AUTH_SOCK` global). Ops provisiona las keys en esa ruta; ASP no spawnea agents.
+ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (sin fallback a `SSH_AUTH_SOCK` global). Ops provisiona las keys en esa ruta; ASP no spawnea agents.
+
+Agente SSH ([ADR-0003](../docs/adr/0003-identity.md) § 1, [ADR-0005](../docs/adr/0005-fase-2d-hardening.md) § 3): todas las rutas pasan por un proxy que lee mensaje a mensaje y solo reenvía `REQUEST_IDENTITIES`, `SIGN_REQUEST` y la extensión `query`. Añadir, borrar o bloquear claves recibe `SSH_AGENT_FAILURE` sin llegar al agente del host. Con `--ssh-agent-confirm`, cada acceptor `{vsock}_26501` solo firma con aprobaciones de su sandbox.
 
 Guest→host: ver [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).
 

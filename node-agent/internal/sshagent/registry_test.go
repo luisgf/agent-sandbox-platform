@@ -90,11 +90,11 @@ func TestRegistryRoutesServeConnToDifferentUpstreams(t *testing.T) {
 		t.Fatalf("bind b: %q", p)
 	}
 
-	// ServeConnScoped for sb-a should reach upA (identities ok).
+	// sb-a's connection reaches upA (identities ok).
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
-	go ServeConnScoped(c2, reg.Lookup("sb-a"), nil, nil)
+	go ServeConn(c2, reg.Lookup("sb-a"), "sb-a", nil, nil)
 	n, err := RequestIdentities(c1)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestRegistryRoutesServeConnToDifferentUpstreams(t *testing.T) {
 	c3, c4 := net.Pipe()
 	defer c3.Close()
 	defer c4.Close()
-	go ServeConnScoped(c4, "", nil, nil)
+	go ServeConn(c4, "", "sb-x", nil, nil)
 	n, err = RequestIdentities(c3)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestRegistryRoutesServeConnToDifferentUpstreams(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("FakeAgent count=%d", n)
 	}
-	// Ensure env was not used: ServeConn (legacy) WOULD use env — Scoped must not.
+	// ServeConn never falls back to the process's SSH_AUTH_SOCK.
 	if _, err := os.Stat(upA); err != nil {
 		t.Fatal(err)
 	}

@@ -229,7 +229,7 @@ Rollout:
 | **3u.1** | Schema `owner_sub` / `owner_email` + audit `actor_sub` | ✅ **Hecho** (migración `007_multi_user_identity.sql`; lab: vacío OK; header `X-ASP-Actor-Sub`) |
 | **3u.2** | Validación JWT IdP (Entra/Okta/OIDC) en API del CP | ✅ **Hecho** (`internal/authn/idp`; `ASP_IDP_*`; lab default off) |
 | **3u.3** | RBAC admin / operator / viewer desde claims IdP | ✅ **Hecho** (`ASP_IDP_ROLE_*`; list tenant-wide; destroy operator=propios) |
-| **3u.4** | SSH: confirm default-on + registry/template por `owner_sub` (opción A MVP) | ✅ **Hecho** (`ASP_SSH_AGENT_SOCK_TEMPLATE`; ServeConnScoped; approve `actor_sub`; no spawner de agents) |
+| **3u.4** | SSH: confirm default-on + registry/template por `owner_sub` (opción A MVP) | ✅ **Hecho** (`ASP_SSH_AGENT_SOCK_TEMPLATE`; upstream por sandbox; approve con `sandbox_id` y `actor_sub`; no spawner de agents) |
 | **3u.5** | Mint OIDC workload con `user_sub` / `act` desde `owner_sub` | ✅ **Hecho** (`oidc.MintIdentity`; CP desde store; guest override ignorado; lab sin owner omite claims) |
 
 **Criterio “corporate ready” (identidad):** create/exec/destroy atribuibles a humano; JWT de workload con cadena `user_sub`; SSH no compartido a ciegas entre usuarios del mismo nodo. API keys quedan como principals de servicio.

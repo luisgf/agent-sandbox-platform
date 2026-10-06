@@ -138,11 +138,11 @@ Flujo:
 ```text
 reconciler Start(sandbox{owner_sub})
   → Registry.Bind(id, owner_sub)  // expand template
-  → AttachSandbox → ServeConnScoped(hostSock)  // no env fallback
+  → AttachSandbox → ServeConn(hostSock, sandboxID)  // no env fallback; solo identities + sign
   → symlink /run/asp/ssh-agent-{id}.sock → hostSock (si no vacío)
 ```
 
-Approve (audit):
+Approve (obligatorio `sandbox_id`: la aprobación solo desbloquea una firma de esa sandbox; `actor_sub` para audit):
 
 ```bash
 curl -s -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \

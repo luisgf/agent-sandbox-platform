@@ -5,7 +5,7 @@
 | Port | Direction | Protocol | Role |
 |---|---|---|---|
 | **26500** | host → guest | HTTP JSON | pod-daemon (`GET /healthz`, `POST /v1/exec`) |
-| **26501** | guest → host | SSH agent | byte-pump to host `SSH_AUTH_SOCK` / FakeAgent |
+| **26501** | guest → host | SSH agent | proxy (identities + sign only) to host `SSH_AUTH_SOCK` / FakeAgent |
 | **26502** | guest → host | HTTP JSON | identity proxy `POST /v1/tokens/oidc` |
 
 ## Host → guest (exec) — Cloud Hypervisor hybrid

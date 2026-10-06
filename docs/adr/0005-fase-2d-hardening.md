@@ -49,8 +49,14 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 
 - Flag `--ssh-agent-confirm` / `ASP_SSH_AGENT_CONFIRM=1`.
 - Antes de `SSH2_AGENTC_SIGN_REQUEST`, hace falta approve one-shot: `POST /v1/internal/ssh-agent/approve` (TTL default 30s). Sin approve → `SSH_AGENT_FAILURE` (auto-deny).
-- List keys / mensajes no-sign siguen funcionando.
+- Listar claves sigue funcionando. El resto de mensajes no llega nunca al agente del host ([ADR-0003](0003-identity.md) § 1).
 - Aplica al bridge unix y a host-vsock :26501.
+
+**Actualizado 2026-10 (aprobaciones por sandbox):** una aprobación la consumía la primera firma que llegara, de cualquier sandbox del nodo, y el `token` de la respuesta no lo pedía nadie. Ahora:
+
+- `POST /v1/internal/ssh-agent/approve` exige `sandbox_id` (**400** sin él). La aprobación solo la consume una firma que llegue por el acceptor hybrid de esa sandbox (`{vsock}_26501`). Si hay varias, se usa la que caduca antes.
+- La respuesta trae `approval_id` en vez de `token`. Es un id de auditoría: sale en el log al aprobar y en la firma que desbloquea, pero nadie tiene que presentarlo.
+- `--ssh-agent-bridge` y el listener host-vsock global no saben qué guest llama. Con el gate activo, toda firma por ellos se deniega. En lab, `--insecure-ssh-agent-global-approvals` (`ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS=1`) acepta aprobaciones sin `sandbox_id`, que solo consumen esos listeners: la usa el primer guest que firme por ellos.
 
 ### 4) nftables anti-bypass (sketch) + enforcer
 

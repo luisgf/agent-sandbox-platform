@@ -276,7 +276,7 @@ Clave de firma: `ASP_OIDC_KEY` (PEM path; auto-create) e issuer `ASP_OIDC_ISSUER
 ### SSH agent bridge
 
 ```bash
-# Sin SSH_AUTH_SOCK → FakeAgent (0 keys). Con sock de host → byte-pump.
+# Sin SSH_AUTH_SOCK → FakeAgent (0 keys). Con sock de host → proxy (solo listar claves y firmar).
 (cd node-agent && go run ./cmd/node-agent --dry-run \
   --ssh-agent-bridge=/tmp/asp-ssh-agent.sock ...)
 

@@ -3,7 +3,7 @@
 // Port map (guest dials CID 2):
 //
 //	26500 — reserved for host→guest pod-daemon (CH hybrid CONNECT; not served here)
-//	26501 — SSH agent protocol byte-pump → per-sandbox HostSock / FakeAgent
+//	26501 — SSH agent proxy (identities + sign only) → per-sandbox HostSock / FakeAgent
 //	26502 — identity HTTP (POST /v1/tokens/oidc)
 //
 // Two host listen paths:
@@ -80,8 +80,11 @@ func (f UnixFactory) PathFor(port uint32) string {
 // Service accepts guest connections on SSH + identity ports.
 type Service struct {
 	Factory     ListenerFactory
-	SSHHostSock string             // legacy node-wide SSH_AUTH_SOCK; empty → FakeAgent (global listener)
-	SSHConfirm  *sshagent.Approver // optional SignRequest confirmation gate
+	SSHHostSock string // legacy node-wide SSH_AUTH_SOCK; empty → FakeAgent
+	// SSHConfirm optional SignRequest confirmation gate. Hybrid acceptors
+	// consume approvals for their sandbox; the global listener only global
+	// ones (Approver.GlobalApprovals).
+	SSHConfirm *sshagent.Approver
 	// SSHRegistry optional per-sandbox upstream map (ADR-0007 phase 4).
 	// When set, hybrid AttachSandbox ServeConn uses Registry.Lookup(sandboxID)
 	// with no process-env fallback.
@@ -178,13 +181,16 @@ func (s *Service) Close() error {
 }
 
 // acceptSSH serves the optional global listener (legacy node-wide HostSock).
+// It cannot tell guests apart, so it has no sandbox for approvals.
 func (s *Service) acceptSSH(ln net.Listener) {
-	s.acceptSSHUpstream(ln, s.SSHHostSock, false /* scoped */)
+	s.acceptSSHUpstream(ln, s.SSHHostSock, "")
 }
 
-// acceptSSHUpstream pumps SSH agent to hostSock. When scoped, empty/missing
-// sock → FakeAgent (no SSH_AUTH_SOCK env fallback).
-func (s *Service) acceptSSHUpstream(ln net.Listener, hostSock string, scoped bool) {
+// acceptSSHUpstream serves the SSH agent proxy (sshagent.ServeConn) to
+// hostSock on ln. sandboxID is the sandbox every connection on ln comes from,
+// "" for the global listener; SignRequest approvals are matched against it.
+// An empty or missing hostSock is an agent with no keys.
+func (s *Service) acceptSSHUpstream(ln net.Listener, hostSock, sandboxID string) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -201,19 +207,12 @@ func (s *Service) acceptSSHUpstream(ln net.Listener, hostSock string, scoped boo
 			s.Logger.Warn("host-vsock ssh accept", "error", err)
 			continue
 		}
-		go func(c net.Conn) {
-			defer c.Close()
-			if scoped {
-				sshagent.ServeConnScoped(c, hostSock, s.SSHConfirm, s.Logger)
-			} else {
-				sshagent.ServeConnWithConfirm(c, hostSock, s.SSHConfirm, s.Logger)
-			}
-		}(conn)
+		go sshagent.ServeConn(conn, hostSock, sandboxID, s.SSHConfirm, s.Logger)
 	}
 }
 
 // resolveHybridSSHSock returns (hostSock, scoped) for a sandbox at Attach time.
-// scoped=true → ServeConnScoped (no process SSH_AUTH_SOCK fallback).
+// scoped=true → the upstream comes from the per-sandbox registry.
 func (s *Service) resolveHybridSSHSock(sandboxID string) (string, bool) {
 	if s.SSHRegistry == nil {
 		return s.SSHHostSock, false
