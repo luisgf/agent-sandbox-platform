@@ -19,6 +19,9 @@ cleanup() { docker rm -f "$CID" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 TMP="$(mktemp -d)"
+# mktemp -d creates the directory 0700, and `cp -a "$TMP"/.` below copies that
+# mode onto the image root. Only root could then traverse / in the guest.
+chmod 0755 "$TMP"
 docker export "$CID" | tar -C "$TMP" -xf -
 # docker create injects /.dockerenv. systemd then treats the VM as a container.
 rm -f "$TMP/.dockerenv"
