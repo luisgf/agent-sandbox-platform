@@ -239,7 +239,7 @@ Allowlist efectiva (deny-by-default). El proxy y el DNS sink identifican el sand
 
 `X-ASP-Allowlist-JSON` y `X-ASP-Sandbox-ID` se borran de la petición reenviada y no cambian la decisión.
 
-Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomendado junto a `--egress-enforce`). Hardening: rate-limit token-bucket por host/sandbox, límite de body (`ASP_EGRESS_MAX_BODY`), deny de schemes no-HTTP, audit JSON. MITM CONNECT bump **off** por defecto; solo con `--egress-mitm` / `ASP_EGRESS_MITM=1` + `--egress-mitm-ca` (corp caution).
+Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomendado junto a `--egress-enforce`). Hardening: rate-limit token-bucket por host/sandbox, límite del body de las peticiones (`ASP_EGRESS_MAX_BODY`, 413; las respuestas no se cortan), deny de schemes no-HTTP, audit JSON. MITM CONNECT bump **off** por defecto; solo con `--egress-mitm` / `ASP_EGRESS_MITM=1` + `--egress-mitm-ca` (corp caution).
 
 #### DNS
 

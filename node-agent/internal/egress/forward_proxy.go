@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/textproto"
 	"os"
 	"strconv"
 	"strings"
@@ -54,12 +56,63 @@ type ForwardProxy struct {
 	// RateLimit per host/sandbox (token bucket). Nil disables.
 	RateLimit *TokenBucket
 	// MaxBodyBytes limits proxied HTTP request bodies (0 = DefaultMaxBody).
+	// Responses are streamed in full, as they are through a CONNECT tunnel.
 	MaxBodyBytes int64
 	// MITM enables CONNECT TLS bump when non-nil and ASP_EGRESS_MITM=1.
 	MITM *mitm.CA
 
 	envOnce sync.Once
 	envAL   *Allowlist
+
+	clientOnce sync.Once
+	client     *http.Client
+}
+
+// upstreamClient is shared by every plain-HTTP request so connections to
+// upstreams are reused. There is no overall timeout: it would also cover the
+// response body and cut a long download. Each phase up to the response headers
+// is bounded instead, and the guest closing its connection cancels the request.
+func (p *ForwardProxy) upstreamClient() *http.Client {
+	p.clientOnce.Do(func() {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.DialContext = (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+		tr.TLSHandshakeTimeout = 10 * time.Second
+		tr.ResponseHeaderTimeout = 30 * time.Second
+		p.client = &http.Client{
+			Transport: tr,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	})
+	return p.client
+}
+
+// hopHeaders apply to one connection only and are not forwarded (RFC 7230 §6.1).
+var hopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// removeHopHeaders drops the hop-by-hop headers and the ones Connection names.
+func removeHopHeaders(h http.Header) {
+	for _, f := range h.Values("Connection") {
+		for _, name := range strings.Split(f, ",") {
+			if name = textproto.TrimString(name); name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, name := range hopHeaders {
+		h.Del(name)
+	}
 }
 
 // resolveAllowlist picks the policy from the connection's source address.
@@ -341,26 +394,31 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request, al *Al
 	if outURL.Host == "" {
 		outURL.Host = rawHost
 	}
-	body := io.LimitReader(r.Body, p.maxBody()+1)
-	limited := http.MaxBytesReader(w, io.NopCloser(body), p.maxBody())
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), limited)
+	if r.ContentLength > p.maxBody() {
+		p.audit("deny", map[string]any{"reason": "body_too_large", "host": host, "sandbox_id": sandbox})
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	var body io.Reader = http.NoBody
+	if r.ContentLength != 0 {
+		body = http.MaxBytesReader(w, r.Body, p.maxBody())
+	}
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Keep the guest's Content-Length (-1 when it sent chunked) so the upstream
+	// gets a length when there is one.
+	outReq.ContentLength = r.ContentLength
 	outReq.Header = r.Header.Clone()
-	outReq.Header.Del("Proxy-Connection")
+	removeHopHeaders(outReq.Header)
 	outReq.Header.Del(AllowlistHeader)
 	outReq.Header.Del(SandboxHeader)
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(outReq)
+	resp, err := p.upstreamClient().Do(outReq)
 	if err != nil {
-		if strings.Contains(err.Error(), "http: request body too large") || strings.Contains(err.Error(), "MaxBytesReader") {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) || strings.Contains(err.Error(), "http: request body too large") {
 			p.audit("deny", map[string]any{"reason": "body_too_large", "host": host, "sandbox_id": sandbox})
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
@@ -372,13 +430,15 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request, al *Al
 	p.audit("http", map[string]any{
 		"host": host, "port": port, "method": r.Method, "status": resp.StatusCode, "sandbox_id": sandbox,
 	})
-	for k, vv := range resp.Header {
+	header := resp.Header.Clone()
+	removeHopHeaders(header)
+	for k, vv := range header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, p.maxBody()))
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func tunnel(dst, src net.Conn) {
