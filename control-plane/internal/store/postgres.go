@@ -156,16 +156,17 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		placedOn = &picked
 	}
 
-	_, err = tx.Exec(ctx, `
+	created, err := scanSandbox(tx.QueryRow(ctx, `
 		INSERT INTO sandboxes (
 			id, tenant_id, node_id, state, vmm_profile, image_ref,
 			cpu_millis, memory_mib, state_version, created_at, updated_at,
 			owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
 			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
-		) VALUES ($1,$2,$14,'requested',$3,$4,$5,$6,1,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'')`,
+		) VALUES ($1,$2,$14,'requested',$3,$4,$5,$6,1,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'')
+		RETURNING `+sandboxColumns,
 		id, input.TenantID, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB, now,
 		ownerSub, ownerEmail, input.WorkspaceHostPath, lnOn, lnState, "", placedOn,
-	)
+	))
 	if err != nil {
 		return Sandbox{}, fmt.Errorf("insert sandbox: %w", err)
 	}
@@ -219,9 +220,11 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 		if input.NodeID != "" {
 			nodeID = input.NodeID
 		}
-		if _, err := tx.Exec(ctx, `
+		created, err = scanSandbox(tx.QueryRow(ctx, `
 			UPDATE sandboxes SET state='running', node_id=$2, state_version=state_version+1, updated_at=$3, last_activity_at=$3
-			WHERE id=$1`, id, nodeID, now3); err != nil {
+			WHERE id=$1
+			RETURNING `+sandboxColumns, id, nodeID, now3))
+		if err != nil {
 			return Sandbox{}, err
 		}
 		if err := emitEventTx(ctx, tx, EmitEventInput{
@@ -248,17 +251,13 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	if err := tx.Commit(ctx); err != nil {
 		return Sandbox{}, err
 	}
-	return p.GetSandbox(id)
+	return created, nil
 }
 
 func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
 	ctx := context.Background()
 	row := p.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-		       cpu_millis, memory_mib, state_version, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
-			local_net_listen_port, local_net_node_addr, local_net_client_addr
+		SELECT `+sandboxColumns+`
 		FROM sandboxes WHERE id=$1`, id)
 	sb, err := scanSandbox(row)
 	if err != nil {
@@ -276,19 +275,11 @@ func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 	var err error
 	if tenantID == "" {
 		rows, err = p.pool.Query(ctx, `
-			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-			       cpu_millis, memory_mib, state_version, created_at, updated_at,
-			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
-			local_net_listen_port, local_net_node_addr, local_net_client_addr
+			SELECT `+sandboxColumns+`
 			FROM sandboxes ORDER BY created_at DESC`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
-			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-			       cpu_millis, memory_mib, state_version, created_at, updated_at,
-			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
-			local_net_listen_port, local_net_node_addr, local_net_client_addr
+			SELECT `+sandboxColumns+`
 			FROM sandboxes WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	}
 	if err != nil {
@@ -319,13 +310,12 @@ func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Only the node the scheduler placed the sandbox on can claim it (ADR-0011).
-	var tenantID string
-	err = tx.QueryRow(ctx, `
+	claimed, err := scanSandbox(tx.QueryRow(ctx, `
 		UPDATE sandboxes
 		SET state='starting', state_version=state_version+1, updated_at=$3
 		WHERE id=$1 AND state='requested' AND node_id=$2
-		RETURNING tenant_id`,
-		id, nodeID, now).Scan(&tenantID)
+		RETURNING `+sandboxColumns,
+		id, nodeID, now))
 	if errors.Is(err, pgx.ErrNoRows) {
 		sb, gerr := p.GetSandbox(id)
 		if gerr != nil {
@@ -342,7 +332,7 @@ func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	from := string(SandboxRequested)
 	if err := emitEventTx(ctx, tx, EmitEventInput{
 		SandboxID: id,
-		TenantID:  tenantID,
+		TenantID:  claimed.TenantID,
 		EventType: "sandbox.claimed",
 		FromState: &from,
 		ToState:   strPtr(string(SandboxStarting)),
@@ -354,7 +344,7 @@ func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return Sandbox{}, err
 	}
-	return p.GetSandbox(id)
+	return claimed, nil
 }
 
 func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
@@ -363,11 +353,7 @@ func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	}
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-		       cpu_millis, memory_mib, state_version, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
-			local_net_listen_port, local_net_node_addr, local_net_client_addr
+		SELECT `+sandboxColumns+`
 		FROM sandboxes
 		WHERE node_id = $1 AND state = ANY($2)
 		ORDER BY created_at ASC`, nodeID, occupyingStateNames())
@@ -398,63 +384,72 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 		return Sandbox{}, fmt.Errorf("%w: invalid status %s", ErrInvalidInput, state)
 	}
 	ctx := context.Background()
-	// Guarded by the state the transition was checked against; retry if it moved.
-	for attempt := 0; attempt < 3; attempt++ {
-		sb, err := p.GetSandbox(id)
-		if err != nil {
-			return Sandbox{}, err
-		}
-		if !ValidAgentTransition(sb.State, state) {
-			return Sandbox{}, fmt.Errorf("%w: cannot move sandbox from %s to %s", ErrConflict, sb.State, state)
-		}
-		from := string(sb.State)
-		now := time.Now().UTC()
-		tx, err := p.pool.Begin(ctx)
-		if err != nil {
-			return Sandbox{}, err
-		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3,
-			    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE last_activity_at END,
-			    stop_reason=CASE WHEN $2='running' THEN '' ELSE stop_reason END,
-			    local_net_state=CASE
-			      WHEN $2 IN ('failed','stopped','stopping') AND local_net THEN 'withdrawn'
-			      WHEN $2 IN ('failed','stopped','stopping') AND NOT local_net THEN 'off'
-			      ELSE local_net_state END,
-			    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_client_public END,
-			    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE local_net_grant_hash END,
-			    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping') THEN NULL ELSE local_net_grant_expires_at END
-			WHERE id=$1 AND state=$4`, id, string(state), now, from)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return Sandbox{}, err
-		}
-		if tag.RowsAffected() == 0 {
-			_ = tx.Rollback(ctx)
-			continue
-		}
-		payload := map[string]string{}
-		if detail != "" {
-			payload["detail"] = detail
-		}
-		if err := emitEventTx(ctx, tx, EmitEventInput{
-			SandboxID: id,
-			TenantID:  sb.TenantID,
-			EventType: "sandbox.state_changed",
-			FromState: &from,
-			ToState:   strPtr(string(state)),
-			Actor:     "node-agent",
-			Payload:   mustJSON(payload),
-		}); err != nil {
-			_ = tx.Rollback(ctx)
-			return Sandbox{}, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return Sandbox{}, err
-		}
-		return p.GetSandbox(id)
+	now := time.Now().UTC()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return Sandbox{}, err
 	}
-	return Sandbox{}, fmt.Errorf("%w: sandbox %s changed state concurrently; retry", ErrConflict, id)
+	defer func() { _ = tx.Rollback(ctx) }()
+	// One statement locks the row, checks the transition against the state it
+	// had (ValidAgentTransition), updates it and returns it. The previous
+	// state comes from a locking sub-select in FROM (see HeartbeatNode).
+	var from string
+	sb, err := scanSandbox(tx.QueryRow(ctx, `
+		UPDATE sandboxes s SET state=$2, state_version=s.state_version+1, updated_at=$3,
+		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE s.last_activity_at END,
+		    stop_reason=CASE WHEN $2='running' THEN '' ELSE s.stop_reason END,
+		    local_net_state=CASE
+		      WHEN $2 IN ('failed','stopped','stopping') AND s.local_net THEN 'withdrawn'
+		      WHEN $2 IN ('failed','stopped','stopping') AND NOT s.local_net THEN 'off'
+		      ELSE s.local_net_state END,
+		    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE s.local_net_client_public END,
+		    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE s.local_net_grant_hash END,
+		    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping') THEN NULL ELSE s.local_net_grant_expires_at END
+		FROM (SELECT id, state FROM sandboxes WHERE id=$1 FOR UPDATE) prev
+		WHERE s.id = prev.id AND prev.state = ANY($4)
+		RETURNING prev.state, `+sandboxColumnsS,
+		id, string(state), now, agentFromStates(state)), &from)
+	if errors.Is(err, pgx.ErrNoRows) {
+		cur, gerr := p.GetSandbox(id)
+		if gerr != nil {
+			return Sandbox{}, gerr
+		}
+		return Sandbox{}, fmt.Errorf("%w: cannot move sandbox from %s to %s", ErrConflict, cur.State, state)
+	}
+	if err != nil {
+		return Sandbox{}, err
+	}
+	payload := map[string]string{}
+	if detail != "" {
+		payload["detail"] = detail
+	}
+	if err := emitEventTx(ctx, tx, EmitEventInput{
+		SandboxID: id,
+		TenantID:  sb.TenantID,
+		EventType: "sandbox.state_changed",
+		FromState: &from,
+		ToState:   strPtr(string(state)),
+		Actor:     "node-agent",
+		Payload:   mustJSON(payload),
+	}); err != nil {
+		return Sandbox{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Sandbox{}, err
+	}
+	return sb, nil
+}
+
+// agentFromStates lists the states a node may move a sandbox to `to` from.
+func agentFromStates(to SandboxState) []string {
+	var out []string
+	for _, from := range []SandboxState{SandboxRequested, SandboxScheduled, SandboxStarting, SandboxRunning,
+		SandboxPaused, SandboxStopping, SandboxStopped, SandboxFailed} {
+		if ValidAgentTransition(from, to) {
+			out = append(out, string(from))
+		}
+	}
+	return out
 }
 
 func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) {
@@ -463,69 +458,74 @@ func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error
 	}
 	actorSub = strings.TrimSpace(actorSub)
 	ctx := context.Background()
-	// The update is guarded by the state it was decided from: a node claiming the
-	// sandbox in between changes the decision, so read again and retry.
-	for attempt := 0; attempt < 3; attempt++ {
-		sb, err := p.GetSandbox(id)
-		if err != nil {
-			return Sandbox{}, err
-		}
-		if sb.State == SandboxStopped || sb.State == SandboxStopping {
-			return sb, nil
-		}
-		from := string(sb.State)
-		target := SandboxStopping
-		payload := json.RawMessage(`{"reason":"destroy"}`)
-		if sb.State == SandboxRequested {
-			// Never claimed: no VM exists before a node claims it.
-			target = SandboxStopped
-			payload = json.RawMessage(`{"reason":"destroy_unclaimed"}`)
-		} else if sb.State == SandboxFailed {
-			target = SandboxStopped
-			payload = json.RawMessage(`{"reason":"destroy_failed"}`)
-		} else if !IsActiveLifecycle(sb.State) {
-			return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, sb.State)
-		}
-
-		now := time.Now().UTC()
-		tx, err := p.pool.Begin(ctx)
-		if err != nil {
-			return Sandbox{}, err
-		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE sandboxes SET state=$2, state_version=state_version+1, updated_at=$3,
-			    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
-			    local_net_client_public='',
-			    local_net_grant_hash='',
-			    local_net_grant_expires_at=NULL
-			WHERE id=$1 AND state=$4`, id, string(target), now, from)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return Sandbox{}, err
-		}
-		if tag.RowsAffected() == 0 {
-			_ = tx.Rollback(ctx)
-			continue // the state moved under us; decide again
-		}
-		if err := emitEventTx(ctx, tx, EmitEventInput{
-			SandboxID: id,
-			TenantID:  sb.TenantID,
-			EventType: "sandbox.state_changed",
-			FromState: &from,
-			ToState:   strPtr(string(target)),
-			Actor:     "api",
-			ActorSub:  actorSub,
-			Payload:   payload,
-		}); err != nil {
-			_ = tx.Rollback(ctx)
-			return Sandbox{}, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return Sandbox{}, err
-		}
-		return p.GetSandbox(id)
+	now := time.Now().UTC()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return Sandbox{}, err
 	}
-	return Sandbox{}, fmt.Errorf("%w: sandbox %s changed state concurrently; retry", ErrConflict, id)
+	defer func() { _ = tx.Rollback(ctx) }()
+	// One statement, decided from the state the row had when it was locked: a
+	// sandbox never claimed (requested) or failed has no VM, so it is stopped
+	// at once; an active one goes to stopping for its node to clean up.
+	var from string
+	sb, err := scanSandbox(tx.QueryRow(ctx, `
+		UPDATE sandboxes s SET
+		    state=CASE WHEN prev.state IN ('requested','failed') THEN 'stopped' ELSE 'stopping' END,
+		    state_version=s.state_version+1, updated_at=$2,
+		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
+		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
+		FROM (SELECT id, state FROM sandboxes WHERE id=$1 FOR UPDATE) prev
+		WHERE s.id = prev.id AND prev.state = ANY($3)
+		RETURNING prev.state, `+sandboxColumnsS,
+		id, now, destroyableStates()), &from)
+	if errors.Is(err, pgx.ErrNoRows) {
+		cur, gerr := p.GetSandbox(id)
+		if gerr != nil {
+			return Sandbox{}, gerr
+		}
+		if cur.State == SandboxStopped || cur.State == SandboxStopping {
+			return cur, nil
+		}
+		return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, cur.State)
+	}
+	if err != nil {
+		return Sandbox{}, err
+	}
+	payload := json.RawMessage(`{"reason":"destroy"}`)
+	switch SandboxState(from) {
+	case SandboxRequested:
+		payload = json.RawMessage(`{"reason":"destroy_unclaimed"}`)
+	case SandboxFailed:
+		payload = json.RawMessage(`{"reason":"destroy_failed"}`)
+	}
+	if err := emitEventTx(ctx, tx, EmitEventInput{
+		SandboxID: id,
+		TenantID:  sb.TenantID,
+		EventType: "sandbox.state_changed",
+		FromState: &from,
+		ToState:   strPtr(string(sb.State)),
+		Actor:     "api",
+		ActorSub:  actorSub,
+		Payload:   payload,
+	}); err != nil {
+		return Sandbox{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Sandbox{}, err
+	}
+	return sb, nil
+}
+
+// destroyableStates are the states MarkSandboxStopping moves: the active
+// lifecycle (to stopping, or stopped before a claim) and failed (to stopped).
+func destroyableStates() []string {
+	out := []string{string(SandboxFailed)}
+	for _, st := range []SandboxState{SandboxRequested, SandboxScheduled, SandboxStarting, SandboxRunning, SandboxPaused} {
+		if IsActiveLifecycle(st) {
+			out = append(out, string(st))
+		}
+	}
+	return out
 }
 
 func (p *PostgresStore) TouchSandboxActivity(id string) error {
@@ -555,11 +555,7 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 	cutoff := now.Add(-idleFor)
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
-		       cpu_millis, memory_mib, state_version, created_at, updated_at,
-		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
-			local_net_listen_port, local_net_node_addr, local_net_client_addr
+		SELECT `+sandboxColumns+`
 		FROM sandboxes
 		WHERE state IN ('requested','scheduled','starting','running','paused')
 		  AND last_activity_at <= $1`, cutoff)
@@ -592,7 +588,7 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 		if err != nil {
 			return out, err
 		}
-		tag, err := tx.Exec(ctx, `
+		stopped, err := scanSandbox(tx.QueryRow(ctx, `
 			UPDATE sandboxes
 			SET state=$2, stop_reason=$3,
 			    state_version=state_version+1, updated_at=$4,
@@ -600,15 +596,16 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 			    local_net_client_public='',
 			    local_net_grant_hash='',
 			    local_net_grant_expires_at=NULL
-			WHERE id=$1 AND state=$5 AND last_activity_at <= $6`,
-			sb.ID, string(target), StopReasonIdle, now, from, cutoff)
+			WHERE id=$1 AND state=$5 AND last_activity_at <= $6
+			RETURNING `+sandboxColumns,
+			sb.ID, string(target), StopReasonIdle, now, from, cutoff))
+		if errors.Is(err, pgx.ErrNoRows) {
+			_ = tx.Rollback(ctx)
+			continue // activity or another transition got there first
+		}
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return out, err
-		}
-		if tag.RowsAffected() == 0 {
-			_ = tx.Rollback(ctx)
-			continue
 		}
 		if err := emitEventTx(ctx, tx, EmitEventInput{
 			SandboxID: sb.ID,
@@ -625,11 +622,7 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 		if err := tx.Commit(ctx); err != nil {
 			return out, err
 		}
-		got, err := p.GetSandbox(sb.ID)
-		if err != nil {
-			return out, err
-		}
-		out = append(out, got)
+		out = append(out, stopped)
 	}
 	return out, nil
 }
@@ -678,23 +671,25 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		return Node{}, errNodeRevoked(id)
 	}
 
+	var node Node
 	if isNew {
 		createdAt = now
-		_, err = tx.Exec(ctx, `
+		node, err = scanNode(tx.QueryRow(ctx, `
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, fence_endpoint, fence_token,
 				last_seen_at, created_at, updated_at,
 				max_sandboxes, accepts_work, local_net_dial, agent_instance_id
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13,$14)`,
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13,$14)
+			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 			strings.TrimSpace(input.AgentInstanceID),
-		)
+		))
 	} else {
 		// cordoned is an admin decision: register never touches it.
-		_, err = tx.Exec(ctx, `
+		node, err = scanNode(tx.QueryRow(ctx, `
 			UPDATE nodes SET
 				name=$2, endpoint=$3,
 				agent_endpoint=CASE WHEN $4 = '' THEN agent_endpoint ELSE $4 END,
@@ -705,12 +700,13 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 				last_seen_at=$10, updated_at=$10,
 				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13,
 				agent_instance_id=CASE WHEN $14 = '' THEN agent_instance_id ELSE $14 END
-			WHERE id=$1`,
+			WHERE id=$1
+			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
 			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 			strings.TrimSpace(input.AgentInstanceID),
-		)
+		))
 		if err == nil && agentRestarted(prevInstance, strings.TrimSpace(input.AgentInstanceID)) {
 			err = failRestartOrphansTx(ctx, tx, id, now)
 		}
@@ -736,7 +732,7 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return Node{}, err
 	}
-	return p.GetNode(id)
+	return node, nil
 }
 
 func (p *PostgresStore) CreateEnrollToken(tok EnrollToken) error {
@@ -849,6 +845,7 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 	if err != nil {
 		return Node{}, err
 	}
+	var node Node
 	if auth.TokenHash != "" {
 		if _, err := tx.Exec(ctx, `UPDATE node_enroll_tokens SET used_at=$2, used_by=$3 WHERE hash=$1`, auth.TokenHash, now, id); err != nil {
 			return Node{}, err
@@ -861,28 +858,29 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 				VALUES ($1,$2,'','rotated-on-enroll',$3)
 				ON CONFLICT (fingerprint) DO NOTHING`, oldFP, id, now)
 		}
-		_, err = tx.Exec(ctx, `
+		node, err = scanNode(tx.QueryRow(ctx, `
 			UPDATE nodes SET
 				name=$2, endpoint=$3, agent_endpoint=$4, state='ready', vmm_profiles=$5,
 				capacity_cpu=$6, capacity_mem_mib=$7, cert_fingerprint=$8, cert_serial=$9,
 				enrolled_at=$10, last_seen_at=$10, updated_at=$10, revoked_at=NULL, cert_not_after=$11
-			WHERE id=$1`,
+			WHERE id=$1
+			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles,
 			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now, cert.notAfterPtr(),
-		)
+		))
 	} else {
-		var tag pgconn.CommandTag
-		tag, err = tx.Exec(ctx, `
+		node, err = scanNode(tx.QueryRow(ctx, `
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, cert_fingerprint, cert_serial, enrolled_at,
 				last_seen_at, created_at, updated_at, cert_not_after
 			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10,$11)
-			ON CONFLICT (id) DO NOTHING`,
+			ON CONFLICT (id) DO NOTHING
+			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles,
 			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now, cert.notAfterPtr(),
-		)
-		if err == nil && tag.RowsAffected() == 0 {
+		))
+		if errors.Is(err, pgx.ErrNoRows) {
 			// Another enrollment created the node first.
 			return Node{}, fmt.Errorf("%w: %s", ErrNodeEnrolled, id)
 		}
@@ -907,7 +905,7 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 	if err := tx.Commit(ctx); err != nil {
 		return Node{}, err
 	}
-	return p.GetNode(id)
+	return node, nil
 }
 
 func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, error) {
@@ -951,9 +949,10 @@ func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, erro
 			return Node{}, err
 		}
 	}
-	_, err = tx.Exec(ctx, `
+	node, err := scanNode(tx.QueryRow(ctx, `
 		UPDATE nodes SET cert_fingerprint=$2, cert_serial=$3, updated_at=$4, cert_not_after=$5
-		WHERE id=$1`, nodeID, fp, serial, now, cert.notAfterPtr())
+		WHERE id=$1
+		RETURNING `+nodeColumns, nodeID, fp, serial, now, cert.notAfterPtr()))
 	if err != nil {
 		return Node{}, err
 	}
@@ -973,7 +972,7 @@ func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, erro
 	if err := tx.Commit(ctx); err != nil {
 		return Node{}, err
 	}
-	return p.GetNode(nodeID)
+	return node, nil
 }
 
 func (p *PostgresStore) RevokeNode(nodeID string) (Node, error) {
@@ -997,8 +996,9 @@ func (p *PostgresStore) RevokeNode(nodeID string) (Node, error) {
 		return Node{}, err
 	}
 	now := time.Now().UTC()
-	_, err = tx.Exec(ctx, `
-		UPDATE nodes SET revoked_at=$2, state='offline', updated_at=$2 WHERE id=$1`, nodeID, now)
+	node, err := scanNode(tx.QueryRow(ctx, `
+		UPDATE nodes SET revoked_at=$2, state='offline', updated_at=$2 WHERE id=$1
+		RETURNING `+nodeColumns, nodeID, now))
 	if err != nil {
 		return Node{}, err
 	}
@@ -1023,7 +1023,7 @@ func (p *PostgresStore) RevokeNode(nodeID string) (Node, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return Node{}, err
 	}
-	return p.GetNode(nodeID)
+	return node, nil
 }
 
 func (p *PostgresStore) IsCertRevoked(fingerprint string) (bool, error) {
@@ -1058,11 +1058,11 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 	// before the row is updated. A CTE read only in RETURNING runs after the
 	// update, and its FOR UPDATE then skips the row this statement changed:
 	// the subquery returns NULL.
-	err := p.pool.QueryRow(ctx, `
+	node, err := scanNode(p.pool.QueryRow(ctx, `
 		UPDATE nodes n SET last_seen_at=$2, updated_at=$2, state='ready'
 		FROM (SELECT id, state FROM nodes WHERE id=$1 AND revoked_at IS NULL FOR UPDATE) prev
 		WHERE n.id = prev.id
-		RETURNING prev.state`, id, now).Scan(&prevState)
+		RETURNING prev.state, `+nodeColumnsN, id, now), &prevState)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, err
 	}
@@ -1079,7 +1079,7 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 		}
 		return Node{}, errNodeRevoked(id)
 	}
-	return p.GetNode(id)
+	return node, nil
 }
 
 func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
@@ -1119,12 +1119,13 @@ func (p *PostgresStore) SetNodeCordoned(id string, cordoned bool) (Node, error) 
 		return Node{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `UPDATE nodes SET cordoned=$2, updated_at=$3 WHERE id=$1`, id, cordoned, time.Now().UTC())
+	node, err := scanNode(tx.QueryRow(ctx, `UPDATE nodes SET cordoned=$2, updated_at=$3 WHERE id=$1 RETURNING `+nodeColumns,
+		id, cordoned, time.Now().UTC()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Node{}, ErrNotFound
+	}
 	if err != nil {
 		return Node{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return Node{}, ErrNotFound
 	}
 	eventType := "node.uncordoned"
 	if cordoned {
@@ -1138,7 +1139,7 @@ func (p *PostgresStore) SetNodeCordoned(id string, cordoned bool) (Node, error) 
 	if err := tx.Commit(ctx); err != nil {
 		return Node{}, err
 	}
-	return p.GetNode(id)
+	return node, nil
 }
 
 func (p *PostgresStore) ListNodeUsage() (map[string]NodeUsage, error) {
@@ -1330,10 +1331,34 @@ type scannable interface {
 	Scan(dest ...any) error
 }
 
-func scanSandbox(row scannable) (Sandbox, error) {
+// sandboxColumns is the column list scanSandbox reads, in order. Writes
+// return it (RETURNING) instead of reading the row back.
+const sandboxColumns = `id, tenant_id, node_id, state, vmm_profile, image_ref,
+	cpu_millis, memory_mib, state_version, created_at, updated_at,
+	owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
+	local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash,
+	local_net_client_public, local_net_node_public, local_net_listen_port, local_net_node_addr, local_net_client_addr`
+
+// qualify prefixes every column of a list with alias (for UPDATE … FROM).
+func qualify(cols, alias string) string {
+	parts := strings.Split(cols, ",")
+	for i, c := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(parts, ", ")
+}
+
+var (
+	sandboxColumnsS = qualify(sandboxColumns, "s")
+	nodeColumnsN    = qualify(nodeColumns, "n")
+)
+
+// scanSandbox reads sandboxColumns. pre are destinations for columns a query
+// selects before them (e.g. the previous state in RETURNING).
+func scanSandbox(row scannable, pre ...any) (Sandbox, error) {
 	var sb Sandbox
 	var state string
-	err := row.Scan(
+	err := row.Scan(append(pre,
 		&sb.ID, &sb.TenantID, &sb.NodeID, &state, &sb.VMMProfile, &sb.ImageRef,
 		&sb.CPUMillis, &sb.MemoryMiB, &sb.StateVersion,
 		&sb.CreatedAt, &sb.UpdatedAt, &sb.OwnerSub, &sb.OwnerEmail, &sb.LastActivityAt, &sb.StopReason,
@@ -1341,7 +1366,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 		&sb.LocalNet, &sb.LocalNetState, &sb.LocalNetAttachedAt, &sb.LocalNetGrantExpiresAt,
 		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic, &sb.LocalNetNodePublic,
 		&sb.LocalNetListenPort, &sb.LocalNetNodeAddr, &sb.LocalNetClientAddr,
-	)
+	)...)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -1355,14 +1380,15 @@ const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
 		cert_fingerprint, cert_serial, cert_not_after, fence_token, fence_endpoint, enrolled_at,
 		revoked_at, last_seen_at, created_at, updated_at`
 
-func scanNode(row scannable) (Node, error) {
+// scanNode reads nodeColumns; pre as in scanSandbox.
+func scanNode(row scannable, pre ...any) (Node, error) {
 	var n Node
-	err := row.Scan(
+	err := row.Scan(append(pre,
 		&n.ID, &n.Name, &n.Endpoint, &n.AgentEndpoint, &n.State, &n.VMMProfiles,
 		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial, &n.AgentInstanceID,
 		&n.CertFingerprint, &n.CertSerial, &n.CertNotAfter, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
 		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt,
-	)
+	)...)
 	if err != nil {
 		return Node{}, err
 	}

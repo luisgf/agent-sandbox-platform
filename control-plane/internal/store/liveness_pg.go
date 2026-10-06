@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -76,33 +75,22 @@ func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince tim
 		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		FROM victims v WHERE s.id = v.id
-		RETURNING s.id, s.tenant_id, v.state, s.state`,
+		RETURNING v.state, `+sandboxColumnsS,
 		nodeID, silentSince, now, reason, occupyingStateNames())
 	if err != nil {
 		return nil, err
 	}
-	type lostRow struct{ id, tenant, from, to string }
-	var lost []lostRow
-	for rows.Next() {
-		var r lostRow
-		if err := rows.Scan(&r.id, &r.tenant, &r.from, &r.to); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		lost = append(lost, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	lost, froms, err := collectChanged(rows)
+	if err != nil {
 		return nil, err
 	}
-	for _, r := range lost {
-		from := r.from
+	for i, sb := range lost {
 		if err := emitEventTx(ctx, tx, EmitEventInput{
-			SandboxID: r.id,
-			TenantID:  r.tenant,
+			SandboxID: sb.ID,
+			TenantID:  sb.TenantID,
 			EventType: "sandbox.node_lost",
-			FromState: &from,
-			ToState:   strPtr(r.to),
+			FromState: &froms[i],
+			ToState:   strPtr(string(sb.State)),
 			Actor:     "node-monitor",
 			Payload:   mustJSON(map[string]string{"node_id": nodeID, "reason": reason}),
 		}); err != nil {
@@ -112,7 +100,7 @@ func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince tim
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return readBackSandboxes(p, lost, func(r lostRow) string { return r.id })
+	return lost, nil
 }
 
 func (p *PostgresStore) FailUnassignedRequested(createdBefore time.Time, reason string) ([]Sandbox, error) {
@@ -129,29 +117,19 @@ func (p *PostgresStore) FailUnassignedRequested(createdBefore time.Time, reason 
 		    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		WHERE state='requested' AND (node_id IS NULL OR node_id='') AND created_at < $1
-		RETURNING id, tenant_id`, createdBefore, now, reason)
+		RETURNING 'requested'::text, `+sandboxColumns, createdBefore, now, reason)
 	if err != nil {
 		return nil, err
 	}
-	type row struct{ id, tenant string }
-	var failed []row
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.id, &r.tenant); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		failed = append(failed, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	failed, _, err := collectChanged(rows)
+	if err != nil {
 		return nil, err
 	}
-	for _, r := range failed {
+	for _, sb := range failed {
 		from := string(SandboxRequested)
 		if err := emitEventTx(ctx, tx, EmitEventInput{
-			SandboxID: r.id,
-			TenantID:  r.tenant,
+			SandboxID: sb.ID,
+			TenantID:  sb.TenantID,
 			EventType: "sandbox.unscheduled",
 			FromState: &from,
 			ToState:   strPtr(string(SandboxFailed)),
@@ -164,23 +142,26 @@ func (p *PostgresStore) FailUnassignedRequested(createdBefore time.Time, reason 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return readBackSandboxes(p, failed, func(r row) string { return r.id })
+	return failed, nil
 }
 
-// readBackSandboxes reads back the rows a bulk update changed.
-func readBackSandboxes[T any](p *PostgresStore, items []T, id func(T) string) ([]Sandbox, error) {
-	out := make([]Sandbox, 0, len(items))
-	for _, it := range items {
-		sb, err := p.GetSandbox(id(it))
+// collectChanged reads the rows a bulk update returned as
+// "<previous state>, <sandboxColumns>". The rows are consumed before the
+// caller writes events in the same transaction.
+func collectChanged(rows pgx.Rows) ([]Sandbox, []string, error) {
+	defer rows.Close()
+	out := []Sandbox{}
+	var froms []string
+	for rows.Next() {
+		var from string
+		sb, err := scanSandbox(rows, &from)
 		if err != nil {
-			if errors.Is(err, ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, sb)
+		froms = append(froms, from)
 	}
-	return out, nil
+	return out, froms, rows.Err()
 }
 
 // recordNodeOnline notes a node that was offline and is seen again.

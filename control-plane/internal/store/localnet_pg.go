@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (p *PostgresStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl time.Duration) (string, time.Time, error) {
@@ -90,15 +93,16 @@ func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.
 	if hashLocalNetGrant(grant) != sb.LocalNetGrantHash {
 		return Sandbox{}, ErrUnauthorized
 	}
-	tag, err := p.pool.Exec(ctx, `
+	up, err := scanSandbox(p.pool.QueryRow(ctx, `
 		UPDATE sandboxes
 		SET local_net_state='up', local_net_client_public=$2, local_net_attached_at=$3, updated_at=$3
-		WHERE id=$1 AND local_net=true`, id, strings.TrimSpace(clientPub), now)
+		WHERE id=$1 AND local_net=true
+		RETURNING `+sandboxColumns, id, strings.TrimSpace(clientPub), now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Sandbox{}, ErrNotFound
+	}
 	if err != nil {
 		return Sandbox{}, err
-	}
-	if tag.RowsAffected() == 0 {
-		return Sandbox{}, ErrNotFound
 	}
 	_ = p.EmitEvent(EmitEventInput{
 		SandboxID: id,
@@ -107,7 +111,7 @@ func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.
 		Actor:     "local-agent",
 		Payload:   mustJSON(map[string]any{"local_net_state": LocalNetUp, "public_egress": false}),
 	})
-	return p.GetSandbox(id)
+	return up, nil
 }
 
 func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
@@ -124,11 +128,15 @@ func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
 	prev := sb.LocalNetState
 	now := time.Now().UTC()
 	ctx := context.Background()
-	_, err = p.pool.Exec(ctx, `
+	withdrawn, err := scanSandbox(p.pool.QueryRow(ctx, `
 		UPDATE sandboxes
 		SET local_net_state='withdrawn', local_net_client_public='',
 		    local_net_grant_hash='', local_net_grant_expires_at=NULL, updated_at=$2
-		WHERE id=$1`, id, now)
+		WHERE id=$1
+		RETURNING `+sandboxColumns, id, now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Sandbox{}, ErrNotFound
+	}
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -141,7 +149,7 @@ func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
 			Payload:   mustJSON(map[string]any{"reason": "detach", "public_egress": false}),
 		})
 	}
-	return p.GetSandbox(id)
+	return withdrawn, nil
 }
 
 func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
@@ -163,16 +171,17 @@ func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNet
 	}
 	now := time.Now().UTC()
 	ctx := context.Background()
-	tag, err := p.pool.Exec(ctx, `
+	out, err := scanSandbox(p.pool.QueryRow(ctx, `
 		UPDATE sandboxes
 		SET local_net_node_public=$2, updated_at=$3,
 		    local_net_listen_port=$4, local_net_node_addr=$5, local_net_client_addr=$6
-		WHERE id=$1 AND local_net=true`, id, strings.TrimSpace(publicKey), now, tun.ListenPort, tun.NodeAddr, tun.ClientAddr)
+		WHERE id=$1 AND local_net=true
+		RETURNING `+sandboxColumns, id, strings.TrimSpace(publicKey), now, tun.ListenPort, tun.NodeAddr, tun.ClientAddr))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Sandbox{}, ErrNotFound
+	}
 	if err != nil {
 		return Sandbox{}, err
 	}
-	if tag.RowsAffected() == 0 {
-		return Sandbox{}, ErrNotFound
-	}
-	return p.GetSandbox(id)
+	return out, nil
 }

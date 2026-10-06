@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
@@ -277,5 +280,100 @@ func TestPostgresLocalNetNodeTunnel(t *testing.T) {
 	}
 	if _, err := pg.SetLocalNetNodePublic(sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", LocalNetTunnel{}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("missing tunnel parameters: want ErrInvalidInput, got %v", err)
+	}
+}
+
+// countingTracer records the statements a store call sends (pgx.QueryTracer).
+type countingTracer struct {
+	mu   sync.Mutex
+	sqls []string
+}
+
+func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	c.mu.Lock()
+	c.sqls = append(c.sqls, data.SQL)
+	c.mu.Unlock()
+	return ctx
+}
+
+func (c *countingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// statements returns what was sent since the last call, without the
+// transaction's begin/commit/rollback.
+func (c *countingTracer) statements() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, q := range c.sqls {
+		switch strings.ToLower(strings.TrimSpace(q)) {
+		case "begin", "commit", "rollback":
+			continue
+		}
+		out = append(out, strings.Join(strings.Fields(q), " "))
+	}
+	c.sqls = nil
+	return out
+}
+
+// Writes return the row they changed instead of reading it back: one
+// statement, plus the event insert where there is one.
+func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	newPostgresTestStore(t) // migrate and truncate
+	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &countingTracer{}
+	cfg.ConnConfig.Tracer = tr
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	pg := NewPostgresStore(pool)
+
+	registerPlacementNodes(t, pg, 0, "trace-node")
+	sb, err := pg.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.statements()
+
+	check := func(what string, want int) {
+		t.Helper()
+		got := tr.statements()
+		if len(got) != want {
+			t.Errorf("%s sent %d statements, want %d:\n%s", what, len(got), want, strings.Join(got, "\n"))
+		}
+	}
+	claimed, err := pg.ClaimSandbox(sb.ID, "trace-node")
+	if err != nil || claimed.State != SandboxStarting || claimed.ID != sb.ID {
+		t.Fatalf("claim: %+v %v", claimed, err)
+	}
+	check("ClaimSandbox", 2)
+	running, err := pg.UpdateSandboxStatus(sb.ID, SandboxRunning, "booted")
+	if err != nil || running.State != SandboxRunning || running.StateVersion != claimed.StateVersion+1 {
+		t.Fatalf("status: %+v %v", running, err)
+	}
+	check("UpdateSandboxStatus", 2)
+	n, err := pg.HeartbeatNode("trace-node")
+	if err != nil || n.ID != "trace-node" || n.LastSeenAt == nil {
+		t.Fatalf("heartbeat: %+v %v", n, err)
+	}
+	check("HeartbeatNode", 1)
+	stopping, err := pg.MarkSandboxStopping(sb.ID, "user:a")
+	if err != nil || stopping.State != SandboxStopping {
+		t.Fatalf("stopping: %+v %v", stopping, err)
+	}
+	check("MarkSandboxStopping", 2)
+
+	// A refused transition reads once to explain itself and changes nothing.
+	if _, err := pg.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "stopping") {
+		t.Fatalf("late running: %v", err)
+	}
+	tr.statements()
+	if got, _ := pg.GetSandbox(sb.ID); got.State != SandboxStopping {
+		t.Fatalf("a refused transition changed the row: %s", got.State)
 	}
 }
