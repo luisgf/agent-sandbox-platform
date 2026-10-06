@@ -169,7 +169,7 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	input.OwnerEmail = strings.TrimSpace(input.OwnerEmail)
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {
 		if !canCreate(p) {
-			forbid(w, "forbidden: create requires admin or operator role")
+			forbid(w, "forbidden: create requires the user, operator or admin role")
 			return
 		}
 		sub := strings.TrimSpace(p.Sub)
@@ -592,7 +592,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
 		if !canExec(p, sb) {
-			forbid(w, "forbidden: exec requires owner, admin, or operator")
+			forbid(w, "forbidden: exec requires the sandbox owner, an admin, or an operator with the exec-any grant")
 			return
 		}
 	}
@@ -724,7 +724,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
 		if !canExec(p, sb) {
-			forbid(w, "forbidden: exec requires owner, admin, or operator")
+			forbid(w, "forbidden: exec requires the sandbox owner, an admin, or an operator with the exec-any grant")
 			return
 		}
 	}

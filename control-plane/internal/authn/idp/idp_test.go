@@ -135,21 +135,45 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 }
 
-func TestMapRolesPrefixAndMap(t *testing.T) {
-	cfg := Config{RoleClaim: "groups", RolePrefix: "asp-", DestroyAnyGroup: "sandbox:destroy-any"}
-	role, any := cfg.MapRoles([]string{"asp-viewer", "asp-operator"})
-	if role != RoleOperator || any {
-		t.Fatalf("got %q any=%v", role, any)
+func TestMapGrantsPrefixAndMap(t *testing.T) {
+	cfg := Config{RoleClaim: "groups", RolePrefix: "asp-", DestroyAnyGroup: "sandbox:destroy-any", ExecAnyGroup: "sandbox:exec-any"}
+	if g := cfg.MapGrants([]string{"asp-viewer", "asp-operator"}); g.Role != RoleOperator || g.DestroyAny || g.ExecAny {
+		t.Fatalf("got %+v", g)
 	}
-	role, any = cfg.MapRoles([]string{"asp-admin", "sandbox:destroy-any"})
-	if role != RoleAdmin || !any {
-		t.Fatalf("got %q any=%v", role, any)
+	if g := cfg.MapGrants([]string{"asp-admin", "sandbox:destroy-any"}); g.Role != RoleAdmin || !g.DestroyAny {
+		t.Fatalf("got %+v", g)
+	}
+	if g := cfg.MapGrants([]string{"asp-user"}); g.Role != RoleUser {
+		t.Fatalf("asp-user got %+v", g)
+	}
+	// viewer and user are orthogonal: both together are operator.
+	if g := cfg.MapGrants([]string{"asp-user", "asp-viewer"}); g.Role != RoleOperator {
+		t.Fatalf("viewer+user got %+v", g)
+	}
+	if g := cfg.MapGrants([]string{"asp-operator", "SANDBOX:EXEC-ANY"}); g.Role != RoleOperator || !g.ExecAny {
+		t.Fatalf("exec-any got %+v", g)
+	}
+	if g := cfg.MapGrants([]string{"asp-root", "other"}); g.Role != RoleNone {
+		t.Fatalf("unknown groups got %+v", g)
 	}
 	cfg.RoleMap = map[string]Role{"Corp.Admin": RoleAdmin, "Corp.Ops": RoleOperator}
 	cfg.RolePrefix = ""
-	role, _ = cfg.MapRoles([]string{"Corp.Ops"})
-	if role != RoleOperator {
-		t.Fatalf("map got %q", role)
+	if g := cfg.MapGrants([]string{"Corp.Ops"}); g.Role != RoleOperator {
+		t.Fatalf("map got %+v", g)
+	}
+}
+
+func TestExecAnyGroupFromEnv(t *testing.T) {
+	t.Setenv("ASP_IDP_EXEC_ANY_GROUP", "")
+	cfg := Config{}
+	RoleConfigFromEnv(&cfg)
+	if cfg.ExecAnyGroup != "sandbox:exec-any" {
+		t.Fatalf("default exec-any group %q", cfg.ExecAnyGroup)
+	}
+	t.Setenv("ASP_IDP_EXEC_ANY_GROUP", "corp-break-glass")
+	RoleConfigFromEnv(&cfg)
+	if cfg.ExecAnyGroup != "corp-break-glass" || !cfg.MapGrants([]string{"asp-operator", "corp-break-glass"}).ExecAny {
+		t.Fatalf("custom exec-any group %+v", cfg)
 	}
 }
 

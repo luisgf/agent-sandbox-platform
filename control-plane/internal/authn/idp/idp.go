@@ -42,10 +42,14 @@ type Config struct {
 	RoleClaim string
 	// RoleMap maps claim values → Role when ASP_IDP_ROLE_MAP is set (e.g. "asp-admin:admin").
 	RoleMap map[string]Role
-	// RolePrefix maps "{prefix}admin|operator|viewer" when RoleMap is empty (default "asp-").
+	// RolePrefix maps "{prefix}admin|operator|user|viewer" when RoleMap is empty (default "asp-").
 	RolePrefix string
 	// DestroyAnyGroup claim value that lets operators destroy any sandbox (default "sandbox:destroy-any").
 	DestroyAnyGroup string
+	// ExecAnyGroup claim value that lets operators exec in any sandbox of the
+	// tenant (default "sandbox:exec-any"). Without it an operator execs only in
+	// its own. ASP_IDP_EXEC_ANY_GROUP.
+	ExecAnyGroup string
 	// AllowMissingExp accepts tokens without an exp claim (ASP_IDP_REQUIRE_EXP=0).
 	// Off by default: a token without exp would be valid forever.
 	AllowMissingExp bool
@@ -65,6 +69,7 @@ type Principal struct {
 	Email      string
 	Role       Role
 	DestroyAny bool // operator may destroy non-owned sandboxes (ADR-0007)
+	ExecAny    bool // operator may exec in non-owned sandboxes
 	// TenantID is the tenant the principal acts within: TenantClaim, else
 	// DefaultTenant. Empty when neither applies; the API refuses such tokens.
 	TenantID string
@@ -138,6 +143,9 @@ func NewValidator(cfg Config) (*Validator, error) {
 	}
 	if strings.TrimSpace(cfg.DestroyAnyGroup) == "" {
 		cfg.DestroyAnyGroup = defaultDestroyAnyGroup
+	}
+	if strings.TrimSpace(cfg.ExecAnyGroup) == "" {
+		cfg.ExecAnyGroup = defaultExecAnyGroup
 	}
 	if strings.TrimSpace(cfg.TenantClaim) == "" {
 		cfg.TenantClaim = defaultTenantClaim
@@ -419,7 +427,7 @@ func (v *Validator) Validate(token string) (Principal, error) {
 		email = strings.TrimSpace(claims.PreferredUsername)
 	}
 	roleValues := extractRoleClaim(cb, v.cfg.RoleClaim, claims)
-	role, destroyAny := v.cfg.MapRoles(roleValues)
+	grants := v.cfg.MapGrants(roleValues)
 	tenant, err := extractTenantClaim(cb, v.cfg.TenantClaim)
 	if err != nil {
 		return Principal{}, err
@@ -427,7 +435,7 @@ func (v *Validator) Validate(token string) (Principal, error) {
 	if tenant == "" {
 		tenant = strings.TrimSpace(v.cfg.DefaultTenant)
 	}
-	return Principal{Sub: claims.Sub, Email: email, Role: role, DestroyAny: destroyAny, TenantID: tenant}, nil
+	return Principal{Sub: claims.Sub, Email: email, Role: grants.Role, DestroyAny: grants.DestroyAny, ExecAny: grants.ExecAny, TenantID: tenant}, nil
 }
 
 // extractTenantClaim reads the tenant claim: a string, or an array with one

@@ -10,8 +10,11 @@ import (
 type Role string
 
 const (
-	RoleNone     Role = ""
-	RoleViewer   Role = "viewer"
+	RoleNone   Role = ""
+	RoleViewer Role = "viewer"
+	// RoleUser creates sandboxes and acts only on its own: it neither sees nor
+	// runs anything in the sandboxes of others.
+	RoleUser     Role = "user"
 	RoleOperator Role = "operator"
 	RoleAdmin    Role = "admin"
 )
@@ -20,8 +23,10 @@ const (
 func (r Role) Rank() int {
 	switch r {
 	case RoleAdmin:
-		return 3
+		return 4
 	case RoleOperator:
+		return 3
+	case RoleUser:
 		return 2
 	case RoleViewer:
 		return 1
@@ -32,13 +37,14 @@ func (r Role) Rank() int {
 
 // Valid reports whether r is a known non-empty role.
 func (r Role) Valid() bool {
-	return r == RoleAdmin || r == RoleOperator || r == RoleViewer
+	return r == RoleAdmin || r == RoleOperator || r == RoleUser || r == RoleViewer
 }
 
 const (
 	defaultRoleClaim       = "groups"
 	defaultRolePrefix      = "asp-"
 	defaultDestroyAnyGroup = "sandbox:destroy-any"
+	defaultExecAnyGroup    = "sandbox:exec-any"
 )
 
 // RoleConfigFromEnv reads ASP_IDP_ROLE_* into cfg (mutates Role* fields).
@@ -64,6 +70,12 @@ func RoleConfigFromEnv(cfg *Config) {
 		dag = defaultDestroyAnyGroup
 	}
 	cfg.DestroyAnyGroup = dag
+
+	eag := strings.TrimSpace(os.Getenv("ASP_IDP_EXEC_ANY_GROUP"))
+	if eag == "" {
+		eag = defaultExecAnyGroup
+	}
+	cfg.ExecAnyGroup = eag
 }
 
 // parseRoleMap parses "asp-admin:admin,asp-ops:operator" (comma-separated claim→role).
@@ -96,30 +108,51 @@ func parseRoleMap(raw string) map[string]Role {
 	return out
 }
 
-// MapRoles picks the highest privilege Role from claim values and whether destroy-any applies.
-func (c Config) MapRoles(values []string) (Role, bool) {
-	var best Role
-	destroyAny := false
-	dag := strings.TrimSpace(c.DestroyAnyGroup)
-	if dag == "" {
-		dag = defaultDestroyAnyGroup
-	}
-	prefix := c.RolePrefix
+// Grants is what a token's role claim values give: the highest role, plus the
+// explicit grants an operator needs to act on sandboxes it does not own.
+type Grants struct {
+	Role       Role
+	DestroyAny bool // ASP_IDP_DESTROY_ANY_GROUP
+	ExecAny    bool // ASP_IDP_EXEC_ANY_GROUP
+}
+
+// MapGrants maps claim values to Grants, keeping the highest role. viewer and
+// user are orthogonal (one sees the whole tenant, the other creates and runs
+// its own sandboxes), so holding both is operator, which is exactly their
+// union.
+func (c Config) MapGrants(values []string) Grants {
+	var g Grants
+	viewer, user := false, false
 	for _, raw := range values {
 		v := strings.TrimSpace(raw)
 		if v == "" {
 			continue
 		}
-		if dag != "" && (v == dag || strings.EqualFold(v, dag)) {
-			destroyAny = true
+		if matchGroup(v, c.DestroyAnyGroup, defaultDestroyAnyGroup) {
+			g.DestroyAny = true
+		}
+		if matchGroup(v, c.ExecAnyGroup, defaultExecAnyGroup) {
+			g.ExecAny = true
 		}
 		role := c.mapOne(v)
-		if role.Rank() > best.Rank() {
-			best = role
+		viewer = viewer || role == RoleViewer
+		user = user || role == RoleUser
+		if role.Rank() > g.Role.Rank() {
+			g.Role = role
 		}
-		_ = prefix
 	}
-	return best, destroyAny
+	if viewer && user && g.Role.Rank() < RoleOperator.Rank() {
+		g.Role = RoleOperator
+	}
+	return g
+}
+
+func matchGroup(v, group, fallback string) bool {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		group = fallback
+	}
+	return strings.EqualFold(v, group)
 }
 
 func (c Config) mapOne(v string) Role {
