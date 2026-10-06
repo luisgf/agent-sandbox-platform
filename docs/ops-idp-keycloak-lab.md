@@ -176,6 +176,24 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18112/v1/sandboxes
 
 Runner ad-hoc (sin systemd): [`scripts/run-cp-lab-idp.sh`](../scripts/run-cp-lab-idp.sh) — útil para debug; **no** conviene junto al unit (mismo puerto).
 
+### Actualizar desde claves en `/tmp`
+
+Con `ASP_IDP_REQUIRED=1` el control plane está en modo producción. Si la CA, la clave OIDC o la de atestación están en `/tmp`, no arranca (código 2). Las units instaladas antes de esta comprobación usaban `/tmp` y unos `ASP_OIDC_KEY_PATH`/`ASP_ATTEST_KEY_PATH` que el código ignora. Antes de arrancar un binario nuevo:
+
+```bash
+sudo install -d -o ubuntu -g ubuntu -m 0700 /var/lib/asp-control-plane
+cp -p /tmp/asp-dev-ca/ca.crt /tmp/asp-dev-ca/ca.key /var/lib/asp-control-plane/
+cp -p /tmp/asp-oidc-key.pem /var/lib/asp-control-plane/oidc-key.pem
+cp -p /tmp/asp-attest-key.pem /var/lib/asp-control-plane/attest-key.pem
+sudo cp ~/src/bots/scripts/systemd/asp-control-plane.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl restart asp-control-plane
+```
+
+- **Claves:** copiarlas en vez de dejar que se creen mantiene válidos los certificados de nodo y el `kid` de los tokens.
+- **Tenant:** añade también `ASP_IDP_DEFAULT_TENANT=default` al env file (tabla de arriba). Sin esa línea, cada `POST /v1/sandboxes` con un token del realm responde 401 `idp token names no tenant`.
+- **Atestación:** el node-agent de este host firma con `ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem`.
+- **Estado:** el store es memoria. Reiniciar el servicio borra sandboxes y API keys, y el node-agent vuelve a registrarse solo.
+
 ### Alternativas y consecuencias
 
 | Alternativa | Pros | Contras |

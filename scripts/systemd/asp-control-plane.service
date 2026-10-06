@@ -26,9 +26,21 @@ Environment=ASP_AUTH_REQUIRE=0
 # Stop sandboxes idle for 2h (successful exec / create / start). 0 or off disables.
 # Process default is off so unit tests and short smokes do not reap; this lab unit opts in.
 Environment=ASP_SANDBOX_IDLE_TIMEOUT=2h
-# Optional lab PEM paths (auto-created under /tmp if absent)
-Environment=ASP_OIDC_KEY_PATH=/tmp/asp-oidc-key.pem
-Environment=ASP_ATTEST_KEY_PATH=/tmp/asp-attest-key.pem
+# Key material must survive a reboot. ASP_IDP_REQUIRED=1 (in the env file)
+# puts the control plane in production mode, which refuses keys in /tmp and
+# exits 2. systemd creates /var/lib/asp-control-plane for User=, and missing
+# keys are created there. When upgrading from /tmp keys, copy
+# /tmp/asp-dev-ca/ca.crt, /tmp/asp-dev-ca/ca.key, /tmp/asp-oidc-key.pem and
+# /tmp/asp-attest-key.pem there first: otherwise node certificates stop
+# verifying and tokens change kid. A node-agent on this host without mTLS
+# signs attestations with the same key: run it with
+# ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem.
+StateDirectory=asp-control-plane
+StateDirectoryMode=0700
+Environment=ASP_CA_CERT=/var/lib/asp-control-plane/ca.crt
+Environment=ASP_CA_KEY=/var/lib/asp-control-plane/ca.key
+Environment=ASP_OIDC_KEY=/var/lib/asp-control-plane/oidc-key.pem
+Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
 ExecStart=/home/ubuntu/src/bots/build/api
 Restart=on-failure
 RestartSec=2
