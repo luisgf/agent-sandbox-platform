@@ -183,6 +183,29 @@ func hasNetAdmin() bool {
 	return false
 }
 
+// NotPublished says which tunnel parameters the grant still lacks: the node
+// publishes its public key, UDP port and tunnel addresses when it starts the
+// session, and the control plane needs a dial address. "" when complete.
+func (d ClientDevice) NotPublished() string {
+	if strings.TrimSpace(d.Endpoint) == "" {
+		return "the control plane has no dial address for this node (local_net_dial / ASP_LOCAL_NET_DIAL)"
+	}
+	var missing []string
+	if strings.TrimSpace(d.NodePublic) == "" {
+		missing = append(missing, "public key")
+	}
+	if _, _, err := net.SplitHostPort(d.Endpoint); err != nil {
+		missing = append(missing, "UDP port")
+	}
+	if strings.TrimSpace(d.Address) == "" {
+		missing = append(missing, "tunnel address")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "the node has not published its " + strings.Join(missing, ", ") + " yet (node-agent does when it starts the session)"
+}
+
 // BringUp prints the exact commands and runs them when CanApply is true.
 // The private key is referenced by path, never printed.
 func BringUp(stderr io.Writer, d ClientDevice) (bool, error) {
@@ -192,8 +215,8 @@ func BringUp(stderr io.Writer, d ClientDevice) (bool, error) {
 	if d.hijacks() {
 		return false, fmt.Errorf("refusing local-net client recipe that changes the host default route")
 	}
-	if strings.TrimSpace(d.NodePublic) == "" {
-		fmt.Fprintf(stderr, "asp: local-net device not applied: node public key is empty (node-agent has not registered it yet). Re-run local-net up.\n")
+	if msg := d.NotPublished(); msg != "" {
+		fmt.Fprintf(stderr, "asp: local-net device not applied: %s. Re-run local-net up.\n", msg)
 		printCmds(stderr, d.Commands())
 		return false, nil
 	}

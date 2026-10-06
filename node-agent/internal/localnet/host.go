@@ -11,13 +11,15 @@ import (
 
 // NodeKeyer is implemented by Host. The reconciler publishes the public key.
 type NodeKeyer interface {
-	EnsureNodeKey(sandboxID string) (public string, listenPort int, keyPath string, err error)
+	EnsureNodeKey(sandboxID string) (public, keyPath string, err error)
 }
 
 // Host runs ip(8) and wg(8) from PATH. Unit tests put scripts on PATH.
 // It never changes the host main default route.
 type Host struct {
 	KeyDir string
+	// Alloc holds the sessions' tables, ports and /30s (in KeyDir).
+	Alloc *Allocator
 
 	mu    sync.Mutex
 	plans map[string]Plan
@@ -27,7 +29,25 @@ func NewHost(keyDir string) *Host {
 	if strings.TrimSpace(keyDir) == "" {
 		keyDir = "/var/lib/asp/local-net"
 	}
-	return &Host{KeyDir: keyDir, plans: map[string]Plan{}}
+	return &Host{KeyDir: keyDir, Alloc: NewAllocator(keyDir, SystemProbe{}), plans: map[string]Plan{}}
+}
+
+func (h *Host) allocator() *Allocator {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.Alloc == nil {
+		h.Alloc = NewAllocator(h.KeyDir, SystemProbe{})
+	}
+	return h.Alloc
+}
+
+// Allocation returns the session's table, port and /30, allocating them
+// (and checking the host for tables and ports in use) the first time.
+func (h *Host) Allocation(sandboxID string) (Allocation, error) {
+	if h == nil {
+		return Allocation{}, fmt.Errorf("localnet host is nil")
+	}
+	return h.allocator().Ensure(sandboxID)
 }
 
 func (h *Host) keyPath(sandboxID string) string {
@@ -37,12 +57,12 @@ func (h *Host) keyPath(sandboxID string) string {
 }
 
 // EnsureNodeKey creates the node private key (mode 0600) if it does not exist.
-func (h *Host) EnsureNodeKey(sandboxID string) (string, int, string, error) {
+func (h *Host) EnsureNodeKey(sandboxID string) (string, string, error) {
 	if h == nil {
-		return "", 0, "", fmt.Errorf("localnet host is nil")
+		return "", "", fmt.Errorf("localnet host is nil")
 	}
 	if strings.TrimSpace(sandboxID) == "" {
-		return "", 0, "", fmt.Errorf("sandbox id required")
+		return "", "", fmt.Errorf("sandbox id required")
 	}
 	path := h.keyPath(sandboxID)
 	priv, err := readKey(path)
@@ -54,20 +74,20 @@ func (h *Host) EnsureNodeKey(sandboxID string) (string, int, string, error) {
 			var pub string
 			priv, pub, err = generateKey()
 			if err != nil {
-				return "", 0, "", err
+				return "", "", err
 			}
 			if err := writeKey(path, priv); err != nil {
-				return "", 0, "", err
+				return "", "", err
 			}
-			return pub, ListenPort(sandboxID), path, nil
+			return pub, path, nil
 		}
-		return "", 0, "", err
+		return "", "", err
 	}
 	pub, err := publicFromPrivate(priv)
 	if err != nil {
-		return "", 0, "", err
+		return "", "", err
 	}
-	return pub, ListenPort(sandboxID), path, nil
+	return pub, path, nil
 }
 
 func (h *Host) Apply(p Plan) error {
@@ -92,16 +112,20 @@ func (h *Host) Apply(p Plan) error {
 	if p.TableID < 10000 || p.TableID >= 30000 {
 		return fmt.Errorf("refusing routing table %d (host main table is out of range)", p.TableID)
 	}
+	// Device names come from the 8-character short id: another session with
+	// the same short id owns them, and using them would take over its tunnel.
+	if holder := h.allocator().ShortHolder(ShortID(p.SandboxID)); holder != "" && holder != p.SandboxID {
+		return fmt.Errorf("local-net device names %s and %s belong to sandbox %s (same short id)", p.Iface, p.Tap, holder)
+	}
 	if p.Kind == KindTunnel {
 		if strings.TrimSpace(p.PeerPublic) == "" {
 			return fmt.Errorf("tunnel peer public key required")
 		}
-		pub, _, path, err := h.EnsureNodeKey(p.SandboxID)
+		_, path, err := h.EnsureNodeKey(p.SandboxID)
 		if err != nil {
 			return err
 		}
 		p.KeyPath = path
-		_ = pub
 	}
 	cmds := Argv(p)
 	// Reconcile runs every couple of seconds. Deleting a live tunnel device
@@ -149,12 +173,30 @@ func (h *Host) Apply(p Plan) error {
 	return nil
 }
 
+// Clear removes the session's device, rules and table, its node key and its
+// allocation. Without an allocation file the state came from an older node,
+// which used the hashed allocation; its table is only flushed when no live
+// session holds it now. Without a key either, only the device goes.
 func (h *Host) Clear(sandboxID string) error {
 	if h == nil || strings.TrimSpace(sandboxID) == "" {
 		return nil
 	}
-	p := Decide(sandboxID, "", true, "withdrawn")
-	for _, c := range ClearArgv(p) {
+	alloc, ok := h.allocator().Get(sandboxID)
+	tableOps := ok
+	if !ok {
+		alloc = HashAllocation(sandboxID)
+		if _, err := os.Stat(h.keyPath(sandboxID)); err == nil {
+			if owner, held := h.allocator().TableOwner(alloc.TableID); !held || owner == sandboxID {
+				tableOps = true
+			}
+		}
+	}
+	p := DecideWith(sandboxID, "", true, "withdrawn", alloc)
+	cmds := ClearArgv(p)
+	if !tableOps {
+		cmds = cmds[:1] // ip link delete dev <iface>
+	}
+	for _, c := range cmds {
 		if HijacksHost([]Cmd{c}) {
 			return fmt.Errorf("refusing clear recipe that hijacks the host")
 		}
@@ -165,6 +207,9 @@ func (h *Host) Clear(sandboxID string) error {
 	removeTapWGForward(p.Tap, p.Iface)
 	removeLocalNetExempt(p.Tap)
 	_ = os.Remove(h.keyPath(sandboxID))
+	if err := h.allocator().Release(sandboxID); err != nil {
+		return err
+	}
 	h.mu.Lock()
 	delete(h.plans, sandboxID)
 	h.mu.Unlock()

@@ -254,3 +254,28 @@ func TestPostgresListEgressRulesForTenants(t *testing.T) {
 		t.Fatalf("a tenant without rules must have an empty entry: %+v", got)
 	}
 }
+
+func TestPostgresLocalNetNodeTunnel(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	pg := newPostgresTestStore(t)
+	registerPlacementNodes(t, pg, 0, "ln-node")
+	on := true
+	sb, err := pg.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, LocalNet: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tun := LocalNetTunnel{ListenPort: 50001, NodeAddr: "10.188.4.1/30", ClientAddr: "10.188.4.2/30"}
+	if _, err := pg.SetLocalNetNodePublic(sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", tun); err != nil {
+		t.Fatal(err)
+	}
+	got, err := pg.GetSandbox(sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LocalNetListenPort != 50001 || got.LocalNetNodeAddr != "10.188.4.1/30" || got.LocalNetClientAddr != "10.188.4.2/30" {
+		t.Fatalf("stored tunnel: %+v", got)
+	}
+	if _, err := pg.SetLocalNetNodePublic(sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", LocalNetTunnel{}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("missing tunnel parameters: want ErrInvalidInput, got %v", err)
+	}
+}

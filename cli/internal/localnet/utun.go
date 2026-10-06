@@ -134,8 +134,8 @@ func bringUpDarwin(stderr io.Writer, d ClientDevice) (bool, error) {
 	if d.hijacks() {
 		return false, fmt.Errorf("refusing local-net client recipe that changes the host default route")
 	}
-	if strings.TrimSpace(d.NodePublic) == "" {
-		fmt.Fprintf(stderr, "asp: local-net device not applied: node public key is empty (node-agent has not registered it yet). Re-run local-net up.\n")
+	if msg := d.NotPublished(); msg != "" {
+		fmt.Fprintf(stderr, "asp: local-net device not applied: %s. Re-run local-net up.\n", msg)
 		return false, nil
 	}
 	upPath, err := writeDarwinScripts(d)

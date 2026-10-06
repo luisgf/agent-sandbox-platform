@@ -177,7 +177,28 @@ func TestLocalNetGrantCarriesNodeDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/node-public", bytes.NewBufferString(`{"public_key":"`+nodePub+`"}`))
+	// Before the node publishes, the grant has no tunnel parameters.
+	rr0 := httptest.NewRecorder()
+	mux.ServeHTTP(rr0, httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/grant", nil))
+	var g0 localNetGrantResponse
+	_ = json.Unmarshal(rr0.Body.Bytes(), &g0)
+	if rr0.Code != http.StatusOK || g0.NodePublicKey != "" || g0.ListenPort != 0 || g0.NodeTunnelAddr != "" || g0.ClientTunnelAddr != "" {
+		t.Fatalf("grant before the node published: %d %+v", rr0.Code, g0)
+	}
+	// The node must publish valid tunnel parameters with its key.
+	for _, bad := range []string{
+		`{"public_key":"` + nodePub + `"}`,
+		`{"public_key":"` + nodePub + `","listen_port":50001,"node_tunnel_addr":"10.9.0.1/30","client_tunnel_addr":"10.9.0.2/30"}`,
+		`{"public_key":"` + nodePub + `","listen_port":50001,"node_tunnel_addr":"10.188.4.1/30","client_tunnel_addr":"10.188.9.2/30"}`,
+	} {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/node-public", bytes.NewBufferString(bad)))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("node-public %s: want 400, got %d %s", bad, rr.Code, rr.Body.String())
+		}
+	}
+	published := `{"public_key":"` + nodePub + `","listen_port":50001,"node_tunnel_addr":"10.188.4.1/30","client_tunnel_addr":"10.188.4.2/30"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/node-public", bytes.NewBufferString(published))
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("node-public %d %s", rr.Code, rr.Body.String())
@@ -205,25 +226,11 @@ func TestLocalNetGrantCarriesNodeDevice(t *testing.T) {
 	if g["tunnel_iface"] != "wg-asp-"+sb.ID[:8] {
 		t.Fatalf("iface=%v id=%s", g["tunnel_iface"], sb.ID)
 	}
-	if int(g["listen_port"].(float64)) != store.LocalNetListenPort(sb.ID) {
-		t.Fatalf("port grant=%v want=%d", g["listen_port"], store.LocalNetListenPort(sb.ID))
-	}
-	nodeCIDR, clientCIDR := store.LocalNetTunnel(sb.ID)
-	if g["node_tunnel_addr"] != nodeCIDR || g["client_tunnel_addr"] != clientCIDR {
-		t.Fatalf("addrs %+v want %s %s", g, nodeCIDR, clientCIDR)
+	if int(g["listen_port"].(float64)) != 50001 || g["node_tunnel_addr"] != "10.188.4.1/30" || g["client_tunnel_addr"] != "10.188.4.2/30" {
+		t.Fatalf("the grant must carry what the node published: %+v", g)
 	}
 	if strings.Contains(rr.Body.String(), "8888") {
 		t.Fatal("grant mentions proxy")
-	}
-}
-
-func TestLocalNetParamsVector(t *testing.T) {
-	if store.LocalNetListenPort("abcdef012345") != 51024 || store.LocalNetTableID("abcdef012345") != 13853 {
-		t.Fatalf("port=%d table=%d", store.LocalNetListenPort("abcdef012345"), store.LocalNetTableID("abcdef012345"))
-	}
-	n, c := store.LocalNetTunnel("abcdef012345")
-	if n != "10.188.17.97/30" || c != "10.188.17.98/30" {
-		t.Fatalf("n=%s c=%s", n, c)
 	}
 }
 

@@ -4,7 +4,6 @@
 package localnet
 
 import (
-	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -56,9 +55,17 @@ type Plan struct {
 	BlockNodeProxy bool
 }
 
-// Decide returns the egress plan. local_net false (or state off) keeps the
-// public path. Any other state with the flag on refuses the public proxy.
+// Decide is DecideWith on the allocation hashed from the short id: what nodes
+// used before allocation. Tests use it, and Clear uses it for state an older
+// node left; live sessions use their Allocator's allocation.
 func Decide(sandboxID, ownerSub string, localNet bool, state string) Plan {
+	return DecideWith(sandboxID, ownerSub, localNet, state, HashAllocation(sandboxID))
+}
+
+// DecideWith returns the egress plan. local_net false (or state off) keeps the
+// public path. Any other state with the flag on refuses the public proxy and
+// uses alloc's routing table, UDP port and tunnel addresses.
+func DecideWith(sandboxID, ownerSub string, localNet bool, state string, alloc Allocation) Plan {
 	short := ShortID(sandboxID)
 	state = strings.TrimSpace(state)
 	if !localNet || state == "off" {
@@ -69,17 +76,16 @@ func Decide(sandboxID, ownerSub string, localNet bool, state string) Plan {
 			UsePublicProxy: true,
 		}
 	}
-	nodeCIDR, clientCIDR := Tunnel(sandboxID)
 	p := Plan{
 		SandboxID:      sandboxID,
 		OwnerSub:       ownerSub,
 		Iface:          IfacePrefix + short,
 		Table:          "aspln-" + short,
 		Tap:            "asp-" + short,
-		TableID:        TableID(sandboxID),
-		ListenPort:     ListenPort(sandboxID),
-		NodeCIDR:       nodeCIDR,
-		ClientCIDR:     clientCIDR,
+		TableID:        alloc.TableID,
+		ListenPort:     alloc.ListenPort,
+		NodeCIDR:       alloc.NodeCIDR(),
+		ClientCIDR:     alloc.ClientCIDR(),
 		UsePublicProxy: false,
 		BlockNodeProxy: true,
 	}
@@ -110,25 +116,20 @@ func fnv32a(s string) uint32 {
 	return h.Sum32()
 }
 
-// ListenPort is the UDP port for this sandbox's WireGuard device.
+// ListenPort is the UDP port hashed from the short id (HashAllocation).
 func ListenPort(id string) int {
 	return 47000 + int(fnv32a("udp"+ShortID(id))%8000)
 }
 
-// TableID is a policy-routing table outside the main table (32766) and local (255).
+// TableID is the policy-routing table hashed from the short id
+// (HashAllocation); outside the main table (32766) and local (255).
 func TableID(id string) int {
 	return 10000 + int(fnv32a(ShortID(id))%20000)
 }
 
-// Tunnel returns node and client /30 addresses in 10.188.0.0/16.
-func Tunnel(id string) (nodeCIDR, clientCIDR string) {
-	slot := fnv32a("tun"+ShortID(id)) % 16384
-	base := slot * 4
-	a := (base >> 8) & 0xff
-	b := base & 0xff
-	nodeCIDR = fmt.Sprintf("10.188.%d.%d/30", a, b+1)
-	clientCIDR = fmt.Sprintf("10.188.%d.%d/30", a, b+2)
-	return nodeCIDR, clientCIDR
+// tunnelSlot is the /30 index hashed from the short id (HashAllocation).
+func tunnelSlot(id string) int {
+	return int(fnv32a("tun"+ShortID(id)) % slotCount)
 }
 
 // Cmd is one argv the host applier runs. Name is looked up on PATH.

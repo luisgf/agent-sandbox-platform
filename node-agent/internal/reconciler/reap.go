@@ -231,15 +231,21 @@ func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool) (
 }
 
 // localNetLeftovers returns the sandboxes whose tunnel state may still be
-// installed: every node key (a blackholed session has a key but no device),
-// then WireGuard devices without a key, by short id.
+// installed: every node key (a blackholed session has a key but no device)
+// and every allocation (table, port, /30 to release), then WireGuard devices
+// without either, by short id.
 func localNetLeftovers(h *localnet.Host, sysClassNet string) ([]string, error) {
 	keyIDs, err := h.KeyIDs()
 	errs := []error{absent(err)}
+	if h.Alloc != nil {
+		keyIDs = append(keyIDs, h.Alloc.IDs()...)
+	}
 	var ids []string
 	shorts := map[string]bool{}
+	seen := map[string]bool{}
 	for _, id := range keyIDs {
-		if isSandboxID(id) {
+		if isSandboxID(id) && !seen[id] {
+			seen[id] = true
 			ids = append(ids, id)
 			shorts[localnet.ShortID(id)] = true
 		}

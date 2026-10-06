@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"hash/fnv"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -96,33 +96,31 @@ func LocalNetShortID(id string) string {
 	return id
 }
 
-func fnv32a(s string) uint32 {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(s))
-	return h.Sum32()
+// LocalNetTunnel is what the node allocates for a session and publishes with
+// its public key: the UDP port of its WireGuard device and the two ends of a
+// /30 in 10.188.0.0/16. The grant hands them to the laptop.
+type LocalNetTunnel struct {
+	ListenPort int
+	NodeAddr   string // CIDR, e.g. 10.188.4.1/30
+	ClientAddr string // CIDR in the same /30
 }
 
-// LocalNetListenPort is the UDP port the node device binds. Stable per sandbox.
-func LocalNetListenPort(id string) int {
-	return 47000 + int(fnv32a("udp"+LocalNetShortID(id))%8000)
-}
-
-// LocalNetTableID is a policy-routing table that is never the main table.
-func LocalNetTableID(id string) int {
-	return 10000 + int(fnv32a(LocalNetShortID(id))%20000)
-}
-
-// LocalNetTunnel returns the node and client interface CIDRs inside 10.188.0.0/16.
-// The client address is the second usable host of a /30. Neither is installed on
-// the host main default route.
-func LocalNetTunnel(id string) (nodeCIDR, clientCIDR string) {
-	slot := fnv32a("tun"+LocalNetShortID(id)) % 16384
-	base := slot * 4
-	a := (base >> 8) & 0xff
-	b := base & 0xff
-	nodeCIDR = fmt.Sprintf("10.188.%d.%d/30", a, b+1)
-	clientCIDR = fmt.Sprintf("10.188.%d.%d/30", a, b+2)
-	return nodeCIDR, clientCIDR
+// Validate checks the port and that both addresses are hosts of one /30 in
+// 10.188.0.0/16.
+func (t LocalNetTunnel) Validate() error {
+	if t.ListenPort < 1 || t.ListenPort > 65535 {
+		return fmt.Errorf("%w: listen_port must be 1-65535", ErrInvalidInput)
+	}
+	pool := netip.MustParsePrefix("10.188.0.0/16")
+	node, err := netip.ParsePrefix(strings.TrimSpace(t.NodeAddr))
+	if err != nil || node.Bits() != 30 || !pool.Contains(node.Addr()) {
+		return fmt.Errorf("%w: node_tunnel_addr must be a /30 address in 10.188.0.0/16", ErrInvalidInput)
+	}
+	client, err := netip.ParsePrefix(strings.TrimSpace(t.ClientAddr))
+	if err != nil || client.Bits() != 30 || client.Masked() != node.Masked() || client.Addr() == node.Addr() {
+		return fmt.Errorf("%w: client_tunnel_addr must be the other host of the node's /30", ErrInvalidInput)
+	}
+	return nil
 }
 
 // LocalNetIface is the per-sandbox WireGuard device name (15 chars max).
