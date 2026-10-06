@@ -18,17 +18,18 @@ func isOwner(p idp.Principal, sb store.Sandbox) bool {
 	return sub != "" && owner != "" && sub == owner
 }
 
-// canCreate: admin | operator (ADR matrix).
+// canCreate: admin | operator | user (ADR matrix).
 func canCreate(p idp.Principal) bool {
-	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator
+	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator || p.Role == idp.RoleUser
 }
 
-// canList: any of admin | operator | viewer.
+// canList: any of admin | operator | viewer | user. A user only sees its own
+// sandboxes (filterSandboxesForList).
 func canList(p idp.Principal) bool {
-	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator || p.Role == idp.RoleViewer
+	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator || p.Role == idp.RoleViewer || p.Role == idp.RoleUser
 }
 
-// canGet: owner | admin | operator | viewer.
+// canGet: owner | admin | operator | viewer. A user gets only its own.
 func canGet(p idp.Principal, sb store.Sandbox) bool {
 	if isOwner(p, sb) {
 		return true
@@ -36,12 +37,17 @@ func canGet(p idp.Principal, sb store.Sandbox) bool {
 	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator || p.Role == idp.RoleViewer
 }
 
-// canExec: owner | admin | operator (viewer no).
+// canExec: owner | admin | operator+ExecAny. Exec in another user's sandbox
+// reads its workspace and mints tokens as that sandbox, so an operator needs
+// the explicit exec-any grant (ASP_IDP_EXEC_ANY_GROUP), as for destroy.
 func canExec(p idp.Principal, sb store.Sandbox) bool {
 	if isOwner(p, sb) {
 		return true
 	}
-	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator
+	if p.Role == idp.RoleAdmin {
+		return true
+	}
+	return p.Role == idp.RoleOperator && p.ExecAny
 }
 
 // canDestroy: owner | admin | operator-own | operator+DestroyAny (ADR default).
@@ -124,15 +130,17 @@ func canManageEgress(p idp.Principal) bool {
 // filterSandboxesForList applies list visibility (documented phase-3 choice):
 //
 //	admin / operator / viewer → tenant-wide (no owner filter; tenant_id query still applies).
+//	user                      → its own sandboxes only.
 //
-// Ownership gates exec/destroy, not list visibility within the tenant.
 // ADR-0007 allows operator "todos o filtro"; we chose tenant-wide ("todos").
 func filterSandboxesForList(p idp.Principal, list []store.Sandbox) []store.Sandbox {
-	_ = p
-	if list == nil {
-		return []store.Sandbox{}
+	out := []store.Sandbox{}
+	for _, sb := range list {
+		if p.Role != idp.RoleUser || isOwner(p, sb) {
+			out = append(out, sb)
+		}
 	}
-	return list
+	return out
 }
 
 func forbid(w http.ResponseWriter, msg string) {

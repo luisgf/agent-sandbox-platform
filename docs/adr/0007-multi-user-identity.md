@@ -78,18 +78,18 @@ Config ops prevista (nombres ilustrativos): `ASP_IDP_ISSUER`, `ASP_IDP_AUDIENCE`
 
 ### Autorización — matriz
 
-| Acción | owner (`actor_sub == owner_sub`) | `admin` tenant | `operator` | `viewer` | API key servicio (rol) | Node mTLS |
-|---|---|---|---|---|---|---|
-| Create sandbox | — (pasa a ser owner) | sí | sí | no | según rol de la key | no |
-| List (propios) | sí | sí (todos) | sí (todos o filtro) | sí (todos, RO) | según rol | no |
-| Get | sí | sí | sí | sí | según rol | claim/status sí |
-| Exec | sí | sí | sí | no | operator+ | proxy interno |
-| Destroy / stop | sí | sí | sí (política: ¿solo propios?) | no | operator+/admin | status |
-| Approve SSH SignRequest | sí (del sandbox) o admin | sí | opcional (flag) | no | no por defecto | endpoint local host |
-| Mint OIDC workload | vía guest→proxy; sujeto = owner del sandbox | — | — | — | — | mint interno |
-| Egress / tenant policy | no | sí | no | no | admin key | no |
+| Acción | owner (`actor_sub == owner_sub`) | `admin` tenant | `operator` | `user` | `viewer` | API key servicio (rol) | Node mTLS |
+|---|---|---|---|---|---|---|---|
+| Create sandbox | — (pasa a ser owner) | sí | sí | sí | no | según rol de la key | no |
+| List (propios) | sí | sí (todos) | sí (todos o filtro) | solo propios | sí (todos, RO) | según rol | no |
+| Get | sí | sí | sí | solo propios | sí | según rol | claim/status sí |
+| Exec | sí | sí | solo propios salvo `sandbox:exec-any` | solo propios | no | operator+ | proxy interno |
+| Destroy / stop | sí | sí | solo propios salvo `sandbox:destroy-any` | solo propios | no | operator+/admin | status |
+| Approve SSH SignRequest | sí (del sandbox) o admin | sí | opcional (flag) | — | no | no por defecto | endpoint local host |
+| Mint OIDC workload | vía guest→proxy; sujeto = owner del sandbox | — | — | — | — | — | mint interno |
+| Egress / tenant policy | no | sí | no | no | no | admin key | no |
 
-Política por defecto recomendada para destroy de `operator`: **solo sandboxes propios** salvo claim/grupo `sandbox:destroy-any`.
+Política por defecto para `operator`: destroy y exec **solo sobre sandboxes propios** salvo los grupos `sandbox:destroy-any` y `sandbox:exec-any`. El exec en una sandbox ajena lee su workspace y pide tokens de workload a nombre de esa sandbox, así que es un permiso explícito igual que el destroy. `user` (2026-10) es el rol de quien solo usa sandboxes: crea las suyas y no ve ni toca las de otros. Con `viewer` y `user` a la vez el rol es `operator`, su unión.
 
 **Aislamiento entre tenants (hecho, 2026-10).** Todo llamante con credencial queda confinado a un tenant y los handlers lo comprueban:
 
@@ -242,7 +242,7 @@ Orden intencional: **no** mintir `user_sub` antes de tener owner real en store (
 |---|---|
 | **1 Schema + audit** | **Hecho** (2026-10): `owner_sub`/`owner_email` en sandbox; `actor_sub` en `sandbox_events`; Create/Get/List exponen owner; lab acepta body/`X-ASP-Actor-Sub` (vacío OK). |
 | **2 IdP JWT** | **Hecho** (2026-10): `ASP_IDP_ISSUER` / `ASP_IDP_AUDIENCE` / `ASP_IDP_JWKS_URL` (o discovery) / `ASP_IDP_REQUIRED`; valida RS256 + iss/aud/exp (`exp` obligatorio salvo `ASP_IDP_REQUIRE_EXP=0`; JWKS refrescado cada 5 min y, ante `kid` desconocido, como mucho cada 30 s); `owner_sub`/`actor_sub` desde token; rechazo de `owner_sub` forjado; rutas node mTLS sin JWT humano. |
-| **3 RBAC** | **Hecho** (2026-10): roles `admin`/`operator`/`viewer` desde `ASP_IDP_ROLE_CLAIM` + `ASP_IDP_ROLE_MAP` o prefijo `asp-*`; destroy operator = propios salvo `sandbox:destroy-any`; list tenant-wide para admin/operator/viewer; IdP off = sin RBAC (lab). |
+| **3 RBAC** | **Hecho** (2026-10): roles `admin`/`operator`/`user`/`viewer` desde `ASP_IDP_ROLE_CLAIM` + `ASP_IDP_ROLE_MAP` o prefijo `asp-*`; destroy operator = propios salvo `sandbox:destroy-any`; list tenant-wide para admin/operator/viewer; IdP off = sin RBAC (lab). |
 | **4 SSH scoped** | **Hecho (MVP 2026-10):** registry `sandboxID→unix path`; `ASP_SSH_AGENT_SOCK_TEMPLATE` (`{owner_sub}`/`{sandbox_id}`); hybrid con upstream por sandbox (sin fallback a `SSH_AUTH_SOCK` global); symlink `ssh-agent-{id}.sock` → path resuelto; confirm default-on en multi-user; approve registra `actor_sub`. **No** spawnea ssh-agent por usuario (ops provisiona socks/keys). |
 | **5 Workload `user_sub`** | **Hecho** (2026-10): `user_sub`/`act` desde `sandbox.owner_sub`; guest `user_sub`/`act` ignorados en proxy y CP; lab sin owner sigue mintando sin claims humanos. |
 
@@ -256,7 +256,7 @@ Cableado real (2026-10), **sin secretos en git**:
 |---|---|
 | Issuer | `https://auth.luisgf.es/realms/asp` |
 | Cliente / `aud` | `asp-api` |
-| Grupos | `asp-admin` / `asp-operator` / `asp-viewer`; destroy-any = `sandbox:destroy-any` |
+| Grupos | `asp-admin` / `asp-operator` / `asp-user` / `asp-viewer`; destroy-any = `sandbox:destroy-any`; exec-any = `sandbox:exec-any` |
 | Env CP | `ASP_IDP_ISSUER` / `AUDIENCE` / `JWKS_URL` / `REQUIRED` / `ROLE_CLAIM` / `ROLE_PREFIX` / `DESTROY_ANY_GROUP` |
 | Secretos host | `~/.secrets/asp-idp.env` (solo `ASP_IDP_*`); `~/.secrets/asp-keycloak-lab.txt` (client secret + user `asp-lab`) |
 | CP listen | `127.0.0.1:18112` — unit `asp-control-plane.service` ([plantilla](../../scripts/systemd/asp-control-plane.service)) |
