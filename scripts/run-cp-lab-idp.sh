@@ -36,11 +36,20 @@ set +a
 export LISTEN_ADDR="127.0.0.1:${CP_PORT}"
 export ASP_OIDC_ISSUER="${ASP_OIDC_ISSUER:-http://127.0.0.1:${CP_PORT}}"
 export ASP_REQUIRE_API_KEY="${ASP_REQUIRE_API_KEY:-0}"
-# reuse host oidc/attest keys if present (lab). The attestation key is the
-# node-agent's default one, so a node on this host signs with a key the
-# control plane trusts (it trusts no key it is not configured with).
-[[ -f /tmp/asp-oidc-key.pem ]] && export ASP_OIDC_KEY=/tmp/asp-oidc-key.pem
-[[ -f /tmp/asp-attest-key.pem ]] && export ASP_ATTEST_KEY=/tmp/asp-attest-key.pem
+# Keys: the systemd unit's persistent ones when present, else the old /tmp
+# files. A node on this host must sign attestations with the same
+# ASP_ATTEST_KEY: the control plane trusts no key it is not configured with.
+# ASP_IDP_REQUIRED=1 puts the control plane in production mode, which refuses
+# key material in /tmp unless ASP_ALLOW_TMP_KEYS=1.
+KEYS=/var/lib/asp-control-plane
+if [[ -r "$KEYS/oidc-key.pem" ]]; then
+  export ASP_CA_CERT="$KEYS/ca.crt" ASP_CA_KEY="$KEYS/ca.key"
+  export ASP_OIDC_KEY="$KEYS/oidc-key.pem" ASP_ATTEST_KEY="$KEYS/attest-key.pem"
+else
+  [[ -f /tmp/asp-oidc-key.pem ]] && export ASP_OIDC_KEY=/tmp/asp-oidc-key.pem
+  [[ -f /tmp/asp-attest-key.pem ]] && export ASP_ATTEST_KEY=/tmp/asp-attest-key.pem
+  export ASP_ALLOW_TMP_KEYS=1
+fi
 
 "$DEMO/api" >"$DEMO/cp.log" 2>&1 &
 echo $! >"$DEMO/cp.pid"
