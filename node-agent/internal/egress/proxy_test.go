@@ -88,17 +88,6 @@ func TestDenyDefaultEmpty(t *testing.T) {
 	}
 }
 
-func TestForwarderStub(t *testing.T) {
-	a := NewAllowlist("allowed.test")
-	f := &ForwarderStub{Allowlist: a}
-	if err := f.AllowDial("allowed.test", 443); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.AllowDial("blocked.test", 443); err != ErrDenied {
-		t.Fatalf("got %v", err)
-	}
-}
-
 func TestParseAllowlistJSON(t *testing.T) {
 	al, err := ParseAllowlistJSON(`{"mode":"deny-default","rules":[{"host_pattern":"allowed.test","enabled":true}]}`)
 	if err != nil {
@@ -296,8 +285,10 @@ func TestForwardProxyWithoutMITM(t *testing.T) {
 
 func TestTokenBucket(t *testing.T) {
 	b := NewTokenBucket(100, 2)
-	if !b.Allow("a") || !b.Allow("a") {
-		t.Fatal("burst")
+	for i := 0; i < 2; i++ {
+		if !b.Allow("a") {
+			t.Fatalf("burst: token %d refused", i+1)
+		}
 	}
 	if b.Allow("a") {
 		t.Fatal("should empty")

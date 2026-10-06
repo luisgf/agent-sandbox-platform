@@ -102,7 +102,7 @@ func TestStoppingDuringAStartTearsDownAfterIt(t *testing.T) {
 
 	rec.poll(context.Background()) // start in flight
 	time.Sleep(50 * time.Millisecond)
-	cp.setState("s1", "stopping") // the user destroyed it meanwhile
+	cp.setState("s1", "stopping")  // the user destroyed it meanwhile
 	rec.poll(context.Background()) // s1 is in flight: skipped
 	rec.work.Wait()
 	rec.tick(context.Background()) // now the stop

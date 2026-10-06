@@ -12,8 +12,8 @@ var ErrUnknownSandbox = errors.New("no pod-daemon endpoint for sandbox")
 
 // Transport names for Endpoint.Mode.
 const (
-	ModeUnix   = "unix"
-	ModeHybrid = "hybrid" // CH UDS + CONNECT
+	ModeUnix    = "unix"
+	ModeHybrid  = "hybrid" // CH UDS + CONNECT
 	ModeAFVsock = "afvsock"
 )
 

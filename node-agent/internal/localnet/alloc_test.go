@@ -11,7 +11,7 @@ import (
 // fakeProbe reports tables and ports another program holds.
 type fakeProbe struct{ tables, ports map[int]bool }
 
-func (p fakeProbe) TablesInUse() map[int]bool  { return p.tables }
+func (p fakeProbe) TablesInUse() map[int]bool   { return p.tables }
 func (p fakeProbe) UDPPortsInUse() map[int]bool { return p.ports }
 
 func TestAllocatorGivesCollidingShortIDsDistinctResources(t *testing.T) {

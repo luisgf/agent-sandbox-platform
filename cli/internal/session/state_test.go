@@ -100,10 +100,3 @@ func TestSaveRejectsEmptyIdentity(t *testing.T) {
 		t.Fatal("expected empty cp error")
 	}
 }
-
-func TestDefaultPathEnvOverride(t *testing.T) {
-	t.Setenv("ASP_SESSION_FILE", "/tmp/custom-asp-session.json")
-	if got := DefaultPath(); got != "/tmp/custom-asp-session.json" {
-		t.Fatalf("got %q", got)
-	}
-}

@@ -1,29 +1,14 @@
 package egress
 
 import (
-	"context"
 	"errors"
 	"strconv"
 	"strings"
 	"sync"
 )
 
-var ErrNotImplemented = errors.New("egress policy proxy is not implemented")
-
 // ErrDenied is returned when a host is not on the allowlist.
 var ErrDenied = errors.New("host not allowed")
-
-type Policy struct {
-	TenantID  string
-	SandboxID string
-	HTTPHosts []string
-	DNSNames  []string
-}
-
-type Proxy interface {
-	Apply(ctx context.Context, policy Policy) error
-	Remove(ctx context.Context, sandboxID string) error
-}
 
 // Rule is a single host_pattern (+ optional port) allowlist entry.
 type Rule struct {
@@ -184,28 +169,4 @@ func ParseHostPort(raw string) (host string, port int) {
 		}
 	}
 	return host, port
-}
-
-// DenyByDefaultProxy will configure node-local HTTP(S) and DNS gateways.
-// Host-side routing must prevent a guest from bypassing these gateways.
-// Never grant NET_ADMIN to the guest and never treat guest firewall rules as
-// an enforcement boundary.
-type DenyByDefaultProxy struct {
-	Allowlist *Allowlist
-}
-
-func (p DenyByDefaultProxy) Apply(context.Context, Policy) error  { return ErrNotImplemented }
-func (p DenyByDefaultProxy) Remove(context.Context, string) error { return ErrNotImplemented }
-
-// ForwarderStub is a tiny HTTP CONNECT/dial gate that checks the allowlist before dialing.
-// Full proxy is Phase 2; this stub only exposes Check for dial decisions.
-type ForwarderStub struct {
-	Allowlist *Allowlist
-}
-
-func (f *ForwarderStub) AllowDial(host string, port int) error {
-	if f == nil || f.Allowlist == nil {
-		return ErrDenied
-	}
-	return f.Allowlist.CheckHostPort(host, port)
 }

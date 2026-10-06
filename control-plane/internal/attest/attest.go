@@ -4,7 +4,6 @@ package attest
 
 import (
 	"context"
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -443,6 +442,3 @@ func (a *SoftwareAttestor) KID() string {
 	defer a.mu.RUnlock()
 	return a.kid
 }
-
-// Ensure crypto.Hash is referenced for future SHA use.
-var _ = crypto.SHA256

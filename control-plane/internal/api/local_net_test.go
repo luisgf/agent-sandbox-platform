@@ -115,9 +115,7 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 	if up.LocalNetState != store.LocalNetUp || !up.LocalNet {
 		t.Fatalf("up=%+v", up)
 	}
-	if up.LastActivityAt.After(before.Add(time.Second)) && !up.LastActivityAt.Equal(before) {
-		// heartbeat must not refresh idle. Equal is required; a clock tick of the same stored value is ok.
-	}
+	// The heartbeat must not refresh idle activity.
 	if !up.LastActivityAt.Equal(before) {
 		t.Fatalf("heartbeat moved activity %s -> %s", before, up.LastActivityAt)
 	}

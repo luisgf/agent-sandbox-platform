@@ -490,7 +490,8 @@ Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 ## Development
 
 ```bash
-make test             # all unit tests (Go modules + Rust + guest helper)
+make test             # all unit tests (Go modules + Rust + guest helper; control plane and node agent with -race)
+make lint             # gofmt, go vet and staticcheck for every Go module, as CI runs them
 make smoke            # control-plane / node-agent smoke scripts
 make smoke-multi-node # two dry-run nodes: placement, cordon, node loss, agent restart
 make smoke-asp        # CLI end-to-end (dry-run)

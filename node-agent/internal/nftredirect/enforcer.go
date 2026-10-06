@@ -24,17 +24,17 @@ const (
 
 // Config for the redirect enforcer.
 type Config struct {
-	GuestSubnet  string // e.g. 10.200.0.0/16
-	ProxyIP      string // host TAP IP (informational for script)
-	ProxyPort    int    // e.g. 8888
-	DNSSinkIP    string // default = ProxyIP
-	DNSSinkPort  int    // e.g. 5353 (node-agent --egress-dns-sink)
-	HTTPPorts    string // comma-separated, default "80,443"
-	DNSAction    string // "redirect" | "drop"
-	Table        string // default asp_egress
-	ScriptPath   string // path to scripts/nftables-egress-redirect.sh
-	Mode         Mode   // soft | enforce
-	Logger       *slog.Logger
+	GuestSubnet string // e.g. 10.200.0.0/16
+	ProxyIP     string // host TAP IP (informational for script)
+	ProxyPort   int    // e.g. 8888
+	DNSSinkIP   string // default = ProxyIP
+	DNSSinkPort int    // e.g. 5353 (node-agent --egress-dns-sink)
+	HTTPPorts   string // comma-separated, default "80,443"
+	DNSAction   string // "redirect" | "drop"
+	Table       string // default asp_egress
+	ScriptPath  string // path to scripts/nftables-egress-redirect.sh
+	Mode        Mode   // soft | enforce
+	Logger      *slog.Logger
 }
 
 // SoftFail is true when Mode is soft (back-compat helper).

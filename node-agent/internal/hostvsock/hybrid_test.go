@@ -94,8 +94,9 @@ func TestHybridAttachIdentityHTTP(t *testing.T) {
 	path := HybridGuestPath(muxer, PortIdentity)
 	client := &http.Client{
 		Transport: &http.Transport{
-			Dial: func(_, _ string) (net.Conn, error) {
-				return net.Dial("unix", path)
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", path)
 			},
 		},
 		Timeout: 2 * time.Second,
