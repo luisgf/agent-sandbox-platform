@@ -10,10 +10,15 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -23,6 +28,13 @@ const (
 	DefaultCACertRel = "ca.crt"
 	DefaultCAKeyRel  = "ca.key"
 	DefaultNodeTTL   = 365 * 24 * time.Hour
+
+	// OUNodes marks node-agent certificates; the control plane binds their CN to the node id.
+	OUNodes = "nodes"
+	// ControlPlaneCN / OUControlPlane name the control plane's client certificate,
+	// the only identity node agents accept on their control-plane listener.
+	ControlPlaneCN = "asp-control-plane"
+	OUControlPlane = "control-plane"
 )
 
 // CA holds a loaded certificate authority used to issue node client certs.
@@ -142,14 +154,92 @@ type IssueResult struct {
 	NotAfter    time.Time
 }
 
-// IssueNodeClient issues a client certificate for the given node ID (CN + URI SAN).
+// ErrInvalidNodeID is returned when a node id cannot be used as a certificate name.
+var ErrInvalidNodeID = errors.New("invalid node id")
+
+// nodeIDPattern: DNS-style labels of letters, digits, '-' and '_' separated by dots.
+// The control plane uses the node id as the TLS ServerName when it calls the agent.
+var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)*$`)
+
+// ValidNodeID reports whether id can name a node certificate.
+func ValidNodeID(id string) error {
+	if len(id) == 0 || len(id) > 253 || !nodeIDPattern.MatchString(id) {
+		return fmt.Errorf("%w %q: use letters, digits, '.', '-' and '_' (at most 253 characters)", ErrInvalidNodeID, id)
+	}
+	if strings.EqualFold(id, ControlPlaneCN) {
+		return fmt.Errorf("%w %q: reserved for the control plane", ErrInvalidNodeID, id)
+	}
+	return nil
+}
+
+// EndpointHosts returns the hosts of agent endpoint URLs, for certificate SANs.
+// Unspecified addresses (0.0.0.0, ::) and unparsable values are skipped.
+func EndpointHosts(endpoints ...string) []string {
+	var hosts []string
+	for _, raw := range endpoints {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		h := u.Hostname()
+		if ip := net.ParseIP(h); ip != nil && ip.IsUnspecified() {
+			continue
+		}
+		if !slices.Contains(hosts, h) {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
+}
+
+// IssueNodeCert issues a node certificate (CN = node id, OU nodes) that works as an
+// mTLS client towards the control plane and as the TLS server certificate of the
+// agent's control-plane listener. SANs carry the node id, which the control plane
+// sets as ServerName, plus the given endpoint hosts so operators can reach the agent
+// by address.
+func (c *CA) IssueNodeCert(nodeID string, hosts []string, ttl time.Duration) (*IssueResult, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if err := ValidNodeID(nodeID); err != nil {
+		return nil, err
+	}
+	var dnsNames []string
+	var ips []net.IP
+	for _, h := range append([]string{nodeID}, hosts...) {
+		if ip := net.ParseIP(h); ip != nil {
+			if !slices.ContainsFunc(ips, ip.Equal) {
+				ips = append(ips, ip)
+			}
+		} else if h != "" && !slices.Contains(dnsNames, h) {
+			dnsNames = append(dnsNames, h)
+		}
+	}
+	return c.issue(pkix.Name{
+		CommonName:         nodeID,
+		Organization:       []string{"agent-sandbox-platform"},
+		OrganizationalUnit: []string{OUNodes},
+	}, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, dnsNames, ips, ttl)
+}
+
+// IssueNodeClient issues a node certificate without extra endpoint hosts.
 func (c *CA) IssueNodeClient(nodeID string, ttl time.Duration) (*IssueResult, error) {
+	return c.IssueNodeCert(nodeID, nil, ttl)
+}
+
+// IssueControlPlaneClient issues the control plane's client certificate for calls to
+// node agents (CN asp-control-plane, OU control-plane). Agents accept only this
+// identity on their control-plane listener, so a node certificate from the same CA
+// cannot call another node's exec API.
+func (c *CA) IssueControlPlaneClient(ttl time.Duration) (*IssueResult, error) {
+	return c.issue(pkix.Name{
+		CommonName:         ControlPlaneCN,
+		Organization:       []string{"agent-sandbox-platform"},
+		OrganizationalUnit: []string{OUControlPlane},
+	}, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil, nil, ttl)
+}
+
+func (c *CA) issue(subject pkix.Name, ekus []x509.ExtKeyUsage, dnsNames []string, ips []net.IP, ttl time.Duration) (*IssueResult, error) {
 	if c == nil || c.Cert == nil || c.Key == nil {
 		return nil, fmt.Errorf("ca not loaded")
-	}
-	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" {
-		return nil, fmt.Errorf("node id required")
 	}
 	if ttl <= 0 {
 		ttl = DefaultNodeTTL
@@ -164,16 +254,14 @@ func (c *CA) IssueNodeClient(nodeID string, ttl time.Duration) (*IssueResult, er
 	}
 	now := time.Now().UTC()
 	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName:   nodeID,
-			Organization: []string{"agent-sandbox-platform"},
-			OrganizationalUnit: []string{"nodes"},
-		},
+		SerialNumber:          serial,
+		Subject:               subject,
+		DNSNames:              dnsNames,
+		IPAddresses:           ips,
 		NotBefore:             now.Add(-time.Minute),
 		NotAfter:              now.Add(ttl),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           ekus,
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 	}

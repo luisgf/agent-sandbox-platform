@@ -4,6 +4,7 @@
 - **Fecha:** 2026-09
 - **Extiende:** [0002](0002-networking.md), [0003](0003-identity.md)
 - **Completado parcialmente por:** [0006](0006-fase-2e-nft-ssh-guest.md) (nft sketch → completo)
+- **Extendido por:** [0011](0011-multi-node.md) (el CN del cert se compara en cada ruta de nodo; mTLS también del CP al nodo)
 
 ## Contexto
 

@@ -680,6 +680,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
+		if existing.RevokedAt != nil {
+			return Node{}, errNodeRevoked(id)
+		}
 		node.CreatedAt = existing.CreatedAt
 		node.CertFingerprint = existing.CertFingerprint
 		node.CertSerial = existing.CertSerial
@@ -748,6 +751,9 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
 		node.CreatedAt = existing.CreatedAt
+		// Same as Postgres: enroll does not carry fence settings, so keep the registered ones.
+		node.FenceEndpoint = existing.FenceEndpoint
+		node.FenceToken = existing.FenceToken
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {
 			m.revokedCerts[existing.CertFingerprint] = id
@@ -835,6 +841,9 @@ func (m *MemoryStore) HeartbeatNode(id string) (Node, error) {
 	n, ok := m.nodes[id]
 	if !ok {
 		return Node{}, ErrNotFound
+	}
+	if n.RevokedAt != nil {
+		return Node{}, errNodeRevoked(id)
 	}
 	now := time.Now().UTC()
 	n.LastSeenAt = &now

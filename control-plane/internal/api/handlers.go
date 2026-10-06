@@ -30,7 +30,10 @@ type Server struct {
 	OIDC     *oidc.Signer
 	Attestor *attest.SoftwareAttestor
 	Fence    fence.FenceProvider
-	Client   *http.Client
+	// Client calls same-host agents over plain HTTP; Agents builds mTLS clients for
+	// https:// agent endpoints (nil: https endpoints are refused).
+	Client *http.Client
+	Agents *AgentDialer
 }
 
 func NewServer(s store.Store) *Server {
@@ -271,6 +274,10 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if err := ValidateAgentEndpoint(effectiveAgentEndpoint(input.AgentEndpoint, input.Endpoint), s.allowInsecureAgentHTTP()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	nodeID := strings.TrimSpace(input.ID)
 	if nodeID == "" {
 		nodeID = strings.TrimSpace(input.Name)
@@ -282,8 +289,12 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	} else {
 		input.ID = nodeID
 	}
-	issued, err := s.CA.IssueNodeClient(nodeID, pki.DefaultNodeTTL)
+	issued, err := s.CA.IssueNodeCert(nodeID, pki.EndpointHosts(input.AgentEndpoint, input.Endpoint), pki.DefaultNodeTTL)
 	if err != nil {
+		if errors.Is(err, pki.ErrInvalidNodeID) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "issue cert: "+err.Error())
 		return
 	}
@@ -325,7 +336,8 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
-	if _, err := s.Store.GetNode(id); err != nil {
+	existing, err := s.Store.GetNode(id)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
 			return
@@ -333,8 +345,12 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	issued, err := s.CA.IssueNodeClient(id, pki.DefaultNodeTTL)
+	issued, err := s.CA.IssueNodeCert(id, pki.EndpointHosts(existing.AgentEndpoint, existing.Endpoint), pki.DefaultNodeTTL)
 	if err != nil {
+		if errors.Is(err, pki.ErrInvalidNodeID) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "issue cert: "+err.Error())
 		return
 	}
@@ -411,10 +427,26 @@ func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// With mTLS a node registers only itself; otherwise it could re-point another
+	// node's agent_endpoint and receive that node's exec traffic.
+	if _, ok := NodeIdentityFromContext(r.Context()); ok {
+		input.ID = actingNodeID(r, input.ID)
+		if !authorizeNodeID(w, r, input.ID) {
+			return
+		}
+	}
+	if err := ValidateAgentEndpoint(effectiveAgentEndpoint(input.AgentEndpoint, input.Endpoint), s.allowInsecureAgentHTTP()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	node, err := s.Store.RegisterNode(input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -430,10 +462,17 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
+	if !authorizeNodeID(w, r, id) {
+		return
+	}
 	node, err := s.Store.HeartbeatNode(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -442,8 +481,12 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, node)
 }
 
-// ListNodes returns registered nodes.
-func (s *Server) ListNodes(w http.ResponseWriter, _ *http.Request) {
+// ListNodes returns registered nodes. With an IdP principal it needs admin or operator.
+func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !canViewNodes(p) {
+		forbid(w, "admin or operator role required to list nodes")
+		return
+	}
 	list, err := s.Store.ListNodes()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -509,25 +552,9 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
-	if sb.NodeID == nil || *sb.NodeID == "" {
-		writeError(w, http.StatusConflict, "sandbox has no assigned node")
-		return
-	}
-	node, err := s.Store.GetNode(*sb.NodeID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusConflict, "assigned node not registered")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	agentURL := strings.TrimRight(node.AgentEndpoint, "/")
-	if agentURL == "" {
-		agentURL = strings.TrimRight(node.Endpoint, "/")
-	}
-	if agentURL == "" || strings.HasPrefix(agentURL, "local://") {
-		writeError(w, http.StatusBadGateway, "node has no agent_endpoint for exec")
+	agentURL, client, status, msg := s.agentTarget(sb)
+	if status != 0 {
+		writeError(w, status, msg)
 		return
 	}
 	egressPol := s.effectiveEgress(sb.TenantID)
@@ -556,10 +583,6 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	httpReq.Header.Set("Content-Type", "application/json")
 	if stream {
 		httpReq.Header.Set("Accept", "application/x-ndjson")
-	}
-	client := s.Client
-	if client == nil {
-		client = http.DefaultClient
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -652,25 +675,9 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
-	if sb.NodeID == nil || *sb.NodeID == "" {
-		writeError(w, http.StatusConflict, "sandbox has no assigned node")
-		return
-	}
-	node, err := s.Store.GetNode(*sb.NodeID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusConflict, "assigned node not registered")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	agentURL := strings.TrimRight(node.AgentEndpoint, "/")
-	if agentURL == "" {
-		agentURL = strings.TrimRight(node.Endpoint, "/")
-	}
-	if agentURL == "" || strings.HasPrefix(agentURL, "local://") {
-		writeError(w, http.StatusBadGateway, "node has no agent_endpoint for exec")
+	agentURL, client, status, msg := s.agentTarget(sb)
+	if status != 0 {
+		writeError(w, status, msg)
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -687,10 +694,6 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	client := s.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
@@ -1047,6 +1050,9 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !authorizeSandboxNode(w, r, sb) {
+		return
+	}
 	attClaim := s.attestationClaim(sb.ID)
 	userSub := strings.TrimSpace(sb.OwnerSub) // authoritative; empty OK in lab
 	token, claims, err := s.OIDC.MintWithAttestation(sb.TenantID, sb.ID, req.Aud, req.Nonce, userSub, attClaim)
@@ -1102,6 +1108,9 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
+	if !authorizeNodeID(w, r, id) {
+		return
+	}
 	list, err := s.Store.ListNodeWork(id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -1129,10 +1138,14 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	nodeID := actingNodeID(r, req.NodeID)
+	if !authorizeNodeID(w, r, nodeID) {
+		return
+	}
 	if prev, err := s.Store.GetSandbox(id); err == nil {
 		s.maybeFenceOnReclaim(r.Context(), prev)
 	}
-	sb, err := s.Store.ClaimSandbox(id, strings.TrimSpace(req.NodeID))
+	sb, err := s.Store.ClaimSandbox(id, nodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1164,7 +1177,11 @@ func (s *Server) RenewSandboxLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	sb, err := s.Store.RenewSandboxLease(id, strings.TrimSpace(req.NodeID))
+	nodeID := actingNodeID(r, req.NodeID)
+	if !authorizeNodeID(w, r, nodeID) {
+		return
+	}
+	sb, err := s.Store.RenewSandboxLease(id, nodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1208,6 +1225,9 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 	var req statusRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !s.authorizeSandboxNodeByID(w, r, id) {
 		return
 	}
 	state := store.SandboxState(strings.TrimSpace(req.State))

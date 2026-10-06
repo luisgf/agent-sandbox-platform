@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
+	"fmt"
 	"log/slog"
-	"net/http"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -31,6 +34,8 @@ import (
 
 type config struct {
 	ControlPlaneURL      string
+	ControlPlaneCA       string // --control-plane-ca: CA of the control plane's TLS certificate
+	EnrollURL            string // --enroll-url: where to enroll (default: ControlPlaneURL)
 	NodeID               string
 	CHAPISocket          string
 	CHSocketDir          string
@@ -38,6 +43,8 @@ type config struct {
 	DryRun               bool
 	Endpoint             string
 	AgentListen          string
+	AgentTLSListen       string
+	InsecureAgentListen  bool
 	Enroll               bool
 	BootstrapToken       string
 	CertDir              string
@@ -104,13 +111,17 @@ func main() {
 	defer stop()
 
 	// Enrollment uses a plain (or server-TLS) client with bootstrap token — no client cert yet.
-	plain := &http.Client{Timeout: 15 * time.Second}
+	plain, err := cpclient.NewEnrollHTTPClient(cfg.ControlPlaneCA)
+	if err != nil {
+		slog.Error("load --control-plane-ca", "error", err)
+		os.Exit(1)
+	}
 	if cfg.Enroll {
 		if cfg.BootstrapToken == "" {
 			slog.Error("--enroll requires --bootstrap-token or ASP_NODE_BOOTSTRAP_TOKEN")
 			os.Exit(2)
 		}
-		enrollClient := cpclient.New(cfg.ControlPlaneURL, plain)
+		enrollClient := cpclient.New(cfg.EnrollURL, plain)
 		resp, err := enrollClient.Enroll(ctx, cfg.BootstrapToken, cpclient.EnrollRequest{
 			ID:             cfg.NodeID,
 			Name:           cfg.NodeID,
@@ -134,7 +145,7 @@ func main() {
 		slog.Info("enrolled", "node_id", cfg.NodeID, "cert_dir", cfg.CertDir, "fingerprint", resp.CertFingerprint)
 	}
 
-	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS)
+	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS, cfg.ControlPlaneCA)
 	if err != nil {
 		slog.Error("load mTLS client", "error", err)
 		os.Exit(1)
@@ -191,6 +202,28 @@ func main() {
 		_ = ln.Close()
 	}()
 	slog.Info("exec proxy listening", "addr", ln.Addr().String())
+
+	if cfg.AgentTLSListen != "" {
+		tlsCfg, err := execproxy.MTLSConfig(
+			filepath.Join(cfg.CertDir, "client.crt"),
+			filepath.Join(cfg.CertDir, "client.key"),
+			filepath.Join(cfg.CertDir, "ca.crt"),
+		)
+		if err != nil {
+			slog.Error("--agent-tls-listen needs the enrolled node certificate (run with --enroll)", "cert_dir", cfg.CertDir, "error", err)
+			os.Exit(1)
+		}
+		tlsSrv, tlsLn, err := execproxy.ListenAndServeTLS(cfg.AgentTLSListen, proxy.RemoteHandler(), tlsCfg)
+		if err != nil {
+			slog.Error("agent TLS listen", "error", err)
+			os.Exit(1)
+		}
+		defer func() {
+			_ = tlsSrv.Close()
+			_ = tlsLn.Close()
+		}()
+		slog.Info("control-plane exec API listening (mTLS)", "addr", tlsLn.Addr().String(), "advertised", agentEndpointURL(cfg))
+	}
 
 	if cfg.EgressProxyListen != "" {
 		if !cfg.EgressEnforce {
@@ -525,6 +558,8 @@ func agentEndpointURL(cfg config) string {
 func loadConfig() config {
 	var cfg config
 	flag.StringVar(&cfg.ControlPlaneURL, "control-plane-url", getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8080"), "control plane base URL")
+	flag.StringVar(&cfg.ControlPlaneCA, "control-plane-ca", os.Getenv("ASP_CONTROL_PLANE_CA"), "PEM CA that signed the control plane's TLS certificate (enroll and API calls); default: cert-dir/ca.crt, then system roots")
+	flag.StringVar(&cfg.EnrollURL, "enroll-url", os.Getenv("ASP_ENROLL_URL"), "control-plane URL for --enroll when it differs from --control-plane-url (ASP_MTLS_STRICT serves enroll on a separate listener)")
 	flag.StringVar(&cfg.NodeID, "node-id", os.Getenv("NODE_ID"), "node identifier")
 	flag.StringVar(&cfg.CHAPISocket, "ch-api-socket", os.Getenv("CH_API_SOCKET"), "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir")
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
@@ -533,7 +568,9 @@ func loadConfig() config {
 	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img, deleted on stop); ignored with --dry-run")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
-	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "localhost listen addr for internal exec proxy")
+	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "loopback listen addr for the exec proxy and operator routes (ssh-agent approve, egress-check); plain HTTP, no authentication")
+	flag.StringVar(&cfg.AgentTLSListen, "agent-tls-listen", os.Getenv("ASP_AGENT_TLS_LISTEN"), "listen addr for the control plane's mTLS exec API (e.g. 0.0.0.0:9443) when the control plane runs on another host; uses the enrolled node certificate")
+	flag.BoolVar(&cfg.InsecureAgentListen, "insecure-agent-listen", getenv("ASP_INSECURE_AGENT_LISTEN", "") == "1", "allow --agent-listen on a non-loopback address (plain HTTP, no authentication; lab only)")
 	flag.BoolVar(&cfg.Enroll, "enroll", getenv("ASP_ENROLL", "") == "1", "perform bootstrap enrollment before register")
 	flag.StringVar(&cfg.BootstrapToken, "bootstrap-token", os.Getenv("ASP_NODE_BOOTSTRAP_TOKEN"), "bootstrap token for enrollment")
 	flag.StringVar(&cfg.CertDir, "cert-dir", getenv("ASP_CERT_DIR", "/var/lib/asp/node-certs"), "directory for node client certs")
@@ -584,7 +621,15 @@ func loadConfig() config {
 	if cfg.NFTEgressMode == "" {
 		cfg.NFTEgressMode = "soft"
 	}
+	if cfg.EnrollURL == "" {
+		cfg.EnrollURL = cfg.ControlPlaneURL
+	}
 
+	if cfg.NodeID == "" {
+		// An enrolled node keeps the identity of its certificate: the control plane
+		// rejects requests for any other node id.
+		cfg.NodeID = certNodeID(cfg.CertDir)
+	}
 	if cfg.NodeID == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -593,8 +638,16 @@ func loadConfig() config {
 		}
 		cfg.NodeID = hostname
 	}
+	if err := checkAgentListen(cfg.AgentListen, cfg.InsecureAgentListen); err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(2)
+	}
 	if cfg.Endpoint == "" {
-		cfg.Endpoint = "http://" + cfg.AgentListen
+		if cfg.AgentTLSListen != "" {
+			cfg.Endpoint = defaultTLSEndpoint(cfg.AgentTLSListen)
+		} else {
+			cfg.Endpoint = "http://" + cfg.AgentListen
+		}
 	}
 	if cfg.CertDir == "" {
 		cfg.CertDir = filepath.Join(os.TempDir(), "asp-node-certs")
@@ -606,6 +659,60 @@ func loadConfig() config {
 		}
 	}
 	return cfg
+}
+
+// certNodeID returns the CN of the enrolled node certificate in certDir, or "".
+func certNodeID(certDir string) string {
+	raw, err := os.ReadFile(filepath.Join(certDir, "client.crt"))
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return ""
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cert.Subject.CommonName)
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// checkAgentListen keeps the plain exec listener on loopback: it has no
+// authentication, and its routes run commands in any sandbox on this node.
+func checkAgentListen(addr string, insecure bool) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("--agent-listen %q: %w", addr, err)
+	}
+	if isLoopbackHost(host) || insecure {
+		return nil
+	}
+	return fmt.Errorf("--agent-listen %s is not a loopback address and the plain exec API has no authentication; use --agent-tls-listen for a control plane on another host, or --insecure-agent-listen (lab only)", addr)
+}
+
+// defaultTLSEndpoint advertises https://<host>:<port> for --agent-tls-listen. An
+// unspecified host (0.0.0.0, ::, empty) becomes this machine's hostname; set
+// --endpoint when the control plane reaches the node by another name.
+func defaultTLSEndpoint(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "https://" + addr
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		if h, err := os.Hostname(); err == nil {
+			host = h
+		}
+	}
+	return "https://" + net.JoinHostPort(host, port)
 }
 
 func getenv(key, fallback string) string {

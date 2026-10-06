@@ -58,6 +58,11 @@ func canDestroy(p idp.Principal, sb store.Sandbox) bool {
 	return false
 }
 
+// canViewNodes: admin | operator. The node inventory is operations data, not tenant data.
+func canViewNodes(p idp.Principal) bool {
+	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator
+}
+
 // canManageEgress: admin only (ADR matrix).
 func canManageEgress(p idp.Principal) bool {
 	return p.Role == idp.RoleAdmin

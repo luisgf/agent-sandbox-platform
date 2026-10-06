@@ -759,10 +759,14 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var createdAt time.Time
-	err = tx.QueryRow(ctx, `SELECT created_at FROM nodes WHERE id=$1`, id).Scan(&createdAt)
+	var revokedAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT created_at, revoked_at FROM nodes WHERE id=$1`, id).Scan(&createdAt, &revokedAt)
 	isNew := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !isNew {
 		return Node{}, err
+	}
+	if revokedAt != nil {
+		return Node{}, errNodeRevoked(id)
 	}
 
 	if isNew {
@@ -1049,12 +1053,20 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 	now := time.Now().UTC()
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE nodes SET last_seen_at=$2, updated_at=$2, state='ready'
-		WHERE id=$1`, id, now)
+		WHERE id=$1 AND revoked_at IS NULL`, id, now)
 	if err != nil {
 		return Node{}, err
 	}
 	if tag.RowsAffected() == 0 {
-		return Node{}, ErrNotFound
+		var revokedAt *time.Time
+		err := p.pool.QueryRow(ctx, `SELECT revoked_at FROM nodes WHERE id=$1`, id).Scan(&revokedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Node{}, ErrNotFound
+		}
+		if err != nil {
+			return Node{}, err
+		}
+		return Node{}, errNodeRevoked(id)
 	}
 	return p.GetNode(id)
 }

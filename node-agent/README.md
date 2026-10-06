@@ -7,7 +7,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | Flag | Env | Default |
 |---|---|---|
 | `--control-plane-url` | `CONTROL_PLANE_URL` | `http://127.0.0.1:8080` |
-| `--node-id` | `NODE_ID` | hostname |
+| `--node-id` | `NODE_ID` | CN del cert enrolado en `--cert-dir`; si no hay, hostname |
 | `--ch-socket-dir` | `CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{id}.sock` (default per-sandbox spawn) |
 | `--ch-api-socket` | `CH_API_SOCKET` | vacío — shared/legacy override (sin spawn) |
 | `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` |
@@ -16,7 +16,12 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--bootstrap-token` | `ASP_NODE_BOOTSTRAP_TOKEN` | token de enroll |
 | `--cert-dir` | `ASP_CERT_DIR` | dir de client certs |
 | `--mtls` | `ASP_MTLS=1` | exigir client certs |
-| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` |
+| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
+| `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
+| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca |
+| `--insecure-agent-listen` | `ASP_INSECURE_AGENT_LISTEN=1` | permite `--agent-listen` fuera de loopback (solo lab) |
+| `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — `exec` con mTLS para un CP en otro host (p.ej. `0.0.0.0:9443`); solo acepta el cert del CP |
+| `--endpoint` | `NODE_ENDPOINT` | anunciado al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen`, si no `http://<agent-listen>` |
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix sock de pod-daemon (dry-run / fallback) |
 | `--pod-daemon-port` | | `26500` — puerto guest vsock/TCP para HTTP |
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check denegado |
@@ -57,7 +62,9 @@ go run ./cmd/node-agent \
   --tap-auto
 ```
 
-Endpoints internos (`--agent-listen`): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con confirm; body/header `actor_sub` audit).
+Endpoints internos (`--agent-listen`, loopback): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con confirm; body/header `actor_sub` audit).
+
+`--agent-tls-listen` solo sirve `GET /healthz`, `POST /v1/internal/exec` y `POST /v1/internal/exec/stdin` al plano de control (CN `asp-control-plane`). Necesita un cert de nodo con uso de servidor: los enrolados antes de [ADR-0011](../docs/adr/0011-multi-node.md) deben re-enrolar o rotar.
 
 ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (ServeConnScoped, sin fallback a `SSH_AUTH_SOCK` global). Ops provisiona las keys en esa ruta; ASP no spawnea agents.
 

@@ -649,3 +649,34 @@ func TestDestroyFailedSandboxStops(t *testing.T) {
 		t.Fatalf("state %s", out.State)
 	}
 }
+
+func TestRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
+	s := NewMemoryStore()
+	if _, err := s.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeNode("n1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HeartbeatNode("n1"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("heartbeat after revoke: want ErrConflict, got %v", err)
+	}
+	if _, err := s.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("register after revoke: want ErrConflict, got %v", err)
+	}
+	n, err := s.GetNode("n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.State != "offline" || n.RevokedAt == nil {
+		t.Fatalf("revoked node came back: %+v", n)
+	}
+
+	// A fresh enroll is the way back.
+	if _, err := s.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.HeartbeatNode("n1"); err != nil || n.State != "ready" {
+		t.Fatalf("heartbeat after re-enroll: node=%+v err=%v", n, err)
+	}
+}
