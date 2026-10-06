@@ -109,3 +109,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
       - name: cargo test
         run: cargo test --locked
+      - name: cargo check (aarch64-unknown-linux-gnu)
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          cargo check --locked --all-targets --target aarch64-unknown-linux-gnu
