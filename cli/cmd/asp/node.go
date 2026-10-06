@@ -120,10 +120,11 @@ func cmdNodeCordon(args []string, stdout, stderr io.Writer, cordon bool) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		fmt.Fprintf(stderr, "usage: asp %s <node-id>\n", name)
 		return 2
 	}
@@ -131,7 +132,7 @@ func cmdNodeCordon(args []string, stdout, stderr io.Writer, cordon bool) int {
 	if c == nil {
 		return code
 	}
-	n, err := c.SetNodeCordoned(context.Background(), fs.Arg(0), cordon)
+	n, err := c.SetNodeCordoned(context.Background(), pos[0], cordon)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1

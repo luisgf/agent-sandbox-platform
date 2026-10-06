@@ -115,6 +115,41 @@ func addGlobalFlags(fs *flag.FlagSet, g *globalFlags) {
 	fs.BoolVar(&g.jsonOut, "json", false, "print raw JSON to stdout")
 }
 
+// parseInterspersed parses fs's flags before and after the positional
+// arguments and returns the positionals. flag.Parse stops at the first one, so
+// "asp sandbox exec <id> --cmd '…'", the order the usage shows, ran "--cmd" as
+// the command. After a positional it only goes on while the next argument is
+// one of fs's flags, which keeps an undelimited command ("<id> ls -la") whole.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	rest := fs.Args()
+	var pos []string
+	for len(rest) > 0 {
+		pos = append(pos, rest[0])
+		rest = rest[1:]
+		if len(rest) == 0 || !isDefinedFlag(fs, rest[0]) {
+			return append(pos, rest...), nil
+		}
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		rest = fs.Args()
+	}
+	return pos, nil
+}
+
+// isDefinedFlag reports whether arg is -name, --name or --name=value for a
+// flag fs defines.
+func isDefinedFlag(fs *flag.FlagSet, arg string) bool {
+	if len(arg) < 2 || arg[0] != '-' {
+		return false
+	}
+	name, _, _ := strings.Cut(strings.TrimPrefix(arg[1:], "-"), "=")
+	return name != "" && fs.Lookup(name) != nil
+}
+
 func newClient(g globalFlags) (*client.Client, error) {
 	c := client.New(g.cpURL, g.apiKey)
 	res, err := auth.ResolveBearer(context.Background(), auth.ResolveInput{
@@ -211,10 +246,10 @@ func cmdGet(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return 2
 	}
-	pos := fs.Args()
 	if len(pos) < 1 {
 		fmt.Fprintln(stderr, "usage: asp sandbox get <id>")
 		return 2
@@ -266,10 +301,10 @@ func cmdDelete(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return 2
 	}
-	pos := fs.Args()
 	if len(pos) < 1 {
 		fmt.Fprintln(stderr, "usage: asp sandbox delete <id>")
 		return 2
@@ -295,10 +330,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	addGlobalFlags(fs, &g)
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
-	if err := fs.Parse(before); err != nil {
+	pos, err := parseInterspersed(fs, before)
+	if err != nil {
 		return 2
 	}
-	pos := fs.Args()
 	if len(pos) < 1 {
 		fmt.Fprintln(stderr, "usage: asp sandbox exec <id> --cmd '…' | asp sandbox exec <id> -- argv…")
 		return 2
