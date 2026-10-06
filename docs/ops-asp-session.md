@@ -4,7 +4,7 @@
 
 Cómo un harness tipo [OpenCode](https://github.com/sst/opencode) apunta su herramienta de shell a ese sandbox ya creado, en lugar de ejecutar cada comando en el host.
 
-La primitiva one-shot (CI / un comando) sigue existiendo y no es esta página: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). CLI base: [`why-cli-asp.md`](why-cli-asp.md). Identidad del dueño: [ADR-0007](adr/0007-multi-user-identity.md) (`owner_sub` sale del JWT, no del guest). El exec API es el dataplane **dentro** de la sesión, no el contrato que el harness debe diseñar.
+Para harnesses que hablan MCP hay una alternativa al wrapper, todavía experimental: [`ops-asp-mcp.md`](ops-asp-mcp.md) (`asp mcp`). La primitiva one-shot (CI / un comando) sigue existiendo y no es esta página: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). CLI base: [`why-cli-asp.md`](why-cli-asp.md). Identidad del dueño: [ADR-0007](adr/0007-multi-user-identity.md) (`owner_sub` sale del JWT, no del guest). El exec API es el dataplane **dentro** de la sesión, no el contrato que el harness debe diseñar.
 
 ## Por qué
 

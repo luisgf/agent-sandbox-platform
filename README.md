@@ -20,6 +20,7 @@ ASP is a self-hosted, FOSS sandbox platform for coding agents. An agent harness 
 - [Network and identity](#network-and-identity)
 - [Quickstart (dry-run, no KVM)](#quickstart-dry-run-no-kvm)
 - [Using ASP with OpenCode](#using-asp-with-opencode)
+- [Using ASP over MCP (experimental)](#using-asp-over-mcp-experimental)
 - [Configuration cheat sheet](#configuration-cheat-sheet)
 - [Status and known limits](#status-and-known-limits)
 - [Repository layout](#repository-layout)
@@ -377,6 +378,32 @@ Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs
 
 ---
 
+## Using ASP over MCP (experimental)
+
+`asp mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. Its tools act inside a session's sandbox, so any harness that speaks MCP (Claude Code, OpenCode, Codex, Cursor…) can work in the microVM without a shell wrapper. The tools are:
+
+- `asp_exec`: streamed, with exit code, timeout and progress;
+- `asp_read`, `asp_write` and `asp_edit`: content travels as base64, so no shell quoting is involved;
+- `asp_list` and `asp_grep`;
+- `asp_session_info`.
+
+```bash
+# Claude Code: the sandbox lives as long as the MCP connection
+claude mcp add asp -- asp mcp --name agent --start --workspace "$PWD" --stop-on-exit
+claude --allowedTools mcp__asp --disallowedTools "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,NotebookEdit"
+```
+
+Turn off the harness's native shell and file tools, or the model can still use the host. Limits:
+
+- no live output to the model;
+- the harness approves or denies each tool as a whole;
+- writes are capped at 512 KiB;
+- files created in the guest show up as `root:root` in the host workspace.
+
+Configs for OpenCode and Codex, and the test results: [`docs/ops-asp-mcp.md`](docs/ops-asp-mcp.md).
+
+---
+
 ## Configuration cheat sheet
 
 Only the most common settings. Full lists live in each component's README.
@@ -461,6 +488,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Topic | Document |
 |---|---|
 | Agent sessions and harness wrapper | [`docs/ops-asp-session.md`](docs/ops-asp-session.md) |
+| MCP server for harnesses (experimental) | [`docs/ops-asp-mcp.md`](docs/ops-asp-mcp.md) |
 | One-shot `asp sandbox run` | [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) |
 | Keycloak IdP lab | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) |
 | On-demand local network | [`docs/ops-local-net.md`](docs/ops-local-net.md) |
