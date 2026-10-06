@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -383,10 +384,11 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RotateNodeCert issues a replacement client certificate (bootstrap token or admin API key).
+// RotateNodeCert issues a replacement node certificate. It takes an IdP
+// admin, a platform-scoped API key or the node bootstrap token (a node
+// re-keying itself).
 func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
-	if !authorizeNodeCertAdmin(r, s.Store) {
-		writeError(w, http.StatusUnauthorized, "bootstrap token or admin api key required")
+	if !checkBootstrapToken(r) && !authorizeNodeAdmin(w, r, "rotate node certificates", true) {
 		return
 	}
 	if s.CA == nil {
@@ -443,10 +445,11 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RevokeNode marks a node and its current client cert as revoked.
+// RevokeNode marks a node and its current client cert as revoked. It takes an
+// IdP admin or a platform-scoped API key; the bootstrap token every node holds
+// is not enough.
 func (s *Server) RevokeNode(w http.ResponseWriter, r *http.Request) {
-	if !authorizeNodeCertAdmin(r, s.Store) {
-		writeError(w, http.StatusUnauthorized, "bootstrap token or admin api key required")
+	if !authorizeNodeAdmin(w, r, "revoke nodes", false) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -464,22 +467,6 @@ func (s *Server) RevokeNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, node)
-}
-
-// authorizeNodeCertAdmin accepts the node bootstrap token or a valid API key.
-func authorizeNodeCertAdmin(r *http.Request, st store.Store) bool {
-	if checkBootstrapToken(r) {
-		return true
-	}
-	raw := bearerToken(r.Header.Get("Authorization"))
-	if raw == "" {
-		return false
-	}
-	hash := store.HashAPIKeySecret(raw)
-	if _, err := st.LookupAPIKeyByHash(hash); err != nil {
-		return false
-	}
-	return true
 }
 
 // RegisterNode records a node-agent registration.
@@ -875,7 +862,7 @@ func checkBootstrapToken(r *http.Request) bool {
 	if got == "" {
 		got = strings.TrimSpace(r.Header.Get("X-ASP-Bootstrap-Token"))
 	}
-	return got != "" && got == expected
+	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 func newNodeIDFallback() string {

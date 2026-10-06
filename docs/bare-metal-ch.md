@@ -698,13 +698,14 @@ Registro de nodo: `fence_endpoint` + `fence_token` (migración `005`). Cuando el
 **Por qué:** un cert robado no debe seguir hablando al CP. **Qué ganamos:** rotate + revoke + middleware.
 
 ```bash
-# Emitir cert nuevo (bootstrap token o ASP_BOOTSTRAP_API_KEY)
+# Emitir cert nuevo (bootstrap token, ASP_BOOTSTRAP_API_KEY u otra API key de plataforma)
 curl -fsS -X POST -H "Authorization: Bearer $ASP_NODE_BOOTSTRAP_TOKEN" \
   https://cp:8080/v1/nodes/$NODE_ID/rotate-cert | jq .
 # Instalar PEMs en --cert-dir del node-agent y reiniciar agente
 
-# Revocar nodo (bloquea fingerprint actual)
-curl -fsS -X POST -H "Authorization: Bearer $ASP_NODE_BOOTSTRAP_TOKEN" \
+# Revocar nodo (bloquea fingerprint actual): admin del IdP o API key de plataforma,
+# no el bootstrap token, que tienen todos los nodos
+curl -fsS -X POST -H "Authorization: Bearer $ASP_BOOTSTRAP_API_KEY" \
   https://cp:8080/v1/nodes/$NODE_ID/revoke
 ```
 

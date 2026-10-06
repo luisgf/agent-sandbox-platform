@@ -28,6 +28,21 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 - `POST /v1/nodes/{id}/rotate-cert` — autorizado con bootstrap token **o** API key admin. Emite cert nuevo, persiste `cert_serial` + `cert_fingerprint`, y mete el fingerprint anterior en `node_cert_revocations`.
 - `POST /v1/nodes/{id}/revoke` — marca `nodes.revoked_at` y revoca el fingerprint actual.
 - Middleware mTLS rechaza fingerprints en la revoke set (`client certificate revoked`).
+
+**Actualizado 2026-10:** «API key admin» era en realidad cualquier API key válida, de cualquier tenant, y un admin del IdP no podía usar estas rutas porque el middleware se las saltaba. Ahora pasan por el middleware y el handler aplica la misma regla que a cordon/uncordon:
+
+| Llamante | rotate-cert | revoke, cordon, uncordon | `GET /v1/nodes` |
+|---|---|---|---|
+| IdP admin | sí | sí | sí |
+| IdP operador | 403 | 403 | sí |
+| IdP viewer | 403 | 403 | 403 |
+| API key de plataforma (`scope=platform`, p. ej. `ASP_BOOTSTRAP_API_KEY`) | sí | sí | sí |
+| API key de tenant | 403 | 403 | 403 |
+| Bootstrap token de nodo | sí (un nodo re-emitiendo su cert) | 401 | 401 |
+
+- Con `ASP_IDP_REQUIRED=1` estas rutas piden un token del IdP, como las demás de usuario; el bootstrap token sigue valiendo para `rotate-cert`.
+- En el lab abierto (sin API keys ni IdP) revoke, cordon, uncordon y la lista quedan abiertas, como el resto de la API. `rotate-cert` sigue pidiendo el bootstrap token: entrega la clave privada de un nodo.
+- El bootstrap token se compara en tiempo constante.
 - Migración: `control-plane/migrations/006_node_cert_rotation.sql`.
 
 ### 2) mTLS estricto (`ASP_MTLS_STRICT=1`)
