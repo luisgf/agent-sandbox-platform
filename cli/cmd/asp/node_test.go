@@ -119,3 +119,50 @@ func TestSessionStatusExplainsASandboxLostWithItsNode(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeEnrollToken(t *testing.T) {
+	t.Setenv("ASP_API_KEY", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	var got map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/nodes/enroll-tokens", func(w http.ResponseWriter, r *http.Request) {
+		got = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		if got["node_id"] == "tenant" {
+			http.Error(w, `{"error":"a platform-scoped api key is required to issue enroll tokens"}`, http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "asp_enroll_abc", "node_id": got["node_id"], "expires_at": time.Now().Add(time.Hour)})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "--node-id", "node-a", "--ttl", "2h"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("enroll-token exit=%d stderr=%s", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "asp_enroll_abc" {
+		t.Fatalf("stdout must be the token alone, got %q", stdout.String())
+	}
+	if got["node_id"] != "node-a" || got["ttl_seconds"] != float64(7200) {
+		t.Fatalf("request body: %v", got)
+	}
+	if !strings.Contains(stderr.String(), "node node-a only") || !strings.Contains(stderr.String(), "--enroll-token=<token> --node-id=node-a") {
+		t.Fatalf("usage hint: %s", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL}, &stdout, &stderr); code != 0 || got["node_id"] != nil || got["ttl_seconds"] != float64(3600) {
+		t.Fatalf("unpinned token: exit=%d body=%v err=%s", code, got, stderr.String())
+	}
+	stderr.Reset()
+	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "--node-id", "tenant"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "platform-scoped") {
+		t.Fatalf("refused: exit=%d err=%s", code, stderr.String())
+	}
+	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "extra"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("extra argument must be a usage error, got %d", code)
+	}
+}

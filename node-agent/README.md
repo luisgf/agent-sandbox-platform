@@ -14,8 +14,9 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--dry-run` | `DRY_RUN=1` | false — usa `FakeVMM` |
 | `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, antes de registrarse, para y borra lo que dejó un node-agent anterior: `cloud-hypervisor`/`virtiofsd` de `--ch-socket-dir`, sus sockets, TAPs `asp-*`, túneles `wg-asp-*`, copias en `--disk-dir`. `report` solo lo lista; `off`. Con `--dry-run` solo informa ([bare-metal §5.6](../docs/bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)) |
 | `--reap-only` | | hace solo esa limpieza y sale; se niega si corre un agente con ese `--ch-socket-dir` (lock `node-agent.lock`) |
-| `--enroll` | `ASP_ENROLL=1` | enrollment con bootstrap token |
-| `--bootstrap-token` | `ASP_NODE_BOOTSTRAP_TOKEN` | token de enroll |
+| `--enroll` | `ASP_ENROLL=1` | enrollment al arrancar. Si el plano de control responde que el nodo ya está enrolado (409), sigue con el certificado de `--cert-dir` cuando es de este nodo y no ha caducado |
+| `--enroll-token` | `ASP_NODE_ENROLL_TOKEN` | token de enroll de un solo uso (`asp node enroll-token`); uno fijado a este nodo le cambia la clave aunque esté enrolado |
+| `--bootstrap-token` | `ASP_NODE_BOOTSTRAP_TOKEN` | token compartido de labs: enrola un id sin certificado o un nodo revocado, nunca re-enrola uno vivo |
 | `--cert-dir` | `ASP_CERT_DIR` | dir de client certs |
 | `--mtls` | `ASP_MTLS=1` | exigir client certs |
 | `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |

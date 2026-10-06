@@ -210,7 +210,7 @@ func TestMemoryStoreEnrollAndHeartbeat(t *testing.T) {
 		ID: "n-enroll", Name: "n-enroll",
 		AgentEndpoint: "http://127.0.0.1:9100",
 		CapacityCPU:   1, CapacityMemMiB: 512,
-	}, CertMeta{Fingerprint: "abc123fingerprint", Serial: "aa"})
+	}, CertMeta{Fingerprint: "abc123fingerprint", Serial: "aa"}, EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestMemoryStoreRotateAndRevokeCert(t *testing.T) {
 	s := NewMemoryStore()
 	_, err := s.EnrollNode(EnrollNodeInput{
 		ID: "n-rot", Name: "n-rot", AgentEndpoint: "http://127.0.0.1:9",
-	}, CertMeta{Fingerprint: "fp-old", Serial: "s1"})
+	}, CertMeta{Fingerprint: "fp-old", Serial: "s1"}, EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	}
 
 	// A fresh enroll is the way back.
-	if _, err := s.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}); err != nil {
+	if _, err := s.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}, EnrollAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := s.HeartbeatNode("n1"); err != nil || n.State != "ready" {

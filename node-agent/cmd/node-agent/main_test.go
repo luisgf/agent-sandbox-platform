@@ -1,18 +1,24 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 )
 
 func TestCheckAgentListen(t *testing.T) {
@@ -46,20 +52,18 @@ func TestDefaultTLSEndpoint(t *testing.T) {
 	}
 }
 
-func TestCertNodeIDReadsTheEnrolledCertificate(t *testing.T) {
-	dir := t.TempDir()
-	if got := certNodeID(dir); got != "" {
-		t.Fatalf("no certificate: got %q", got)
-	}
+// writeNodeCert writes a self-signed node certificate for cn to dir/client.crt.
+func writeNodeCert(t *testing.T, dir, cn string, notAfter time.Time) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "node-7", OrganizationalUnit: []string{"nodes"}},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
+		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{"nodes"}},
+		NotBefore:    notAfter.Add(-2 * time.Hour),
+		NotAfter:     notAfter,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -68,8 +72,69 @@ func TestCertNodeIDReadsTheEnrolledCertificate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "client.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCertNodeIDReadsTheEnrolledCertificate(t *testing.T) {
+	dir := t.TempDir()
+	if got := certNodeID(dir); got != "" {
+		t.Fatalf("no certificate: got %q", got)
+	}
+	writeNodeCert(t, dir, "node-7", time.Now().Add(time.Hour))
 	if got := certNodeID(dir); got != "node-7" {
 		t.Fatalf("certNodeID = %q, want node-7", got)
+	}
+}
+
+// An agent restarted with --enroll keeps its certificate when the control
+// plane says the node is enrolled already.
+func TestEnrollKeepsTheCertificateOfAnEnrolledNode(t *testing.T) {
+	status := http.StatusConflict
+	var gotAuth string
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if status != http.StatusCreated {
+			http.Error(w, `{"error":"node is enrolled and not revoked"}`, status)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"node_id": "node-7", "client_cert_pem": "C", "client_key_pem": "K", "ca_cert_pem": "A"})
+	}))
+	defer cp.Close()
+	c := cpclient.New(cp.URL, cp.Client())
+	now := time.Now()
+	dir := t.TempDir()
+	cfg := config{NodeID: "node-7", CertDir: dir, BootstrapToken: "boot", AgentListen: "127.0.0.1:9100"}
+
+	if _, err := enrollNode(context.Background(), cfg, c, now); err == nil {
+		t.Fatal("409 without a certificate in cert-dir must fail")
+	}
+	writeNodeCert(t, dir, "node-7", now.Add(time.Hour))
+	if id, err := enrollNode(context.Background(), cfg, c, now); err != nil || id != "node-7" {
+		t.Fatalf("409 with this node's certificate: id=%q err=%v", id, err)
+	}
+	if _, err := enrollNode(context.Background(), cfg, c, now.Add(2*time.Hour)); err == nil {
+		t.Fatal("an expired certificate must not be kept")
+	}
+	other := cfg
+	other.NodeID = "node-8"
+	if _, err := enrollNode(context.Background(), other, c, now); err == nil {
+		t.Fatal("another node's certificate must not be kept")
+	}
+	status = http.StatusUnauthorized
+	if _, err := enrollNode(context.Background(), cfg, c, now); err == nil {
+		t.Fatal("only a 409 falls back to the existing certificate")
+	}
+
+	// The enroll token wins over the bootstrap token, and a 201 writes the certificates.
+	status = http.StatusCreated
+	cfg.EnrollToken = "asp_enroll_x"
+	if id, err := enrollNode(context.Background(), cfg, c, now); err != nil || id != "node-7" {
+		t.Fatalf("enroll: id=%q err=%v", id, err)
+	}
+	if gotAuth != "Bearer asp_enroll_x" {
+		t.Fatalf("credential sent: %q", gotAuth)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "client.crt")); string(b) != "C" {
+		t.Fatalf("client.crt not replaced: %q", b)
 	}
 }
 

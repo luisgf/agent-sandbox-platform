@@ -65,6 +65,7 @@ Usage:
   asp auth login|logout|status [flags]
   asp node list [--json]
   asp node cordon|uncordon <id>
+  asp node enroll-token [--node-id ID] [--ttl 1h] [--json]
   asp version
 
 Global env:

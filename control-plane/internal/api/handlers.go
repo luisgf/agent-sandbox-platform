@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -324,8 +325,8 @@ func (s *Server) ListSandboxEvents(w http.ResponseWriter, r *http.Request) {
 
 // EnrollNode issues a client certificate after validating the bootstrap token.
 func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
-	if !checkBootstrapToken(r) {
-		writeError(w, http.StatusUnauthorized, "invalid or missing bootstrap token")
+	auth, ok := enrollAuth(w, r)
+	if !ok {
 		return
 	}
 	if s.CA == nil {
@@ -346,11 +347,20 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		nodeID = strings.TrimSpace(input.Name)
 	}
 	if nodeID == "" {
-		// allocate id via store by leaving empty — but we need it for CN first
+		// The certificate's CN needs the id before the store sees the node.
 		nodeID = newNodeIDFallback()
-		input.ID = nodeID
-	} else {
-		input.ID = nodeID
+	}
+	input.ID = nodeID
+	if err := pki.ValidNodeID(nodeID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Refuse before issuing a certificate. EnrollNode checks again atomically;
+	// if it refuses after all, the certificate is discarded and its private
+	// key never leaves this process.
+	if err := s.Store.CheckEnroll(nodeID, auth); err != nil {
+		writeEnrollError(w, nodeID, err)
+		return
 	}
 	issued, err := s.CA.IssueNodeCert(nodeID, pki.EndpointHosts(input.AgentEndpoint, input.Endpoint), pki.DefaultNodeTTL)
 	if err != nil {
@@ -364,15 +374,12 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	node, err := s.Store.EnrollNode(input, store.CertMeta{
 		Fingerprint: issued.Fingerprint,
 		Serial:      issued.Serial,
-	})
+	}, auth)
 	if err != nil {
-		if errors.Is(err, store.ErrInvalidInput) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeEnrollError(w, nodeID, err)
 		return
 	}
+	slog.Info("node enrolled", "node_id", node.ID, "auth", enrollAuthLabel(auth), "cert_fingerprint", issued.Fingerprint)
 	writeJSON(w, http.StatusCreated, enrollResponse{
 		NodeID:          node.ID,
 		ClientCertPEM:   string(issued.CertPEM),
@@ -388,7 +395,8 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 // admin, a platform-scoped API key or the node bootstrap token (a node
 // re-keying itself).
 func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
-	if !checkBootstrapToken(r) && !authorizeNodeAdmin(w, r, "rotate node certificates", true) {
+	if !checkBootstrapToken(r) && !authorizeNodeAdmin(w, r, "rotate node certificates",
+		"an idp admin token, a platform api key or the node bootstrap token is required to rotate node certificates") {
 		return
 	}
 	if s.CA == nil {
@@ -449,7 +457,7 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 // IdP admin or a platform-scoped API key; the bootstrap token every node holds
 // is not enough.
 func (s *Server) RevokeNode(w http.ResponseWriter, r *http.Request) {
-	if !authorizeNodeAdmin(w, r, "revoke nodes", false) {
+	if !authorizeNodeAdmin(w, r, "revoke nodes", "") {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))

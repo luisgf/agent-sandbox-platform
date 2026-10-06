@@ -81,7 +81,7 @@ func (s *Server) UncordonNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordoned bool) {
-	if !authorizeNodeAdmin(w, r, "cordon or uncordon nodes", false) {
+	if !authorizeNodeAdmin(w, r, "cordon or uncordon nodes", "") {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))

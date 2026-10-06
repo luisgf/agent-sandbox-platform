@@ -173,7 +173,7 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 ## Modelo de datos (control plane)
 
-Tablas / entidades principales (migraciones `001`–`013`):
+Tablas / entidades principales (migraciones `001`–`015`):
 
 | Entidad | Campos clave |
 |---|---|
@@ -182,7 +182,8 @@ Tablas / entidades principales (migraciones `001`–`013`):
 | `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, fence_*, revoked_at |
 | `node_events` | journal de nodos: registro, cordon, `node.offline`/`node.online`, fencing |
 | `node_cert_revocations` | fingerprints revocados (006) |
-| `api_keys` | sha256 del secreto; Bearer |
+| `node_enroll_tokens` | sha256 de tokens de enroll de un solo uso; `node_id` opcional (fijado), `expires_at`, `used_at` (015) |
+| `api_keys` | sha256 del secreto; Bearer; `scope` `tenant`/`platform` (014) |
 | `tenant_egress_rules` | host_pattern, port, enabled (003) |
 | attestation evidence | BootStatement firmado (005) |
 

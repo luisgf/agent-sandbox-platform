@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 
 func nodeCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "node subcommand required (list|cordon|uncordon)")
+		fmt.Fprintln(stderr, "node subcommand required (list|cordon|uncordon|enroll-token)")
 		return 2
 	}
 	switch args[0] {
@@ -25,6 +26,8 @@ func nodeCmd(args []string, stdout, stderr io.Writer) int {
 		return cmdNodeCordon(args[1:], stdout, stderr, true)
 	case "uncordon":
 		return cmdNodeCordon(args[1:], stdout, stderr, false)
+	case "enroll-token":
+		return cmdNodeEnrollToken(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printRootUsage(stderr)
 		return 0
@@ -124,6 +127,46 @@ func cmdNodeCordon(args []string, stdout, stderr io.Writer, cordon bool) int {
 	} else {
 		fmt.Fprintf(stdout, "node %s uncordoned: schedulable=%v\n", n.ID, n.Schedulable)
 	}
+	return 0
+}
+
+// cmdNodeEnrollToken prints a single-use enroll token for a new server, or
+// for re-keying an enrolled node (--node-id pins it).
+func cmdNodeEnrollToken(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("node enroll-token", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	nodeID := fs.String("node-id", "", "pin the token to this node id (needed to re-key a node that is enrolled)")
+	ttl := fs.Duration("ttl", time.Hour, "how long the token stays valid (at most 168h)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: asp node enroll-token [--node-id ID] [--ttl 1h] [--json]")
+		return 2
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	tok, err := c.CreateEnrollToken(context.Background(), strings.TrimSpace(*nodeID), *ttl)
+	if err != nil {
+		fmt.Fprintf(stderr, "node enroll-token: %v\n", err)
+		return 1
+	}
+	if g.jsonOut {
+		return writeJSON(stdout, tok)
+	}
+	fmt.Fprintln(stdout, tok.Token)
+	scope := "any new node id"
+	idFlag := "--node-id=<id>"
+	if tok.NodeID != "" {
+		scope = "node " + tok.NodeID + " only"
+		idFlag = "--node-id=" + tok.NodeID
+	}
+	fmt.Fprintf(stderr, "single use, for %s, valid until %s\nOn the server: node-agent --enroll --enroll-token=<token> %s ...  (or ASP_NODE_ENROLL_TOKEN)\n",
+		scope, tok.ExpiresAt.Local().Format(time.RFC3339), idFlag)
 	return 0
 }
 

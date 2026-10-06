@@ -189,6 +189,30 @@ func (c *Client) SetNodeCordoned(ctx context.Context, id string, cordoned bool) 
 	return out, err
 }
 
+// EnrollToken is a single-use node enrollment token.
+type EnrollToken struct {
+	Token     string    `json:"token"`
+	NodeID    string    `json:"node_id,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Note      string    `json:"note,omitempty"`
+}
+
+// CreateEnrollToken asks for a single-use node enrollment token (IdP admin or
+// platform API key). A non-empty nodeID pins it to that node; ttl 0 uses the
+// control plane's default.
+func (c *Client) CreateEnrollToken(ctx context.Context, nodeID string, ttl time.Duration) (EnrollToken, error) {
+	body := map[string]any{}
+	if nodeID != "" {
+		body["node_id"] = nodeID
+	}
+	if ttl > 0 {
+		body["ttl_seconds"] = int(ttl / time.Second)
+	}
+	var out EnrollToken
+	err := c.doJSON(ctx, http.MethodPost, "/v1/nodes/enroll-tokens", body, http.StatusCreated, &out)
+	return out, err
+}
+
 // GetSandbox GETs one sandbox by id.
 func (c *Client) GetSandbox(ctx context.Context, id string) (Sandbox, error) {
 	var out Sandbox

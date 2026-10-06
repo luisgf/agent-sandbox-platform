@@ -43,6 +43,15 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 - Con `ASP_IDP_REQUIRED=1` estas rutas piden un token del IdP, como las demás de usuario; el bootstrap token sigue valiendo para `rotate-cert`.
 - En el lab abierto (sin API keys ni IdP) revoke, cordon, uncordon y la lista quedan abiertas, como el resto de la API. `rotate-cert` sigue pidiendo el bootstrap token: entrega la clave privada de un nodo.
 - El bootstrap token se compara en tiempo constante.
+
+**Actualizado 2026-10 (enroll):** `POST /v1/nodes/enroll` solo pedía el bootstrap token compartido, y el llamante elegía el `id`. Re-enrolar un id existente emitía un cert nuevo con ese CN, revocaba el anterior y limpiaba `revoked_at`: quien tuviera el token suplantaba cualquier nodo y echaba al legítimo. Ahora:
+
+- **Tokens de enroll de un solo uso.** `POST /v1/nodes/enroll-tokens` (admin del IdP o API key de plataforma; `asp node enroll-token [--node-id ID] [--ttl 1h]`) devuelve un token `asp_enroll_…` que caduca (1 h por defecto, 7 días como mucho). El store guarda solo su SHA-256 (migración `015_node_enroll_tokens.sql`). Con `node_id` el token queda **fijado** a ese nodo.
+- `/enroll` acepta el bootstrap token o un token de enroll. El token se marca usado en la misma transacción que el enroll (`SELECT … FOR UPDATE`): dos enrolls a la vez no pueden usarlo los dos.
+- **Ningún enroll echa a un nodo vivo sin permiso.** Un id con certificado vigente y no revocado solo se re-enrola con un token fijado a él (**409** si no, con el comando para pedirlo). El bootstrap token sigue valiendo para labs, pero solo para un id sin certificado o un nodo revocado. Un enroll rechazado no revoca nada ni gasta el token.
+- Errores: token usado, caducado o desconocido (o bootstrap token incorrecto) → **401**; token fijado a otro id → **403**.
+- El plano de control comprueba todo esto antes de emitir el certificado y lo vuelve a comprobar al guardarlo. Si al final lo rechaza, el certificado se descarta: su clave privada nunca sale del proceso.
+- El node-agent arrancado otra vez con `--enroll` recibe 409 y sigue con el certificado de `--cert-dir` si es de ese nodo y no ha caducado. `--enroll-token` (`ASP_NODE_ENROLL_TOKEN`) pasa un token de enroll en vez del bootstrap token.
 - Migración: `control-plane/migrations/006_node_cert_rotation.sql`.
 
 ### 2) mTLS estricto (`ASP_MTLS_STRICT=1`)

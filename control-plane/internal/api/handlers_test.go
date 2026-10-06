@@ -601,7 +601,7 @@ func TestAuthMiddlewareRejectsRevokedCert(t *testing.T) {
 	mem := store.NewMemoryStore()
 	_, err = mem.EnrollNode(store.EnrollNodeInput{ID: "n-rev", Name: "n-rev"}, store.CertMeta{
 		Fingerprint: issued.Fingerprint, Serial: issued.Serial,
-	})
+	}, store.EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}

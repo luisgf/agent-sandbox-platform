@@ -53,7 +53,16 @@ type Store interface {
 	StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error)
 
 	RegisterNode(input RegisterNodeInput) (Node, error)
-	EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, error)
+	// CreateEnrollToken stores a single-use enroll token by its hash.
+	CreateEnrollToken(tok EnrollToken) error
+	// CheckEnroll reports whether auth may enroll node id now, without
+	// changing anything (EnrollNode checks again atomically). Errors:
+	// ErrEnrollTokenInvalid, ErrEnrollTokenPinned, ErrNodeEnrolled.
+	CheckEnroll(id string, auth EnrollAuth) error
+	// EnrollNode records an enrollment and its certificate. A node id that holds
+	// a live certificate needs an enroll token pinned to it; a token is marked
+	// used in the same transaction, so two enrollments cannot share it.
+	EnrollNode(input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error)
 	// RotateNodeCert issues tracking for a new cert: revokes the previous fingerprint and stores the new meta.
 	RotateNodeCert(nodeID string, cert CertMeta) (Node, error)
 	// RevokeNode marks the node revoked and adds its current fingerprint to the revocation set.

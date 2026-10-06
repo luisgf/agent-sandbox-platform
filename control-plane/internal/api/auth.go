@@ -104,9 +104,13 @@ func isRotateCertPath(path string) bool {
 	return strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/rotate-cert")
 }
 
-// isNodeAdminPath is node administration: cordon, uncordon, revoke and
-// rotate-cert. Handlers allow an IdP admin or a platform-scoped API key.
+// isNodeAdminPath is node administration: cordon, uncordon, revoke,
+// rotate-cert and enroll tokens. Handlers allow an IdP admin or a
+// platform-scoped API key.
 func isNodeAdminPath(path string) bool {
+	if path == "/v1/nodes/enroll-tokens" {
+		return true
+	}
 	if !strings.HasPrefix(path, "/v1/nodes/") {
 		return false
 	}
