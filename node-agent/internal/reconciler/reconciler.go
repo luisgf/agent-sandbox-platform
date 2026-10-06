@@ -128,6 +128,11 @@ type Reconciler struct {
 	// timeout, a multi-GB rootfs copy) no longer delays every other item.
 	Workers int
 
+	// GuestReadyTimeout is how long a start waits for pod-daemon in the new VM
+	// to answer before it reports running (waitGuest). Zero reports running
+	// as soon as the VMM is up, as dry-run does: FakeVMM boots no guest.
+	GuestReadyTimeout time.Duration
+
 	// inflight holds the sandboxes a worker is handling (mu); the next poll
 	// skips them, so one id is never handled by two workers, and a stopping
 	// that arrives during a start is handled once the start is done.
@@ -530,6 +535,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	r.mu.Unlock()
 
 	r.registerEndpoint(sb.ID, h)
+	r.waitGuest(ctx, sb.ID)
 
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "vmm started"); err != nil {
 		if cpclient.IsConflict(err) {
@@ -815,6 +821,49 @@ func (r *Reconciler) registerEndpoint(sandboxID string, h Handle) {
 		CID:       h.CID,
 		Port:      port,
 	})
+}
+
+// guestPoll is how often waitGuest asks a booting guest.
+const guestPoll = 200 * time.Millisecond
+
+// waitGuest returns once pod-daemon in a just-started VM answers /healthz, so
+// that "running" means an exec reaches the guest. Cloud Hypervisor is up in
+// well under a second, but the guest needs a few more to boot (about 3s on a
+// KVM host), and "asp sandbox run" execs as soon as it sees running: it got
+// "hybrid vsock ACK: EOF". Only hybrid vsock endpoints (real VMs) wait. After
+// GuestReadyTimeout the start reports running anyway, as it did before, and
+// says so in the log.
+func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) {
+	if r.GuestReadyTimeout <= 0 || r.Registry == nil {
+		return
+	}
+	if ep, ok := r.Registry.Lookup(sandboxID); !ok || ep.Mode != poddaemon.ModeHybrid {
+		return
+	}
+	c, err := r.Registry.ClientFor(sandboxID)
+	if err != nil {
+		return
+	}
+	start := time.Now()
+	deadline := start.Add(r.GuestReadyTimeout)
+	for {
+		attempt, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err = c.Healthz(attempt)
+		cancel()
+		if err == nil {
+			r.Logger.Info("guest answering", "sandbox_id", sandboxID, "after", time.Since(start).Round(time.Millisecond))
+			return
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(guestPoll):
+		}
+	}
+	r.Logger.Warn("guest did not answer; reporting running anyway", "sandbox_id", sandboxID,
+		"waited", time.Since(start).Round(time.Millisecond), "error", err)
 }
 
 func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {

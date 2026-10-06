@@ -44,6 +44,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop VMM |
 | `--reconcile-interval` | | default `2s` |
 | `--reconcile-workers` | `ASP_RECONCILE_WORKERS` | `4` — sandboxes que el reconciler arranca o para a la vez. Un arranque lento (timeout de CH, copia de un rootfs grande) ya no retrasa al resto; una misma sandbox nunca la llevan dos workers, y un `stopping` que llega durante su arranque se atiende al terminar este. `1` con `--ch-api-socket` |
+| `--guest-ready-timeout` | `ASP_GUEST_READY_TIMEOUT` | `60s`. Tiempo máximo que espera un arranque a que el pod-daemon de la VM responda a `/healthz` antes de informar `running`. CH está arriba antes de que el guest arranque (unos 3 s en un host KVM), y `asp sandbox run` hace el exec en cuanto ve `running`. Pasado ese tiempo informa `running` igualmente, con un aviso en el log. `0`: informa en cuanto arranca la VMM. Sin efecto con `--dry-run` |
 | `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra TAP `asp-{shortid}` con su propia /30 de `--guest-subnet`. Si el TAP no se puede crear (permisos, nombre ya en uso) la sandbox pasa a `failed`; solo `--dry-run` sigue sin TAP |
 | `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — copia privada del rootfs por sandbox (`rootfs-{id}.img`), borrada al parar; no aplica con `--dry-run` |
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest CID 2) |

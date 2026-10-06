@@ -68,6 +68,7 @@ type config struct {
 	Reconcile            bool
 	ReconcileEvery       time.Duration
 	ReconcileWorkers     int // --reconcile-workers: sandboxes started/stopped at once
+	GuestReadyTimeout    time.Duration
 	TapAuto              bool
 	HostVsock            bool
 	HostVsockDir         string // unix factory fallback when AF_VSOCK unavailable / lab
@@ -498,6 +499,9 @@ func main() {
 		}
 		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
 		rec.Workers = cfg.ReconcileWorkers
+		if !cfg.DryRun {
+			rec.GuestReadyTimeout = cfg.GuestReadyTimeout
+		}
 		if cfg.CHAPISocket != "" {
 			// One shared Cloud Hypervisor API socket runs one VM at a time.
 			rec.Workers = 1
@@ -673,6 +677,7 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
 	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
 	flag.IntVar(&cfg.ReconcileWorkers, "reconcile-workers", getenvInt("ASP_RECONCILE_WORKERS", reconciler.DefaultWorkers), "sandboxes the reconciler starts or stops at once (1 with --ch-api-socket)")
+	flag.DurationVar(&cfg.GuestReadyTimeout, "guest-ready-timeout", getenvDuration("ASP_GUEST_READY_TIMEOUT", 60*time.Second), "wait up to this long for pod-daemon in a new VM to answer before reporting running (0: report as soon as the VMM is up; ignored with --dry-run)")
 	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")
 	flag.Parse()
 	cfg.HeartbeatEvery = *hb
@@ -784,6 +789,19 @@ func newInstanceID() string {
 		return fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+func getenvDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		slog.Error("invalid duration", "env", key, "value", v)
+		os.Exit(2)
+	}
+	return d
 }
 
 func getenvInt(key string, fallback int) int {
