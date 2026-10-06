@@ -67,6 +67,15 @@ type Claims struct {
 	XAspAttestation map[string]any `json:"x_asp_attestation,omitempty"`
 }
 
+// KeyPathFromEnv is where the signing key lives: ASP_OIDC_KEY, else a lab key
+// in the temporary directory.
+func KeyPathFromEnv() string {
+	if path := strings.TrimSpace(os.Getenv("ASP_OIDC_KEY")); path != "" {
+		return path
+	}
+	return filepath.Join(os.TempDir(), "asp-oidc-key.pem")
+}
+
 // LoadOrCreate loads PEM from ASP_OIDC_KEY (path) or creates a 2048-bit RSA key.
 func LoadOrCreate(issuer string) (*Signer, error) {
 	if issuer == "" {
@@ -77,10 +86,7 @@ func LoadOrCreate(issuer string) (*Signer, error) {
 	}
 	s := &Signer{Issuer: strings.TrimRight(issuer, "/"), TTL: DefaultTTL}
 
-	path := strings.TrimSpace(os.Getenv("ASP_OIDC_KEY"))
-	if path == "" {
-		path = filepath.Join(os.TempDir(), "asp-oidc-key.pem")
-	}
+	path := KeyPathFromEnv()
 	s.KeyPath = path
 
 	if data, err := os.ReadFile(path); err == nil {

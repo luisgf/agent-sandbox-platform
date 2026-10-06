@@ -44,7 +44,8 @@ if [[ $ok -ne 1 ]]; then echo CP_FAIL; cat "$DEMO/cp.log"; exit 1; fi
 echo CP_OK
 
 # Same attestation key as the control plane: it trusts no other key here.
-sudo env ASP_ATTEST_KEY="$DEMO/asp-attest-key.pem" "$DEMO/node-agent" \
+# The demo keeps its certificates under /tmp: allow it on later runs too.
+sudo env ASP_ATTEST_KEY="$DEMO/asp-attest-key.pem" ASP_ALLOW_TMP_KEYS=1 "$DEMO/node-agent" \
     --control-plane-url "http://127.0.0.1:$CP_PORT" \
     --node-id "$NODE_ID" \
     --enroll \

@@ -17,7 +17,8 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--enroll` | `ASP_ENROLL=1` | enrollment al arrancar. Si el plano de control responde que el nodo ya está enrolado (409), sigue con el certificado de `--cert-dir` cuando es de este nodo y no ha caducado |
 | `--enroll-token` | `ASP_NODE_ENROLL_TOKEN` | token de enroll de un solo uso (`asp node enroll-token`); uno fijado a este nodo le cambia la clave aunque esté enrolado |
 | `--bootstrap-token` | `ASP_NODE_BOOTSTRAP_TOKEN` | token compartido de labs: enrola un id sin certificado o un nodo revocado, nunca re-enrola uno vivo |
-| `--cert-dir` | `ASP_CERT_DIR` | dir de client certs |
+| `--cert-dir` | `ASP_CERT_DIR` | dir de client certs (`/var/lib/asp/node-certs`; si no se puede escribir, uno temporal) |
+| | `ASP_ALLOW_TMP_KEYS` | `1`: un nodo de producción arranca aunque `--cert-dir`, `ASP_ATTEST_KEY` o `--egress-mitm-ca` estén en un directorio temporal |
 | `--mtls` | `ASP_MTLS=1` | exigir client certs |
 | `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
 | `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
@@ -80,6 +81,8 @@ Identidad del guest ([ADR-0003](../docs/adr/0003-identity.md) § 2): el token es
 ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (sin fallback a `SSH_AUTH_SOCK` global). Ops provisiona las keys en esa ruta; ASP no spawnea agents.
 
 Agente SSH ([ADR-0003](../docs/adr/0003-identity.md) § 1, [ADR-0005](../docs/adr/0005-fase-2d-hardening.md) § 3): todas las rutas pasan por un proxy que lee mensaje a mensaje y solo reenvía `REQUEST_IDENTITIES`, `SIGN_REQUEST` y la extensión `query`. Añadir, borrar o bloquear claves recibe `SSH_AGENT_FAILURE` sin llegar al agente del host. Con `--ssh-agent-confirm`, cada acceptor `{vsock}_26501` solo firma con aprobaciones de su sandbox.
+
+Claves persistentes: un nodo de producción (sin `--dry-run`, y con `--agent-tls-listen`, `--mtls` o un certificado en `--cert-dir`) no arranca (código 2) si `--cert-dir`, `ASP_ATTEST_KEY` (cuando se define) o `--egress-mitm-ca` (con `--egress-mitm`) están en `/tmp`, `/var/tmp`, `/dev/shm` o `$TMPDIR`: un reinicio borraría el certificado del nodo, y el bootstrap token no re-enrola un nodo vivo. `ASP_ALLOW_TMP_KEYS=1` lo fuerza; en lab solo avisa. Sin `ASP_ATTEST_KEY`, un nodo de producción firma las atestaciones solo con la clave de su certificado y no crea una clave temporal.
 
 Renovación del certificado de nodo ([ADR-0005](../docs/adr/0005-fase-2d-hardening.md) § 1): con mTLS contra un control plane `https://`, el agente revisa su certificado al arrancar y cada 24 h. Con menos de un tercio de vida por delante pide uno nuevo con `POST /v1/nodes/{id}/rotate-cert`, autenticado por el certificado actual, lo escribe en `--cert-dir` de forma atómica y lo usa sin reiniciar (cliente del control plane, listener `--agent-tls-listen` y firma de atestaciones). Si falla con menos de 30 días por delante, avisa en el log en cada intento.
 
