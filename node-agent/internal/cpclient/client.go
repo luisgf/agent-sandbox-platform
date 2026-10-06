@@ -282,8 +282,33 @@ type Sandbox struct {
 }
 
 type workResponse struct {
-	Sandboxes []Sandbox `json:"sandboxes"`
-	Assigned  *[]string `json:"assigned"`
+	Sandboxes []Sandbox   `json:"sandboxes"`
+	Assigned  *[]string   `json:"assigned"`
+	Egress    *WorkEgress `json:"egress"`
+}
+
+// WorkEgress carries the egress policy of every sandbox assigned to the node.
+type WorkEgress struct {
+	// Tenants maps each assigned sandbox to its tenant.
+	Tenants map[string]string `json:"tenants"`
+	// Policies holds each tenant's effective policy.
+	Policies map[string]EgressPolicy `json:"policies"`
+}
+
+// EgressPolicy is a tenant's effective egress policy. Version changes when
+// what the policy allows changes.
+type EgressPolicy struct {
+	TenantID string       `json:"tenant_id"`
+	Mode     string       `json:"mode"`
+	Rules    []EgressRule `json:"rules"`
+	Version  string       `json:"version"`
+}
+
+// EgressRule is one allowlist entry.
+type EgressRule struct {
+	HostPattern string `json:"host_pattern"`
+	Port        *int   `json:"port,omitempty"`
+	Enabled     bool   `json:"enabled"`
 }
 
 // Work is one poll of GET /v1/nodes/{id}/work.
@@ -294,6 +319,9 @@ type Work struct {
 	// when the control plane predates the field: then nothing may be stopped
 	// for being missing from it.
 	Assigned []string
+	// Egress is nil when the control plane does not send policies (older
+	// version, or it could not read them this time).
+	Egress *WorkEgress
 }
 
 func (c *Client) ListWork(ctx context.Context, nodeID string) (Work, error) {
@@ -315,7 +343,7 @@ func (c *Client) ListWork(ctx context.Context, nodeID string) (Work, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return Work{}, err
 	}
-	work := Work{Sandboxes: out.Sandboxes}
+	work := Work{Sandboxes: out.Sandboxes, Egress: out.Egress}
 	if work.Sandboxes == nil {
 		work.Sandboxes = []Sandbox{}
 	}

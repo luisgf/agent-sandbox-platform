@@ -29,11 +29,13 @@ Capas concretas (de dentro hacia fuera):
 
 Allowlist efectiva en el proxy (orden). **Actualizado 2026-10:** la cabecera `X-ASP-Allowlist-JSON` la escribe el guest y permitía `allow-all`; ya no se lee. La cache era una sola por nodo (la del último exec de cualquier tenant); ahora es por sandbox, buscada por IP de origen:
 
-1. Origen en la /30 de un sandbox → su último `egress_allowlist` (deny antes del primer exec)
+1. Origen en la /30 de un sandbox → la política de su tenant (deny hasta que el nodo la recibe)
 2. Origen desconocido → env `ASP_EGRESS_ALLOWLIST_JSON`
 3. Default deny del proceso
 
-El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`) y las adjunta en `POST /v1/sandboxes/{id}/exec`.
+El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`).
+
+**Actualizado 2026-10 (entrega de la política):** la política solo llegaba al nodo con cada `POST /v1/sandboxes/{id}/exec`. Hasta el primer exec el guest no salía a ningún sitio aunque su tenant lo permitiera (un agente que arranca solo en la imagen no tenía red), y un cambio de reglas no llegaba a una sandbox en marcha hasta su siguiente exec. Ahora cada sondeo de `GET /v1/nodes/{id}/work` trae `egress`: qué tenant tiene cada sandbox asignada al nodo y la política efectiva de cada tenant (una lectura del store por sondeo) con una `version` (hash del modo y de las reglas activas, sin ids ni orden). El reconciler la aplica al `PolicyCache` antes del primer arranque y otra vez cuando cambia la versión: un `PUT` de reglas llega en el siguiente sondeo (~2 s). El exec sigue adjuntando `egress_allowlist` durante una versión; después se quitará. `POST /v1/internal/egress-check` con `sandbox_id` dice qué decide ahora el proxy para esa sandbox.
 
 ## Alternativas consideradas
 

@@ -79,9 +79,12 @@ type Reconciler struct {
 	// GuestSubnet is the pool each TAP's /30 is carved from (default
 	// tap.DefaultGuestSubnet). Must match the nft --guest-subnet.
 	GuestSubnet netip.Prefix
-	// Egress, when set, learns each sandbox's /30 so the forward proxy and
+	// Egress, when set, learns each sandbox's /30 and its tenant's policy (from
+	// every work poll) so the forward proxy and
 	// the DNS sink apply that sandbox's policy to its traffic.
 	Egress *egress.PolicyCache
+	// egressVersions is the policy version applied to each sandbox (mu).
+	egressVersions map[string]string
 	// localNetDone is the local-net plan applied to each sandbox (mu).
 	localNetDone map[string]*localNetApplied
 	// now is the clock (tests); nil is time.Now.
@@ -227,6 +230,50 @@ func (r *Reconciler) tick(ctx context.Context) {
 		}
 	}
 	r.fenceUnassigned(ctx, work.Assigned)
+	r.applyEgress(work.Egress)
+}
+
+// applyEgress gives every assigned sandbox its tenant's egress policy, before
+// its first exec and again whenever the policy's version changes. A sandbox
+// whose policy was dropped (teardown) gets it again.
+func (r *Reconciler) applyEgress(e *cpclient.WorkEgress) {
+	if r.Egress == nil || e == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.egressVersions == nil {
+		r.egressVersions = make(map[string]string)
+	}
+	for id, tenant := range e.Tenants {
+		pol, ok := e.Policies[tenant]
+		if !ok {
+			continue
+		}
+		if v, applied := r.egressVersions[id]; applied && v == pol.Version && r.Egress.Get(id) != nil {
+			continue
+		}
+		r.Egress.Set(id, egressAllowlist(pol))
+		r.egressVersions[id] = pol.Version
+		r.Logger.Info("egress policy applied", "sandbox_id", id, "tenant_id", tenant, "mode", pol.Mode, "rules", len(pol.Rules), "version", pol.Version)
+	}
+	for id := range r.egressVersions {
+		if _, ok := e.Tenants[id]; !ok {
+			delete(r.egressVersions, id)
+		}
+	}
+}
+
+// egressAllowlist turns a control-plane policy into the allowlist the proxy
+// and the DNS sink use; only enabled rules count.
+func egressAllowlist(pol cpclient.EgressPolicy) *egress.Allowlist {
+	rules := make([]egress.Rule, 0, len(pol.Rules))
+	for _, rule := range pol.Rules {
+		if rule.Enabled && rule.HostPattern != "" {
+			rules = append(rules, egress.Rule{HostPattern: rule.HostPattern, Port: rule.Port})
+		}
+	}
+	return egress.NewAllowlistFromPolicy(pol.Mode, rules)
 }
 
 // fenceUnassigned stops every local VM the control plane no longer assigns to

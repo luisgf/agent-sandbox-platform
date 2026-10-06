@@ -1206,6 +1206,46 @@ type listWorkResponse struct {
 	// Assigned lists every sandbox placed on the node that still holds it; the
 	// node stops any VM it runs that is not listed (failed over, destroyed).
 	Assigned []string `json:"assigned"`
+	// Egress carries the egress policy of every assigned sandbox, so a guest
+	// gets its tenant's policy before its first exec and a change reaches
+	// running sandboxes on the next poll. Absent when the rules could not be
+	// read: the node keeps the policies it has.
+	Egress *workEgress `json:"egress,omitempty"`
+}
+
+type workEgress struct {
+	// Tenants maps each assigned sandbox to its tenant.
+	Tenants map[string]string `json:"tenants"`
+	// Policies holds each tenant's effective policy and its version.
+	Policies map[string]workEgressPolicy `json:"policies"`
+}
+
+type workEgressPolicy struct {
+	store.EgressPolicy
+	Version string `json:"version"`
+}
+
+// workEgressFor builds the egress block of a work response: one effective
+// policy per tenant present on the node, read in one store call.
+func (s *Server) workEgressFor(tenants map[string]string) (*workEgress, error) {
+	ids := make([]string, 0, len(tenants))
+	seen := map[string]bool{}
+	for _, t := range tenants {
+		if !seen[t] {
+			seen[t] = true
+			ids = append(ids, t)
+		}
+	}
+	rules, err := s.Store.ListEgressRulesForTenants(ids)
+	if err != nil {
+		return nil, err
+	}
+	out := &workEgress{Tenants: tenants, Policies: make(map[string]workEgressPolicy, len(ids))}
+	for _, t := range ids {
+		pol := store.EffectiveEgress(t, rules[t])
+		out.Policies[t] = workEgressPolicy{EgressPolicy: pol, Version: pol.Version()}
+	}
+	return out, nil
 }
 
 // ListNodeWork returns the sandboxes this node should act on and the set of
@@ -1243,7 +1283,16 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 	if work.Assigned == nil {
 		work.Assigned = []string{}
 	}
-	writeJSON(w, http.StatusOK, listWorkResponse{Sandboxes: work.Sandboxes, Assigned: work.Assigned})
+	if work.Tenants == nil {
+		work.Tenants = map[string]string{}
+	}
+	resp := listWorkResponse{Sandboxes: work.Sandboxes, Assigned: work.Assigned}
+	if eg, err := s.workEgressFor(work.Tenants); err != nil {
+		slog.Warn("work poll without egress policies: reading the rules failed", "node_id", id, "error", err)
+	} else {
+		resp.Egress = eg
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ClaimSandbox atomically assigns a requested sandbox to a node.

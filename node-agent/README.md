@@ -72,7 +72,9 @@ go run ./cmd/node-agent \
   --tap-auto
 ```
 
-Endpoints internos (`--agent-listen`, loopback): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check`, `POST /v1/internal/ssh-agent/approve` (con confirm; `sandbox_id` obligatorio, 400 sin él; body/header `actor_sub` audit; devuelve un `approval_id` de auditoría).
+Política de egress ([ADR-0002](../docs/adr/0002-networking.md)): cada sondeo de `/work` trae la política efectiva del tenant de cada sandbox asignada y su versión. El reconciler la aplica antes del primer arranque (el guest no espera a un exec para tener red) y otra vez cuando cambia la versión, así que un `PUT /v1/tenants/{id}/egress` llega a las sandboxes en marcha en el siguiente sondeo. Sin política todavía, deny-default.
+
+Endpoints internos (`--agent-listen`, loopback): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check` (`{"host":…, "sandbox_id":…}` evalúa la política que el proxy aplica ahora a esa sandbox), `POST /v1/internal/ssh-agent/approve` (con confirm; `sandbox_id` obligatorio, 400 sin él; body/header `actor_sub` audit; devuelve un `approval_id` de auditoría).
 
 `--agent-tls-listen` solo sirve `GET /healthz`, `POST /v1/internal/exec` y `POST /v1/internal/exec/stdin` al plano de control (CN `asp-control-plane`). Necesita un cert de nodo con uso de servidor: los enrolados antes de [ADR-0011](../docs/adr/0011-multi-node.md) deben re-enrolar o rotar.
 

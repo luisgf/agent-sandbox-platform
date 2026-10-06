@@ -296,12 +296,13 @@ func (m *MemoryStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}}
+	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}, Tenants: map[string]string{}}
 	for _, sb := range m.sandboxes {
 		if sb.NodeID == nil || *sb.NodeID != nodeID || !OccupiesNode(sb.State) {
 			continue
 		}
 		work.Assigned = append(work.Assigned, sb.ID)
+		work.Tenants[sb.ID] = sb.TenantID
 		if NeedsNodeAction(sb) {
 			work.Sandboxes = append(work.Sandboxes, cloneSandbox(sb))
 		}
@@ -1210,6 +1211,20 @@ func (m *MemoryStore) ListEgressRules(tenantID string) ([]EgressRule, error) {
 	out := make([]EgressRule, 0, len(rules))
 	for _, r := range rules {
 		out = append(out, cloneEgressRule(r))
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) ListEgressRulesForTenants(tenantIDs []string) (map[string][]EgressRule, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string][]EgressRule, len(tenantIDs))
+	for _, t := range tenantIDs {
+		rules := make([]EgressRule, 0, len(m.egress[t]))
+		for _, r := range m.egress[t] {
+			rules = append(rules, cloneEgressRule(r))
+		}
+		out[t] = rules
 	}
 	return out, nil
 }

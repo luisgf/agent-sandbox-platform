@@ -78,7 +78,7 @@ Responsabilidades:
 - Planificador por capacidad: elige el nodo al crear (filtros de vida, cordon, perfil, CPU/memoria/huecos; `spread` o `binpack`) y rechaza con 503 si nada cabe ([ADR-0011](adr/0011-multi-node.md), [`ops-multi-node.md`](ops-multi-node.md)).
 - Work queue: `GET /v1/nodes/{id}/work` (solo las sandboxes de ese nodo, y el conjunto `assigned`) + claim/status.
 - Proxy de exec hacia `agent_endpoint` del nodo (`POST /v1/sandboxes/{id}/exec`): HTTP en loopback, o HTTPS con mTLS hacia un nodo en otro host ([ADR-0011](adr/0011-multi-node.md)).
-- Egress policies por tenant; JWKS público.
+- Egress policies por tenant, entregadas a los nodos con cada sondeo de `/work` (política efectiva y versión por tenant); JWKS público.
 
 Puede vivir en Kubernetes **solo como Deployment del API** (ADR-0004); no ejecuta workloads de usuario.
 

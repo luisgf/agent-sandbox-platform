@@ -1,7 +1,11 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -44,4 +48,40 @@ func EnvTruthy(key string) bool {
 func envTruthy(key string) bool {
 	v := strings.TrimSpace(os.Getenv(key))
 	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// Version identifies what the policy allows: a hash of its mode and enabled
+// rules (host pattern and port), so it changes when the decision can change
+// and not when rule ids or their order do. Nodes reapply a policy only when
+// its version moves.
+func (p EgressPolicy) Version() string {
+	type rule struct {
+		Host string `json:"h"`
+		Port *int   `json:"p,omitempty"`
+	}
+	rules := make([]rule, 0, len(p.Rules))
+	for _, r := range p.Rules {
+		if r.Enabled {
+			rules = append(rules, rule{Host: strings.ToLower(strings.TrimSpace(r.HostPattern)), Port: r.Port})
+		}
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Host != rules[j].Host {
+			return rules[i].Host < rules[j].Host
+		}
+		pi, pj := -1, -1
+		if rules[i].Port != nil {
+			pi = *rules[i].Port
+		}
+		if rules[j].Port != nil {
+			pj = *rules[j].Port
+		}
+		return pi < pj
+	})
+	b, _ := json.Marshal(struct {
+		Mode  string `json:"m"`
+		Rules []rule `json:"r"`
+	}{p.Mode, rules})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
 }
