@@ -12,6 +12,12 @@ type Applier interface {
 	Current(sandboxID string) (Plan, bool)
 }
 
+// Verifier is implemented by appliers that can cheaply tell whether an
+// applied plan's devices still exist.
+type Verifier interface {
+	Healthy(sandboxID string) bool
+}
+
 // Memory is the CI/FakeVMM applier. It does not touch the host routing table.
 type Memory struct {
 	mu    sync.Mutex

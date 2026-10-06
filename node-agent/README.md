@@ -88,6 +88,8 @@ Renovación del certificado de nodo ([ADR-0005](../docs/adr/0005-fase-2d-hardeni
 
 Atestación de arranque ([ADR-0003](../docs/adr/0003-identity.md) § 2): tras `running` el reconciler firma un `BootStatement` y lo envía al control plane, que solo acepta claves que conoce. Con mTLS a un control plane `https://` firma con la clave del certificado de nodo (`--cert-dir`/`client.key`); si el control plane la rechaza, prueba con `ASP_ATTEST_KEY` (por defecto `$TMPDIR/asp-attest-key.pem`, el mismo fichero que usa el control plane en un lab de un host).
 
+Local-net ([ADR-0010](../docs/adr/0010-on-demand-local-net.md)): el reconciler aplica el plan de cada sesión (unos 15 procesos `ip`/`wg`/`iptables`/`nft`) solo cuando cambia, publica la clave pública del nodo una vez por sandbox, y cada 30 s comprueba con un `ip link show` que el túnel `wg-asp-*` sigue ahí; si no, lo vuelve a crear.
+
 Guest→host: ver [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).
 
 Fase 2e (nft + SSH guest auto): [`docs/why-2e-nft-redirect.md`](../docs/why-2e-nft-redirect.md), [`docs/why-2e-ssh-guest-mount.md`](../docs/why-2e-ssh-guest-mount.md), ADR-0006.
