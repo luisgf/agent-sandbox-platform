@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/capacity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
@@ -501,6 +502,7 @@ func main() {
 		rec.Egress = policyCache
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
+		rec.Attest = attestSigners(cfg, mtls)
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
 		if !cfg.DryRun {
 			// Never boot the shared image writable: every VM gets its own copy.
@@ -827,6 +829,32 @@ func readNodeCert(certDir string) *x509.Certificate {
 		return nil
 	}
 	return cert
+}
+
+// attestSigners lists the keys that sign boot attestations, in the order
+// they are tried. Over mTLS to an https control plane the node certificate's
+// key comes first: the control plane verifies it with the certificate the
+// request comes with (ASP_CLIENT_CA), so a node can only attest as itself.
+// ASP_ATTEST_KEY follows; the control plane must trust its public key
+// (shared in a single-host lab, or listed in ASP_ATTEST_TRUSTED_PUBS).
+func attestSigners(cfg config, mtls bool) []*attest.Signer {
+	var out []*attest.Signer
+	if mtls && strings.HasPrefix(strings.ToLower(cfg.ControlPlaneURL), "https://") {
+		s, err := attest.LoadKeyFile(filepath.Join(cfg.CertDir, "client.key"))
+		if err == nil {
+			slog.Info("attestations signed with the node certificate key", "key_id", s.KeyID())
+			out = append(out, s)
+		} else {
+			slog.Warn("cannot sign attestations with the node certificate key", "error", err)
+		}
+	}
+	s, err := attest.LoadOrCreate()
+	if err != nil {
+		slog.Warn("ASP_ATTEST_KEY unavailable", "error", err)
+		return out
+	}
+	slog.Info("attestations can be signed with ASP_ATTEST_KEY: the control plane must trust its public key", "key_id", s.KeyID())
+	return append(out, s)
 }
 
 // certNodeID returns the CN of the enrolled node certificate in certDir, or "".

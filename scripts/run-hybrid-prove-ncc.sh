@@ -29,9 +29,9 @@ NODE_ID=hybrid-prove
 
 LISTEN_ADDR=127.0.0.1:$CP_PORT \
 ASP_OIDC_ISSUER=http://127.0.0.1:$CP_PORT \
-ASP_OIDC_KEY_PATH=$DEMO/asp-oidc-key.pem \
-ASP_ATTEST_KEY_PATH=$DEMO/asp-attest-key.pem \
-ASP_AUTH_REQUIRE=0 \
+ASP_OIDC_KEY=$DEMO/asp-oidc-key.pem \
+ASP_ATTEST_KEY=$DEMO/asp-attest-key.pem \
+ASP_REQUIRE_API_KEY=0 \
 ASP_NODE_BOOTSTRAP_TOKEN=dev-bootstrap \
   "$DEMO/api" >"$DEMO/cp.log" 2>&1 &
 echo $! >"$DEMO/cp.pid"
@@ -43,7 +43,8 @@ done
 if [[ $ok -ne 1 ]]; then echo CP_FAIL; cat "$DEMO/cp.log"; exit 1; fi
 echo CP_OK
 
-sudo "$DEMO/node-agent" \
+# Same attestation key as the control plane: it trusts no other key here.
+sudo env ASP_ATTEST_KEY="$DEMO/asp-attest-key.pem" "$DEMO/node-agent" \
     --control-plane-url "http://127.0.0.1:$CP_PORT" \
     --node-id "$NODE_ID" \
     --enroll \

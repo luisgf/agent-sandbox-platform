@@ -81,6 +81,8 @@ ADR-0007 fase 4 (SSH scoped): con template, cada sandbox usa su HostSock (sin fa
 
 Agente SSH ([ADR-0003](../docs/adr/0003-identity.md) § 1, [ADR-0005](../docs/adr/0005-fase-2d-hardening.md) § 3): todas las rutas pasan por un proxy que lee mensaje a mensaje y solo reenvía `REQUEST_IDENTITIES`, `SIGN_REQUEST` y la extensión `query`. Añadir, borrar o bloquear claves recibe `SSH_AGENT_FAILURE` sin llegar al agente del host. Con `--ssh-agent-confirm`, cada acceptor `{vsock}_26501` solo firma con aprobaciones de su sandbox.
 
+Atestación de arranque ([ADR-0003](../docs/adr/0003-identity.md) § 2): tras `running` el reconciler firma un `BootStatement` y lo envía al control plane, que solo acepta claves que conoce. Con mTLS a un control plane `https://` firma con la clave del certificado de nodo (`--cert-dir`/`client.key`); si el control plane la rechaza, prueba con `ASP_ATTEST_KEY` (por defecto `$TMPDIR/asp-attest-key.pem`, el mismo fichero que usa el control plane en un lab de un host).
+
 Guest→host: ver [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).
 
 Fase 2e (nft + SSH guest auto): [`docs/why-2e-nft-redirect.md`](../docs/why-2e-nft-redirect.md), [`docs/why-2e-ssh-guest-mount.md`](../docs/why-2e-ssh-guest-mount.md), ADR-0006.

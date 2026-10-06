@@ -19,6 +19,9 @@ export ASP_NODE_BOOTSTRAP_TOKEN="$TOKEN"
 export ASP_CA_CERT="$WORKDIR/ca.crt"
 export ASP_CA_KEY="$WORKDIR/ca.key"
 export ASP_OIDC_KEY="$WORKDIR/oidc.pem"
+# No mTLS in this dry-run lab: the control plane and both nodes share the
+# attestation key, because the control plane only trusts configured keys.
+export ASP_ATTEST_KEY="$WORKDIR/attest.pem"
 export ASP_AUTO_PROVISION=0
 export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTERVAL=1s
 
@@ -49,7 +52,7 @@ for _ in $(seq 1 50); do curl -sf "$CP/healthz" >/dev/null && break; sleep 0.1; 
 curl -sf "$CP/healthz" | grep -q ok || fail "control plane did not start"
 
 start_node() { # <node-id> <agent-port> <log>
-  ASP_ATTEST_KEY="$WORKDIR/attest-$1.pem" ASP_LOCAL_NET_KEY_DIR="$WORKDIR/ln-$1" \
+  ASP_LOCAL_NET_KEY_DIR="$WORKDIR/ln-$1" \
   "$WORKDIR/node-agent" \
     --control-plane-url="$CP" \
     --node-id="$1" \
@@ -102,6 +105,9 @@ n1=$(node_of "$s1"); n2=$(node_of "$s2")
 [[ "$n1" != "$n2" ]] || fail "spread put both sandboxes on $n1"
 wait_running "$s1"; wait_running "$s2"
 echo "    s1 → $n1, s2 → $n2"
+for s in "$s1" "$s2"; do
+  wait_fresh_attestation "$CP" "$s" || fail "no fresh boot attestation for $s"
+done
 
 echo "==> 2. cordon $NODE_A: the next sandbox goes to $NODE_B"
 curl -sf -X POST "$CP/v1/nodes/$NODE_A/cordon" | grep -q '"unschedulable_reason":"cordoned"' || fail "cordon"

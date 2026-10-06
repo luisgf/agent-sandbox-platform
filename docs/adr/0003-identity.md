@@ -49,6 +49,19 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Rotación básica: `ASP_OIDC_KEY` (mint) + `ASP_OIDC_KEY_PREV` (overlap en JWKS).
 - Tras Fase 2c, el mint puede exigir evidencia de attestation fresca (`x_asp_attestation`).
 
+**Actualizado 2026-10 (atestación):** el control plane verificaba la firma de la evidencia también con la clave pública que traía la propia evidencia (`public_key_pem`). Cualquiera que pudiera hacer `POST /v1/sandboxes/{id}/attest` firmaba con una clave nueva, la adjuntaba y se aceptaba, así que `x_asp_attestation` no probaba nada. Ahora solo valen claves que el control plane conoce:
+
+| Clave | Cuándo |
+|---|---|
+| La de `ASP_ATTEST_KEY` (o `ASP_ATTEST_PUB`, que la sustituye) | lab de un host: node-agent y control plane comparten el PEM |
+| Las de `ASP_ATTEST_TRUSTED_PUBS` (bundle PEM de `PUBLIC KEY` y/o `CERTIFICATE`) | claves de nodo que el operador da de alta a mano |
+| La del certificado de nodo con el que llegó la petición | multi-nodo con mTLS (`ASP_CLIENT_CA`): el CN ya se compara con `statement.node_id`, así que la evidencia queda ligada a la identidad enrolada del nodo |
+
+- `public_key_pem` y `key_id` siguen en el formato para diagnóstico: el error de verificación nombra el `key_id` que no es de confianza.
+- El node-agent firma con la clave de su certificado de nodo (`cert-dir/client.key`) cuando habla por mTLS con un control plane `https://`, y si el control plane rechaza esa firma prueba con `ASP_ATTEST_KEY`. Sin mTLS firma con `ASP_ATTEST_KEY`.
+- `POST /v1/attestation/verify` solo usa las claves configuradas: no hay certificado de nodo en esa petición.
+- `ASP_ATTEST_PUB` ahora también se aplica cuando el fichero de `ASP_ATTEST_KEY` ya existía (antes solo al crearlo). Sin `ASP_ATTEST_KEY`, el control plane usa el mismo fichero por defecto que el node-agent (`$TMPDIR/asp-attest-key.pem`).
+
 **Actualizado 2026-10:** el proxy tomaba el sandbox de la cabecera `X-ASP-Sandbox-ID`, que escribe el guest. Un guest podía pedir el token de cualquier otra sandbox de su nodo, y el control plane no lo ve: con mTLS comprueba que la sandbox sea del nodo que llama ([0011](0011-multi-node.md)), y lo es. Ahora el acceptor hybrid de cada sandbox liga su id a cada petición, en el contexto de la petición y no en una cabecera:
 
 | Listener | Sandbox del token | `X-ASP-Sandbox-ID` |
@@ -93,7 +106,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Confirm gate puede romper automatizaciones que firman en bucle → hay que aprobar o desactivar el flag en lab.
 - Indisponibilidad de JWKS/atestación → **falla cerrada** (no hay token de respaldo persistente).
 - Desde 2026-10, `--identity-listen` y los listeners host-vsock globales devuelven 403 a los tokens salvo con `--insecure-identity-sandbox-header` (lab); `--default-sandbox-id` solo aplica con ese flag.
-- Attestation MVP es software-signed (ECDSA `ASP_ATTEST_KEY`), no TPM/SEV.
+- Attestation MVP es software-signed (ECDSA: `ASP_ATTEST_KEY`, claves de confianza o la clave del certificado de nodo), no TPM/SEV. Prueba qué nodo firmó, no qué arrancó de verdad.
 
 ### Follow-ups
 
@@ -115,7 +128,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 | Mint | `POST /v1/internal/oidc/token` (nodo/lab); guest vía identity proxy |
 | JWKS / discovery | `GET /oidc/jwks.json`, `GET /.well-known/openid-configuration` |
 | Approve SSH | `POST /v1/internal/ssh-agent/approve` (node-agent) |
-| Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--insecure-identity-sandbox-header` (lab), `--default-sandbox-id` (lab), `--guest-ssh-agent-auto`, `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY` |
+| Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--insecure-identity-sandbox-header` (lab), `--default-sandbox-id` (lab), `--guest-ssh-agent-auto`, `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY`, `ASP_ATTEST_PUB`, `ASP_ATTEST_TRUSTED_PUBS` |
 | Notas vsock | `scripts/guest-vsock-notes.md`, `docs/why-ch-hybrid-guest-host.md` |
 | Smoke | `scripts/smoke-identity-egress.sh` |
 

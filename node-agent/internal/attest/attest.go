@@ -37,11 +37,36 @@ type Evidence struct {
 	PublicKeyPEM string        `json:"public_key_pem,omitempty"`
 }
 
-// Signer signs boot statements with ASP_ATTEST_KEY (ECDSA P-256).
+// Signer signs boot statements with an ECDSA P-256 key: the node
+// certificate's key over mTLS (the control plane verifies it with the
+// certificate the request comes with), else ASP_ATTEST_KEY, whose public key
+// the control plane must trust.
 type Signer struct {
 	key *ecdsa.PrivateKey
 	kid string
 }
+
+// NewSigner signs with key.
+func NewSigner(key *ecdsa.PrivateKey) *Signer {
+	return &Signer{key: key, kid: kidOf(&key.PublicKey)}
+}
+
+// LoadKeyFile reads an ECDSA private key PEM (SEC 1 or PKCS #8), such as the
+// node certificate key in cert-dir/client.key.
+func LoadKeyFile(path string) (*Signer, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := parseKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return NewSigner(key), nil
+}
+
+// KeyID identifies the signing key (truncated SHA-256 of its SPKI).
+func (s *Signer) KeyID() string { return s.kid }
 
 func LoadOrCreate() (*Signer, error) {
 	path := strings.TrimSpace(os.Getenv("ASP_ATTEST_KEY"))
@@ -134,12 +159,17 @@ func parseKey(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 	return ek, nil
 }
 
-// SignNow is a convenience used by the reconciler.
+// SignNow signs with ASP_ATTEST_KEY; the reconciler uses it without a Signer.
 func SignNow(sandboxID, nodeID, imageDigest, vmmProfile string, cid uint32) (Evidence, error) {
 	s, err := LoadOrCreate()
 	if err != nil {
 		return Evidence{}, err
 	}
+	return s.SignBoot(sandboxID, nodeID, imageDigest, vmmProfile, cid)
+}
+
+// SignBoot signs a boot statement stamped now.
+func (s *Signer) SignBoot(sandboxID, nodeID, imageDigest, vmmProfile string, cid uint32) (Evidence, error) {
 	return s.Sign(BootStatement{
 		SandboxID:   sandboxID,
 		ImageDigest: imageDigest,

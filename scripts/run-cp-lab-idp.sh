@@ -35,10 +35,12 @@ set +a
 
 export LISTEN_ADDR="127.0.0.1:${CP_PORT}"
 export ASP_OIDC_ISSUER="${ASP_OIDC_ISSUER:-http://127.0.0.1:${CP_PORT}}"
-export ASP_AUTH_REQUIRE="${ASP_AUTH_REQUIRE:-0}"
-# reuse host oidc/attest keys if present (lab)
-[[ -f /tmp/asp-oidc-key.pem ]] && export ASP_OIDC_KEY_PATH=/tmp/asp-oidc-key.pem
-[[ -f /tmp/asp-attest-key.pem ]] && export ASP_ATTEST_KEY_PATH=/tmp/asp-attest-key.pem
+export ASP_REQUIRE_API_KEY="${ASP_REQUIRE_API_KEY:-0}"
+# reuse host oidc/attest keys if present (lab). The attestation key is the
+# node-agent's default one, so a node on this host signs with a key the
+# control plane trusts (it trusts no key it is not configured with).
+[[ -f /tmp/asp-oidc-key.pem ]] && export ASP_OIDC_KEY=/tmp/asp-oidc-key.pem
+[[ -f /tmp/asp-attest-key.pem ]] && export ASP_ATTEST_KEY=/tmp/asp-attest-key.pem
 
 "$DEMO/api" >"$DEMO/cp.log" 2>&1 &
 echo $! >"$DEMO/cp.pid"
