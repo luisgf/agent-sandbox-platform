@@ -23,7 +23,8 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | POST | `/v1/attestation/verify` | Verifica bundle sin persistir |
 | PUT/GET | `/v1/tenants/{id}/egress` | Allowlist de egress |
 | POST | `/v1/tenants/{id}/egress/check` | Helper de evaluación |
-| POST | `/v1/nodes/enroll` | Bootstrap token → client cert PEMs |
+| POST | `/v1/nodes/enroll` | Bootstrap token o token de enroll → PEMs del cert de nodo. El bootstrap token solo enrola un id sin certificado o un nodo revocado; re-enrolar un nodo vivo pide un token fijado a él (409) |
+| POST | `/v1/nodes/enroll-tokens` | Token de enroll de un solo uso (admin o API key de plataforma); `node_id` lo fija a un nodo, `ttl_seconds` (1 h por defecto, 7 días máx.) |
 | POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (admin, API key de plataforma o bootstrap token); revoca fingerprint anterior |
 | POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
 | POST | `/v1/nodes/register` | Registra/actualiza nodo |

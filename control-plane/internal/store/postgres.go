@@ -894,7 +894,79 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	return p.GetNode(id)
 }
 
-func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, error) {
+func (p *PostgresStore) CreateEnrollToken(tok EnrollToken) error {
+	if err := validateEnrollToken(tok); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if tok.CreatedAt.IsZero() {
+		tok.CreatedAt = now
+	}
+	_, _ = p.pool.Exec(ctx, `DELETE FROM node_enroll_tokens WHERE expires_at < $1`, now.Add(-enrollTokenRetention))
+	tag, err := p.pool.Exec(ctx, `
+		INSERT INTO node_enroll_tokens (hash, node_id, expires_at, created_by, created_at)
+		VALUES ($1, NULLIF($2, ''), $3, $4, $5)
+		ON CONFLICT (hash) DO NOTHING`,
+		tok.Hash, strings.TrimSpace(tok.NodeID), tok.ExpiresAt, tok.CreatedBy, tok.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAlreadyExists
+	}
+	return nil
+}
+
+func (p *PostgresStore) CheckEnroll(id string, auth EnrollAuth) error {
+	_, _, err := enrollCheckTx(context.Background(), p.pool, id, auth, time.Now().UTC(), false)
+	return err
+}
+
+// enrollCheckTx reads the enroll token and the node's certificate state and
+// applies enrollAllowed. With lock it takes row locks (FOR UPDATE), so a
+// token cannot be used by two enrollments and a node not enrolled twice at
+// once. It returns the node's current certificate fingerprint ("" if none)
+// and whether the node exists.
+func enrollCheckTx(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, id string, auth EnrollAuth, now time.Time, lock bool) (oldFP string, exists bool, err error) {
+	forUpdate := ""
+	if lock {
+		forUpdate = " FOR UPDATE"
+	}
+	var tok *EnrollToken
+	if auth.TokenHash != "" {
+		var t EnrollToken
+		var pinned *string
+		err := q.QueryRow(ctx, `SELECT node_id, expires_at, used_at FROM node_enroll_tokens WHERE hash=$1`+forUpdate,
+			auth.TokenHash).Scan(&pinned, &t.ExpiresAt, &t.UsedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, ErrEnrollTokenInvalid
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if pinned != nil {
+			t.NodeID = *pinned
+		}
+		tok = &t
+	}
+	var revokedAt *time.Time
+	err = q.QueryRow(ctx, `SELECT cert_fingerprint, revoked_at FROM nodes WHERE id=$1`+forUpdate, id).Scan(&oldFP, &revokedAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		oldFP, exists = "", false
+	case err != nil:
+		return "", false, err
+	default:
+		exists = true
+	}
+	live := exists && enrolledLive(Node{CertFingerprint: oldFP, RevokedAt: revokedAt})
+	return oldFP, exists, enrollAllowed(id, tok, live, now)
+}
+
+func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error) {
 	fp := strings.TrimSpace(cert.Fingerprint)
 	serial := strings.TrimSpace(cert.Serial)
 	if fp == "" {
@@ -928,13 +1000,16 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)`, id).Scan(&exists); err != nil {
+	oldFP, exists, err := enrollCheckTx(ctx, tx, id, auth, now, true)
+	if err != nil {
 		return Node{}, err
 	}
+	if auth.TokenHash != "" {
+		if _, err := tx.Exec(ctx, `UPDATE node_enroll_tokens SET used_at=$2, used_by=$3 WHERE hash=$1`, auth.TokenHash, now, id); err != nil {
+			return Node{}, err
+		}
+	}
 	if exists {
-		var oldFP string
-		_ = tx.QueryRow(ctx, `SELECT cert_fingerprint FROM nodes WHERE id=$1`, id).Scan(&oldFP)
 		if oldFP != "" && oldFP != fp {
 			_, _ = tx.Exec(ctx, `
 				INSERT INTO node_cert_revocations (fingerprint, node_id, serial, reason, revoked_at)
@@ -951,15 +1026,21 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, 
 			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now,
 		)
 	} else {
-		_, err = tx.Exec(ctx, `
+		var tag pgconn.CommandTag
+		tag, err = tx.Exec(ctx, `
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, cert_fingerprint, cert_serial, enrolled_at,
 				last_seen_at, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10)`,
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10)
+			ON CONFLICT (id) DO NOTHING`,
 			id, name, input.Endpoint, agentEndpoint, profiles,
 			input.CapacityCPU, input.CapacityMemMiB, fp, serial, now,
 		)
+		if err == nil && tag.RowsAffected() == 0 {
+			// Another enrollment created the node first.
+			return Node{}, fmt.Errorf("%w: %s", ErrNodeEnrolled, id)
+		}
 	}
 	if err != nil {
 		return Node{}, err
@@ -972,6 +1053,7 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, 
 			"cert_fingerprint": fp,
 			"cert_serial":      serial,
 			"agent_endpoint":   agentEndpoint,
+			"enroll_auth":      enrollAuthName(auth),
 		}),
 	)
 	if err != nil {

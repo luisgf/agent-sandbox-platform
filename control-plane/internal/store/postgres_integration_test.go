@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func newPostgresTestStore(t *testing.T) *PostgresStore {
 	}
 	// Isolate this run with a truncate of app tables (keep schema).
 	if _, err := pool.Exec(ctx, `
-		TRUNCATE sandbox_events, node_events, node_cert_revocations, sandboxes, api_keys, nodes, tenants RESTART IDENTITY CASCADE`); err != nil {
+		TRUNCATE sandbox_events, node_events, node_cert_revocations, node_enroll_tokens, sandboxes, api_keys, nodes, tenants RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return NewPostgresStore(pool)
@@ -116,7 +117,7 @@ func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	if n.State != "offline" || n.RevokedAt == nil {
 		t.Fatalf("revoked node came back: %+v", n)
 	}
-	if _, err := pg.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}); err != nil {
+	if _, err := pg.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}, EnrollAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := pg.HeartbeatNode("n1"); err != nil || n.State != "ready" {
@@ -148,5 +149,68 @@ func TestPostgresAPIKeyScope(t *testing.T) {
 	}
 	if _, err := pg.EnsureAPIKey("tenant-scope", "bad", "root", "x", "y"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unknown scope: want ErrInvalidInput, got %v", err)
+	}
+}
+
+// Enroll tokens are single use, even when enrollments race for one, and
+// only a pinned token takes over a node that holds a certificate.
+func TestPostgresEnrollTokens(t *testing.T) {
+	pg := newPostgresTestStore(t)
+	future := time.Now().Add(time.Hour)
+	tokFor := func(raw, nodeID string) EnrollAuth {
+		t.Helper()
+		if err := pg.CreateEnrollToken(EnrollToken{Hash: HashEnrollToken(raw), NodeID: nodeID, ExpiresAt: future, CreatedBy: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		return EnrollAuth{TokenHash: HashEnrollToken(raw)}
+	}
+	enroll := func(id, fp string, auth EnrollAuth) error {
+		_, err := pg.EnrollNode(EnrollNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: fp}, auth)
+		return err
+	}
+
+	shared := tokFor("race-"+newID(), "")
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func(i int) { errs <- enroll(fmt.Sprintf("race-%d", i), fmt.Sprintf("fp-race-%d", i), shared) }(i)
+	}
+	won := 0
+	for i := 0; i < 8; i++ {
+		switch err := <-errs; {
+		case err == nil:
+			won++
+		case errors.Is(err, ErrEnrollTokenInvalid):
+		default:
+			t.Errorf("concurrent enroll: %v", err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d enrollments used one token", won)
+	}
+
+	if err := enroll("live", "fp-live-1", EnrollAuth{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enroll("live", "fp-live-2", EnrollAuth{}); !errors.Is(err, ErrNodeEnrolled) {
+		t.Fatalf("bootstrap re-enroll of a live node: want ErrNodeEnrolled, got %v", err)
+	}
+	if err := pg.CheckEnroll("live", EnrollAuth{}); !errors.Is(err, ErrNodeEnrolled) {
+		t.Fatalf("CheckEnroll: want ErrNodeEnrolled, got %v", err)
+	}
+	if err := enroll("other", "fp-other", tokFor("pin-"+newID(), "live")); !errors.Is(err, ErrEnrollTokenPinned) {
+		t.Fatalf("pinned to another node: want ErrEnrollTokenPinned, got %v", err)
+	}
+	if err := enroll("live", "fp-live-3", tokFor("rekey-"+newID(), "live")); err != nil {
+		t.Fatalf("pinned re-enroll: %v", err)
+	}
+	if revoked, err := pg.IsCertRevoked("fp-live-1"); err != nil || !revoked {
+		t.Fatalf("re-keying must revoke the previous certificate: revoked=%v err=%v", revoked, err)
+	}
+	expired := HashEnrollToken("expired-" + newID())
+	if err := pg.CreateEnrollToken(EnrollToken{Hash: expired, ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enroll("late", "fp-late", EnrollAuth{TokenHash: expired}); !errors.Is(err, ErrEnrollTokenInvalid) {
+		t.Fatalf("expired token: want ErrEnrollTokenInvalid, got %v", err)
 	}
 }

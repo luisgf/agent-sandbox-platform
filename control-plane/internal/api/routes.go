@@ -35,6 +35,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/tenants/{id}/egress", s.GetTenantEgress)
 	mux.HandleFunc("POST /v1/tenants/{id}/egress/check", s.CheckTenantEgress)
 	mux.HandleFunc("POST /v1/nodes/enroll", s.EnrollNode)
+	mux.HandleFunc("POST /v1/nodes/enroll-tokens", s.CreateEnrollToken)
 	mux.HandleFunc("POST /v1/nodes/register", s.RegisterNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", s.HeartbeatNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/rotate-cert", s.RotateNodeCert)

@@ -50,6 +50,7 @@ type config struct {
 	InsecureAgentListen  bool
 	Enroll               bool
 	BootstrapToken       string
+	EnrollToken          string // --enroll-token: single-use, admin-issued (asp node enroll-token)
 	CertDir              string
 	MTLS                 bool
 	PodDaemonSock        string
@@ -144,32 +145,16 @@ func main() {
 		os.Exit(1)
 	}
 	if cfg.Enroll {
-		if cfg.BootstrapToken == "" {
-			slog.Error("--enroll requires --bootstrap-token or ASP_NODE_BOOTSTRAP_TOKEN")
+		if cfg.EnrollToken == "" && cfg.BootstrapToken == "" {
+			slog.Error("--enroll requires --enroll-token (ASP_NODE_ENROLL_TOKEN) or --bootstrap-token (ASP_NODE_BOOTSTRAP_TOKEN)")
 			os.Exit(2)
 		}
-		enrollClient := cpclient.New(cfg.EnrollURL, plain)
-		resp, err := enrollClient.Enroll(ctx, cfg.BootstrapToken, cpclient.EnrollRequest{
-			ID:             cfg.NodeID,
-			Name:           cfg.NodeID,
-			Endpoint:       cfg.Endpoint,
-			AgentEndpoint:  agentEndpointURL(cfg),
-			VMMProfiles:    []string{"cloud-hypervisor"},
-			CapacityCPU:    cfg.CapacityCPU,
-			CapacityMemMiB: cfg.CapacityMemMiB,
-		})
+		nodeID, err := enrollNode(ctx, cfg, cpclient.New(cfg.EnrollURL, plain), time.Now())
 		if err != nil {
 			slog.Error("enrollment failed", "error", err)
 			os.Exit(1)
 		}
-		if err := cpclient.WriteCerts(cfg.CertDir, resp.ClientCertPEM, resp.ClientKeyPEM, resp.CACertPEM); err != nil {
-			slog.Error("write certs", "error", err)
-			os.Exit(1)
-		}
-		if resp.NodeID != "" {
-			cfg.NodeID = resp.NodeID
-		}
-		slog.Info("enrolled", "node_id", cfg.NodeID, "cert_dir", cfg.CertDir, "fingerprint", resp.CertFingerprint)
+		cfg.NodeID = nodeID
 	}
 
 	httpClient, mtls, err := cpclient.LoadMTLSClient(cfg.CertDir, cfg.MTLS, cfg.ControlPlaneCA)
@@ -621,7 +606,8 @@ func loadConfig() config {
 	flag.StringVar(&cfg.AgentTLSListen, "agent-tls-listen", os.Getenv("ASP_AGENT_TLS_LISTEN"), "listen addr for the control plane's mTLS exec API (e.g. 0.0.0.0:9443) when the control plane runs on another host; uses the enrolled node certificate")
 	flag.BoolVar(&cfg.InsecureAgentListen, "insecure-agent-listen", getenv("ASP_INSECURE_AGENT_LISTEN", "") == "1", "allow --agent-listen on a non-loopback address (plain HTTP, no authentication; lab only)")
 	flag.BoolVar(&cfg.Enroll, "enroll", getenv("ASP_ENROLL", "") == "1", "perform bootstrap enrollment before register")
-	flag.StringVar(&cfg.BootstrapToken, "bootstrap-token", os.Getenv("ASP_NODE_BOOTSTRAP_TOKEN"), "bootstrap token for enrollment")
+	flag.StringVar(&cfg.BootstrapToken, "bootstrap-token", os.Getenv("ASP_NODE_BOOTSTRAP_TOKEN"), "shared bootstrap token for enrollment: enrolls a new node id or a revoked node, never re-keys an enrolled one")
+	flag.StringVar(&cfg.EnrollToken, "enroll-token", os.Getenv("ASP_NODE_ENROLL_TOKEN"), "single-use enroll token from an admin (asp node enroll-token), used instead of --bootstrap-token; one pinned to this node re-keys it even when it is enrolled")
 	flag.StringVar(&cfg.CertDir, "cert-dir", getenv("ASP_CERT_DIR", "/var/lib/asp/node-certs"), "directory for node client certs")
 	flag.BoolVar(&cfg.MTLS, "mtls", getenv("ASP_MTLS", "") == "1", "require mTLS client certs for control-plane calls")
 	flag.StringVar(&cfg.PodDaemonSock, "pod-daemon-sock", os.Getenv("ASP_POD_DAEMON_SOCK"), "unix socket path for pod-daemon (dry-run / local fallback)")
@@ -781,18 +767,72 @@ func getenvInt(key string, fallback int) int {
 	return n
 }
 
-// certNodeID returns the CN of the enrolled node certificate in certDir, or "".
-func certNodeID(certDir string) string {
+// enrollNode enrolls with the control plane and writes the certificates to
+// cert-dir; it returns the node id. The control plane refuses (409) to
+// re-enroll a node that holds a live certificate unless the credential is an
+// enroll token pinned to it. Then a certificate in cert-dir that names this
+// node and has not expired is kept: an agent restarted with --enroll goes on
+// with the identity it has.
+func enrollNode(ctx context.Context, cfg config, c *cpclient.Client, now time.Time) (string, error) {
+	credential := cfg.EnrollToken
+	if credential == "" {
+		credential = cfg.BootstrapToken
+	}
+	resp, err := c.Enroll(ctx, credential, cpclient.EnrollRequest{
+		ID:             cfg.NodeID,
+		Name:           cfg.NodeID,
+		Endpoint:       cfg.Endpoint,
+		AgentEndpoint:  agentEndpointURL(cfg),
+		VMMProfiles:    []string{"cloud-hypervisor"},
+		CapacityCPU:    cfg.CapacityCPU,
+		CapacityMemMiB: cfg.CapacityMemMiB,
+	})
+	if err != nil {
+		if cpclient.IsConflict(err) && cfg.NodeID != "" && certValidFor(cfg.CertDir, cfg.NodeID, now) {
+			slog.Info("node already enrolled: keeping the certificate in cert-dir (an admin re-keys it with asp node enroll-token --node-id)",
+				"node_id", cfg.NodeID, "cert_dir", cfg.CertDir)
+			return cfg.NodeID, nil
+		}
+		return "", err
+	}
+	if err := cpclient.WriteCerts(cfg.CertDir, resp.ClientCertPEM, resp.ClientKeyPEM, resp.CACertPEM); err != nil {
+		return "", fmt.Errorf("write certs: %w", err)
+	}
+	nodeID := cfg.NodeID
+	if resp.NodeID != "" {
+		nodeID = resp.NodeID
+	}
+	slog.Info("enrolled", "node_id", nodeID, "cert_dir", cfg.CertDir, "fingerprint", resp.CertFingerprint)
+	return nodeID, nil
+}
+
+// certValidFor reports whether cert-dir holds a node certificate for nodeID
+// that has not expired.
+func certValidFor(certDir, nodeID string, now time.Time) bool {
+	cert := readNodeCert(certDir)
+	return cert != nil && strings.TrimSpace(cert.Subject.CommonName) == nodeID && now.Before(cert.NotAfter)
+}
+
+func readNodeCert(certDir string) *x509.Certificate {
 	raw, err := os.ReadFile(filepath.Join(certDir, "client.crt"))
 	if err != nil {
-		return ""
+		return nil
 	}
 	block, _ := pem.Decode(raw)
 	if block == nil {
-		return ""
+		return nil
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
+		return nil
+	}
+	return cert
+}
+
+// certNodeID returns the CN of the enrolled node certificate in certDir, or "".
+func certNodeID(certDir string) string {
+	cert := readNodeCert(certDir)
+	if cert == nil {
 		return ""
 	}
 	return strings.TrimSpace(cert.Subject.CommonName)

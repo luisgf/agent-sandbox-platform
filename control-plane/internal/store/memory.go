@@ -23,7 +23,8 @@ type MemoryStore struct {
 	apiKeys      map[string]ApiKey       // keyed by secret hash
 	egress       map[string][]EgressRule // tenant_id -> rules
 	attestations map[string]AttestationRecord
-	revokedCerts map[string]string // fingerprint -> node_id
+	revokedCerts map[string]string      // fingerprint -> node_id
+	enrollTokens map[string]EnrollToken // keyed by token hash
 	nextEvt      int64
 	// provisionNodeID is assigned by the stub provisioner when creating sandboxes.
 	provisionNodeID string
@@ -38,6 +39,7 @@ func NewMemoryStore() *MemoryStore {
 		egress:          make(map[string][]EgressRule),
 		attestations:    make(map[string]AttestationRecord),
 		revokedCerts:    make(map[string]string),
+		enrollTokens:    make(map[string]EnrollToken),
 		events:          make([]SandboxEvent, 0),
 		provisionNodeID: DefaultLocalNodeID,
 		schedCfg:        sched.DefaultConfig(),
@@ -777,7 +779,52 @@ func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time) []l
 	return out
 }
 
-func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, error) {
+func (m *MemoryStore) CreateEnrollToken(tok EnrollToken) error {
+	if err := validateEnrollToken(tok); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if tok.CreatedAt.IsZero() {
+		tok.CreatedAt = now
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for h, t := range m.enrollTokens {
+		if t.ExpiresAt.Before(now.Add(-enrollTokenRetention)) {
+			delete(m.enrollTokens, h)
+		}
+	}
+	if _, ok := m.enrollTokens[tok.Hash]; ok {
+		return ErrAlreadyExists
+	}
+	tok.UsedAt = nil
+	tok.UsedBy = ""
+	m.enrollTokens[tok.Hash] = tok
+	return nil
+}
+
+func (m *MemoryStore) CheckEnroll(id string, auth EnrollAuth) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, err := m.enrollCheckLocked(id, auth, time.Now().UTC())
+	return err
+}
+
+// enrollCheckLocked applies enrollAllowed under m.mu and returns the token.
+func (m *MemoryStore) enrollCheckLocked(id string, auth EnrollAuth, now time.Time) (*EnrollToken, error) {
+	var tok *EnrollToken
+	if auth.TokenHash != "" {
+		t, ok := m.enrollTokens[auth.TokenHash]
+		if !ok {
+			return nil, ErrEnrollTokenInvalid
+		}
+		tok = &t
+	}
+	existing, exists := m.nodes[id]
+	return tok, enrollAllowed(id, tok, exists && enrolledLive(existing), now)
+}
+
+func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error) {
 	fp := strings.TrimSpace(cert.Fingerprint)
 	if fp == "" {
 		return Node{}, fmt.Errorf("%w: cert_fingerprint required", ErrInvalidInput)
@@ -823,6 +870,15 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tok, err := m.enrollCheckLocked(id, auth, now)
+	if err != nil {
+		return Node{}, err
+	}
+	if tok != nil {
+		tok.UsedAt = &now
+		tok.UsedBy = id
+		m.enrollTokens[auth.TokenHash] = *tok
+	}
 	if existing, ok := m.nodes[id]; ok {
 		node.CreatedAt = existing.CreatedAt
 		// Same as Postgres: enroll does not carry fence or scheduling settings, so keep

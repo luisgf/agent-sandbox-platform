@@ -275,7 +275,7 @@ docker compose up -d postgres
 export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 ```
 
-Migraciones `001`–`013` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`).
+Migraciones `001`–`015` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll).
 
 ### 4.2 TLS + client CA + bootstrap
 

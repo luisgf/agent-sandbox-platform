@@ -44,14 +44,14 @@ func testNodeSchedulingAttributes(t *testing.T, s Store) {
 	if _, err := s.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 5, LocalNetDial: "198.51.100.7:51820"}); err != nil {
 		t.Fatal(err)
 	}
-	n, err = s.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-n1"})
+	n, err = s.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-n1"}, EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n.MaxSandboxes != 5 || n.LocalNetDial != "198.51.100.7:51820" || !n.AcceptsWork {
 		t.Fatalf("re-enroll lost scheduling attributes: %+v", n)
 	}
-	n, err = s.EnrollNode(EnrollNodeInput{ID: "n2", AgentEndpoint: "http://127.0.0.1:9101"}, CertMeta{Fingerprint: "fp-n2"})
+	n, err = s.EnrollNode(EnrollNodeInput{ID: "n2", AgentEndpoint: "http://127.0.0.1:9101"}, CertMeta{Fingerprint: "fp-n2"}, EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}

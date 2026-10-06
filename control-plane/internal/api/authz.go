@@ -72,9 +72,10 @@ func canManageNodes(p idp.Principal) bool {
 // uncordon, revoke, rotate-cert): an IdP admin or a platform-scoped API key.
 // A tenant-scoped key never may: every tenant shares the nodes. A request
 // without any identity only reaches a handler in the open lab (no API keys,
-// no IdP), where it is allowed unless credentialRequired: rotate-cert sets it
-// because it hands out a node's private key.
-func authorizeNodeAdmin(w http.ResponseWriter, r *http.Request, action string, credentialRequired bool) bool {
+// no IdP), where it is allowed unless needCredential is set: then it gets
+// 401 with that message. rotate-cert and enroll-tokens set it, because they
+// lead to a node's private key.
+func authorizeNodeAdmin(w http.ResponseWriter, r *http.Request, action, needCredential string) bool {
 	ctx := r.Context()
 	if p, ok := IdPPrincipalFromContext(ctx); ok {
 		if canManageNodes(p) {
@@ -90,8 +91,8 @@ func authorizeNodeAdmin(w http.ResponseWriter, r *http.Request, action string, c
 		forbid(w, "a platform-scoped api key is required to "+action+": tenant keys cannot manage the nodes every tenant shares")
 		return false
 	}
-	if credentialRequired {
-		writeError(w, http.StatusUnauthorized, "an idp admin token, a platform api key or the node bootstrap token is required to "+action)
+	if needCredential != "" {
+		writeError(w, http.StatusUnauthorized, needCredential)
 		return false
 	}
 	return true

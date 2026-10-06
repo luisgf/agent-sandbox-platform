@@ -64,6 +64,7 @@ Las dos salidas existen para laboratorios. Dejan el `exec` sin autenticar y se a
 - `--control-plane-ca`: CA del certificado TLS del plano de control, para enroll y llamadas.
 - `--enroll-url`: con `ASP_MTLS_STRICT` el enroll vive en otro listener.
 - Sin `--node-id`, un nodo enrolado usa el CN de su certificado, porque el plano de control rechaza cualquier otro id.
+- **Actualizado 2026-10:** para un servidor nuevo, un admin pide un token de un solo uso con `asp node enroll-token --node-id node2` y el agente lo usa con `--enroll-token`. El bootstrap token compartido ya no re-enrola un nodo con certificado vigente: así nadie que lo tenga suplanta a un nodo ni revoca su certificado ([ADR-0005](0005-fase-2d-hardening.md) § 1). Un agente reiniciado con `--enroll` sigue con el certificado que ya tiene.
 
 ### 6. Colocación por capacidad, en el plano de control
 

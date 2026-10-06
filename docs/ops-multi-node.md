@@ -39,6 +39,14 @@ Requisitos:
 - **TLS** en el plano de control (`ASP_TLS_CERT`/`ASP_TLS_KEY`) y **`ASP_CLIENT_CA`** apuntando a la CA de enrollment: así cada ruta de nodo exige el certificado de ese nodo.
 - La misma CA de enrollment para todos los nodos (`ASP_CA_CERT`/`ASP_CA_KEY`, fuera de `/tmp`).
 
+Desde un puesto con rol admin (o con una API key de plataforma), pide un token de enroll de un solo uso para el servidor nuevo:
+
+```bash
+asp node enroll-token --node-id node2 --ttl 2h
+```
+
+El comando imprime el token (`asp_enroll_…`). Solo sirve una vez, solo para `node2`, y caduca. El store guarda únicamente su hash.
+
 Pasos en el servidor nuevo (`node2`):
 
 ```bash
@@ -46,7 +54,7 @@ node-agent \
   --control-plane-url=https://cp.ejemplo.corp:8443 \
   --control-plane-ca=/etc/asp/cp-ca.pem \
   --node-id=node2 \
-  --enroll --bootstrap-token="$ASP_NODE_BOOTSTRAP_TOKEN" \
+  --enroll --enroll-token="$ASP_NODE_ENROLL_TOKEN" \
   --cert-dir=/var/lib/asp/node-certs --mtls \
   --agent-listen=127.0.0.1:9100 \
   --agent-tls-listen=0.0.0.0:9443 \
@@ -55,6 +63,8 @@ node-agent \
   --guest-subnet=10.200.16.0/20 \
   --local-net-dial=node2.ejemplo.corp
 ```
+
+El bootstrap token compartido (`--bootstrap-token`, `ASP_NODE_BOOTSTRAP_TOKEN`) sigue funcionando en labs, pero solo enrola un id sin certificado o un nodo revocado: no re-enrola un nodo vivo. Si reinicias el agente con `--enroll`, el plano de control responde que el nodo ya está enrolado y el agente sigue con el certificado de `--cert-dir`. Para cambiarle la clave a un nodo vivo, pide un token fijado a él (`asp node enroll-token --node-id node2`) o usa `POST /v1/nodes/{id}/rotate-cert`.
 
 En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)): los mismos ajustes van en `/etc/asp/node-agent.env` como variables de entorno. Un solo node-agent por servidor.
 
