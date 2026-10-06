@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -249,6 +250,50 @@ func requestToken(t *testing.T, path, sandboxHeader string) (int, string) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return resp.StatusCode, out.AccessToken
+}
+
+// Re-attaching replaces the previous listeners. Closing them must not unlink
+// the sockets the new ones bound on the same paths.
+func TestHybridReattach(t *testing.T) {
+	cp, _ := mintRecorder(t)
+	svc := &Service{
+		SkipGlobalListeners: true,
+		IdentityHandler:     (&identity.Proxy{ControlPlaneURL: cp.URL, HTTP: cp.Client()}).Handler(),
+	}
+	t.Setenv("SSH_AUTH_SOCK", "")
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	dir := t.TempDir()
+	muxer := filepath.Join(dir, "vsock-r.sock")
+	moved := filepath.Join(dir, "vsock-r2.sock")
+	for _, path := range []string{muxer, muxer, moved} {
+		if err := svc.AttachSandbox("sb-r", path); err != nil {
+			t.Fatal(err)
+		}
+		ssh, err := net.Dial("unix", HybridGuestPath(path, PortSSHAgent))
+		if err != nil {
+			t.Fatalf("ssh-agent socket after attach to %s: %v", path, err)
+		}
+		count, err := sshagent.RequestIdentities(ssh)
+		ssh.Close()
+		if err != nil || count != 0 {
+			t.Fatalf("ssh-agent after attach to %s: count %d, err %v", path, count, err)
+		}
+		if status, token := requestToken(t, HybridGuestPath(path, PortIdentity), ""); status != http.StatusOK || token != "tok-sb-r" {
+			t.Fatalf("identity after attach to %s: status %d, token %q; want sb-r's", path, status, token)
+		}
+	}
+	// The move released the old paths.
+	for _, port := range []uint32{PortSSHAgent, PortIdentity} {
+		if _, err := os.Stat(HybridGuestPath(muxer, port)); !os.IsNotExist(err) {
+			t.Errorf("%s left behind after the move: %v", HybridGuestPath(muxer, port), err)
+		}
+	}
+	if err := svc.AttachSandbox("sb-other", muxer); err != nil {
+		t.Fatalf("old muxer still held after the move: %v", err)
+	}
 }
 
 func TestHybridDetachRemovesSockets(t *testing.T) {
