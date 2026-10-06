@@ -234,3 +234,23 @@ func TestPostgresNodeCertNotAfter(t *testing.T) {
 		t.Fatalf("after rotate: cert_not_after=%v err=%v", n.CertNotAfter, err)
 	}
 }
+
+func TestPostgresListEgressRulesForTenants(t *testing.T) {
+	pg := newPostgresTestStore(t)
+	if _, err := pg.PutEgressRules("eg-t1", []EgressRule{{HostPattern: "api.github.com", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.PutEgressRules("eg-t2", []EgressRule{{HostPattern: "a.example", Enabled: true}, {HostPattern: "b.example", Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := pg.ListEgressRulesForTenants([]string{"eg-t1", "eg-t2", "eg-none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["eg-t1"]) != 1 || len(got["eg-t2"]) != 2 {
+		t.Fatalf("rules: %+v", got)
+	}
+	if rules, ok := got["eg-none"]; !ok || len(rules) != 0 {
+		t.Fatalf("a tenant without rules must have an empty entry: %+v", got)
+	}
+}

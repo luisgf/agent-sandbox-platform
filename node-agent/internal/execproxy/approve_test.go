@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 )
 
@@ -58,5 +59,32 @@ func TestApproveGlobalNeedsTheLabFlag(t *testing.T) {
 
 	if code, _ := approve(t, &Server{}, `{"sandbox_id":"sb-1"}`); code != http.StatusServiceUnavailable {
 		t.Fatalf("no confirmation gate: want 503, got %d", code)
+	}
+}
+
+// egress-check with sandbox_id evaluates the policy the proxy applies to that
+// sandbox now (from the work poll), deny-default until it has one.
+func TestEgressCheckForASandbox(t *testing.T) {
+	cache := &egress.PolicyCache{}
+	cache.Set("sb-1", egress.NewAllowlist("api.github.com"))
+	h := (&Server{PolicyCache: cache}).Handler()
+	check := func(sandbox, host string) bool {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/internal/egress-check",
+			strings.NewReader(`{"host":"`+host+`","sandbox_id":"`+sandbox+`"}`)))
+		var out struct {
+			Allowed bool `json:"allowed"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%d %s", rr.Code, rr.Body.String())
+		}
+		return out.Allowed
+	}
+	if !check("sb-1", "api.github.com") || check("sb-1", "evil.example") {
+		t.Fatal("sb-1 must follow its policy")
+	}
+	if check("sb-2", "api.github.com") {
+		t.Fatal("a sandbox without a policy is deny-default")
 	}
 }

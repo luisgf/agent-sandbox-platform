@@ -97,6 +97,9 @@ type Store interface {
 	TouchAPIKey(id string) error
 
 	ListEgressRules(tenantID string) ([]EgressRule, error)
+	// ListEgressRulesForTenants returns the rules of several tenants in one
+	// read (every tenant in tenantIDs has an entry, possibly empty).
+	ListEgressRulesForTenants(tenantIDs []string) (map[string][]EgressRule, error)
 	PutEgressRules(tenantID string, rules []EgressRule) ([]EgressRule, error)
 
 	PutAttestation(input PutAttestationInput) (AttestationRecord, error)

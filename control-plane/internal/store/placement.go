@@ -49,6 +49,8 @@ func occupyingStateNames() []string {
 type NodeWork struct {
 	Sandboxes []Sandbox
 	Assigned  []string
+	// Tenants maps every assigned sandbox to its tenant (for its egress policy).
+	Tenants map[string]string
 }
 
 // NeedsNodeAction reports whether a sandbox assigned to a node needs its node

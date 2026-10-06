@@ -68,6 +68,8 @@ type egressCheckBody struct {
 	Host            string           `json:"host"`
 	Port            int              `json:"port,omitempty"`
 	EgressAllowlist *egressPolicyDTO `json:"egress_allowlist,omitempty"`
+	// SandboxID evaluates the policy the proxy applies to that sandbox now.
+	SandboxID string `json:"sandbox_id,omitempty"`
 }
 
 func (s *Server) Handler() http.Handler {
@@ -168,9 +170,17 @@ func (s *Server) handleEgressCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	al := s.DefaultAllowlist
-	if body.EgressAllowlist != nil {
-		// Evaluation only: no sandbox ID, so the proxy policy is not changed.
+	switch {
+	case body.EgressAllowlist != nil:
+		// Evaluation only: the proxy policy is not changed.
 		al = s.allowlistFromDTO(body.EgressAllowlist)
+	case body.SandboxID != "":
+		// What the proxy and the DNS sink apply to this sandbox's traffic: its
+		// tenant's policy from the work poll, deny-default until there is one.
+		al = s.PolicyCache.Get(body.SandboxID)
+		if al == nil {
+			al = egress.NewAllowlistFromPolicy("deny-default", nil)
+		}
 	}
 	if al == nil {
 		al = egress.NewAllowlistFromPolicy("deny-default", nil)

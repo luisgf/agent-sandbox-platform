@@ -27,6 +27,9 @@ export ASP_AUTO_PROVISION=0
 # With DATABASE_URL the control plane runs in production mode; the smoke keeps
 # its keys in WORKDIR on purpose.
 export ASP_ALLOW_TMP_KEYS=1
+# Empty tenant rules deny (the memory store would allow all): step 1b checks
+# that rules reach a running sandbox in both directions.
+export ASP_EGRESS_DENY_DEFAULT=1
 export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTERVAL=1s
 
 cleanup() {
@@ -112,6 +115,26 @@ echo "    s1 → $n1, s2 → $n2"
 for s in "$s1" "$s2"; do
   wait_fresh_attestation "$CP" "$s" || fail "no fresh boot attestation for $s"
 done
+
+echo "==> 1b. tenant egress rules reach a running sandbox with the work poll, no exec needed"
+agent_of() { [[ "$1" == "$NODE_A" ]] && echo 127.0.0.1:19110 || echo 127.0.0.1:19111; }
+proxy_allows() { # <sandbox> <host>
+  curl -sf -X POST "http://$(agent_of "$(node_of "$1")")/v1/internal/egress-check" \
+    -H 'Content-Type: application/json' -d "{\"host\":\"$2\",\"sandbox_id\":\"$1\"}" | grep -q '"allowed":true'
+}
+wait_proxy() { # <want: allow|deny> <sandbox> <host>
+  for _ in $(seq 1 40); do
+    if proxy_allows "$2" "$3"; then [[ "$1" == allow ]] && return 0; else [[ "$1" == deny ]] && return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+wait_proxy deny "$s1" api.github.com || fail "deny-default before any rule"
+curl -sf -X PUT "$CP/v1/tenants/smoke/egress" -H 'Content-Type: application/json' \
+  -d '{"rules":[{"host_pattern":"api.github.com","port":443}]}' >/dev/null || fail "put egress rules"
+wait_proxy allow "$s1" api.github.com:443 || fail "the new rule did not reach $s1"
+curl -sf -X PUT "$CP/v1/tenants/smoke/egress" -H 'Content-Type: application/json' -d '{"rules":[]}' >/dev/null || fail "clear egress rules"
+wait_proxy deny "$s1" api.github.com:443 || fail "the removed rule still applies to $s1"
 
 echo "==> 2. cordon $NODE_A: the next sandbox goes to $NODE_B"
 curl -sf -X POST "$CP/v1/nodes/$NODE_A/cordon" | grep -q '"unschedulable_reason":"cordoned"' || fail "cordon"

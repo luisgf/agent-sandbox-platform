@@ -29,7 +29,7 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
 | POST | `/v1/nodes/register` | Registra/actualiza nodo |
 | POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
-| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`) y `assigned`: las que el nodo debe seguir corriendo; para el resto |
+| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`), `assigned`: las que el nodo debe seguir corriendo (para el resto), y `egress`: tenant de cada sandbox y política efectiva con `version` de cada tenant |
 | POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin o API key de plataforma) |
 | POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin o API key de plataforma) |
 | GET | `/v1/nodes` | Lista nodos con asignado/ofrecido, si son planificables y cuándo caduca su certificado (`cert_not_after`) (admin, operador o API key de plataforma) |

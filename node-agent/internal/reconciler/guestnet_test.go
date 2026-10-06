@@ -92,10 +92,13 @@ type fakeCP struct {
 	legacy bool
 	// requests counts calls by "METHOD path".
 	requests map[string]int
+	// egress, when set, is sent as each tenant's policy with the work poll.
+	egress map[string]cpclient.EgressPolicy
 }
 
 type fakeSandbox struct {
 	ID     string  `json:"id"`
+	Tenant string  `json:"tenant_id"`
 	Node   *string `json:"node_id"`
 	State  string  `json:"state"`
 	Detail string  `json:"-"`
@@ -104,7 +107,7 @@ type fakeSandbox struct {
 func newFakeCP(t *testing.T, ids ...string) *fakeCP {
 	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}, conflict: map[string]bool{}, requests: map[string]int{}}
 	for _, id := range ids {
-		f.boxes[id] = &fakeSandbox{ID: id, State: "requested"}
+		f.boxes[id] = &fakeSandbox{ID: id, Tenant: "t1", State: "requested"}
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
@@ -147,6 +150,13 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{"sandboxes": list}
 		if !f.legacy {
 			resp["assigned"] = assigned
+		}
+		if f.egress != nil {
+			tenants := map[string]string{}
+			for _, id := range assigned {
+				tenants[id] = f.boxes[id].Tenant
+			}
+			resp["egress"] = map[string]any{"tenants": tenants, "policies": f.egress}
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):

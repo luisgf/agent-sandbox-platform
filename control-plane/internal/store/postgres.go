@@ -371,13 +371,14 @@ func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
 		return NodeWork{}, err
 	}
 	defer rows.Close()
-	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}}
+	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}, Tenants: map[string]string{}}
 	for rows.Next() {
 		sb, err := scanSandbox(rows)
 		if err != nil {
 			return NodeWork{}, err
 		}
 		work.Assigned = append(work.Assigned, sb.ID)
+		work.Tenants[sb.ID] = sb.TenantID
 		if NeedsNodeAction(sb) {
 			work.Sandboxes = append(work.Sandboxes, sb)
 		}
@@ -1411,6 +1412,32 @@ func (p *PostgresStore) ListEgressRules(tenantID string) ([]EgressRule, error) {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresStore) ListEgressRulesForTenants(tenantIDs []string) (map[string][]EgressRule, error) {
+	out := make(map[string][]EgressRule, len(tenantIDs))
+	for _, t := range tenantIDs {
+		out[t] = []EgressRule{}
+	}
+	if len(tenantIDs) == 0 {
+		return out, nil
+	}
+	rows, err := p.pool.Query(context.Background(), `
+		SELECT id, tenant_id, host_pattern, port, enabled
+		FROM tenant_egress_rules WHERE tenant_id = ANY($1)
+		ORDER BY tenant_id, host_pattern, port NULLS FIRST`, tenantIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r EgressRule
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.HostPattern, &r.Port, &r.Enabled); err != nil {
+			return nil, err
+		}
+		out[r.TenantID] = append(out[r.TenantID], r)
 	}
 	return out, rows.Err()
 }
