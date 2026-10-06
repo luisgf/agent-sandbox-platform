@@ -72,3 +72,16 @@ func TestCertNodeIDReadsTheEnrolledCertificate(t *testing.T) {
 		t.Fatalf("certNodeID = %q, want node-7", got)
 	}
 }
+
+func TestRegisterRequestReportsCapacityAndWork(t *testing.T) {
+	cfg := config{NodeID: "n1", Endpoint: "https://n1:9443", CapacityCPU: 16, CapacityMemMiB: 60000, MaxSandboxes: 10, LocalNetDial: "203.0.113.10", Reconcile: true}
+	req := registerRequest(cfg)
+	if req.CapacityCPU != 16 || req.CapacityMemMiB != 60000 || req.MaxSandboxes != 10 || req.LocalNetDial != "203.0.113.10" ||
+		req.AgentEndpoint != "https://n1:9443" || req.AcceptsWork == nil || !*req.AcceptsWork {
+		t.Fatalf("register request: %+v", req)
+	}
+	cfg.Reconcile = false
+	if req := registerRequest(cfg); *req.AcceptsWork {
+		t.Fatal("an agent without --reconcile must not accept work")
+	}
+}

@@ -75,7 +75,8 @@ Responsabilidades:
 
 - Estado deseado de sandboxes y journal `sandbox_events`.
 - Inventario de nodos (enroll, register, heartbeat, rotate/revoke).
-- Work queue: `GET /v1/nodes/{id}/work` + claim/status/renew-lease.
+- Planificador por capacidad: elige el nodo al crear (filtros de vida, cordon, perfil, CPU/memoria/huecos; `spread` o `binpack`) y rechaza con 503 si nada cabe ([ADR-0011](adr/0011-multi-node.md), [`ops-multi-node.md`](ops-multi-node.md)).
+- Work queue: `GET /v1/nodes/{id}/work` (solo las sandboxes de ese nodo) + claim/status/renew-lease.
 - Proxy de exec hacia `agent_endpoint` del nodo (`POST /v1/sandboxes/{id}/exec`): HTTP en loopback, o HTTPS con mTLS hacia un nodo en otro host ([ADR-0011](adr/0011-multi-node.md)).
 - Egress policies por tenant; JWKS público.
 
@@ -176,7 +177,7 @@ Tablas / entidades principales (migraciones `001`–`007`):
 |---|---|
 | `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until, **owner_sub**, **owner_email** (007 / ADR-0007 fase 1) |
 | `sandbox_events` | journal append-only; **actor_sub** (007) |
-| `nodes` | endpoint, agent_endpoint, capacity, cert_fingerprint/serial, fence_*, revoked_at |
+| `nodes` | endpoint, agent_endpoint, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, cert_fingerprint/serial, fence_*, revoked_at |
 | `node_cert_revocations` | fingerprints revocados (006) |
 | `api_keys` | sha256 del secreto; Bearer |
 | `tenant_egress_rules` | host_pattern, port, enabled (003) |

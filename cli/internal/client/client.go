@@ -35,6 +35,30 @@ type Sandbox struct {
 	LocalNetState     string `json:"local_net_state"`
 }
 
+// Node mirrors the control plane's node view (GET /v1/nodes).
+type Node struct {
+	ID                  string     `json:"id"`
+	State               string     `json:"state"`
+	AgentEndpoint       string     `json:"agent_endpoint,omitempty"`
+	Cordoned            bool       `json:"cordoned"`
+	AcceptsWork         bool       `json:"accepts_work"`
+	CapacityCPU         int        `json:"capacity_cpu"`
+	CapacityMemMiB      int        `json:"capacity_mem_mib"`
+	MaxSandboxes        int        `json:"max_sandboxes"`
+	LastSeenAt          *time.Time `json:"last_seen_at"`
+	Allocated           NodeUsage  `json:"allocated"`
+	Allocatable         NodeUsage  `json:"allocatable"` // 0 = not enforced
+	Schedulable         bool       `json:"schedulable"`
+	UnschedulableReason string     `json:"unschedulable_reason,omitempty"`
+}
+
+// NodeUsage is what is placed on (or offered by) a node.
+type NodeUsage struct {
+	CPUMillis int64 `json:"cpu_millis"`
+	MemoryMiB int64 `json:"memory_mib"`
+	Sandboxes int64 `json:"sandboxes"`
+}
+
 // StopReasonIdle matches control-plane store.StopReasonIdle.
 const StopReasonIdle = "idle_timeout"
 
@@ -128,6 +152,26 @@ func (c *Client) authHeader() string {
 func (c *Client) CreateSandbox(ctx context.Context, in CreateInput) (Sandbox, error) {
 	var out Sandbox
 	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes", in, http.StatusCreated, &out)
+	return out, err
+}
+
+// ListNodes GETs the node inventory (admin or operator with an IdP).
+func (c *Client) ListNodes(ctx context.Context) ([]Node, error) {
+	var out struct {
+		Nodes []Node `json:"nodes"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v1/nodes", nil, http.StatusOK, &out)
+	return out.Nodes, err
+}
+
+// SetNodeCordoned cordons (no new sandboxes) or uncordons a node (admin).
+func (c *Client) SetNodeCordoned(ctx context.Context, id string, cordoned bool) (Node, error) {
+	action := "uncordon"
+	if cordoned {
+		action = "cordon"
+	}
+	var out Node
+	err := c.doJSON(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(id)+"/"+action, nil, http.StatusOK, &out)
 	return out, err
 }
 

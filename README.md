@@ -152,8 +152,9 @@ The control plane stores *desired* state; the node agent reconciles it against w
 
 ```mermaid
 stateDiagram-v2
-  [*] --> requested: POST /v1/sandboxes
-  requested --> starting: node claims (lease)
+  [*] --> requested: POST /v1/sandboxes (placed on a node with room)
+  requested --> stopped: DELETE before any node claims it
+  requested --> starting: the assigned node claims it (lease)
   starting --> running: VM booted
   starting --> failed: boot / TAP / virtiofsd error
   running --> paused
@@ -165,8 +166,9 @@ stateDiagram-v2
   failed --> [*]
 ```
 
+- **Placement:** the control plane picks the node at create time from the nodes that can take sandboxes and their free CPU (overcommitted 4x by default), memory and slots; `ASP_SCHED_POLICY=spread|binpack`. When nothing fits, create fails at once with 503 and the reasons; only the chosen node can claim the sandbox. See [`docs/ops-multi-node.md`](docs/ops-multi-node.md).
 - **Idle reaper:** with `ASP_SANDBOX_IDLE_TIMEOUT=2h`, a forgotten sandbox is stopped. Create, reaching `running` and a successful exec count as activity; status calls and heartbeats do not. Off by default.
-- **Node failure:** expired leases can trigger a `FenceProvider` (webhook, Redfish/IPMI stubs) before another node reclaims the sandbox.
+- **Node failure:** a node that stops sending signs of life gets no new sandboxes after `ASP_NODE_STALE_AFTER` (90 s). Sandboxes stay assigned to their node; detecting a lost node and failing its sandboxes is the next step of [ADR-0011](docs/adr/0011-multi-node.md).
 
 ---
 
@@ -385,6 +387,9 @@ Only the most common settings. Full lists live in each component's README.
 | `ASP_NODE_BOOTSTRAP_TOKEN` | CP, node | One-time token for node enrollment. |
 | `ASP_CLIENT_CA` | CP | Require node client certificates and bind each node route to the certificate's node. |
 | `--agent-tls-listen` | node | mTLS exec listener for a control plane on another host ([ADR-0011](docs/adr/0011-multi-node.md)). |
+| `ASP_SCHED_POLICY` | CP | `spread` (default) or `binpack`. |
+| `ASP_SCHED_CPU_OVERCOMMIT` | CP | vCPUs per physical core (default `4`); memory is never overcommitted. |
+| `--capacity-cpu` / `--capacity-mem-mib` / `--max-sandboxes` | node | What the node offers; detected from the host by default. |
 
 Reference: [`cli/README.md`](cli/README.md) · [`control-plane/README.md`](control-plane/README.md) · [`node-agent/README.md`](node-agent/README.md) · [`pod-daemon/README.md`](pod-daemon/README.md).
 
@@ -406,6 +411,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Harness integration | No plugin; a wrapper script is the integration point. |
 | Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |
 | Kubernetes | Optional, only to deploy the API. Sandboxes are not Pods. |
+| Multiple nodes | Capacity placement, cordon and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Placement does not know about `--workspace` paths. |
 
 ---
 
@@ -447,6 +453,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | One-shot `asp sandbox run` | [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) |
 | Keycloak IdP lab | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) |
 | On-demand local network | [`docs/ops-local-net.md`](docs/ops-local-net.md) |
+| Multiple servers: capacity, placement, cordon, adding a node | [`docs/ops-multi-node.md`](docs/ops-multi-node.md) |
 | Guest vsock notes | [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) |
 
 **Architecture decision records**
@@ -463,7 +470,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0008](docs/adr/0008-network-flow-attribution.md) | Network flow → `owner_sub` attribution (evaluation, not implemented) |
 | [0009](docs/adr/0009-agent-sessions.md) | Sessions as the primary use of isolation |
 | [0010](docs/adr/0010-on-demand-local-net.md) | On-demand local network: full tunnel, opt-in |
-| [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes |
+| [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes, capacity placement |
 
 Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 

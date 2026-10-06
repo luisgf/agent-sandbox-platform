@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 )
 
 const DefaultLocalNodeID = "local-dev"
@@ -25,6 +27,7 @@ type MemoryStore struct {
 	nextEvt      int64
 	// provisionNodeID is assigned by the stub provisioner when creating sandboxes.
 	provisionNodeID string
+	schedCfg        sched.Config
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -37,7 +40,29 @@ func NewMemoryStore() *MemoryStore {
 		revokedCerts:    make(map[string]string),
 		events:          make([]SandboxEvent, 0),
 		provisionNodeID: DefaultLocalNodeID,
+		schedCfg:        sched.DefaultConfig(),
 	}
+}
+
+// SetSchedConfig sets the placement policy (ASP_SCHED_POLICY and friends).
+func (m *MemoryStore) SetSchedConfig(cfg sched.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedCfg = cfg
+}
+
+// nodeUsageLocked sums what is placed on each node. Caller holds m.mu.
+func (m *MemoryStore) nodeUsageLocked() map[string]NodeUsage {
+	usage := make(map[string]NodeUsage, len(m.nodes))
+	for _, sb := range m.sandboxes {
+		if sb.NodeID == nil || *sb.NodeID == "" || !OccupiesNode(sb.State) {
+			continue
+		}
+		u := usage[*sb.NodeID]
+		u.add(sb)
+		usage[*sb.NodeID] = u
+	}
+	return usage
 }
 
 // SetProvisionNodeID overrides the stub node used by sync provisioning.
@@ -83,28 +108,29 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 	}
 
 	m.mu.Lock()
-	m.sandboxes[sb.ID] = sb
 	nodeID := m.provisionNodeID
 	if input.NodeID != "" {
 		nodeID = input.NodeID
 	}
-	// Optional soft-assigner: pin a node but leave requested for the agent.
-	if !AutoProvisionEnabled() {
-		pin := strings.TrimSpace(input.NodeID)
-		if pin == "" {
-			nodes := make([]Node, 0, len(m.nodes))
-			for _, n := range m.nodes {
-				nodes = append(nodes, n)
-			}
-			pin = PickReadyNodeID(nodes)
+	placed := !AutoProvisionEnabled()
+	if placed {
+		// Decide and insert under one lock: concurrent creates cannot overfill a node.
+		usage := m.nodeUsageLocked()
+		cands := make([]sched.Candidate, 0, len(m.nodes))
+		for _, n := range m.nodes {
+			cands = append(cands, Candidate(n, usage[n.ID]))
 		}
-		if pin != "" {
-			nid := pin
-			sb.NodeID = &nid
-			m.sandboxes[sb.ID] = sb
+		picked, err := sched.Place(m.schedCfg, placementRequest(input, sb.VMMProfile), cands, now)
+		if err != nil {
+			m.mu.Unlock()
+			return Sandbox{}, err
 		}
+		nodeID = picked
+		sb.NodeID = &picked
 	}
-	out := cloneSandbox(m.sandboxes[sb.ID])
+	m.sandboxes[sb.ID] = sb
+	out := cloneSandbox(sb)
+	schedCfg := m.schedCfg
 	m.mu.Unlock()
 
 	_ = m.EmitEvent(EmitEventInput{
@@ -124,6 +150,15 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 			Actor:     "api",
 			ActorSub:  actorSub,
 			Payload:   mustJSON(map[string]any{"local_net": true, "local_net_state": out.LocalNetState}),
+		})
+	}
+	if placed {
+		_ = m.EmitEvent(EmitEventInput{
+			SandboxID: out.ID,
+			TenantID:  out.TenantID,
+			EventType: "sandbox.placed",
+			Actor:     "scheduler",
+			Payload:   placedEventPayload(nodeID, schedCfg, input),
 		})
 	}
 
@@ -255,51 +290,18 @@ func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 		m.mu.Unlock()
 		return Sandbox{}, ErrNotFound
 	}
-	now := time.Now().UTC()
-	// Allow reclaim of requested with expired lease from another node.
-	if sb.State == SandboxRequested {
-		if sb.NodeID != nil && *sb.NodeID != "" && *sb.NodeID != nodeID {
-			if !leaseExpired(sb.NodeLeaseUntil, now) {
-				m.mu.Unlock()
-				return Sandbox{}, fmt.Errorf("%w: already assigned to %s", ErrConflict, *sb.NodeID)
-			}
-			// expired soft-assign — take over
-		}
-	} else if sb.State == SandboxStarting || sb.State == SandboxRunning {
-		// Reclaim stuck sandbox with expired lease → treat as claimable after reset.
-		if sb.NodeID != nil && *sb.NodeID != "" && *sb.NodeID != nodeID && leaseExpired(sb.NodeLeaseUntil, now) {
-			fromStuck := string(sb.State)
-			sb.State = SandboxRequested
-			sb.NodeID = nil
-			sb.NodeLeaseUntil = nil
-			sb.StateVersion++
-			sb.UpdatedAt = now
-			m.sandboxes[id] = sb
-			tenantStuck := sb.TenantID
-			m.mu.Unlock()
-			_ = m.EmitEvent(EmitEventInput{
-				SandboxID: id,
-				TenantID:  tenantStuck,
-				EventType: "sandbox.lease_reclaimed",
-				FromState: &fromStuck,
-				ToState:   strPtr(string(SandboxRequested)),
-				Actor:     "lease",
-				Payload:   mustJSON(map[string]string{"by": nodeID, "reason": "expired_before_claim"}),
-			})
-			m.mu.Lock()
-			sb = m.sandboxes[id]
-		} else {
-			m.mu.Unlock()
-			return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
-		}
-	} else {
+	// Only the node the scheduler placed the sandbox on can claim it (ADR-0011).
+	if sb.NodeID == nil || *sb.NodeID != nodeID {
+		m.mu.Unlock()
+		return Sandbox{}, fmt.Errorf("%w: sandbox is not assigned to node %s", ErrConflict, nodeID)
+	}
+	if sb.State != SandboxRequested {
 		m.mu.Unlock()
 		return Sandbox{}, fmt.Errorf("%w: sandbox state %s not claimable", ErrConflict, sb.State)
 	}
+	now := time.Now().UTC()
 	from := string(sb.State)
-	nid := nodeID
 	until := leaseUntil(now)
-	sb.NodeID = &nid
 	sb.State = SandboxStarting
 	sb.NodeLeaseUntil = &until
 	sb.StateVersion++
@@ -330,15 +332,12 @@ func (m *MemoryStore) ListNodeWork(nodeID string) ([]Sandbox, error) {
 	out := make([]Sandbox, 0)
 	for _, sb := range m.sandboxes {
 		assigned := sb.NodeID != nil && *sb.NodeID == nodeID
-		unassigned := sb.NodeID == nil || *sb.NodeID == ""
 		switch {
 		case assigned && (sb.State == SandboxRequested || sb.State == SandboxStarting || sb.State == SandboxStopping):
 			out = append(out, cloneSandbox(sb))
 		case assigned && sb.LocalNet && sb.State == SandboxRunning:
 			// Running full-tunnel sessions stay visible so the node can move
 			// pending → up → withdrawn without ever restoring public egress.
-			out = append(out, cloneSandbox(sb))
-		case unassigned && sb.State == SandboxRequested:
 			out = append(out, cloneSandbox(sb))
 		}
 	}
@@ -486,8 +485,8 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 		m.mu.Unlock()
 		return out, nil
 	}
-	// Never started / unassigned requested → stopped immediately.
-	if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+	// Never claimed → stopped immediately: no VM exists before a node claims it.
+	if sb.State == SandboxRequested {
 		from := string(sb.State)
 		sb.State = SandboxStopped
 		withdrawLocalNetFields(&sb)
@@ -505,7 +504,7 @@ func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) 
 			ToState:   strPtr(string(SandboxStopped)),
 			Actor:     "api",
 			ActorSub:  actorSub,
-			Payload:   json.RawMessage(`{"reason":"destroy_unassigned"}`),
+			Payload:   json.RawMessage(`{"reason":"destroy_unclaimed"}`),
 		})
 		return out, nil
 	}
@@ -599,7 +598,7 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 		}
 		from := string(sb.State)
 		target := SandboxStopping
-		if sb.State == SandboxRequested && (sb.NodeID == nil || *sb.NodeID == "") {
+		if sb.State == SandboxRequested { // never claimed: no VM to stop
 			target = SandboxStopped
 		}
 		sb.State = target
@@ -643,6 +642,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.Name) == "" {
 		return Node{}, fmt.Errorf("%w: id or name required", ErrInvalidInput)
 	}
+	if err := validateNodeCapacity(input.CapacityCPU, input.CapacityMemMiB, input.MaxSandboxes); err != nil {
+		return Node{}, err
+	}
 	now := time.Now().UTC()
 	id := input.ID
 	if id == "" {
@@ -670,6 +672,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		VMMProfiles:    append([]string(nil), profiles...),
 		CapacityCPU:    input.CapacityCPU,
 		CapacityMemMiB: input.CapacityMemMiB,
+		MaxSandboxes:   input.MaxSandboxes,
+		AcceptsWork:    input.acceptsWork(),
+		LocalNetDial:   strings.TrimSpace(input.LocalNetDial),
 		FenceEndpoint:  strings.TrimSpace(input.FenceEndpoint),
 		FenceToken:     strings.TrimSpace(input.FenceToken),
 		LastSeenAt:     &seen,
@@ -688,6 +693,8 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		node.CertSerial = existing.CertSerial
 		node.EnrolledAt = existing.EnrolledAt
 		node.RevokedAt = existing.RevokedAt
+		// Cordon is an admin decision; an agent re-registering never lifts it.
+		node.Cordoned = existing.Cordoned
 		if node.AgentEndpoint == "" {
 			node.AgentEndpoint = existing.AgentEndpoint
 		}
@@ -740,6 +747,7 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 		VMMProfiles:     append([]string(nil), profiles...),
 		CapacityCPU:     input.CapacityCPU,
 		CapacityMemMiB:  input.CapacityMemMiB,
+		AcceptsWork:     true,
 		CertFingerprint: fp,
 		CertSerial:      strings.TrimSpace(cert.Serial),
 		EnrolledAt:      &enrolled,
@@ -751,9 +759,14 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta) (Node, er
 	defer m.mu.Unlock()
 	if existing, ok := m.nodes[id]; ok {
 		node.CreatedAt = existing.CreatedAt
-		// Same as Postgres: enroll does not carry fence settings, so keep the registered ones.
+		// Same as Postgres: enroll does not carry fence or scheduling settings, so keep
+		// the registered ones (and an admin's cordon).
 		node.FenceEndpoint = existing.FenceEndpoint
 		node.FenceToken = existing.FenceToken
+		node.MaxSandboxes = existing.MaxSandboxes
+		node.Cordoned = existing.Cordoned
+		node.AcceptsWork = existing.AcceptsWork
+		node.LocalNetDial = existing.LocalNetDial
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {
 			m.revokedCerts[existing.CertFingerprint] = id
@@ -851,6 +864,47 @@ func (m *MemoryStore) HeartbeatNode(id string) (Node, error) {
 	n.State = "ready"
 	m.nodes[id] = n
 	return cloneNode(n), nil
+}
+
+// nodePollWriteEvery throttles last_seen_at writes from work polls (every ~2s per node).
+const nodePollWriteEvery = 5 * time.Second
+
+func (m *MemoryStore) TouchNodePoll(id string, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if n.LastSeenAt != nil && now.Sub(*n.LastSeenAt) < nodePollWriteEvery {
+		return nil
+	}
+	n.LastSeenAt = &now
+	n.UpdatedAt = now
+	if n.RevokedAt == nil {
+		n.State = "ready"
+	}
+	m.nodes[id] = n
+	return nil
+}
+
+func (m *MemoryStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return Node{}, ErrNotFound
+	}
+	n.Cordoned = cordoned
+	n.UpdatedAt = time.Now().UTC()
+	m.nodes[id] = n
+	return cloneNode(n), nil
+}
+
+func (m *MemoryStore) ListNodeUsage() (map[string]NodeUsage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.nodeUsageLocked(), nil
 }
 
 func (m *MemoryStore) ListNodes() ([]Node, error) {

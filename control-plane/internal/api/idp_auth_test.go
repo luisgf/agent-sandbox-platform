@@ -53,7 +53,7 @@ func mintUserJWTWithGroups(t *testing.T, key *rsa.PrivateKey, kid, sub, email st
 func TestIdPCreateSetsOwnerFromToken(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -123,7 +123,7 @@ func TestIdPInvalidTokenUnauthorized(t *testing.T) {
 func TestIdPRequiredRejectsWithoutJWT(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v, IdPRequired: true})(testMux(srv))
 
@@ -147,7 +147,7 @@ func TestIdPRequiredRejectsWithoutJWT(t *testing.T) {
 
 func TestIdPOffKeepsLabBodyOwner(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	// No IdP configured — phase 1 lab behavior.
 	h := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
@@ -202,7 +202,7 @@ func TestIdPDoesNotBreakNodeWorkWithoutJWT(t *testing.T) {
 func TestIdPActorOverridesHeaderOnExecDestroy(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 	tok := mintUserJWT(t, key, kid, "user:alice", "")

@@ -17,42 +17,23 @@ import (
 )
 
 func testMux(s *Server) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/sandboxes", s.CreateSandbox)
-	mux.HandleFunc("GET /v1/sandboxes", s.ListSandboxes)
-	mux.HandleFunc("GET /v1/sandboxes/{id}", s.GetSandbox)
-	mux.HandleFunc("DELETE /v1/sandboxes/{id}", s.DestroySandbox)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/events", s.ListSandboxEvents)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.Exec)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/grant", s.IssueLocalNetGrant)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/node-public", s.RegisterLocalNetNode)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/heartbeat", s.HeartbeatLocalNet)
-	mux.HandleFunc("DELETE /v1/sandboxes/{id}/local-net/attach", s.DetachLocalNet)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/exec/stdin", s.ExecStdin)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/claim", s.ClaimSandbox)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/renew-lease", s.RenewSandboxLease)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/attest", s.StoreAttestation)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/attestation", s.GetAttestation)
-	mux.HandleFunc("POST /v1/attestation/verify", s.VerifyAttestation)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/status", s.UpdateSandboxStatus)
-	mux.HandleFunc("PUT /v1/tenants/{id}/egress", s.PutTenantEgress)
-	mux.HandleFunc("GET /v1/tenants/{id}/egress", s.GetTenantEgress)
-	mux.HandleFunc("POST /v1/tenants/{id}/egress/check", s.CheckTenantEgress)
-	mux.HandleFunc("GET /.well-known/openid-configuration", s.OpenIDConfiguration)
-	mux.HandleFunc("GET /oidc/jwks.json", s.JWKS)
-	mux.HandleFunc("POST /v1/internal/oidc/token", s.MintOIDCToken)
-	mux.HandleFunc("POST /v1/nodes/enroll", s.EnrollNode)
-	mux.HandleFunc("POST /v1/nodes/register", s.RegisterNode)
-	mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", s.HeartbeatNode)
-	mux.HandleFunc("POST /v1/nodes/{id}/rotate-cert", s.RotateNodeCert)
-	mux.HandleFunc("POST /v1/nodes/{id}/revoke", s.RevokeNode)
-	mux.HandleFunc("GET /v1/nodes/{id}/work", s.ListNodeWork)
-	mux.HandleFunc("GET /v1/nodes", s.ListNodes)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	return mux
+	return s.Routes()
+}
+
+// newTestStore returns a memory store with healthy nodes, so creates without
+// ASP_AUTO_PROVISION have somewhere to go (ADR-0011).
+func newTestStore(t *testing.T, ids ...string) *store.MemoryStore {
+	t.Helper()
+	mem := store.NewMemoryStore()
+	if len(ids) == 0 {
+		ids = []string{"test-node"}
+	}
+	for _, id := range ids {
+		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return mem
 }
 
 func TestCreateGetListSandbox(t *testing.T) {
@@ -276,7 +257,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 }
 
 func TestAuthMiddlewareOptionalOff(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{Require: false})(testMux(srv))
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -295,7 +276,7 @@ func TestAuthMiddlewareOptionalOff(t *testing.T) {
 }
 
 func TestAuthMiddlewareRequire(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	secret := "test-key-abc"
 	_, err := BootstrapAPIKey(mem, secret)
 	if err != nil {
@@ -396,7 +377,7 @@ func TestOIDCMintAndJWKS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
@@ -676,7 +657,7 @@ func TestRotateWithBootstrapWhenAPIKeysExist(t *testing.T) {
 
 func TestCreateSandboxOwnerAndActorHeader(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newTestStore(t))
 	mux := testMux(srv)
 
 	// Empty owner OK (lab)
@@ -759,7 +740,7 @@ func TestCreateSandboxOwnerAndActorHeader(t *testing.T) {
 
 func TestCreateSandboxActorFallsBackToOwner(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newTestStore(t))
 	mux := testMux(srv)
 	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":128,"owner_sub":"user:bob"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
@@ -786,7 +767,7 @@ func TestOIDCMintIncludesUserSubFromOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
@@ -843,7 +824,7 @@ func TestOIDCMintIgnoresGuestUserSubOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)
@@ -880,7 +861,7 @@ func TestOIDCMintLabWithoutOwnerStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	srv.OIDC = oidc.NewSignerFromKey(key, "http://issuer.test")
 	mux := testMux(srv)

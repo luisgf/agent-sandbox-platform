@@ -109,10 +109,13 @@ func isNodeAgentPath(path string) bool {
 	return false
 }
 
-// isUserFacingPath is the IdP JWT surface: sandbox create/list/get/exec/destroy/events
-// and the node inventory. Node claim/status/attest/renew-lease stay on mTLS / internal auth.
+// isUserFacingPath is the IdP JWT surface: sandbox create/list/get/exec/destroy/events,
+// the node inventory and cordon/uncordon. Node claim/status/attest/renew-lease stay on mTLS / internal auth.
 func isUserFacingPath(path string) bool {
 	if path == "/v1/sandboxes" || path == "/v1/nodes" {
+		return true
+	}
+	if strings.HasPrefix(path, "/v1/nodes/") && (strings.HasSuffix(path, "/cordon") || strings.HasSuffix(path, "/uncordon")) {
 		return true
 	}
 	if !strings.HasPrefix(path, "/v1/sandboxes/") {

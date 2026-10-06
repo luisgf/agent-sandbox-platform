@@ -32,7 +32,7 @@ func TestRBACViewerCannotCreate(t *testing.T) {
 func TestRBACOperatorCreateAdminDestroyAny(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -96,7 +96,7 @@ func TestRBACOperatorCreateAdminDestroyAny(t *testing.T) {
 func TestRBACOperatorDestroyAnyClaim(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -123,7 +123,7 @@ func TestRBACOperatorDestroyAnyClaim(t *testing.T) {
 func TestRBACOwnerCanDestroyOwnEvenAsViewer(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -150,7 +150,7 @@ func TestRBACOwnerCanDestroyOwnEvenAsViewer(t *testing.T) {
 func TestRBACListTenantWideForOperatorViewer(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -210,7 +210,7 @@ func TestRBACNoRoleForbidden(t *testing.T) {
 
 func TestRBACIdPOffNoEnforcement(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
 	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":128,"owner_sub":"lab"}`

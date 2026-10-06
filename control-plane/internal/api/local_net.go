@@ -128,7 +128,7 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "local_net grant requires owner_sub")
 		return
 	}
-	dial := strings.TrimSpace(os.Getenv("ASP_LOCAL_NET_DIAL"))
+	dial := s.localNetDial(sb)
 	grant, exp, err := s.Store.IssueLocalNetGrant(id, dial, time.Now().UTC(), store.LocalNetGrantTTL)
 	if err != nil {
 		writeLocalNetErr(w, err)
@@ -146,6 +146,18 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		NodeTunnelAddr:   nodeCIDR,
 		ClientTunnelAddr: clientCIDR,
 	})
+}
+
+// localNetDial is where the laptop dials the sandbox's node: the node's own
+// local_net_dial (each server has its own address), else the control plane's
+// ASP_LOCAL_NET_DIAL for single-node setups.
+func (s *Server) localNetDial(sb store.Sandbox) string {
+	if sb.NodeID != nil && *sb.NodeID != "" {
+		if n, err := s.Store.GetNode(*sb.NodeID); err == nil && strings.TrimSpace(n.LocalNetDial) != "" {
+			return strings.TrimSpace(n.LocalNetDial)
+		}
+	}
+	return strings.TrimSpace(os.Getenv("ASP_LOCAL_NET_DIAL"))
 }
 
 // HeartbeatLocalNet is POST /v1/sandboxes/{id}/local-net/heartbeat.

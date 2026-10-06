@@ -346,6 +346,9 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
 | `--mtls` | `ASP_MTLS=1` | client certs hacia CP |
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca salvo `--insecure-agent-listen` |
+| `--capacity-cpu` / `--capacity-mem-mib` | `ASP_CAPACITY_CPU` / `ASP_CAPACITY_MEM_MIB` | `-1` detecta del host, `0` no limita ([`ops-multi-node.md`](ops-multi-node.md)) |
+| `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
+| `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
 | `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — p.ej. `0.0.0.0:9443`: `exec` con mTLS para un CP en otro host (ver 5.5) |
 | `--endpoint` | `NODE_ENDPOINT` | lo que se anuncia al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen` |
 | `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
@@ -557,7 +560,7 @@ Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`).
    - [ ] `--reconcile` sin `--dry-run`; opcional `--tap-auto --host-vsock`
    - [ ] ping CH sin warning persistente (solo shared)
 6. **Ciclo sandbox**
-   - [ ] `POST /v1/sandboxes` → `requested` (y soft-assign si hay nodo ready)
+   - [ ] `POST /v1/sandboxes` → `requested`, colocada en un nodo con hueco (503 si ninguno cabe)
    - [ ] Reconciler claim → `starting` → VMM Start → `running`
    - [ ] `GET /v1/sandboxes/{id}/events` muestra transiciones
    - [ ] `POST .../exec` vía hybrid vsock (guest `--listen vsock`) o unix en dry-run

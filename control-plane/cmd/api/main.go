@@ -20,6 +20,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
@@ -50,9 +51,12 @@ func main() {
 			os.Exit(1)
 		}
 		pg := store.NewPostgresStore(pool)
-		if err := pg.EnsureBootstrapNode(ctx); err != nil {
-			slog.Error("bootstrap node", "error", err)
-			os.Exit(1)
+		if store.AutoProvisionEnabled() {
+			// Only the stub provisioner uses the local-dev row.
+			if err := pg.EnsureBootstrapNode(ctx); err != nil {
+				slog.Error("bootstrap node", "error", err)
+				os.Exit(1)
+			}
 		}
 		st = pg
 		storeName = "postgres"
@@ -64,6 +68,17 @@ func main() {
 			_ = os.Setenv("ASP_EGRESS_DEFAULT_ALLOW", "1")
 		}
 	}
+
+	schedCfg, err := sched.ConfigFromEnv()
+	if err != nil {
+		slog.Error("scheduler config", "error", err)
+		os.Exit(1)
+	}
+	if sc, ok := st.(interface{ SetSchedConfig(sched.Config) }); ok {
+		sc.SetSchedConfig(schedCfg)
+	}
+	slog.Info("scheduler ready", "policy", schedCfg.Policy, "cpu_overcommit", schedCfg.CPUOvercommit,
+		"node_stale_after", schedCfg.StaleAfter.String(), "auto_provision", store.AutoProvisionEnabled())
 
 	if secret := os.Getenv("ASP_BOOTSTRAP_API_KEY"); secret != "" {
 		key, err := api.BootstrapAPIKey(st, secret)
@@ -99,6 +114,7 @@ func main() {
 
 	srv := api.NewServer(st)
 	srv.CA = ca
+	srv.Sched = schedCfg
 	srv.Agents = api.NewAgentDialer(ca, api.EnvTruthy(api.EnvInsecureAgentHTTP))
 	if srv.Agents.AllowInsecureHTTP {
 		slog.Warn(api.EnvInsecureAgentHTTP + "=1: plain HTTP agent endpoints on other hosts are allowed; exec traffic is unauthenticated (lab only)")
@@ -146,42 +162,7 @@ func main() {
 			"rbac", true)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
-	})
-	mux.HandleFunc("GET /.well-known/openid-configuration", srv.OpenIDConfiguration)
-	mux.HandleFunc("GET /oidc/jwks.json", srv.JWKS)
-	mux.HandleFunc("POST /v1/internal/oidc/token", srv.MintOIDCToken)
-	mux.HandleFunc("POST /v1/sandboxes", srv.CreateSandbox)
-	mux.HandleFunc("GET /v1/sandboxes", srv.ListSandboxes)
-	mux.HandleFunc("GET /v1/sandboxes/{id}", srv.GetSandbox)
-	mux.HandleFunc("DELETE /v1/sandboxes/{id}", srv.DestroySandbox)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/events", srv.ListSandboxEvents)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", srv.Exec)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/grant", srv.IssueLocalNetGrant)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/node-public", srv.RegisterLocalNetNode)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/local-net/heartbeat", srv.HeartbeatLocalNet)
-	mux.HandleFunc("DELETE /v1/sandboxes/{id}/local-net/attach", srv.DetachLocalNet)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/exec/stdin", srv.ExecStdin)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/claim", srv.ClaimSandbox)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/renew-lease", srv.RenewSandboxLease)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/status", srv.UpdateSandboxStatus)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/attest", srv.StoreAttestation)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/attestation", srv.GetAttestation)
-	mux.HandleFunc("POST /v1/attestation/verify", srv.VerifyAttestation)
-	mux.HandleFunc("PUT /v1/tenants/{id}/egress", srv.PutTenantEgress)
-	mux.HandleFunc("GET /v1/tenants/{id}/egress", srv.GetTenantEgress)
-	mux.HandleFunc("POST /v1/tenants/{id}/egress/check", srv.CheckTenantEgress)
-	mux.HandleFunc("POST /v1/nodes/enroll", srv.EnrollNode)
-	mux.HandleFunc("POST /v1/nodes/register", srv.RegisterNode)
-	mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", srv.HeartbeatNode)
-	mux.HandleFunc("POST /v1/nodes/{id}/rotate-cert", srv.RotateNodeCert)
-	mux.HandleFunc("POST /v1/nodes/{id}/revoke", srv.RevokeNode)
-	mux.HandleFunc("GET /v1/nodes/{id}/work", srv.ListNodeWork)
-	mux.HandleFunc("GET /v1/nodes", srv.ListNodes)
+	mux := srv.Routes()
 
 	handler := api.AuthMiddleware(st, authCfg)(requestLog(mux))
 

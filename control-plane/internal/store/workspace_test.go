@@ -3,7 +3,7 @@ package store
 import "testing"
 
 func TestWorkspaceHostPathStoredAndValidated(t *testing.T) {
-	s := NewMemoryStore()
+	s := newMemoryStoreWithNodes(t)
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64,
 		WorkspaceHostPath: "/var/tmp/proj",

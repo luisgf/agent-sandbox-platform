@@ -3,6 +3,8 @@
 # Mirrors smoke-enroll-exec lifecycle via `asp sandbox run`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=smoke-lib.sh
+source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-cli-smoke-$$"
 mkdir -p "$WORKDIR"
 SOCK="$WORKDIR/pod-daemon.sock"
@@ -70,6 +72,7 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 curl -sf http://127.0.0.1:19101/healthz | grep -q ok
+wait_node_schedulable "$CP_URL" cli-smoke-node
 
 ASP="$WORKDIR/asp"
 export ASP_CP_URL="$CP_URL"

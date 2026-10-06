@@ -1,6 +1,6 @@
-# ADR-0011: Varios nodos — identidad de nodo y canal plano de control ↔ nodo
+# ADR-0011: Varios nodos — identidad, canal plano de control ↔ nodo y colocación por capacidad
 
-- **Estado:** Propuesta. Esta revisión fija la identidad y el canal. La colocación por capacidad y la detección de nodos caídos se añadirán a este ADR en los cambios siguientes.
+- **Estado:** Propuesta. Esta revisión fija la identidad, el canal y la colocación por capacidad. La detección de nodos caídos se añadirá en el cambio siguiente.
 - **Fecha:** 2026-10-05
 - **Extiende:** [0005](0005-fase-2d-hardening.md) (identidad de nodo = certificado cliente mTLS), [0004](0004-k8s-scope.md) (el planificador de capacidad vive en nuestro plano de control)
 - **Relacionados:** [0010](0010-on-demand-local-net.md) (`Node.agent_endpoint`), [`../architecture.md`](../architecture.md), [`../bare-metal-ch.md`](../bare-metal-ch.md)
@@ -65,11 +65,29 @@ Las dos salidas existen para laboratorios. Dejan el `exec` sin autenticar y se a
 - `--enroll-url`: con `ASP_MTLS_STRICT` el enroll vive en otro listener.
 - Sin `--node-id`, un nodo enrolado usa el CN de su certificado, porque el plano de control rechaza cualquier otro id.
 
+### 6. Colocación por capacidad, en el plano de control
+
+El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planificador vive aquí):
+
+- **Filtros**, en este orden: sin `agent_endpoint` (fila stub), revocado, `offline`, sin señales desde hace más de `ASP_NODE_STALE_AFTER` (90 s), sin `--reconcile` (`accepts_work`), en `cordon`, sin el `vmm_profile` pedido, sin CPU, sin memoria, sin hueco (`max_sandboxes`).
+- **Capacidad:** el nodo declara cores, MiB y tope de sandboxes; `0` significa que esa dimensión no se limita. La CPU se sobresuscribe `ASP_SCHED_CPU_OVERCOMMIT` veces (4 por defecto: las sesiones de agentes esperan al modelo casi siempre). La memoria no se sobresuscribe nunca.
+- **Uso:** suma de las sandboxes del nodo en `requested`…`stopping`. Se calcula de las propias filas, sin contadores que se desincronicen.
+- **Política** (`ASP_SCHED_POLICY`): `spread` (por defecto) elige el nodo menos cargado tras colocar; `binpack`, el más cargado que aún cabe. La carga es la utilización dominante entre las dimensiones que se limitan. Desempate: menos sandboxes (o más, en `binpack`) y luego el id del nodo.
+- **Sin hueco: rechazo inmediato.** `503` con `Retry-After` y el recuento de motivos. Un pin (`node_id`) a un nodo desconocido o que no admite sandboxes da `409`; a un nodo lleno, `503`.
+- **Atomicidad:** en memoria se decide e inserta bajo el mismo lock. En Postgres, un `pg_advisory_xact_lock` serializa las colocaciones, también entre réplicas, y nodos y uso se leen dentro de la transacción.
+- **Solo el nodo elegido** ve la sandbox en `/work` y puede reclamarla. El claim ya no recupera leases caducados de otro nodo.
+- **Cordon:** `POST /v1/nodes/{id}/cordon|uncordon` (admin). Un nodo que se vuelve a registrar no levanta el cordon.
+- **Local-net:** el grant devuelve el `local_net_dial` del nodo de la sandbox y, si no tiene, `ASP_LOCAL_NET_DIAL`.
+- Destruir una sandbox que ningún nodo ha reclamado la deja en `stopped` al momento: antes del claim no existe VM.
+
 ## Alternativas consideradas
 
 - **Comprobar el nombre de host del endpoint en vez del node id.** Ata el certificado a una IP o nombre concretos; cambiar de dirección exigiría re-emitir. Además no prueba *qué* nodo contesta si dos nodos comparten nombre. Rechazada.
 - **Pasar `--agent-listen` a HTTPS.** Rompe a los operadores que llaman a `approve` y `egress-check` con `curl http://127.0.0.1:9100` en el propio nodo, y al plano de control en la misma máquina. Un listener aparte, restringido a lo que necesita el plano de control, es más pequeño de auditar.
 - **Token compartido en cabecera en vez de mTLS.** Un secreto más que repartir y rotar, y no autentica al servidor. La PKI de enrollment ya existe.
+- **Cola de sandboxes pendientes** cuando no hay hueco. Esconde la falta de capacidad tras un `asp session start` que espera hasta su timeout. Se prefirió fallar rápido con un motivo claro.
+- **Que los nodos se repartan el trabajo reclamando.** Era el modelo anterior: todos veían las sandboxes sin asignar y competían. No respeta la capacidad y deja que un nodo se quede con trabajo de otro.
+- **Contadores de uso por nodo.** Se desincronizan con cada caída o reintento. Sumar las filas cuesta una consulta indexada (`sandboxes_node_state_idx`).
 
 ## Consecuencias
 
@@ -78,15 +96,20 @@ Las dos salidas existen para laboratorios. Dejan el `exec` sin autenticar y se a
 - Un nodo comprometido ya no puede actuar en nombre de otro, ni desviar su tráfico de `exec`.
 - El plano de control puede vivir en otra máquina sin abrir un `exec` sin autenticar a la red.
 - Un nodo revocado se queda revocado.
+- Añadir un servidor añade capacidad sin configurar nada en el plano de control, y nunca se llena un nodo por encima de lo que declara.
 
 ### Negativas / coste
 
 - **Cambio que rompe (seguridad):** quien hoy alcance un agente por `http://` desde otra máquina debe pasar a `--agent-tls-listen` o activar las salidas inseguras.
 - Los nodos enrolados antes de este cambio tienen certificados solo de cliente: para usar `--agent-tls-listen` hay que re-enrolar (`--enroll`) o `rotate-cert`. El agente lo dice al arrancar.
 - Los node id deben poder ser nombre de certificado: letras, dígitos, `.`, `-` y `_`, y no `asp-control-plane`. El enroll rechaza los demás con 400.
+- Crear sin ningún nodo planificable da 503 en vez de dejar la sandbox en `requested`. Un pin a un nodo desconocido da 409.
+- Un agente anterior a este cambio declara siempre 4 cores y 8 GiB, y ahora se aplica: hay que actualizar los agentes antes que el plano de control.
 
 ### Límites honestos
 
 - La identidad solo se exige con `ASP_CLIENT_CA`. En el lab abierto cualquiera que alcance el plano de control puede hablar como cualquier nodo, como antes.
 - El certificado del plano de control vive en memoria. Varias réplicas del plano de control se emiten cada una el suyo, todos de la misma CA.
 - El timeout de 30 s del cliente hacia el agente sigue cortando `exec` largos en streaming (fallo previo, fuera de este cambio).
+- La colocación no conoce `--workspace`: la ruta tiene que existir en el nodo elegido.
+- Sin migración: el disco del guest vive en su nodo.

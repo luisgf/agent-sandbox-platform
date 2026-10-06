@@ -63,6 +63,11 @@ func canViewNodes(p idp.Principal) bool {
 	return p.Role == idp.RoleAdmin || p.Role == idp.RoleOperator
 }
 
+// canManageNodes: admin only (cordon / uncordon).
+func canManageNodes(p idp.Principal) bool {
+	return p.Role == idp.RoleAdmin
+}
+
 // canManageEgress: admin only (ADR matrix).
 func canManageEgress(p idp.Principal) bool {
 	return p.Role == idp.RoleAdmin

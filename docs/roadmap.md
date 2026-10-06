@@ -272,8 +272,15 @@ Default **apagado** (`local_net=false`). Solo `asp session start --local-net` (o
 
 ## Fase 3 — Multi-nodo y fiabilidad
 
+Varios servidores de microVMs ([ADR-0011](adr/0011-multi-node.md), ops: [`ops-multi-node.md`](ops-multi-node.md)):
 
-- Scheduler por capacidad; métricas/SLOs; caos; fencing BMC de producción endurecido.
+| Subfase | Qué | Estado |
+|---|---|---|
+| **3m.1** | Identidad de nodo atada al cert en cada ruta; mTLS plano de control → nodo (`--agent-tls-listen`); HTTP plano solo en loopback; secretos de fencing fuera de las respuestas | ✅ |
+| **3m.2** | Colocación por capacidad al crear (`spread`/`binpack`, CPU 4×, 503 sin hueco); trabajo solo para el nodo asignado; cordon; capacidad real del host; `asp node` | ✅ |
+| **3m.3** | Detección de nodos caídos, fallo de sus sandboxes, fencing y autodefensa del nodo | Pendiente |
+
+- Métricas/SLOs; caos; fencing BMC de producción endurecido.
 - Attestors hardware (TPM/SEV) vía `Attestor`.
 - Observabilidad de revoke, SignRequest deny, nft enforce failures.
 - Identidad multi-usuario / IdP: ver § readiness + ADR-0007 (puede avanzar en paralelo a 3u.*).

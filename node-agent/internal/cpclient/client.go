@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,6 +48,9 @@ type RegisterRequest struct {
 	VMMProfiles    []string `json:"vmm_profiles"`
 	CapacityCPU    int      `json:"capacity_cpu"`
 	CapacityMemMiB int      `json:"capacity_mem_mib"`
+	MaxSandboxes   int      `json:"max_sandboxes"`
+	AcceptsWork    *bool    `json:"accepts_work,omitempty"`
+	LocalNetDial   string   `json:"local_net_dial,omitempty"`
 	FenceEndpoint  string   `json:"fence_endpoint,omitempty"`
 	FenceToken     string   `json:"fence_token,omitempty"`
 }
@@ -146,7 +150,7 @@ func (c *Client) Enroll(ctx context.Context, bootstrapToken string, req EnrollRe
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return out, fmt.Errorf("enroll status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return out, httpError("enroll status", resp.StatusCode, raw)
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return out, err
@@ -168,7 +172,7 @@ func (c *Client) Register(ctx context.Context, req RegisterRequest) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("register status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return httpError("register status", resp.StatusCode, raw)
 	}
 	return nil
 }
@@ -186,9 +190,35 @@ func (c *Client) Heartbeat(ctx context.Context, nodeID string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("heartbeat status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return httpError("heartbeat status", resp.StatusCode, raw)
 	}
 	return nil
+}
+
+// HTTPError is a non-2xx answer from the control plane.
+type HTTPError struct {
+	Op         string // e.g. "heartbeat status", "work status"
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s %d: %s", e.Op, e.StatusCode, e.Body)
+}
+
+func httpError(op string, status int, body []byte) error {
+	return &HTTPError{Op: op, StatusCode: status, Body: string(bytes.TrimSpace(body))}
+}
+
+// IsNotFound reports a 404 from the control plane (e.g. it forgot this node).
+func IsNotFound(err error) bool { return statusIs(err, http.StatusNotFound) }
+
+// IsConflict reports a 409 from the control plane (e.g. the sandbox is no longer ours).
+func IsConflict(err error) bool { return statusIs(err, http.StatusConflict) }
+
+func statusIs(err error, code int) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.StatusCode == code
 }
 
 // WriteCerts persists enrollment PEMs into certDir.
@@ -256,7 +286,7 @@ func (c *Client) ListWork(ctx context.Context, nodeID string) ([]Sandbox, error)
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("work status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return nil, httpError("work status", resp.StatusCode, raw)
 	}
 	var out workResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -284,7 +314,7 @@ func (c *Client) Claim(ctx context.Context, sandboxID, nodeID string) (Sandbox, 
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return out, fmt.Errorf("claim status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return out, httpError("claim status", resp.StatusCode, raw)
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return out, err
@@ -312,7 +342,7 @@ func (c *Client) ReportStatus(ctx context.Context, sandboxID, state, detail stri
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return out, fmt.Errorf("status update %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return out, httpError("status update", resp.StatusCode, raw)
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return out, err
@@ -337,7 +367,7 @@ func (c *Client) PublishLocalNetNode(ctx context.Context, sandboxID, publicKey s
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("local-net node-public %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return httpError("local-net node-public", resp.StatusCode, raw)
 	}
 	return nil
 }
@@ -358,7 +388,7 @@ func (c *Client) RenewLease(ctx context.Context, sandboxID, nodeID string) (Sand
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return out, fmt.Errorf("renew-lease status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return out, httpError("renew-lease status", resp.StatusCode, raw)
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return out, err
@@ -384,7 +414,7 @@ func (c *Client) Attest(ctx context.Context, sandboxID string, evidence any) err
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("attest status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return httpError("attest status", resp.StatusCode, raw)
 	}
 	return nil
 }

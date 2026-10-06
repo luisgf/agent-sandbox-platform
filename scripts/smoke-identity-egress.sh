@@ -2,6 +2,8 @@
 # Dry-run smoke: tenant egress allowlist + OIDC JWKS mint + SSH agent bridge (no root).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=smoke-lib.sh
+source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-smoke-id-$$"
 mkdir -p "$WORKDIR"
 SOCK="$WORKDIR/pod-daemon.sock"
@@ -98,6 +100,7 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 curl -sf http://127.0.0.1:19101/healthz | grep -q ok
+wait_node_schedulable http://127.0.0.1:18081 smoke-id-node
 [[ -S "$SSH_BRIDGE" ]] || { echo "ssh bridge missing"; cat "$NA_LOG"; exit 1; }
 [[ -S "$ID_SOCK" ]] || { echo "identity sock missing"; cat "$NA_LOG"; exit 1; }
 

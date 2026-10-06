@@ -14,7 +14,7 @@ import (
 )
 
 func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	s := &Server{Store: mem}
 	mux := testMux(s)
 
@@ -165,7 +165,7 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 }
 
 func TestLocalNetGrantCarriesNodeDevice(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newTestStore(t)
 	s := &Server{Store: mem}
 	mux := testMux(s)
 	nodePub := "ERERERERERERERERERERERERERERERERERERERERERE="
@@ -228,3 +228,39 @@ func TestLocalNetParamsVector(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// Each server has its own address: the grant dials the sandbox's node.
+func TestLocalNetGrantDialsTheSandboxNode(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	t.Setenv("ASP_LOCAL_NET_DIAL", "198.51.100.1")
+	mem := store.NewMemoryStore()
+	for id, dial := range map[string]string{"node-a": "203.0.113.10", "node-b": ""} {
+		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100", LocalNetDial: dial}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux := testMux(NewServer(mem))
+	dialFor := func(node string) any {
+		t.Helper()
+		sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+			TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: node, LocalNet: boolPtr(true),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/local-net/grant", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("grant %d %s", rr.Code, rr.Body.String())
+		}
+		var g map[string]any
+		_ = json.Unmarshal(rr.Body.Bytes(), &g)
+		return g["dial"]
+	}
+	if got := dialFor("node-a"); got != "203.0.113.10" {
+		t.Fatalf("node-a dial = %v, want its own address", got)
+	}
+	if got := dialFor("node-b"); got != "198.51.100.1" {
+		t.Fatalf("node-b dial = %v, want the ASP_LOCAL_NET_DIAL fallback", got)
+	}
+}

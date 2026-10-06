@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -72,16 +73,25 @@ type Sandbox struct {
 }
 
 type Node struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Endpoint        string   `json:"endpoint"`
-	AgentEndpoint   string   `json:"agent_endpoint,omitempty"`
-	State           string   `json:"state"`
-	VMMProfiles     []string `json:"vmm_profiles"`
-	CapacityCPU     int      `json:"capacity_cpu"`
-	CapacityMemMiB  int      `json:"capacity_mem_mib"`
-	CertFingerprint string   `json:"cert_fingerprint,omitempty"`
-	CertSerial      string   `json:"cert_serial,omitempty"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Endpoint       string   `json:"endpoint"`
+	AgentEndpoint  string   `json:"agent_endpoint,omitempty"`
+	State          string   `json:"state"`
+	VMMProfiles    []string `json:"vmm_profiles"`
+	CapacityCPU    int      `json:"capacity_cpu"`
+	CapacityMemMiB int      `json:"capacity_mem_mib"`
+	// MaxSandboxes caps sandboxes on the node; 0 = no limit. A 0 capacity_cpu or
+	// capacity_mem_mib is not enforced either (ADR-0011).
+	MaxSandboxes int `json:"max_sandboxes"`
+	// Cordoned: an admin stopped new placements; running sandboxes stay.
+	Cordoned bool `json:"cordoned"`
+	// AcceptsWork is false for agents running without --reconcile.
+	AcceptsWork bool `json:"accepts_work"`
+	// LocalNetDial is the host[:port] a laptop dials for this node's local-net tunnels.
+	LocalNetDial    string `json:"local_net_dial,omitempty"`
+	CertFingerprint string `json:"cert_fingerprint,omitempty"`
+	CertSerial      string `json:"cert_serial,omitempty"`
 	// Fence credentials can power the node off; they never leave the control plane.
 	FenceToken    string     `json:"-"`
 	FenceEndpoint string     `json:"-"`
@@ -164,8 +174,25 @@ type RegisterNodeInput struct {
 	VMMProfiles    []string `json:"vmm_profiles"`
 	CapacityCPU    int      `json:"capacity_cpu"`
 	CapacityMemMiB int      `json:"capacity_mem_mib"`
-	FenceEndpoint  string   `json:"fence_endpoint,omitempty"`
-	FenceToken     string   `json:"fence_token,omitempty"`
+	MaxSandboxes   int      `json:"max_sandboxes"`
+	// AcceptsWork: nil (agents that predate the field) means true.
+	AcceptsWork   *bool  `json:"accepts_work,omitempty"`
+	LocalNetDial  string `json:"local_net_dial,omitempty"`
+	FenceEndpoint string `json:"fence_endpoint,omitempty"`
+	FenceToken    string `json:"fence_token,omitempty"`
+}
+
+// acceptsWork resolves the optional register field.
+func (in RegisterNodeInput) acceptsWork() bool {
+	return in.AcceptsWork == nil || *in.AcceptsWork
+}
+
+// validateNodeCapacity rejects negative capacity; 0 means "not enforced".
+func validateNodeCapacity(cpu, memMiB, maxSandboxes int) error {
+	if cpu < 0 || memMiB < 0 || maxSandboxes < 0 {
+		return fmt.Errorf("%w: capacity_cpu, capacity_mem_mib and max_sandboxes must be >= 0", ErrInvalidInput)
+	}
+	return nil
 }
 
 // EnrollNodeInput is the payload for bootstrap-token enrollment.

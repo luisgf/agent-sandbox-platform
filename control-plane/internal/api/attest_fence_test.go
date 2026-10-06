@@ -8,14 +8,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
-	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
@@ -98,63 +96,5 @@ func TestAttestStoreGetVerifyAndOIDCClaim(t *testing.T) {
 	claims := mint["claims"].(map[string]any)
 	if claims["x_asp_attestation"] == nil {
 		t.Fatalf("missing x_asp_attestation in %v", claims)
-	}
-}
-
-func TestFenceOnReclaimRunning(t *testing.T) {
-	t.Setenv("ASP_AUTO_PROVISION", "0")
-	t.Setenv("ASP_FENCE_PROVIDER", "http_webhook")
-
-	var hit int
-	fenceSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hit++
-		raw, _ := io.ReadAll(r.Body)
-		if !bytes.Contains(raw, []byte("power_off")) {
-			t.Errorf("body=%s", raw)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer fenceSrv.Close()
-
-	mem := store.NewMemoryStore()
-	_, err := mem.RegisterNode(store.RegisterNodeInput{
-		ID: "dead-node", Name: "dead-node", Endpoint: "http://dead",
-		FenceEndpoint: fenceSrv.URL, FenceToken: "tok",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = mem.RegisterNode(store.RegisterNodeInput{ID: "live-node", Name: "live-node", Endpoint: "http://live"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
-		TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128, NodeID: "dead-node",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := mem.ClaimSandbox(sb.ID, "dead-node")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = mem.UpdateSandboxStatus(claimed.ID, store.SandboxRunning, "ok")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mem.ExpireLeaseForTest(claimed.ID)
-
-	srv := NewServer(mem)
-	srv.Fence = &fence.HTTPWebhook{Client: fenceSrv.Client()}
-	mux := testMux(srv)
-
-	body, _ := json.Marshal(map[string]string{"node_id": "live-node"})
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+claimed.ID+"/claim", bytes.NewReader(body)))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("claim %d %s", rr.Code, rr.Body.String())
-	}
-	if hit != 1 {
-		t.Fatalf("fence hits=%d want 1", hit)
 	}
 }

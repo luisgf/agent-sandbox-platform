@@ -20,6 +20,10 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca |
 | `--insecure-agent-listen` | `ASP_INSECURE_AGENT_LISTEN=1` | permite `--agent-listen` fuera de loopback (solo lab) |
+| `--capacity-cpu` | `ASP_CAPACITY_CPU` | `-1` = núcleos del host; `0` = no limita |
+| `--capacity-mem-mib` | `ASP_CAPACITY_MEM_MIB` | `-1` = `MemTotal − max(1 GiB, 10 %)`; `0` = no limita |
+| `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
+| `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | `host[:puerto]` que marca el portátil para local-net en este nodo |
 | `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — `exec` con mTLS para un CP en otro host (p.ej. `0.0.0.0:9443`); solo acepta el cert del CP |
 | `--endpoint` | `NODE_ENDPOINT` | anunciado al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen`, si no `http://<agent-listen>` |
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix sock de pod-daemon (dry-run / fallback) |

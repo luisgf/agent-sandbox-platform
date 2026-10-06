@@ -16,6 +16,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
@@ -34,21 +35,20 @@ type Server struct {
 	// https:// agent endpoints (nil: https endpoints are refused).
 	Client *http.Client
 	Agents *AgentDialer
+	// Sched mirrors the store's placement config, for the node view.
+	Sched sched.Config
 }
 
 func NewServer(s store.Store) *Server {
 	return &Server{
 		Store:  s,
 		Client: &http.Client{Timeout: 30 * time.Second},
+		Sched:  sched.DefaultConfig(),
 	}
 }
 
 type listSandboxesResponse struct {
 	Sandboxes []store.Sandbox `json:"sandboxes"`
-}
-
-type listNodesResponse struct {
-	Nodes []store.Node `json:"nodes"`
 }
 
 type listEventsResponse struct {
@@ -170,10 +170,40 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if writePlacementError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, sb)
+}
+
+// placementErrorResponse explains a refused placement; reasons counts why each
+// node was skipped (e.g. {"insufficient_memory": 2, "cordoned": 1}).
+type placementErrorResponse struct {
+	Error   string         `json:"error"`
+	Reasons map[string]int `json:"reasons,omitempty"`
+}
+
+// writePlacementError maps scheduler refusals: no room → 503 with Retry-After
+// (capacity frees as sandboxes stop), a pinned node that cannot run sandboxes → 409.
+func writePlacementError(w http.ResponseWriter, err error) bool {
+	var nc *store.NoCapacityError
+	if errors.As(err, &nc) {
+		reasons := make(map[string]int, len(nc.Reasons))
+		for r, n := range nc.Reasons {
+			reasons[string(r)] = n
+		}
+		w.Header().Set("Retry-After", "30")
+		writeJSON(w, http.StatusServiceUnavailable, placementErrorResponse{Error: err.Error(), Reasons: reasons})
+		return true
+	}
+	if errors.Is(err, store.ErrNodeUnavailable) {
+		writeError(w, http.StatusConflict, err.Error())
+		return true
+	}
+	return false
 }
 
 // GetSandbox returns the current sandbox and its observed state.
@@ -479,23 +509,6 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, node)
-}
-
-// ListNodes returns registered nodes. With an IdP principal it needs admin or operator.
-func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
-	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !canViewNodes(p) {
-		forbid(w, "admin or operator role required to list nodes")
-		return
-	}
-	list, err := s.Store.ListNodes()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if list == nil {
-		list = []store.Node{}
-	}
-	writeJSON(w, http.StatusOK, listNodesResponse{Nodes: list})
 }
 
 // Exec authorizes and proxies an execution request to the sandbox's node-agent.
@@ -1111,6 +1124,15 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 	if !authorizeNodeID(w, r, id) {
 		return
 	}
+	// Polling for work is a liveness signal (the heartbeat is only every 30s).
+	if err := s.Store.TouchNodePoll(id, time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "node not registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	list, err := s.Store.ListNodeWork(id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
@@ -1141,9 +1163,6 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 	nodeID := actingNodeID(r, req.NodeID)
 	if !authorizeNodeID(w, r, nodeID) {
 		return
-	}
-	if prev, err := s.Store.GetSandbox(id); err == nil {
-		s.maybeFenceOnReclaim(r.Context(), prev)
 	}
 	sb, err := s.Store.ClaimSandbox(id, nodeID)
 	if err != nil {
