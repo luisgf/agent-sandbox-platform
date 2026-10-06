@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -22,7 +23,26 @@ type DNSSink struct {
 	Logger *slog.Logger
 	// Enforce: when false, still NXDOMAIN non-allowlisted (sink is always deny-default).
 	Enforce bool
+	// Lookup resolves an allowed name; nil uses net.DefaultResolver.LookupIP
+	// (tests inject a fake).
+	Lookup func(ctx context.Context, network, host string) ([]net.IP, error)
 }
+
+// DNS header bits and response codes (RFC 1035 §4.1.1).
+const (
+	dnsFlagQR     = 0x8000
+	dnsFlagRD     = 0x0100
+	dnsFlagRA     = 0x0080
+	dnsOpcodeMask = 0x7800
+
+	dnsRcodeNoError  = 0
+	dnsRcodeServFail = 2
+	dnsRcodeNXDomain = 3
+	dnsRcodeNotImp   = 4
+
+	dnsTypeA    = 1
+	dnsTypeAAAA = 28
+)
 
 // allowlist picks the policy of the sandbox that sent the query. Sources that
 // are not a known sandbox get the node-wide Allowlist.
@@ -34,6 +54,13 @@ func (d *DNSSink) allowlist(from netip.Addr) *Allowlist {
 		return d.Allowlist
 	}
 	return NewAllowlistFromPolicy("deny-default", nil)
+}
+
+func (d *DNSSink) lookup(ctx context.Context, name string) ([]net.IP, error) {
+	if d.Lookup != nil {
+		return d.Lookup(ctx, "ip", name)
+	}
+	return net.DefaultResolver.LookupIP(ctx, "ip", name)
 }
 
 // ListenAndServe binds UDP addr and serves until ctx cancel.
@@ -68,6 +95,12 @@ func (d *DNSSink) ListenAndServe(ctx context.Context, addr string) error {
 	}
 }
 
+// answer builds the reply to one query. A name the sandbox may not reach is
+// NXDOMAIN. An allowed name always exists as far as the guest is concerned: a
+// query type the sink does not serve (MX, TXT, HTTPS…) or a family the name
+// has no address in is NODATA (NOERROR, no answers), because NXDOMAIN would
+// tell the guest's resolver that the name has no records of any type (RFC
+// 2308) and poison its negative cache for the A lookup next to it.
 func (d *DNSSink) answer(req []byte, from netip.Addr) []byte {
 	if len(req) < 12 {
 		return nil
@@ -76,33 +109,40 @@ func (d *DNSSink) answer(req []byte, from netip.Addr) []byte {
 	if !ok {
 		return nil
 	}
-	// Only A (1) and AAAA (28) — others get NXDOMAIN-ish empty.
-	al := d.allowlist(from)
-	allowed := al.Check(name) == nil
 	id := binary.BigEndian.Uint16(req[0:2])
-
-	if !allowed || (qtype != 1 && qtype != 28) {
-		return buildDNSResponse(id, name, qtype, nil, true)
+	reqFlags := binary.BigEndian.Uint16(req[2:4])
+	reply := func(rcode int, addrs []net.IP) []byte {
+		return buildDNSResponse(id, reqFlags, name, qtype, addrs, rcode)
+	}
+	if reqFlags&dnsOpcodeMask != 0 {
+		return reply(dnsRcodeNotImp, nil)
+	}
+	if d.allowlist(from).Check(name) != nil {
+		return reply(dnsRcodeNXDomain, nil)
+	}
+	if qtype != dnsTypeA && qtype != dnsTypeAAAA {
+		return reply(dnsRcodeNoError, nil)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", name)
-	if err != nil || len(ips) == 0 {
-		return buildDNSResponse(id, name, qtype, nil, true)
+	ips, err := d.lookup(ctx, name)
+	if err != nil {
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return reply(dnsRcodeNXDomain, nil)
+		}
+		return reply(dnsRcodeServFail, nil)
 	}
 	var addrs []net.IP
 	for _, ip := range ips {
-		if qtype == 1 && ip.To4() != nil {
+		if qtype == dnsTypeA && ip.To4() != nil {
 			addrs = append(addrs, ip.To4())
 		}
-		if qtype == 28 && ip.To4() == nil && ip.To16() != nil {
+		if qtype == dnsTypeAAAA && ip.To4() == nil && ip.To16() != nil {
 			addrs = append(addrs, ip.To16())
 		}
 	}
-	if len(addrs) == 0 {
-		return buildDNSResponse(id, name, qtype, nil, true)
-	}
-	return buildDNSResponse(id, name, qtype, addrs, false)
+	return reply(dnsRcodeNoError, addrs)
 }
 
 func parseDNSQuestion(msg []byte) (name string, qtype uint16, end int, ok bool) {
@@ -134,25 +174,20 @@ func parseDNSQuestion(msg []byte) (name string, qtype uint16, end int, ok bool) 
 	return strings.ToLower(strings.Join(labels, ".")), qtype, end, true
 }
 
-func buildDNSResponse(id uint16, name string, qtype uint16, addrs []net.IP, nxdomain bool) []byte {
-	// Rebuild: ID + flags + counts + question + answers
+// buildDNSResponse answers the question with addrs (only when rcode is
+// NOERROR). RD is echoed from the query; RA is set because the sink resolves
+// recursively on the guest's behalf.
+func buildDNSResponse(id, reqFlags uint16, name string, qtype uint16, addrs []net.IP, rcode int) []byte {
+	if rcode != dnsRcodeNoError {
+		addrs = nil
+	}
 	out := make([]byte, 0, 512)
 	var hdr [12]byte
 	binary.BigEndian.PutUint16(hdr[0:2], id)
-	flags := uint16(0x8000) // QR
-	if nxdomain || len(addrs) == 0 {
-		flags |= 0x0003 // NXDOMAIN
-	} else {
-		flags |= 0x0000 // NOERROR
-	}
-	flags |= 0x0400 // AA bit optional
+	flags := uint16(dnsFlagQR|dnsFlagRA) | reqFlags&dnsFlagRD | uint16(rcode&0x0f)
 	binary.BigEndian.PutUint16(hdr[2:4], flags)
 	binary.BigEndian.PutUint16(hdr[4:6], 1) // QDCOUNT
-	ancount := uint16(len(addrs))
-	if nxdomain {
-		ancount = 0
-	}
-	binary.BigEndian.PutUint16(hdr[6:8], ancount)
+	binary.BigEndian.PutUint16(hdr[6:8], uint16(len(addrs)))
 	out = append(out, hdr[:]...)
 
 	// Question
@@ -162,9 +197,6 @@ func buildDNSResponse(id uint16, name string, qtype uint16, addrs []net.IP, nxdo
 	binary.BigEndian.PutUint16(qc[2:4], 1) // IN
 	out = append(out, qc[:]...)
 
-	if nxdomain {
-		return out
-	}
 	for _, ip := range addrs {
 		out = appendDNSName(out, name)
 		var rr [10]byte
