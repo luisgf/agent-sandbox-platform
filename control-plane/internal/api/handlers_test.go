@@ -481,6 +481,9 @@ func TestClaimWorkStatusDestroy(t *testing.T) {
 	if len(work.Sandboxes) < 1 {
 		t.Fatalf("work empty: %+v", work)
 	}
+	if len(work.Assigned) != 1 || work.Assigned[0] != sb.ID {
+		t.Fatalf("the work poll must list the sandbox as assigned to n1: %+v", work.Assigned)
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/claim",
 		bytes.NewBufferString(`{"node_id":"n1"}`))

@@ -62,7 +62,7 @@ Ya existe un segundo contrato, construido como añadido post-2f y descrito como 
 | `POST /v1/sandboxes/{id}/exec` | Dataplane: CP → node-agent → pod-daemon (vsock **26500**). JSON acumulado `stdout` / `stderr` / `exit_code` |
 | `owner_sub` (ADR-0007) | Lo sella el CP desde el JWT del IdP en el create. El JSON local no puede elegir dueño |
 | Egress del sandbox | TAP + allowlist del tenant + nft `asp_egress` de **esa** microVM, durante toda su vida |
-| `ASP_SANDBOX_IDLE_TIMEOUT` | Reaper del CP. Default del proceso **apagado** (`0` / unset) para no romper smokes. El unit de lab exporta `2h`. Actividad = create, paso a `running`, exec que el CP proxyó bien. Heartbeat, renew de lease y `GET` **no** cuentan |
+| `ASP_SANDBOX_IDLE_TIMEOUT` | Reaper del CP. Default del proceso **apagado** (`0` / unset) para no romper smokes. El unit de lab exporta `2h`. Actividad = create, paso a `running`, exec que el CP proxyó bien. Heartbeat, sondeo de `/work` y `GET` **no** cuentan |
 
 Este ADR no inventa ese código. **Cambia el orden de lectura:** la sesión es el objeto primario con el que un agente usa el aislamiento. El one-shot es una primitiva interna (CI, smokes, ops de un solo comando, y el mecanismo que `session start` / `session exec` ya llaman por debajo).
 
@@ -126,7 +126,7 @@ Estados que no son fin de sesión:
 | Acción | Efecto real |
 |---|---|
 | `session stop --local` | Borra solo el puntero. La microVM **sigue**. Escape de ops, no el camino del agente |
-| `GET`, heartbeat, renew de lease | No son actividad. Si lo fueran, el reconciler impediría el idle para siempre |
+| `GET`, heartbeat, sondeo de `/work` | No son actividad. Si lo fueran, el reconciler impediría el idle para siempre |
 | Exec que falla antes del guest (red, 502) | No refresca actividad |
 | Caducidad del JWT | El siguiente `exec` recibe 401. El sandbox no se entera. El puntero sigue. Nuevo Bearer y se continúa |
 | Borrar el JSON a mano | El CP sigue teniendo la VM hasta stop, `--force` o el reaper |

@@ -172,7 +172,7 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 |---|---|
 | `session start` (create, y el paso a `running`) | Sí. Es el reloj inicial. No es un heartbeat nuevo: el create y la transición a `running` ya lo escribían. |
 | Exec que el CP proxyó bien (JSON acumulado, o stream NDJSON copiado hasta el final), aunque el guest salga ≠ 0 | Sí. **Esto es lo único que refresca el reloj después del start.** |
-| `session status`, `GET`, heartbeat del nodo, renew del lease | No. Si contaran, el reconciler impediría el idle para siempre. |
+| `session status`, `GET`, heartbeat del nodo, sondeo de `/work` | No. Si contaran, el reconciler impediría el idle para siempre. |
 | Exec que falla antes del guest (red, 502, stream cortado a medias) | No. |
 
 **Qué hace el reaper.** Pasa el sandbox a `stopping` (el node-agent lo destruye) o a `stopped` si ningún nodo la había reclamado todavía. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.

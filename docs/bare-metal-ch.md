@@ -2,7 +2,7 @@
 
 Guía operativa para correr **agent-sandbox-platform** con Cloud Hypervisor (CH) real — **sin `--dry-run` / FakeVMM** — en un host Linux con KVM.
 
-> Código **tal cual** (MVP solution-complete + hardening 2b–2e): multi-socket CH, vsock exec **26500**, host-vsock **26501/26502**, TAP auto, forward proxy + DNS sink, nft `asp_egress` soft|enforce, SSH guest auto, attest software, leases/fence.
+> Código **tal cual** (MVP solution-complete + hardening 2b–2e): multi-socket CH, vsock exec **26500**, host-vsock **26501/26502**, TAP auto, forward proxy + DNS sink, nft `asp_egress` soft|enforce, SSH guest auto, attest software, autodefensa del nodo/fence.
 
 Smoke dry-run (sin KVM): [`mvp-smoke.md`](mvp-smoke.md). Arquitectura: [`architecture.md`](architecture.md). Roadmap: [`roadmap.md`](roadmap.md). Diagrama: [`diagram.svg`](diagram.svg).
 
@@ -644,16 +644,16 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 
 
 
-## 8b. Multi-node leases (soft fencing) y rotación OIDC
+## 8b. Autodefensa multi-nodo (soft fencing) y rotación OIDC
 
-### Leases
+### Conjunto asignado
 
-- `sandboxes.node_lease_until` (migración `004`): claim / status running / `POST /v1/sandboxes/{id}/renew-lease` extienden **30s**.
-- El reconciler renueva leases de sandboxes locales en cada tick. Si el CP responde 409 (la sandbox ya no es de ese nodo o no está activa), el agente para la VM local.
+- Cada `GET /v1/nodes/{id}/work` trae `assigned`: las sandboxes colocadas en ese nodo que lo siguen ocupando. El reconciler para cualquier VM local que no esté ahí (fallada por nodo perdido, destruida o de otro nodo), sin reportar estado. Un 409 al reportar `running` también la para.
+- Sustituye a los leases por sandbox (`node_lease_until`, migración `004`, y `POST …/renew-lease`), retirados en 2026-10: `renew-lease` responde 410 y la columna ya no se escribe. En estado estable el nodo solo hace el sondeo de `/work` y el heartbeat.
 - Ningún nodo reclama sandboxes de otro: un nodo caído lo detecta el monitor del plano de control ([ADR-0011](adr/0011-multi-node.md), [`ops-multi-node.md`](ops-multi-node.md)): `offline` a los `ASP_NODE_STALE_AFTER` (90 s); fencing y sandboxes → `failed` (`node_lost`) a los `ASP_NODE_FAILOVER_AFTER` (5 min).
 - `nodes.fence_token` es opcional (metadato ops).
 
-**Límite split-brain (honesto):** el lease software **no** es STONITH. Un nodo particionado sigue corriendo sus VMs hasta que vuelve y su lease es rechazado, o hasta el fencing. Mitigación: `ASP_FENCE_PROVIDER` (ver §8c).
+**Límite split-brain (honesto):** la autodefensa del nodo **no** es STONITH. Un nodo particionado sigue corriendo sus VMs hasta que vuelve y ve que ya no están en su conjunto `assigned`, o hasta el fencing. Mitigación: `ASP_FENCE_PROVIDER` (ver §8c).
 
 ### Rotación de clave OIDC
 
@@ -683,7 +683,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 
 Registro de nodo: `fence_endpoint` + `fence_token` (migración `005`). Cuando el monitor da un nodo por perdido y tiene sandboxes, el CP llama al provider (una vez por caída) antes de marcarlas `failed`. Si el fencing falla, se registra `node.fence_failed` y se marcan igual.
 
-> **Ops:** STONITH real exige BMC out-of-band (Redfish/IPMI alcanzable aunque el host esté hung). Un lease en Postgres **no** apaga VMs huérfanas.
+> **Ops:** STONITH real exige BMC out-of-band (Redfish/IPMI alcanzable aunque el host esté hung). Una fila en Postgres **no** apaga VMs huérfanas.
 
 ### Proxy hardening
 

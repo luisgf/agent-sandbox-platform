@@ -36,7 +36,6 @@ type Sandbox struct {
 	CPUMillis      int          `json:"cpu_millis"`
 	MemoryMiB      int          `json:"memory_mib"`
 	StateVersion   int64        `json:"state_version"`
-	NodeLeaseUntil *time.Time   `json:"node_lease_until,omitempty"`
 	// OwnerSub is the IdP subject of the creator (ADR-0007). Empty OK in lab until IdP JWT.
 	OwnerSub string `json:"owner_sub,omitempty"`
 	// OwnerEmail is optional ops/UI claim; not an authz key.

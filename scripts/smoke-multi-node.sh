@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Two dry-run nodes behind one control plane (ADR-0011): spread placement,
 # cordon, 503 with reasons when full, uncordon, 409 for an unknown pin, a node
-# killed (its sandboxes fail as node_lost) and an agent restart (its running
-# sandboxes fail as node_agent_restarted). Liveness thresholds are seconds here.
+# frozen like a partition (its sandboxes fail as node_lost, and once back it
+# stops them because they left its assigned set) and an agent restart (its
+# running sandboxes fail as node_agent_restarted). Liveness thresholds are seconds here.
 # Each node offers 2 sandbox slots. Honours DATABASE_URL (node ids are unique
 # per run so leftover rows do not count as usage).
 set -euo pipefail
@@ -30,7 +31,7 @@ export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTER
 
 cleanup() {
   for pid in "${NA_A:-}" "${NA_B:-}" "${CP_PID:-}"; do
-    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+    [[ -n "$pid" ]] && { kill -CONT "$pid"; kill "$pid"; } 2>/dev/null || true
   done
   rm -rf "$WORKDIR"
 }
@@ -153,8 +154,8 @@ node_state() {
   curl -sf "$CP/v1/nodes" | python3 -c 'import json,sys; print(next((n["state"] for n in json.load(sys.stdin)["nodes"] if n["id"]==sys.argv[1]), ""))' "$1"
 }
 
-echo "==> 8. kill -9 $NODE_B: offline, then its sandboxes fail as node_lost"
-{ kill -9 "$NA_B" && wait "$NA_B"; } 2>/dev/null || true; NA_B=""
+echo "==> 8. freeze $NODE_B (SIGSTOP, like a partition): offline, then its sandboxes fail as node_lost"
+kill -STOP "$NA_B"
 for _ in $(seq 1 80); do
   [[ "$(field_of "$s2" state)" == failed && "$(field_of "$s3" state)" == failed ]] && break
   sleep 0.25
@@ -166,6 +167,15 @@ done
 out=$(create)
 [[ "$out" == 503* ]] || fail "with $NODE_B lost and $NODE_A full want 503, got $out"
 echo "    ${out#503 }"
+echo "    thaw $NODE_B: its sandboxes left its assigned set, so it stops their VMs"
+kill -CONT "$NA_B"
+for _ in $(seq 1 40); do
+  grep self-fencing "$WORKDIR/na-b.log" | grep -q "$s2" && grep self-fencing "$WORKDIR/na-b.log" | grep -q "$s3" && break
+  sleep 0.25
+done
+for s in "$s2" "$s3"; do
+  grep self-fencing "$WORKDIR/na-b.log" | grep -q "$s" || fail "$NODE_B did not stop $s after coming back"
+done
 
 echo "==> 9. restart the agent of $NODE_A: its running sandboxes fail as node_agent_restarted"
 { kill -9 "$NA_A" && wait "$NA_A"; } 2>/dev/null || true

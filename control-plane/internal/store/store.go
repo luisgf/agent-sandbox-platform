@@ -26,25 +26,18 @@ type Store interface {
 	CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	GetSandbox(id string) (Sandbox, error)
 	ListSandboxes(tenantID string) ([]Sandbox, error)
-	AssignSandbox(id, nodeID string, state SandboxState) (Sandbox, error)
 
-	// ClaimSandbox atomically assigns a requested sandbox to nodeID.
-	// Succeeds when state=requested and (unassigned or already assigned to nodeID).
-	// Sets node_id and transitions to starting.
+	// ClaimSandbox moves a requested sandbox placed on nodeID to starting;
+	// ErrConflict when it is placed elsewhere or no longer requested.
 	ClaimSandbox(id, nodeID string) (Sandbox, error)
-	// ListNodeWork returns sandboxes this node should act on:
-	// assigned requested/starting/stopping, or unassigned requested.
-	ListNodeWork(nodeID string) ([]Sandbox, error)
+	// ListNodeWork returns, for one node, the sandboxes that need its action
+	// and the ids of every sandbox assigned to it (see NodeWork).
+	ListNodeWork(nodeID string) (NodeWork, error)
 	// UpdateSandboxStatus sets lifecycle state (starting|running|failed|stopped).
 	UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error)
 	// MarkSandboxStopping moves an active sandbox to stopping for reconciler cleanup.
 	// actorSub is optional (ADR-0007); empty is OK in lab.
 	MarkSandboxStopping(id, actorSub string) (Sandbox, error)
-	// RenewSandboxLease extends node_lease_until for the owning node.
-	RenewSandboxLease(id, nodeID string) (Sandbox, error)
-	// ReclaimExpiredLeases marks stuck starting|running with expired leases as failed
-	// (or requested when reRequest is true) and clears the assignment so another node may claim.
-	ReclaimExpiredLeases(now time.Time, reRequest bool) ([]Sandbox, error)
 
 	// TouchSandboxActivity records a successful exec (or equivalent) as last_activity_at=now.
 	TouchSandboxActivity(id string) error

@@ -116,7 +116,6 @@ func TestNodeRoutesRejectAnotherNodesCertificate(t *testing.T) {
 		{"heartbeat another node", http.MethodPost, "/v1/nodes/n1/heartbeat", ""},
 		{"work of another node", http.MethodGet, "/v1/nodes/n1/work", ""},
 		{"claim as another node", http.MethodPost, sb + "/claim", `{"node_id":"n1"}`},
-		{"renew as another node", http.MethodPost, sb + "/renew-lease", `{"node_id":"n1"}`},
 		{"status of a sandbox on another node", http.MethodPost, sb + "/status", `{"state":"failed","detail":"x"}`},
 		{"oidc mint for a sandbox on another node", http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"` + f.sbID + `","aud":"https://api.example"}`},
 		{"local-net key for a sandbox on another node", http.MethodPost, sb + "/local-net/node-public", `{"public_key":"ERERERERERERERERERERERERERERERERERERERERERE="}`},
@@ -144,7 +143,6 @@ func TestNodeRoutesAcceptTheNodesOwnCertificate(t *testing.T) {
 		{"heartbeat", http.MethodPost, "/v1/nodes/n1/heartbeat", ""},
 		{"work", http.MethodGet, "/v1/nodes/n1/work", ""},
 		{"claim with node from the certificate", http.MethodPost, sb + "/claim", `{}`},
-		{"renew", http.MethodPost, sb + "/renew-lease", `{"node_id":"n1"}`},
 		{"attest", http.MethodPost, sb + "/attest", f.attestBody("n1")},
 		{"oidc mint", http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"` + f.sbID + `","aud":"https://api.example"}`},
 		{"status", http.MethodPost, sb + "/status", `{"state":"running","detail":"ok"}`},
@@ -205,5 +203,14 @@ func TestNodeIdentityNotEnforcedInOpenLab(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/nodes/n1/heartbeat", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("open lab heartbeat: want 200, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Lease renewal is gone; an old node agent learns why instead of a 404.
+func TestRenewLeaseIsGone(t *testing.T) {
+	f := newIdentityFixture(t)
+	rr := f.do(f.certs["n1"], http.MethodPost, "/v1/sandboxes/"+f.sbID+"/renew-lease", `{"node_id":"n1"}`)
+	if rr.Code != http.StatusGone || !strings.Contains(rr.Body.String(), "/work") {
+		t.Fatalf("renew-lease: want 410 pointing at the work poll, got %d %s", rr.Code, rr.Body.String())
 	}
 }

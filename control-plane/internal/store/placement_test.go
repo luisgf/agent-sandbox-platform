@@ -186,17 +186,17 @@ func testClaimOnlyByAssignedNode(t *testing.T, s Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work, _ := s.ListNodeWork("node-b"); len(work) != 0 {
+	if work, _ := s.ListNodeWork("node-b"); len(work.Sandboxes) != 0 || len(work.Assigned) != 0 {
 		t.Fatalf("node-b sees another node's sandbox: %+v", work)
 	}
-	if work, _ := s.ListNodeWork("node-a"); len(work) != 1 || work[0].ID != sb.ID {
+	if work, _ := s.ListNodeWork("node-a"); len(work.Sandboxes) != 1 || work.Sandboxes[0].ID != sb.ID || len(work.Assigned) != 1 || work.Assigned[0] != sb.ID {
 		t.Fatalf("node-a work: %+v", work)
 	}
 	if _, err := s.ClaimSandbox(sb.ID, "node-b"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim by another node: %v", err)
 	}
 	claimed, err := s.ClaimSandbox(sb.ID, "node-a")
-	if err != nil || claimed.State != SandboxStarting || claimed.NodeLeaseUntil == nil {
+	if err != nil || claimed.State != SandboxStarting {
 		t.Fatalf("claim by the assigned node: %+v %v", claimed, err)
 	}
 	if _, err := s.ClaimSandbox(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
@@ -311,20 +311,36 @@ func TestPostgresCordonAndUsage(t *testing.T) {
 	testCordonAndUsage(t, newPostgresTestStore(t))
 }
 
-// Late agent reports cannot bring a sandbox back, and only an active sandbox
-// keeps its lease (a 409 on renew tells the node to stop its VM).
-func testAgentTransitionsAndLeases(t *testing.T, s Store) {
+// assignedTo reports whether node's work poll lists id as assigned to it.
+func assignedTo(t *testing.T, s Store, node, id string) bool {
+	t.Helper()
+	work, err := s.ListNodeWork(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range work.Assigned {
+		if a == id {
+			return true
+		}
+	}
+	return false
+}
+
+// Late agent reports cannot bring a sandbox back, and a sandbox stays in its
+// node's assigned set only while it holds the node: when it leaves, the node
+// stops the VM.
+func testAgentTransitionsAndAssignment(t *testing.T, s Store) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	registerPlacementNodes(t, s, 0, "node-a")
+	registerPlacementNodes(t, s, 0, "node-a", "node-b")
 	newClaimed := func() Sandbox {
 		t.Helper()
-		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.RenewSandboxLease(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
-			t.Fatalf("renew before claim: %v", err)
+		if !assignedTo(t, s, "node-a", sb.ID) {
+			t.Fatal("a placed sandbox is assigned to its node before the claim")
 		}
 		if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
 			t.Fatal(err)
@@ -336,11 +352,11 @@ func testAgentTransitionsAndLeases(t *testing.T, s Store) {
 	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "booted"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RenewSandboxLease(sb.ID, "node-a"); err != nil {
-		t.Fatalf("renew while running: %v", err)
+	if !assignedTo(t, s, "node-a", sb.ID) || assignedTo(t, s, "node-b", sb.ID) {
+		t.Fatal("a running sandbox is assigned to its node only")
 	}
-	if _, err := s.RenewSandboxLease(sb.ID, "node-b"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("renew by another node: %v", err)
+	if work, _ := s.ListNodeWork("node-a"); len(work.Sandboxes) != 0 {
+		t.Fatalf("a running sandbox without local-net needs no action: %+v", work.Sandboxes)
 	}
 	if _, err := s.MarkSandboxStopping(sb.ID, ""); err != nil {
 		t.Fatal(err)
@@ -348,8 +364,8 @@ func testAgentTransitionsAndLeases(t *testing.T, s Store) {
 	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("running after stopping: %v", err)
 	}
-	if _, err := s.RenewSandboxLease(sb.ID, "node-a"); err != nil {
-		t.Fatalf("renew while stopping (the VM still exists): %v", err)
+	if !assignedTo(t, s, "node-a", sb.ID) {
+		t.Fatal("a stopping sandbox stays assigned: its VM still exists")
 	}
 	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxStopped, "cleaned"); err != nil {
 		t.Fatal(err)
@@ -357,8 +373,8 @@ func testAgentTransitionsAndLeases(t *testing.T, s Store) {
 	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("running after stopped: %v", err)
 	}
-	if _, err := s.RenewSandboxLease(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("renew after stopped must tell the node to stop: %v", err)
+	if assignedTo(t, s, "node-a", sb.ID) {
+		t.Fatal("a stopped sandbox must leave the assigned set, so the node stops any VM left")
 	}
 	if got, _ := s.GetSandbox(sb.ID); got.State != SandboxStopped {
 		t.Fatalf("state = %s, want stopped", got.State)
@@ -368,6 +384,9 @@ func testAgentTransitionsAndLeases(t *testing.T, s Store) {
 	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxFailed, "boot error"); err != nil {
 		t.Fatal(err)
 	}
+	if assignedTo(t, s, "node-a", failed.ID) {
+		t.Fatal("a failed sandbox must leave the assigned set")
+	}
 	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("running after failed: %v", err)
 	}
@@ -376,12 +395,12 @@ func testAgentTransitionsAndLeases(t *testing.T, s Store) {
 	}
 }
 
-func TestMemoryAgentTransitionsAndLeases(t *testing.T) {
-	testAgentTransitionsAndLeases(t, NewMemoryStore())
+func TestMemoryAgentTransitionsAndAssignment(t *testing.T) {
+	testAgentTransitionsAndAssignment(t, NewMemoryStore())
 }
 
-func TestPostgresAgentTransitionsAndLeases(t *testing.T) {
-	testAgentTransitionsAndLeases(t, newPostgresTestStore(t))
+func TestPostgresAgentTransitionsAndAssignment(t *testing.T) {
+	testAgentTransitionsAndAssignment(t, newPostgresTestStore(t))
 }
 
 func TestCreateRejectsGuestsBelowTheMinimumMemory(t *testing.T) {

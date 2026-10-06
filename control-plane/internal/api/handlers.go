@@ -1201,10 +1201,15 @@ type statusRequest struct {
 }
 
 type listWorkResponse struct {
+	// Sandboxes need the node's action (claim, start, stop, local-net).
 	Sandboxes []store.Sandbox `json:"sandboxes"`
+	// Assigned lists every sandbox placed on the node that still holds it; the
+	// node stops any VM it runs that is not listed (failed over, destroyed).
+	Assigned []string `json:"assigned"`
 }
 
-// ListNodeWork returns sandboxes this node should claim or stop.
+// ListNodeWork returns the sandboxes this node should act on and the set of
+// sandboxes assigned to it.
 func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
@@ -1223,7 +1228,7 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	list, err := s.Store.ListNodeWork(id)
+	work, err := s.Store.ListNodeWork(id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1232,10 +1237,13 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if list == nil {
-		list = []store.Sandbox{}
+	if work.Sandboxes == nil {
+		work.Sandboxes = []store.Sandbox{}
 	}
-	writeJSON(w, http.StatusOK, listWorkResponse{Sandboxes: list})
+	if work.Assigned == nil {
+		work.Assigned = []string{}
+	}
+	writeJSON(w, http.StatusOK, listWorkResponse{Sandboxes: work.Sandboxes, Assigned: work.Assigned})
 }
 
 // ClaimSandbox atomically assigns a requested sandbox to a node.
@@ -1274,40 +1282,11 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sb)
 }
 
-// RenewSandboxLease extends the owning node's soft lease (multi-node fencing).
-func (s *Server) RenewSandboxLease(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSpace(r.PathValue("id"))
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "sandbox id required")
-		return
-	}
-	var req claimRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	nodeID := actingNodeID(r, req.NodeID)
-	if !authorizeNodeID(w, r, nodeID) {
-		return
-	}
-	sb, err := s.Store.RenewSandboxLease(id, nodeID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "sandbox not found")
-			return
-		}
-		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, err.Error())
-			return
-		}
-		if errors.Is(err, store.ErrInvalidInput) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, sb)
+// RenewSandboxLease is gone: the work poll's assigned set replaces lease
+// renewals (a node stops the VMs the control plane no longer assigns to it).
+// It answers 410 for one release, so an old node agent says why in its log.
+func (s *Server) RenewSandboxLease(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusGone, "lease renewal was removed: GET /v1/nodes/{id}/work lists the sandboxes assigned to the node; update the node agent")
 }
 
 // UpdateSandboxStatus records agent-observed lifecycle state.

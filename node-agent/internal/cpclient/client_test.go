@@ -141,8 +141,8 @@ func TestStatusErrorsAreTyped(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/nodes/n1/heartbeat":
 			http.Error(w, `{"error":"node not found"}`, http.StatusNotFound)
-		case "/v1/sandboxes/s1/renew-lease":
-			http.Error(w, `{"error":"not owned"}`, http.StatusConflict)
+		case "/v1/sandboxes/s1/status":
+			http.Error(w, `{"error":"conflict: cannot move sandbox from failed to running"}`, http.StatusConflict)
 		case "/v1/nodes/register":
 			_ = json.NewDecoder(r.Body).Decode(&gotRegister)
 			w.WriteHeader(http.StatusOK)
@@ -155,9 +155,9 @@ func TestStatusErrorsAreTyped(t *testing.T) {
 	if !IsNotFound(err) || IsConflict(err) || err.Error() != `heartbeat status 404: {"error":"node not found"}` {
 		t.Fatalf("heartbeat 404: %v", err)
 	}
-	_, err = c.RenewLease(context.Background(), "s1", "n1")
+	_, err = c.ReportStatus(context.Background(), "s1", "running", "booted")
 	if !IsConflict(err) || IsNotFound(err) {
-		t.Fatalf("renew 409: %v", err)
+		t.Fatalf("status 409: %v", err)
 	}
 
 	no := false
@@ -166,5 +166,37 @@ func TestStatusErrorsAreTyped(t *testing.T) {
 	}
 	if gotRegister["max_sandboxes"] != float64(3) || gotRegister["accepts_work"] != false || gotRegister["local_net_dial"] != "203.0.113.10" || gotRegister["capacity_cpu"] != float64(8) {
 		t.Fatalf("register body: %v", gotRegister)
+	}
+}
+
+// The assigned set distinguishes "nothing assigned" from a control plane
+// that does not send it.
+func TestListWorkAssignedSet(t *testing.T) {
+	body := `{"sandboxes":[{"id":"s1","state":"requested"}],"assigned":["s1","s2"]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, srv.Client())
+	for _, tc := range []struct {
+		body     string
+		assigned []string
+		isNil    bool
+	}{
+		{`{"sandboxes":[{"id":"s1","state":"requested"}],"assigned":["s1","s2"]}`, []string{"s1", "s2"}, false},
+		{`{"sandboxes":[],"assigned":[]}`, []string{}, false},
+		{`{"sandboxes":[]}`, nil, true},
+	} {
+		body = tc.body
+		work, err := c.ListWork(context.Background(), "n1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (work.Assigned == nil) != tc.isNil || len(work.Assigned) != len(tc.assigned) {
+			t.Fatalf("%s: assigned=%#v", tc.body, work.Assigned)
+		}
+		if work.Sandboxes == nil {
+			t.Fatalf("%s: sandboxes must not be nil", tc.body)
+		}
 	}
 }

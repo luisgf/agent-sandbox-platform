@@ -16,7 +16,7 @@ Problemas que aparecen al mezclar dos schedulers (kube + nuestro control plane):
 
 - **Propiedad de dispositivos:** `/dev/kvm`, TAP, vsock CIDs, sockets CH en `/run/asp` — ¿quién limpia tras un eviction?
 - **Red:** CNI asume namespaces de Pod; nuestras microVMs usan TAP en el netns del host + nft `asp_egress`.
-- **Estado y recuperación:** leases (`node_lease_until`), fencing y attestation viven en nuestro store Postgres, no en etcd de kube.
+- **Estado y recuperación:** asignación de sandboxes a nodos, fencing y attestation viven en nuestro store Postgres, no en etcd de kube.
 - **Ambigüedad de amenaza:** “está en un Pod” no implica frontera VMM; confunde auditorías.
 
 Restricción FOSS/corp: el control plane **sí** puede desplegarse en K8s (Deployment + Service + Postgres), porque es un servicio HTTP/TLS stateless respecto al VMM.
@@ -44,7 +44,7 @@ Restricción FOSS/corp: el control plane **sí** puede desplegarse en K8s (Deplo
 ### Positivas
 
 - Frontera de amenaza clara: microVM + node-agent privilegiado + CP API.
-- El scheduler de capacidad (`vmm_profiles`, CPU/mem del nodo, work queue) vive en **nuestro** control plane (`GET /v1/nodes/{id}/work`, claim/lease).
+- El scheduler de capacidad (`vmm_profiles`, CPU/mem del nodo, work queue) vive en **nuestro** control plane (`GET /v1/nodes/{id}/work`, claim).
 - No dependemos de device plugins, RuntimeClass ni CNI para el ciclo de vida de cada sandbox.
 - CI/dry-run no necesita cluster.
 
@@ -65,7 +65,7 @@ Restricción FOSS/corp: el control plane **sí** puede desplegarse en K8s (Deplo
 |---|---|
 | Control plane | `control-plane/cmd/api` — binario HTTP/TLS; `docker-compose.yml` solo trae Postgres |
 | Node-agent | Proceso host; enroll `POST /v1/nodes/enroll`; register/heartbeat; `--reconcile` |
-| Store | `nodes`, `sandboxes`, leases — **no** objetos kube |
+| Store | `nodes`, `sandboxes` — **no** objetos kube |
 | Empaquetado | `make pack` / `scripts/pack-release.sh` — tarball de binarios, no chart de sandboxes |
 | Docs ops | [`../bare-metal-ch.md`](../bare-metal-ch.md) asume host KVM, no `kubectl apply` de VMs |
 

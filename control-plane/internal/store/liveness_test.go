@@ -77,7 +77,7 @@ func testNodeLoss(t *testing.T, s Store, h livenessHooks) {
 	want := map[string]SandboxState{requested.ID: SandboxFailed, starting.ID: SandboxFailed, running.ID: SandboxFailed, stopping.ID: SandboxStopped}
 	for id, st := range want {
 		got, _ := s.GetSandbox(id)
-		if got.State != st || got.StopReason != StopReasonNodeLost || got.NodeLeaseUntil != nil {
+		if got.State != st || got.StopReason != StopReasonNodeLost {
 			t.Errorf("%s: %s/%s, want %s/node_lost", id, got.State, got.StopReason, st)
 		}
 	}
