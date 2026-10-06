@@ -426,3 +426,29 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// A session from this agent version has an allocation file: Reap clears its
+// allocated table (not the hashed one) and releases the allocation.
+func TestReapReleasesLocalNetAllocations(t *testing.T) {
+	argvLog := mockNetTools(t)
+	keyDir := t.TempDir()
+	id := "0b0b0b0b-1111-2222-3333-444444444444"
+	writeFile(t, filepath.Join(keyDir, id+".key"), "private\n")
+	writeFile(t, filepath.Join(keyDir, id+".alloc"), `{"table_id":12345,"listen_port":50001,"slot":9}`)
+	cfg := ReapConfig{SocketDir: shortTempDir(t), DiskDir: t.TempDir(), Procs: &fakeProcs{alive: map[int]bool{}, stubborn: map[int]bool{}},
+		SysClassNet: t.TempDir(), Tap: &tap.Manager{Runner: &tap.RecordingRunner{}}, LocalNet: localnet.NewHost(keyDir), Grace: 10 * time.Millisecond}
+	rep := Reap(context.Background(), cfg)
+	if rep.Err != nil {
+		t.Fatal(rep.Err)
+	}
+	if !slices.Equal(rep.LocalNet, []string{id}) {
+		t.Fatalf("local-net=%q", rep.LocalNet)
+	}
+	log := string(mustRead(t, argvLog))
+	if !strings.Contains(log, "ip route flush table 12345") {
+		t.Fatalf("want the allocated table cleared:\n%s", log)
+	}
+	if _, err := os.Stat(filepath.Join(keyDir, id+".alloc")); !os.IsNotExist(err) {
+		t.Fatalf("allocation file still there: %v", err)
+	}
+}

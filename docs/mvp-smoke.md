@@ -197,7 +197,7 @@ Flujo: cliente → control-plane `POST /v1/sandboxes/{id}/exec` → node-agent `
 ## Notas
 
 - Sin `DATABASE_URL`: persistencia solo en memoria; reiniciar el API borra sandboxes/nodos.
-- Con `DATABASE_URL`: migraciones embebidas `001`–`016` al arrancar (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo).
+- Con `DATABASE_URL`: migraciones embebidas `001`–`017` al arrancar (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo).
 - Auth opcional API key en rutas de tenant; `/healthz` y `/v1/nodes/enroll` son públicos respecto a API keys (enroll usa `ASP_NODE_BOOTSTRAP_TOKEN`). Con `ASP_MTLS_STRICT=1` el enroll vive en `ASP_ENROLL_LISTEN` (ver ADR-0005).
 - TLS: `ASP_TLS_CERT`/`ASP_TLS_KEY`; client CA con `ASP_CLIENT_CA` (lab: `VerifyClientCertIfGiven` + middleware; prod: `ASP_MTLS_STRICT=1`).
 - CA de enrollment: `ASP_CA_CERT`/`ASP_CA_KEY` o auto-create en `/tmp/asp-dev-ca`.
@@ -286,7 +286,7 @@ Clave de firma: `ASP_OIDC_KEY` (PEM path; auto-create) e issuer `ASP_OIDC_ISSUER
 # Confirm gate opcional: --ssh-agent-confirm + POST /v1/internal/ssh-agent/approve
 ```
 
-Con Postgres, todas las migraciones (`001`–`016`) se aplican al arrancar.
+Con Postgres, todas las migraciones (`001`–`017`) se aplican al arrancar.
 
 ## 7. Reconciler (fase 1e)
 

@@ -159,6 +159,8 @@ No hay columna `local_net_policy` en v1. Reservarla «por si acaso» invita a re
 
 El grant en claro **no** se guarda en Postgres ni en `sessions/<nombre>.json`. Solo hash o id si hace falta revocar. El JSON de sesión puede anotar `local_net: true` como recordatorio de UX; no es autoridad y no lleva clave WireGuard.
 
+**Actualizado 2026-10 (asignación en el nodo):** la tabla de policy routing, el puerto UDP del dispositivo y la /30 del túnel salían de un hash FNV del id corto de 8 caracteres, sin detectar colisiones. Dos sesiones con la misma tabla mandaban el tráfico de una al túnel de la otra, es decir, al portátil de otro usuario (50 % de probabilidad con unas 170 sesiones por nodo). Ahora los asigna el node-agent (`localnet.Allocator`): tabla en `10000`–`29999`, puerto en `47000`–`54999`, /30 en `10.188.0.0/16`. Empieza por el valor del hash (así suele coincidir con lo que calculaban las versiones anteriores), salta lo que ya tiene otra sesión y lo que el host usa (`ip rule show`, `ss -lun`), y lo guarda en `<id>.alloc` junto a la clave del nodo, para que un agente reiniciado y el reaper lo encuentren y lo liberen. El nodo publica puerto y direcciones con su clave pública (`POST …/local-net/node-public` con `listen_port`, `node_tunnel_addr`, `client_tunnel_addr`); el control plane los guarda (`local_net_listen_port`, `local_net_node_addr`, `local_net_client_addr`, migración `017`) y el grant devuelve exactamente eso. Antes de que el nodo publique, el grant los trae vacíos y el CLI dice qué falta. Los nombres de dispositivo siguen saliendo del id corto: si dos sandboxes del mismo nodo comparten id corto, los nombres son de la primera y el plan de la segunda se rechaza (su arranque falla) en vez de tomar el túnel de la otra.
+
 Eventos (`sandbox_events`, `actor_sub` = quien llamó):
 
 - `sandbox.local_net_requested` — create con `local_net=true` (sin lista de destinos; no hay policy)
@@ -222,7 +224,9 @@ control plane ──desired state (bool, no CIDRs)──────────
 - No escribe la clave privada en el JSON de sesión ni en el repo.
 - Es un observador de facto de ese tráfico (DNS incluido). Quien enciende `--local-net` acepta eso. El proceso no tiene por qué ser un MITM TLS; el NAT ya revela destinos IP, puertos y queries DNS que no vayan cifradas.
 
-### Transporte (decisión de diseño, aún sin código)
+### Transporte (decisión de diseño; WireGuard implementado)
+
+**Parámetros por sesión (2026-10):** puerto UDP del dispositivo y direcciones de la /30 los asigna el nodo y los publica con su clave; el grant los entrega al portátil (ver «Modelo de datos»). Ya no hay funciones de hash en el control plane.
 
 **v1 preferido: WireGuard en un dispositivo por sandbox, con el handshake iniciado por el agente local, dentro de un netns o de un TUN de usuario.**
 
@@ -421,7 +425,7 @@ Corte que sí está en el árbol (FakeVMM / tests; no demuestra un paquete):
 
 | Pieza | Qué hace |
 |---|---|
-| API + store | `local_net` bool default false, `local_net_state` `off\|pending\|up\|withdrawn`. Migraciones `010_sandbox_local_net.sql` y `011_sandbox_local_net_node_public.sql` (clave pública del nodo, no el secreto). 400 si el body trae `local_net_policy`, `prefixes`, `cidrs`, `ports`, `routes` o `exceptions` |
+| API + store | `local_net` bool default false, `local_net_state` `off\|pending\|up\|withdrawn`. Migraciones `010_sandbox_local_net.sql`, `011_sandbox_local_net_node_public.sql` (clave pública del nodo, no el secreto) y `017_local_net_node_tunnel.sql` (puerto y direcciones que asigna el nodo). 400 si el body trae `local_net_policy`, `prefixes`, `cidrs`, `ports`, `routes` o `exceptions` |
 | Quién lo enciende | Solo el create autenticado (lab sin IdP incluido) y `asp session start --local-net`. Header `X-ASP-Caller: guest` (o `X-ASP-Guest: 1`) con el campo, y `local_net` dentro de exec o status, responden **403**. El guest no lo cambia |
 | Handshake | `POST .../local-net/grant` (el grant en claro no se guarda; solo sha256 y `expires_at`), `POST .../local-net/heartbeat` pasa a `up` y **no** mueve `last_activity_at`, `DELETE .../local-net/attach` pasa a `withdrawn`. Otro `owner_sub` con JWT no recibe grant |
 | CLI | `asp session local-net up\|down`. Clave privada modo 0600 junto al JSON, nunca dentro ni en git. Con `wireguard-tools` y `CAP_NET_ADMIN`, `up` ejecuta `ip`+`wg` sin tocar la default del host; si no, imprime el argv. `down` y `session stop` borran el iface local |
@@ -432,7 +436,7 @@ Qué hace el corte de dispositivo (comandos reales, sin lab de paquetes):
 - Con `local_net_state=up` y la clave pública del cliente, el node-agent ejecuta `ip link add type wireguard` y `wg set` sobre `wg-asp-{id8}`. El peer es el agente local. La default de **esa** sesión va en una tabla aparte, elegida con `ip rule … iif` del TAP. No hay `ip route replace default` sin `table`.
 - `pending` y `withdrawn` borran ese iface y reinstalan blackhole en la misma tabla. `session stop` y el idle reap (`stopping`) llaman a `Clear`, que borra iface, regla y tabla. Nada de eso apunta a `:8888`.
 - `asp session local-net up` aplica el extremo cliente con los mismos binarios cuando hay `wireguard-tools` y `CAP_NET_ADMIN`. Si no, imprime el argv. `down` y `session stop` hacen `ip link delete`. La clave privada sigue en modo 0600, fuera del JSON y de git.
-- El nodo publica solo la clave pública (`local_net_node_public`). La privada no sale del directorio de claves del nodo.
+- El nodo publica la clave pública (`local_net_node_public`) junto con el puerto y las direcciones que asignó. La privada no sale del directorio de claves del nodo.
 - CI sustituye `wg` e `ip` por scripts en el `PATH`. No hace falta el módulo del kernel.
 
 Qué **sigue** sin estar demostrado (límite honesto):

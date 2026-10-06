@@ -1,11 +1,11 @@
 package store
 
 import (
-	"sort"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1425,11 +1425,14 @@ func (m *MemoryStore) WithdrawLocalNet(id string) (Sandbox, error) {
 
 // SetLocalNetNodePublic stores the node device public key. The private key
 // stays on the node. This does not move local_net_state or last_activity_at.
-func (m *MemoryStore) SetLocalNetNodePublic(id, publicKey string) (Sandbox, error) {
+func (m *MemoryStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
 	if err := ValidateWGPublicKey(publicKey); err != nil {
+		return Sandbox{}, err
+	}
+	if err := tun.Validate(); err != nil {
 		return Sandbox{}, err
 	}
 	m.mu.Lock()
@@ -1442,6 +1445,7 @@ func (m *MemoryStore) SetLocalNetNodePublic(id, publicKey string) (Sandbox, erro
 		return Sandbox{}, fmt.Errorf("%w: local_net is off", ErrConflict)
 	}
 	sb.LocalNetNodePublic = strings.TrimSpace(publicKey)
+	sb.LocalNetListenPort, sb.LocalNetNodeAddr, sb.LocalNetClientAddr = tun.ListenPort, tun.NodeAddr, tun.ClientAddr
 	sb.UpdatedAt = time.Now().UTC()
 	m.sandboxes[id] = sb
 	return cloneSandbox(sb), nil

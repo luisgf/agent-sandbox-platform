@@ -144,11 +144,14 @@ func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
 	return p.GetSandbox(id)
 }
 
-func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string) (Sandbox, error) {
+func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
 	if err := ValidateWGPublicKey(publicKey); err != nil {
+		return Sandbox{}, err
+	}
+	if err := tun.Validate(); err != nil {
 		return Sandbox{}, err
 	}
 	sb, err := p.GetSandbox(id)
@@ -162,8 +165,9 @@ func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string) (Sandbox, er
 	ctx := context.Background()
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sandboxes
-		SET local_net_node_public=$2, updated_at=$3
-		WHERE id=$1 AND local_net=true`, id, strings.TrimSpace(publicKey), now)
+		SET local_net_node_public=$2, updated_at=$3,
+		    local_net_listen_port=$4, local_net_node_addr=$5, local_net_client_addr=$6
+		WHERE id=$1 AND local_net=true`, id, strings.TrimSpace(publicKey), now, tun.ListenPort, tun.NodeAddr, tun.ClientAddr)
 	if err != nil {
 		return Sandbox{}, err
 	}

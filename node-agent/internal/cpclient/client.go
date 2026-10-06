@@ -407,8 +407,23 @@ func (c *Client) ReportStatus(ctx context.Context, sandboxID, state, detail stri
 
 // PublishLocalNetNode registers this sandbox's WireGuard public key.
 // The private key is not sent. Failure to publish does not change egress by itself.
-func (c *Client) PublishLocalNetNode(ctx context.Context, sandboxID, publicKey string) error {
-	body, _ := json.Marshal(map[string]string{"public_key": publicKey})
+// LocalNetTunnel is what the node allocated for a local-net session: the UDP
+// port of its WireGuard device and the two ends of the tunnel /30.
+type LocalNetTunnel struct {
+	ListenPort int    `json:"listen_port"`
+	NodeAddr   string `json:"node_tunnel_addr"`
+	ClientAddr string `json:"client_tunnel_addr"`
+}
+
+// PublishLocalNetNode gives the control plane the node device's public key
+// and the session's tunnel parameters, which the grant hands to the laptop.
+func (c *Client) PublishLocalNetNode(ctx context.Context, sandboxID, publicKey string, tun LocalNetTunnel) error {
+	body, _ := json.Marshal(map[string]any{
+		"public_key":         publicKey,
+		"listen_port":        tun.ListenPort,
+		"node_tunnel_addr":   tun.NodeAddr,
+		"client_tunnel_addr": tun.ClientAddr,
+	})
 	url := fmt.Sprintf("%s/v1/sandboxes/%s/local-net/node-public", c.BaseURL, sandboxID)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

@@ -588,7 +588,17 @@ func (r *Reconciler) localApplier() localnet.Applier {
 // points that sandbox's policy table at it. Host.Apply runs ip/wg.
 // Memory (tests, FakeVMM default) only records the plan.
 func (r *Reconciler) applyLocalNet(ctx context.Context, sb cpclient.Sandbox) error {
-	plan := localnet.Decide(sb.ID, sb.OwnerSub, sb.LocalNet, sb.LocalNetState)
+	var alloc localnet.Allocation
+	if sb.LocalNet {
+		// Table, port and /30 are allocated on the node, not hashed from the
+		// short id: a collision would route one session into another's tunnel.
+		a, err := r.localApplier().Allocation(sb.ID)
+		if err != nil {
+			return err
+		}
+		alloc = a
+	}
+	plan := localnet.DecideWith(sb.ID, sb.OwnerSub, sb.LocalNet, sb.LocalNetState, alloc)
 	plan.PeerPublic = strings.TrimSpace(sb.LocalNetClientPublic)
 	keyer, hasKeys := r.localApplier().(localnet.NodeKeyer)
 	needKey := sb.LocalNet && hasKeys
@@ -600,7 +610,7 @@ func (r *Reconciler) applyLocalNet(ctx context.Context, sb cpclient.Sandbox) err
 	// The plan is applied on every running local-net sandbox's work item,
 	// every tick. Its recipe is about 15 processes: run it only when the plan
 	// changed, and check that the device survived every localNetVerifyEvery.
-	if prev != nil && samePlan(prev.plan, plan) && (!needKey || prev.published != "") {
+	if prev != nil && samePlan(prev.plan, plan) && (!needKey || prev.published.key != "") {
 		if now.Sub(prev.checked) < localNetVerifyEvery {
 			return nil
 		}
@@ -613,20 +623,22 @@ func (r *Reconciler) applyLocalNet(ctx context.Context, sb cpclient.Sandbox) err
 		r.Logger.Warn("local-net device missing; applying the plan again", "sandbox_id", sb.ID, "iface", plan.Iface)
 	}
 
-	published := ""
+	var published localNetPublished
 	if prev != nil {
 		published = prev.published
 	}
 	if needKey {
-		pub, _, _, err := keyer.EnsureNodeKey(sb.ID)
+		pub, _, err := keyer.EnsureNodeKey(sb.ID)
 		if err != nil {
 			return err
 		}
-		if r.CP != nil && pub != "" && pub != published {
-			if err := r.CP.PublishLocalNetNode(ctx, sb.ID, pub); err != nil {
+		want := localNetPublished{key: pub, alloc: alloc}
+		if r.CP != nil && pub != "" && want != published {
+			tun := cpclient.LocalNetTunnel{ListenPort: alloc.ListenPort, NodeAddr: alloc.NodeCIDR(), ClientAddr: alloc.ClientCIDR()}
+			if err := r.CP.PublishLocalNetNode(ctx, sb.ID, pub, tun); err != nil {
 				r.Logger.Warn("local-net node public", "sandbox_id", sb.ID, "error", err)
 			} else {
-				published = pub
+				published = want
 			}
 		}
 	}
@@ -658,8 +670,14 @@ const localNetVerifyEvery = 30 * time.Second
 // localNetApplied is what the reconciler last applied for a sandbox.
 type localNetApplied struct {
 	plan      localnet.Plan
-	published string    // node public key the control plane accepted
-	checked   time.Time // last apply or device check
+	published localNetPublished // what the control plane accepted
+	checked   time.Time         // last apply or device check
+}
+
+// localNetPublished is the node key and tunnel parameters a grant hands out.
+type localNetPublished struct {
+	key   string
+	alloc localnet.Allocation
 }
 
 // samePlan compares plans as the reconciler computes them: the host fills

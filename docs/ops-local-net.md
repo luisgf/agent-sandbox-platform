@@ -29,7 +29,7 @@ asp session local-net up --name agente
 asp session local-net down --name agente
 ```
 
-`up` pide `POST /v1/sandboxes/{id}/local-net/grant` y luego `POST .../local-net/heartbeat` con la clave pública del portátil. El grant trae `node_public_key`, `listen_port`, `node_tunnel_addr`, `client_tunnel_addr` y `tunnel_iface`. Si la clave del nodo aún no está, el handshake igual pasa a `up` y el CLI **no** crea el dispositivo: hay que repetir `up`.
+`up` pide `POST /v1/sandboxes/{id}/local-net/grant` y luego `POST .../local-net/heartbeat` con la clave pública del portátil. El grant trae `node_public_key`, `listen_port`, `node_tunnel_addr`, `client_tunnel_addr` y `tunnel_iface`. Puerto, direcciones y clave los asigna y publica el node-agent al arrancar la sesión. Si aún no lo ha hecho, el handshake igual pasa a `up` y el CLI **no** crea el dispositivo: dice qué falta (clave, puerto o dirección) y hay que repetir `up`.
 
 Si `wg` e `ip` están en el `PATH` y el proceso tiene `CAP_NET_ADMIN`, `up` ejecuta, en este orden aproximado:
 
@@ -72,7 +72,7 @@ Identidad: `owner_sub` del create. Otro sujeto con JWT no obtiene grant. El gues
 - `wireguard-tools` (`wg`) y `iproute2` en el portátil y en el nodo.
 - `CAP_NET_ADMIN` (en la práctica, root o una capability acotada) para crear el dispositivo. Sin eso el CLI solo imprime los comandos y el nodo falla el Start de un sandbox con `local_net=true` en vez de caer al proxy.
 - `nft` en el portátil si se quiere el MASQUERADE (`iifname` del `wg-asp-…`). Si no está, el dispositivo puede crearse y el NAT no se instala. Este repo no ha comprobado el reenvío.
-- Una dirección del nodo alcanzable desde el portátil: `--local-net-dial` en cada node-agent (`host` o `host:puerto`). Si el nodo no la declara, el grant usa `ASP_LOCAL_NET_DIAL` del plano de control, que solo vale con un único nodo. Vacío = el `wg set` del cliente no lleva `endpoint` y no hay paquetes. El control plane no reenvía el payload. Con varios nodos, abre UDP `47000–54999` hacia cada uno ([`ops-multi-node.md`](ops-multi-node.md)).
+- Una dirección del nodo alcanzable desde el portátil: `--local-net-dial` en cada node-agent (`host` o `host:puerto`). Si el nodo no la declara, el grant usa `ASP_LOCAL_NET_DIAL` del plano de control, que solo vale con un único nodo. Vacío = el `wg set` del cliente no lleva `endpoint` y no hay paquetes. El control plane no reenvía el payload. Con varios nodos, abre UDP `47000–54999` hacia cada uno ([`ops-multi-node.md`](ops-multi-node.md)). Cada sesión tiene su propio puerto de ese rango, asignado por el nodo sin colisiones; el reparto se guarda en `<id>.alloc` junto a la clave en `ASP_LOCAL_NET_KEY_DIR`.
 - No poner `AllowedIPs = 0.0.0.0/0` con `wg-quick` en la tabla principal. Está prohibido.
 
 Los tests de unidad meten un script `wg` e `ip` en el `PATH` y comprueban el argv, incluido que la desconexión no menciona `:8888`. No cargan el módulo WireGuard del kernel.

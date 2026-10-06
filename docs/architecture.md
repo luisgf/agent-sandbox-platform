@@ -173,11 +173,11 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 ## Modelo de datos (control plane)
 
-Tablas / entidades principales (migraciones `001`–`016`):
+Tablas / entidades principales (migraciones `001`–`017`):
 
 | Entidad | Campos clave |
 |---|---|
-| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until (sin uso desde 2026-10), **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011) |
+| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until (sin uso desde 2026-10), **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011; puerto y direcciones del túnel que asigna el nodo, 017) |
 | `sandbox_events` | journal append-only; **actor_sub** (007) |
 | `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, cert_not_after (016), fence_*, revoked_at |
 | `node_events` | journal de nodos: registro, cordon, `node.offline`/`node.online`, fencing |

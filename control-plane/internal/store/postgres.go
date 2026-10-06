@@ -257,7 +257,8 @@ func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, created_at, updated_at,
 		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
+			local_net_listen_port, local_net_node_addr, local_net_client_addr
 		FROM sandboxes WHERE id=$1`, id)
 	sb, err := scanSandbox(row)
 	if err != nil {
@@ -278,14 +279,16 @@ func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 			       cpu_millis, memory_mib, state_version, created_at, updated_at,
 			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
+			local_net_listen_port, local_net_node_addr, local_net_client_addr
 			FROM sandboxes ORDER BY created_at DESC`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
 			SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 			       cpu_millis, memory_mib, state_version, created_at, updated_at,
 			       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
+			local_net_listen_port, local_net_node_addr, local_net_client_addr
 			FROM sandboxes WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	}
 	if err != nil {
@@ -363,7 +366,8 @@ func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, created_at, updated_at,
 		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
+			local_net_listen_port, local_net_node_addr, local_net_client_addr
 		FROM sandboxes
 		WHERE node_id = $1 AND state = ANY($2)
 		ORDER BY created_at ASC`, nodeID, occupyingStateNames())
@@ -554,7 +558,8 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 		SELECT id, tenant_id, node_id, state, vmm_profile, image_ref,
 		       cpu_millis, memory_mib, state_version, created_at, updated_at,
 		       owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public, local_net_node_public,
+			local_net_listen_port, local_net_node_addr, local_net_client_addr
 		FROM sandboxes
 		WHERE state IN ('requested','scheduled','starting','running','paused')
 		  AND last_activity_at <= $1`, cutoff)
@@ -1335,6 +1340,7 @@ func scanSandbox(row scannable) (Sandbox, error) {
 		&sb.WorkspaceHostPath,
 		&sb.LocalNet, &sb.LocalNetState, &sb.LocalNetAttachedAt, &sb.LocalNetGrantExpiresAt,
 		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic, &sb.LocalNetNodePublic,
+		&sb.LocalNetListenPort, &sb.LocalNetNodeAddr, &sb.LocalNetClientAddr,
 	)
 	if err != nil {
 		return Sandbox{}, err

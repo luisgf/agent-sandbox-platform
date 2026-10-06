@@ -36,7 +36,7 @@ func TestKeyIDsListsNodeKeys(t *testing.T) {
 	dir := t.TempDir()
 	id := "abcdef01-2345-4678-9abc-def012345678"
 	h := NewHost(dir)
-	if _, _, _, err := h.EnsureNodeKey(id); err != nil {
+	if _, _, err := h.EnsureNodeKey(id); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o600); err != nil {

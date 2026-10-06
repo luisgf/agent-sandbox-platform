@@ -46,8 +46,12 @@ func (a *recordingApplier) Current(id string) (localnet.Plan, bool) {
 	return p, ok
 }
 
-func (a *recordingApplier) EnsureNodeKey(string) (string, int, string, error) {
-	return "bm9kZS1wdWJsaWMta2V5LWZvci10ZXN0cy0wMDAwMDA=", 51820, "/k", nil
+func (a *recordingApplier) EnsureNodeKey(string) (string, string, error) {
+	return "bm9kZS1wdWJsaWMta2V5LWZvci10ZXN0cy0wMDAwMDA=", "/k", nil
+}
+
+func (a *recordingApplier) Allocation(id string) (localnet.Allocation, error) {
+	return localnet.HashAllocation(id), nil
 }
 
 func (a *recordingApplier) Healthy(string) bool {

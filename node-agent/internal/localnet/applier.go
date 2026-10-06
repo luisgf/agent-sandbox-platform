@@ -7,6 +7,9 @@ import (
 
 // Applier records or installs the per-sandbox plan.
 type Applier interface {
+	// Allocation returns the routing table, UDP port and tunnel /30 of a
+	// local-net session on this node, allocating them the first time.
+	Allocation(sandboxID string) (Allocation, error)
 	Apply(p Plan) error
 	Clear(sandboxID string) error
 	Current(sandboxID string) (Plan, bool)
@@ -18,7 +21,8 @@ type Verifier interface {
 	Healthy(sandboxID string) bool
 }
 
-// Memory is the CI/FakeVMM applier. It does not touch the host routing table.
+// Memory is the CI/FakeVMM applier. It does not touch the host routing table,
+// so the hashed allocation is enough.
 type Memory struct {
 	mu    sync.Mutex
 	plans map[string]Plan
@@ -65,4 +69,9 @@ func (m *Memory) Current(sandboxID string) (Plan, bool) {
 	defer m.mu.Unlock()
 	p, ok := m.plans[sandboxID]
 	return p, ok
+}
+
+// Allocation returns the hashed allocation: Memory touches nothing on the host.
+func (m *Memory) Allocation(sandboxID string) (Allocation, error) {
+	return HashAllocation(sandboxID), nil
 }

@@ -95,6 +95,10 @@ type localNetGrantResponse struct {
 
 type localNetNodePublicRequest struct {
 	PublicKey string `json:"public_key"`
+	// What the node allocated for the tunnel.
+	ListenPort       int    `json:"listen_port"`
+	NodeTunnelAddr   string `json:"node_tunnel_addr"`
+	ClientTunnelAddr string `json:"client_tunnel_addr"`
 }
 
 type localNetHeartbeatRequest struct {
@@ -137,7 +141,8 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		writeLocalNetErr(w, err)
 		return
 	}
-	nodeCIDR, clientCIDR := store.LocalNetTunnel(id)
+	// Port and addresses are what the node allocated and published with its
+	// key; empty until it has (the CLI says so and asks to retry).
 	writeJSON(w, http.StatusOK, localNetGrantResponse{
 		Grant:            grant,
 		Dial:             dial,
@@ -145,9 +150,9 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		Iface:            store.LocalNetIface(id),
 		Transport:        "wireguard",
 		NodePublicKey:    sb.LocalNetNodePublic,
-		ListenPort:       store.LocalNetListenPort(id),
-		NodeTunnelAddr:   nodeCIDR,
-		ClientTunnelAddr: clientCIDR,
+		ListenPort:       sb.LocalNetListenPort,
+		NodeTunnelAddr:   sb.LocalNetNodeAddr,
+		ClientTunnelAddr: sb.LocalNetClientAddr,
 	})
 }
 
@@ -316,7 +321,9 @@ func (s *Server) RegisterLocalNetNode(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeSandboxNodeByID(w, r, id) {
 		return
 	}
-	out, err := s.Store.SetLocalNetNodePublic(id, req.PublicKey)
+	out, err := s.Store.SetLocalNetNodePublic(id, req.PublicKey, store.LocalNetTunnel{
+		ListenPort: req.ListenPort, NodeAddr: req.NodeTunnelAddr, ClientAddr: req.ClientTunnelAddr,
+	})
 	if err != nil {
 		writeLocalNetErr(w, err)
 		return

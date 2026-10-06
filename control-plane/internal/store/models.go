@@ -27,15 +27,15 @@ type Tenant struct {
 }
 
 type Sandbox struct {
-	ID             string       `json:"id"`
-	TenantID       string       `json:"tenant_id"`
-	NodeID         *string      `json:"node_id"`
-	State          SandboxState `json:"state"`
-	VMMProfile     string       `json:"vmm_profile"`
-	ImageRef       string       `json:"image_ref"`
-	CPUMillis      int          `json:"cpu_millis"`
-	MemoryMiB      int          `json:"memory_mib"`
-	StateVersion   int64        `json:"state_version"`
+	ID           string       `json:"id"`
+	TenantID     string       `json:"tenant_id"`
+	NodeID       *string      `json:"node_id"`
+	State        SandboxState `json:"state"`
+	VMMProfile   string       `json:"vmm_profile"`
+	ImageRef     string       `json:"image_ref"`
+	CPUMillis    int          `json:"cpu_millis"`
+	MemoryMiB    int          `json:"memory_mib"`
+	StateVersion int64        `json:"state_version"`
 	// OwnerSub is the IdP subject of the creator (ADR-0007). Empty OK in lab until IdP JWT.
 	OwnerSub string `json:"owner_sub,omitempty"`
 	// OwnerEmail is optional ops/UI claim; not an authz key.
@@ -65,6 +65,12 @@ type Sandbox struct {
 	LocalNetClientPublic string `json:"local_net_client_public,omitempty"`
 	// LocalNetNodePublic is the node WireGuard public key for this sandbox (not a secret).
 	LocalNetNodePublic string `json:"local_net_node_public,omitempty"`
+	// LocalNetListenPort, LocalNetNodeAddr and LocalNetClientAddr are what the
+	// node allocated for the tunnel (017): its device's UDP port and the two
+	// ends of the /30. Zero until the node publishes them.
+	LocalNetListenPort int    `json:"local_net_listen_port,omitempty"`
+	LocalNetNodeAddr   string `json:"local_net_node_addr,omitempty"`
+	LocalNetClientAddr string `json:"local_net_client_addr,omitempty"`
 	// LocalNetGrantHash is sha256 hex of the live grant. Never serialized.
 	LocalNetGrantHash string    `json:"-"`
 	CreatedAt         time.Time `json:"created_at"`

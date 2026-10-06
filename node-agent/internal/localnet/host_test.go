@@ -78,12 +78,12 @@ func TestHostApplyMockPath(t *testing.T) {
 	if err := h.Apply(up); err != nil {
 		t.Fatal(err)
 	}
-	pub, port, keyPath, err := h.EnsureNodeKey(id)
+	pub, keyPath, err := h.EnsureNodeKey(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pub == "" || port != 51024 {
-		t.Fatalf("pub=%q port=%d", pub, port)
+	if pub == "" || up.ListenPort != 51024 {
+		t.Fatalf("pub=%q port=%d", pub, up.ListenPort)
 	}
 	fi, err := os.Stat(keyPath)
 	if err != nil {

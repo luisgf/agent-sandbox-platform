@@ -118,7 +118,7 @@ func TestNodeRoutesRejectAnotherNodesCertificate(t *testing.T) {
 		{"claim as another node", http.MethodPost, sb + "/claim", `{"node_id":"n1"}`},
 		{"status of a sandbox on another node", http.MethodPost, sb + "/status", `{"state":"failed","detail":"x"}`},
 		{"oidc mint for a sandbox on another node", http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"` + f.sbID + `","aud":"https://api.example"}`},
-		{"local-net key for a sandbox on another node", http.MethodPost, sb + "/local-net/node-public", `{"public_key":"ERERERERERERERERERERERERERERERERERERERERERE="}`},
+		{"local-net key for a sandbox on another node", http.MethodPost, sb + "/local-net/node-public", `{"public_key":"ERERERERERERERERERERERERERERERERERERERERERE=","listen_port":50001,"node_tunnel_addr":"10.188.4.1/30","client_tunnel_addr":"10.188.4.2/30"}`},
 		{"attest a sandbox on another node", http.MethodPost, sb + "/attest", f.attestBody("n2")},
 	}
 	for _, tc := range cases {
