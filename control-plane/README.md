@@ -42,7 +42,8 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | `ASP_REQUIRE_API_KEY` | unset | `1` fuerza Bearer auth |
 | `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
 | `ASP_IDP_AUDIENCE` | unset | Audiencia esperada del JWT (`aud`) |
-| `ASP_IDP_JWKS_URL` | unset | JWKS; si vacío → discovery desde issuer |
+| `ASP_IDP_JWKS_URL` | unset | JWKS; si vacío → discovery desde issuer. Se refresca cada 5 min (una clave que el IdP retira deja de validar) y, ante un `kid` desconocido, como mucho una vez cada 30 s |
+| `ASP_IDP_REQUIRE_EXP` | `1` | `0` acepta JWT sin `exp` (no recomendado: no caducarían). `nbf` admite 1 min de desfase de reloj; un `iat` más de 5 min en el futuro se rechaza |
 | `ASP_IDP_REQUIRED` | `0` | `1` exige JWT IdP en create/list/get/exec/destroy/events |
 | `ASP_IDP_ROLE_CLAIM` | `groups` | Claim de grupos/roles para RBAC (fase 3) |
 | `ASP_IDP_ROLE_MAP` | unset | CSV `claim:role` (admin\|operator\|viewer); si set, gana sobre prefijo |

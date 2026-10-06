@@ -136,6 +136,9 @@ func main() {
 	}
 	authCfg.IdP = idpVal
 	authCfg.IdPRequired = idpCfg.Required
+	if idpVal != nil {
+		go idpVal.Run(ctx)
+	}
 
 	idleTimeout, err := store.ResolveIdleTimeout(os.Getenv(store.EnvSandboxIdleTimeout), idleTimeoutFlag(os.Args[1:]))
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
@@ -20,7 +21,16 @@ import (
 	"time"
 )
 
-const defaultJWKSCacheTTL = 5 * time.Minute
+const (
+	defaultJWKSCacheTTL = 5 * time.Minute
+	// defaultMinRefresh is the shortest gap between JWKS fetches triggered by
+	// tokens with an unknown kid.
+	defaultMinRefresh = 30 * time.Second
+	// clockSkew tolerates a token whose nbf is slightly ahead of this clock.
+	clockSkew = time.Minute
+	// maxIatFuture rejects tokens issued further in the future than this.
+	maxIatFuture = 5 * time.Minute
+)
 
 // Config controls IdP JWT validation. Required=false (default) keeps lab behavior.
 type Config struct {
@@ -36,6 +46,9 @@ type Config struct {
 	RolePrefix string
 	// DestroyAnyGroup claim value that lets operators destroy any sandbox (default "sandbox:destroy-any").
 	DestroyAnyGroup string
+	// AllowMissingExp accepts tokens without an exp claim (ASP_IDP_REQUIRE_EXP=0).
+	// Off by default: a token without exp would be valid forever.
+	AllowMissingExp bool
 }
 
 // Principal is the authenticated human (or service principal) from an IdP JWT.
@@ -54,9 +67,15 @@ type Validator struct {
 	mu       sync.RWMutex
 	keys     map[string]*rsa.PublicKey // kid -> key; "" for single-key sets
 	keysAt   time.Time
-	cacheTTL time.Duration
-	static   bool // keys pinned; never refetch
+	cacheTTL time.Duration // Run refreshes the keys this often
+	static   bool          // keys pinned; never refetch
 	jwksURL  string
+
+	// refreshMu serialises fetches: concurrent misses wait for the one in
+	// flight instead of each fetching. lastRefresh is the last attempt.
+	refreshMu   sync.Mutex
+	lastRefresh time.Time
+	minRefresh  time.Duration
 }
 
 // ConfigFromEnv reads ASP_IDP_* variables.
@@ -67,9 +86,19 @@ func ConfigFromEnv() Config {
 		Audience: strings.TrimSpace(os.Getenv("ASP_IDP_AUDIENCE")),
 		JWKSURL:  strings.TrimSpace(os.Getenv("ASP_IDP_JWKS_URL")),
 		Required: envTruthy("ASP_IDP_REQUIRED"),
+		// ASP_IDP_REQUIRE_EXP=0 is the escape hatch for IdPs that omit exp.
+		AllowMissingExp: envFalsy("ASP_IDP_REQUIRE_EXP"),
 	}
 	RoleConfigFromEnv(&cfg)
 	return cfg
+}
+
+func envFalsy(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
 }
 
 func envTruthy(key string) bool {
@@ -101,11 +130,12 @@ func NewValidator(cfg Config) (*Validator, error) {
 		cfg.RolePrefix = defaultRolePrefix
 	}
 	return &Validator{
-		cfg:      cfg,
-		client:   &http.Client{Timeout: 10 * time.Second},
-		keys:     make(map[string]*rsa.PublicKey),
-		cacheTTL: defaultJWKSCacheTTL,
-		jwksURL:  cfg.JWKSURL,
+		cfg:        cfg,
+		client:     &http.Client{Timeout: 10 * time.Second},
+		keys:       make(map[string]*rsa.PublicKey),
+		cacheTTL:   defaultJWKSCacheTTL,
+		jwksURL:    cfg.JWKSURL,
+		minRefresh: defaultMinRefresh,
 	}, nil
 }
 
@@ -167,7 +197,8 @@ func LooksLikeJWT(token string) bool {
 	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
 }
 
-// Refresh loads JWKS (discovery if needed). Safe to call concurrently.
+// Refresh loads JWKS (discovery if needed). Safe to call concurrently: calls
+// run one at a time. On failure the keys already loaded are kept.
 func (v *Validator) Refresh(ctx context.Context) error {
 	if v == nil {
 		return errors.New("idp: nil validator")
@@ -175,6 +206,55 @@ func (v *Validator) Refresh(ctx context.Context) error {
 	if v.static {
 		return nil
 	}
+	v.refreshMu.Lock()
+	defer v.refreshMu.Unlock()
+	v.lastRefresh = time.Now()
+	return v.refresh(ctx)
+}
+
+// refreshAfterMiss refreshes because a token named an unknown kid, which may be
+// a key the IdP just rotated in. It fetches at most every minRefresh, so tokens
+// with made-up kids cannot turn the control plane into a request generator
+// against the IdP; misses that arrive during a fetch wait for it.
+func (v *Validator) refreshAfterMiss() {
+	if v.static {
+		return
+	}
+	v.refreshMu.Lock()
+	defer v.refreshMu.Unlock()
+	if !v.lastRefresh.IsZero() && time.Since(v.lastRefresh) < v.minRefresh {
+		return
+	}
+	v.lastRefresh = time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = v.refresh(ctx)
+}
+
+// Run refreshes the keys every cache TTL until ctx is done, so a key the IdP
+// removes stops validating without a restart and without waiting for a miss.
+func (v *Validator) Run(ctx context.Context) {
+	if v == nil || v.static || v.cacheTTL <= 0 {
+		return
+	}
+	t := time.NewTicker(v.cacheTTL)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := v.Refresh(rctx); err != nil {
+				slog.Warn("idp jwks refresh failed; keeping the keys already loaded", "error", err)
+			}
+			cancel()
+		}
+	}
+}
+
+// refresh does the fetch. Caller holds refreshMu.
+func (v *Validator) refresh(ctx context.Context) error {
 	url := v.jwksURL
 	if url == "" {
 		disc, err := v.discoverJWKSURL(ctx)
@@ -268,10 +348,7 @@ func (v *Validator) Validate(token string) (Principal, error) {
 
 	pub, err := v.lookupKey(header.Kid)
 	if err != nil {
-		// one refresh retry on miss / stale
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = v.Refresh(ctx)
-		cancel()
+		v.refreshAfterMiss()
 		pub, err = v.lookupKey(header.Kid)
 		if err != nil {
 			return Principal{}, err
@@ -307,12 +384,18 @@ func (v *Validator) Validate(token string) (Principal, error) {
 			return Principal{}, fmt.Errorf("jwt aud mismatch: want %q", v.cfg.Audience)
 		}
 	}
-	now := time.Now().UTC().Unix()
-	if claims.Exp > 0 && now > claims.Exp {
+	now := time.Now().UTC()
+	switch {
+	case claims.Exp <= 0 && !v.cfg.AllowMissingExp:
+		return Principal{}, errors.New("jwt missing exp")
+	case claims.Exp > 0 && now.Unix() > claims.Exp:
 		return Principal{}, errors.New("token expired")
 	}
-	if claims.Nbf > 0 && now < claims.Nbf {
+	if claims.Nbf > 0 && now.Add(clockSkew).Unix() < claims.Nbf {
 		return Principal{}, errors.New("token not yet valid")
+	}
+	if claims.Iat > 0 && claims.Iat > now.Add(maxIatFuture).Unix() {
+		return Principal{}, errors.New("token issued in the future")
 	}
 
 	email := strings.TrimSpace(claims.Email)
@@ -383,6 +466,7 @@ type claimsJSON struct {
 	Sub               string          `json:"sub"`
 	Exp               int64           `json:"exp"`
 	Nbf               int64           `json:"nbf"`
+	Iat               int64           `json:"iat"`
 	Email             string          `json:"email"`
 	PreferredUsername string          `json:"preferred_username"`
 	Aud               audFlex         `json:"aud"`
