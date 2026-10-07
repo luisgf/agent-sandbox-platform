@@ -6,7 +6,7 @@ set -e
 case "$1" in
 remove | 0) # deb: remove; rpm: 0 left after this one
 	if [ -d /run/systemd/system ]; then
-		for unit in asp-control-plane asp-node-agent; do
+		for unit in asp-control-plane asp-node-agent asp-server; do
 			if [ -e "/lib/systemd/system/$unit.service" ] || [ -e "/usr/lib/systemd/system/$unit.service" ]; then
 				systemctl disable --now "$unit.service" >/dev/null 2>&1 || true
 			fi

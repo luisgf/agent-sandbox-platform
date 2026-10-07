@@ -10,7 +10,8 @@
 # node A from flags and the environment: a setting the file layer lost would break a step below.
 #
 # The store: ASP_DATABASE_URL (or DATABASE_URL) names one; ASP_SMOKE_STORE=memory|sqlite picks
-# one of those. With neither, the scenario runs twice: on the memory store and on a SQLite file.
+# one of those. With neither, the scenario runs twice (on the memory store and on a SQLite file) and
+# then the single-host smoke (scripts/smoke-standalone.sh) runs, so one CI step covers all three.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ -z "${ASP_SMOKE_STORE:-}" && -z "${ASP_DATABASE_URL:-${DATABASE_URL:-}}" ]]; then
@@ -18,6 +19,8 @@ if [[ -z "${ASP_SMOKE_STORE:-}" && -z "${ASP_DATABASE_URL:-${DATABASE_URL:-}}" ]
     echo "######## the control plane on the $store store"
     ASP_SMOKE_STORE=$store "$0"
   done
+  echo "######## asp-server on one host"
+  "$ROOT/scripts/smoke-standalone.sh"
   exit 0
 fi
 # shellcheck source=smoke-lib.sh

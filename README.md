@@ -213,7 +213,7 @@ flowchart TB
 
 ## Install a release
 
-Once a [release](CHANGELOG.md) exists, no compiling is needed: `curl -fsSL https://github.com/luisgf/agent-sandbox-platform/releases/latest/download/install.sh | sudo sh` installs the CLI, and `INSTALL_ASP_ROLE=server` or `agent` a control plane or a node, after checking every download against the release's `SHA256SUMS`. [`docs/how-to/install.md`](docs/how-to/install.md) has the variables and the two-host walkthrough.
+Once a [release](CHANGELOG.md) exists, no compiling is needed: `curl -fsSL https://github.com/luisgf/agent-sandbox-platform/releases/latest/download/install.sh | sudo sh` installs the CLI, and `INSTALL_ASP_ROLE=server` or `agent` a control plane or a node, after checking every download against the release's `SHA256SUMS`. **On one host with KVM, `INSTALL_ASP_ROLE=standalone` is the whole thing**: it makes the database, the keys and the certificate, runs a control plane and a node, and configures `asp` — then `sudo asp session start` ([`docs/how-to/single-host.md`](docs/how-to/single-host.md)). [`docs/how-to/install.md`](docs/how-to/install.md) has the variables and the two-host walkthrough.
 
 ## Quickstart (dry-run, no KVM)
 

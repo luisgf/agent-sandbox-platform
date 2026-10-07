@@ -1,0 +1,25 @@
+# Settings of asp-server, as the asp-server package installs them: the unit runs
+# `asp-server --config /etc/asp/standalone.yaml`. Mode 0600.
+#
+# A key is the name of a flag with underscores (--tls-san is tls_san). The files in
+# /etc/asp/standalone.yaml.d/*.yaml are read after this one, in name order, and win over it; put
+# what is yours there. A flag on the command line beats the file. `asp-server -h` lists the flags.
+#
+# Everything is made on the first start and kept: the database, the keys, the TLS certificate, the
+# administration key (/var/lib/asp/server/admin-key) and the token a node joins with. By default the
+# control plane listens on the loopback only. To let other hosts join, listen on an address they
+# reach and name it in the certificate:
+#listen: 0.0.0.0:8443
+#tls_san: [asp.example.com, 203.0.113.7]
+#
+# The id of the node on this host (default: the host name):
+#node_id: box1
+#
+# A host with no KVM can try ASP with a node that has no VMs (sandboxes are only records):
+#profile: lab
+#
+# Only the control plane, no node on this host:
+#no_agent: true
+#
+# Where everything lives:
+#data_dir: /var/lib/asp
