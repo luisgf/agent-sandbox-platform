@@ -1,0 +1,35 @@
+# ASP on one host, as the asp-server package installs it: a control plane and a node, with the
+# database, the keys and the TLS certificate made for them under /var/lib/asp.
+#   sudo systemctl enable --now asp-server
+#   asp session start                  # the asp command of this host is configured by asp-server
+# Its own settings (listen, tls_san, node_id…) are in /etc/asp/standalone.yaml and its drop-ins in
+# /etc/asp/standalone.yaml.d/. The control plane and the node it starts still read their own
+# (/etc/asp/server.yaml, /etc/asp/agent.yaml). Docs: docs/how-to/single-host.md
+#
+# Runs as root, which the node needs (TAPs, nftables, WireGuard, /dev/kvm); the control plane it
+# starts runs as asp-control-plane, a user the asp-control-plane package makes. The VMs run in units
+# of their own (asp-vm-<id>.service in asp-vms.slice) that this one does not own: stopping or
+# restarting it leaves them running and the next start adopts them (ADR-0014).
+[Unit]
+Description=ASP on one host (control plane and node)
+Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/docs/how-to/single-host.md
+After=network-online.target
+Wants=network-online.target
+# The programs it starts are the ones of these two services: run both and they would fight for the
+# port and the state.
+Conflicts=asp-control-plane.service asp-node-agent.service
+# A bad setting makes it exit; keep trying instead of giving up after 5 starts in 10 s.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/asp-server --config /etc/asp/standalone.yaml
+Restart=on-failure
+RestartSec=5
+# SIGTERM to asp-server alone: it stops the node, then the control plane, each with up to 40 s to
+# finish. (control-group would signal all three at once.)
+KillMode=mixed
+TimeoutStopSec=100
+
+[Install]
+WantedBy=multi-user.target

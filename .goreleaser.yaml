@@ -21,6 +21,19 @@ builds:
       - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Version={{ .Version }}
       - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Commit={{ .FullCommit }}
       - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Date={{ .Date }}
+  - id: server
+    dir: cli
+    main: ./cmd/asp-server
+    binary: asp-server
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Version={{ .Version }}
+      - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Date={{ .Date }}
   - id: control-plane
     dir: control-plane
     main: ./cmd/api
@@ -54,6 +67,18 @@ archives:
     name_template: "asp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     files: [LICENSE, README.md]
+  - id: server
+    ids: [server]
+    name_template: "asp-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - src: docs/how-to/single-host.md
+        dst: README.md
+      - src: packaging/systemd/asp-server.service
+        dst: asp-server.service
+      - src: packaging/etc/standalone.yaml
+        dst: standalone.yaml
   - id: control-plane
     ids: [control-plane]
     name_template: "asp-control-plane_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -90,6 +115,38 @@ nfpms:
     description: asp, the command line of the Agent Sandbox Platform.
     license: Apache-2.0
     bindir: /usr/bin
+  - id: asp-server
+    package_name: asp-server
+    ids: [server]
+    formats: [deb, rpm]
+    file_name_template: "asp-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    maintainer: Luis González Fernández <luisgf@luisgf.es>
+    homepage: https://github.com/luisgf/agent-sandbox-platform
+    description: |-
+      ASP on one host: runs a control plane and a node, with the database, the keys and the
+      TLS certificate made for them under /var/lib/asp. `sudo systemctl enable --now asp-server`,
+      then `asp session start`. It needs the packages asp, asp-control-plane and asp-node-agent.
+    license: Apache-2.0
+    bindir: /usr/bin
+    dependencies: [asp, asp-control-plane, asp-node-agent]
+    contents:
+      - src: packaging/systemd/asp-server.service
+        dst: /lib/systemd/system/asp-server.service
+      - dst: /etc/asp
+        type: dir
+        file_info: {mode: 0755, owner: root, group: root}
+      - src: packaging/etc/standalone.yaml
+        dst: /etc/asp/standalone.yaml
+        type: config|noreplace
+        file_info: {mode: 0600}
+      - dst: /etc/asp/standalone.yaml.d
+        type: dir
+        file_info: {mode: 0700}
+    scripts:
+      # The group that may read the administration key.
+      preinstall: packaging/scripts/preinstall-server.sh
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
   - id: asp-control-plane
     package_name: asp-control-plane
     ids: [control-plane]

@@ -57,6 +57,12 @@ The first release will be 0.1.0. Until then this is what `main` has.
   against a deployment through its API; the nightly workflow runs it with the other KVM smokes.
 - A Postgres run of the API tests, and a parity script that holds the memory and Postgres stores to
   one contract.
+- **ASP on one host** ([docs/how-to/single-host.md](docs/how-to/single-host.md), [ADR-0016](docs/adr/0016-single-host.md)):
+  `INSTALL_ASP_ROLE=standalone` installs four packages and starts `asp-server`, which makes the database,
+  the keys, a self-signed TLS certificate, an administration key and the node token, runs a control plane
+  (without privileges) and a node, stops them in order, and leaves the `asp` command of the host
+  configured. Three commands to the first session. `--profile lab` runs a node without VMs: no KVM, no
+  root. `scripts/smoke-standalone.sh` covers it with the real binaries in CI.
 - **A SQLite store** for a single host: `ASP_DATABASE_URL=sqlite:///var/lib/asp/server/asp.db` keeps
   the state in one private file (no CGO, no database server). The same parity script, shared store
   tests and API suite run on it, with no server needed, so every test run covers it.

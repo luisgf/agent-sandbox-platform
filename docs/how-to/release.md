@@ -9,7 +9,8 @@ Una versión es una etiqueta `vX.Y.Z`. Al empujarla, el workflow de release (`.g
 | `asp_<versión>_<os>_<arch>.tar.gz` | el CLI `asp` (linux y darwin, amd64 y arm64) |
 | `asp-control-plane_<versión>_linux_<arch>.tar.gz` | el control plane, su unit de systemd y un `server.yaml` de ejemplo |
 | `asp-node-agent_<versión>_linux_<arch>.tar.gz` | el node-agent, su unit y un `agent.yaml` de ejemplo |
-| `*.deb`, `*.rpm` | los mismos tres como paquetes: `asp`, `asp-control-plane`, `asp-node-agent`. Dejan la unit en `/lib/systemd/system` y el fichero de ajustes en `/etc/asp/` (modo 0600, no se pisa al actualizar), y **no arrancan nada** |
+| `asp-server_<versión>_linux_<arch>.tar.gz` | `asp-server` (todo en un host, [single-host.md](single-host.md)), su unit y un `standalone.yaml` de ejemplo |
+| `*.deb`, `*.rpm` | los mismos cuatro como paquetes: `asp`, `asp-control-plane`, `asp-node-agent`, `asp-server` (éste depende de los otros tres). Dejan la unit en `/lib/systemd/system` y el fichero de ajustes en `/etc/asp/` (modo 0600, no se pisa al actualizar), y **no arrancan nada** |
 | `*.sbom.json` | la lista de componentes de cada archivo |
 | `asp_<versión>_source.tar.gz` | las fuentes |
 | `SHA256SUMS` | las sumas de todo lo anterior: `sha256sum -c SHA256SUMS --ignore-missing` |

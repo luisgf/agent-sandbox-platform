@@ -1,7 +1,8 @@
 #!/bin/sh
-# Installs ASP on this host: the CLI, a control plane, or a node.
+# Installs ASP on this host: the CLI, a control plane, a node, or all of it on one host.
 #
 #   curl -fsSL https://github.com/luisgf/agent-sandbox-platform/releases/latest/download/install.sh | sudo sh
+#   curl -fsSL .../install.sh | sudo INSTALL_ASP_ROLE=standalone sh      # then: asp session start
 #   curl -fsSL .../install.sh | sudo INSTALL_ASP_ROLE=server sh
 #   curl -fsSL .../install.sh | sudo INSTALL_ASP_ROLE=agent INSTALL_ASP_SERVER=https://cp.example:8443 \
 #       INSTALL_ASP_TOKEN=<token from `asp node enroll-token`> sh
@@ -12,7 +13,8 @@
 # and starts the service. It never starts a service on a host without systemd, and it never
 # overwrites a drop-in that is already there.
 #
-#   INSTALL_ASP_ROLE      cli (default), server (control plane + cli) or agent (node + cli)
+#   INSTALL_ASP_ROLE      cli (default), server (control plane + cli), agent (node + cli) or standalone
+#                         (a control plane and a node on this host, made and run by asp-server)
 #   INSTALL_ASP_VERSION   a release, e.g. 0.1.0 (default: the latest)
 #   INSTALL_ASP_URL       where the release's files are, without the trailing slash (a mirror, or
 #                         a directory served over HTTP); default: this project's GitHub release
@@ -28,6 +30,14 @@
 #                             INSTALL_ASP_TLS_SAN (default: this host's name and 127.0.0.1); nodes
 #                             trust it as their INSTALL_ASP_CA
 #   INSTALL_ASP_TLS_CERT, INSTALL_ASP_TLS_KEY   a certificate you already have
+#
+# standalone (a node needs KVM; INSTALL_ASP_PROFILE=lab runs one without VMs):
+#   INSTALL_ASP_LISTEN    where the control plane listens (default 127.0.0.1:8443, the loopback;
+#                         0.0.0.0:8443 lets other hosts join)
+#   INSTALL_ASP_TLS_SAN   more names or addresses its certificate is valid for (comma separated)
+#   INSTALL_ASP_NODE_ID   the id of the node on this host (default: the host name)
+#   INSTALL_ASP_PROFILE   default, or lab
+#   INSTALL_ASP_SKIP_IMAGE  1 = do not pull the guest kernel and image of the release
 #
 # agent (a node, which needs KVM):
 #   INSTALL_ASP_SERVER    the URL of the control plane (required)
@@ -55,8 +65,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo sh)"
 for r in $(printf '%s' "$ROLE" | tr ',' ' '); do
-	case "$r" in cli | server | agent) ;; *) die "INSTALL_ASP_ROLE: $r is not cli, server or agent" ;; esac
+	case "$r" in cli | server | agent | standalone) ;; *) die "INSTALL_ASP_ROLE: $r is not cli, server, agent or standalone" ;; esac
 done
+case ",$ROLE," in *,standalone,*)
+	case ",$ROLE," in *,server,* | *,agent,*) die "INSTALL_ASP_ROLE: standalone is the control plane and the node together: do not add server or agent" ;; esac ;;
+esac
 has_role() { case ",$ROLE," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 
 OS=$(uname -s)
@@ -70,7 +83,7 @@ Linux) OSN=linux ;;
 Darwin) OSN=darwin ;;
 *) die "no release for $OS" ;;
 esac
-if [ "$OSN" = darwin ] && { has_role server || has_role agent; }; then
+if [ "$OSN" = darwin ] && { has_role server || has_role agent || has_role standalone; }; then
 	die "a control plane and a node run on Linux; on $OS only INSTALL_ASP_ROLE=cli"
 fi
 
@@ -154,6 +167,9 @@ install_component() {
 		if [ "$name" = asp-control-plane ] && ! getent passwd asp-control-plane >/dev/null 2>&1; then
 			useradd --system --user-group --home-dir /var/lib/asp-control-plane --no-create-home \
 				--shell /usr/sbin/nologin asp-control-plane || warn "cannot create the user asp-control-plane"
+		fi
+		if [ "$name" = asp-server ] && ! getent group asp >/dev/null 2>&1; then
+			groupadd --system asp 2>/dev/null || warn "cannot create the group asp"
 		fi
 		if [ -f "$d/$name.service" ]; then
 			mkdir -p /etc/systemd/system
@@ -388,6 +404,55 @@ enroll_token: $(yaml_str "$INSTALL_ASP_TOKEN")
 	fi
 	say ""
 	say "Check this host: sudo asp doctor"
+fi
+
+if has_role standalone; then
+	say "==> this host: a control plane and a node"
+	PROFILE="${INSTALL_ASP_PROFILE:-default}"
+	case "$PROFILE" in default | lab) ;; *) die "INSTALL_ASP_PROFILE: $PROFILE is not default or lab" ;; esac
+	if [ "$PROFILE" = default ] && [ ! -c /dev/kvm ]; then
+		warn "no /dev/kvm: this host cannot run sandboxes, so asp-server runs the control plane alone (INSTALL_ASP_PROFILE=lab runs a node without VMs)"
+	fi
+	install_component asp-control-plane
+	install_component asp-node-agent
+	install_component asp-server
+	body=""
+	[ -z "${INSTALL_ASP_LISTEN:-}" ] || body="${body}listen: $(yaml_str "$INSTALL_ASP_LISTEN")
+"
+	[ -z "${INSTALL_ASP_TLS_SAN:-}" ] || body="${body}tls_san: $(yaml_str "$INSTALL_ASP_TLS_SAN")
+"
+	[ -z "${INSTALL_ASP_NODE_ID:-}" ] || body="${body}node_id: $(yaml_str "$INSTALL_ASP_NODE_ID")
+"
+	[ "$PROFILE" = default ] || body="${body}profile: $PROFILE
+"
+	if [ -n "$body" ]; then
+		write_dropin standalone 10-install.yaml "# Written by install.sh. Every setting: asp-server -h; the package's own are in ../standalone.yaml.
+$body" || true
+	fi
+	if [ "$PROFILE" = default ] && [ "${INSTALL_ASP_SKIP_IMAGE:-}" != 1 ] && [ -c /dev/kvm ]; then
+		say "    pulling the guest kernel and image of $VERSION"
+		"$BIN_ASP" image pull --version "$VERSION" --base-url "$BASE_URL" || warn "no guest image: sudo asp image pull --version $VERSION (or INSTALL_ASP_SKIP_IMAGE=1 to bring your own)"
+	fi
+	if want_start; then
+		systemctl daemon-reload
+		systemctl enable --now asp-server >/dev/null 2>&1 || warn "asp-server did not start: journalctl -u asp-server"
+		i=0
+		while [ "$i" -lt 90 ]; do
+			if journalctl -u asp-server --no-pager 2>/dev/null | grep -qE 'registered with control plane'; then
+				say "    the control plane and the node are up"
+				break
+			fi
+			i=$((i + 1))
+			sleep 1
+		done
+	else
+		say "    not started (INSTALL_ASP_NO_START, or no systemd): systemctl enable --now asp-server"
+	fi
+	say ""
+	say "The asp command of this host is configured by asp-server (/etc/asp/asp.yaml). As root:"
+	say "  asp session start && asp session exec --cmd 'id'"
+	say "To let a user do it: sudo usermod -aG asp <user>   (then log in again)"
+	say "To add another host: set INSTALL_ASP_LISTEN=0.0.0.0:8443 here, and run: asp node enroll-token"
 fi
 
 if [ "$ROLE" = cli ]; then

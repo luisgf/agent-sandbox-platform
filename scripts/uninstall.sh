@@ -32,21 +32,21 @@ elif [ -x "$(dirname "$0")/killall.sh" ]; then
 	"$(dirname "$0")/killall.sh"
 fi
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-	systemctl disable --now asp-node-agent.service asp-control-plane.service 2>/dev/null
+	systemctl disable --now asp-server.service asp-node-agent.service asp-control-plane.service 2>/dev/null
 fi
 
 # The packages, or the files of a tarball install.
-if command -v dpkg >/dev/null 2>&1 && { dpkg -s asp-node-agent || dpkg -s asp-control-plane || dpkg -s asp; } >/dev/null 2>&1; then
+if command -v dpkg >/dev/null 2>&1 && { dpkg -s asp-server || dpkg -s asp-node-agent || dpkg -s asp-control-plane || dpkg -s asp; } >/dev/null 2>&1; then
 	flag=-r
 	[ "$purge" -eq 1 ] && flag=-P
-	dpkg "$flag" asp-node-agent asp-control-plane asp 2>/dev/null
+	dpkg "$flag" asp-server asp-node-agent asp-control-plane asp 2>/dev/null
 elif command -v rpm >/dev/null 2>&1; then
-	for p in asp-node-agent asp-control-plane asp; do
+	for p in asp-server asp-node-agent asp-control-plane asp; do
 		rpm -q "$p" >/dev/null 2>&1 && rpm -e "$p"
 	done
 fi
-for b in asp asp-control-plane asp-node-agent; do rm -f "/usr/local/bin/$b"; done
-rm -f /etc/systemd/system/asp-node-agent.service /etc/systemd/system/asp-control-plane.service
+for b in asp asp-control-plane asp-node-agent asp-server; do rm -f "/usr/local/bin/$b"; done
+rm -f /etc/systemd/system/asp-node-agent.service /etc/systemd/system/asp-control-plane.service /etc/systemd/system/asp-server.service
 command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload 2>/dev/null
 
 # The links asp image pull made; a file of somebody's own is left.
@@ -58,6 +58,7 @@ rmdir /opt/sandbox 2>/dev/null
 if [ "$purge" -eq 1 ]; then
 	rm -rf /etc/asp /var/lib/asp /var/lib/asp-control-plane /run/asp /run/asp-vm
 	getent passwd asp-control-plane >/dev/null 2>&1 && userdel asp-control-plane 2>/dev/null
+	getent group asp >/dev/null 2>&1 && groupdel asp 2>/dev/null
 	echo "asp-uninstall: ASP and its data are gone"
 else
 	echo "asp-uninstall: ASP is gone; /etc/asp and /var/lib/asp* were kept (--purge removes them)"

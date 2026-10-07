@@ -5,7 +5,7 @@
 set -e
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload >/dev/null 2>&1 || true
-	for unit in asp-control-plane asp-node-agent; do
+	for unit in asp-control-plane asp-node-agent asp-server; do
 		if systemctl is-active --quiet "$unit.service" 2>/dev/null; then
 			echo "$unit is running the version it had before: systemctl restart $unit runs this one."
 		fi
