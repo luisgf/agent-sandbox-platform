@@ -41,12 +41,12 @@ Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts
 
 ```text
 ┌─ Cliente ─────────────────────────────────────────────┐
-│  Confianza: API key Bearer. No habla con VMM.         │
+│  Confianza: API key o token IdP. No habla con VMM.    │
 └───────────────────────────┬───────────────────────────┘
                             │ HTTPS
 ┌─ Control plane ───────────┴───────────────────────────┐
 │  Autoridad de tenancy, cuotas, JWKS, attest verify,   │
-│  fencing. Store Postgres (o MemoryStore lab).         │
+│  fencing. Store Postgres o SQLite (o memoria, lab).   │
 └───────────────────────────┬───────────────────────────┘
                             │ mTLS en los dos sentidos
                             │ (cert del nodo ↔ cert del CP)
@@ -176,21 +176,21 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 ## Modelo de datos (control plane)
 
-Tablas / entidades principales (migraciones `001`–`017`):
+Tablas / entidades principales (migraciones `001`–`024`):
 
 | Entidad | Campos clave |
 |---|---|
 | `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until (sin uso desde 2026-10), **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011; puerto y direcciones del túnel que asigna el nodo, 017), **status_detail**, **boot_count**, **stopped_at** (018: estados `deleting` y `deleted`, motivo del último fallo, arranques, cuándo paró; `idx` parcial de las paradas) |
 | `sandbox_events` | journal append-only; **actor_sub** (007) |
-| `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, cert_not_after (016), fence_*, revoked_at |
+| `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, cert_not_after (016), fence_*, revoked_at, disk_free_mib (019), egress_enforced (021), agent_version (023), guest_kernel_digest/guest_image_digest (024) |
 | `node_events` | journal de nodos: registro, cordon, `node.offline`/`node.online`, fencing |
 | `node_cert_revocations` | fingerprints revocados (006) |
 | `node_enroll_tokens` | sha256 de tokens de enroll de un solo uso; `node_id` opcional (fijado), `expires_at`, `used_at` (015) |
-| `api_keys` | sha256 del secreto; Bearer; `scope` `tenant`/`platform` (014) |
+| `api_keys` | sha256 del secreto (único, 022); Bearer; `scope` `tenant`/`platform` (014) |
 | `tenant_egress_rules` | host_pattern, port, enabled (003) |
 | attestation evidence | BootStatement firmado (005) |
 
-Stores: `PostgresStore` si `ASP_DATABASE_URL`; si no, `MemoryStore` (lab; se pierde al reiniciar).
+Stores: `PostgresStore` si `ASP_DATABASE_URL=postgres://…`; `SQLiteStore` si `ASP_DATABASE_URL=sqlite:///ruta` (un fichero, un host, [ADR-0016](adr/0016-single-host.md)); si no, `MemoryStore` (lab; se pierde al reiniciar). Los tres cumplen un mismo contrato que un test de paridad comprueba.
 
 ## Fallos y recuperación
 

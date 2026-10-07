@@ -2,7 +2,7 @@
 
 Contrato: [ADR-0010](adr/0010-on-demand-local-net.md). Por qué: [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
 
-El nodo y el CLI **sí lanzan** `ip` y `wg` para crear `wg-asp-{id8}`. No es un esqueleto que se queda en disco. Probado en un host KVM (Ubuntu 26.04, octubre de 2026) con dos sesiones a la vez y el cliente Linux en un network namespace. Cada sandbox llega a la LAN de su propio cliente por su túnel. La del otro le da `Network is unreachable`, y el otro túnel no cuenta ni un byte.
+El nodo y el CLI **sí lanzan** `ip` y `wg` para crear `wg-asp-{id8}`. No es un esqueleto que se queda en disco. Probado a mano en un host KVM (Ubuntu 26.04, octubre de 2026) con dos sesiones a la vez y el cliente Linux en un network namespace: cada sandbox llegaba a la red de su propio cliente por su túnel, la del otro le daba `Network is unreachable` y el otro túnel no contaba ni un byte. **Lo que no se ha comprobado**: el reenvío y el NAT hasta una LAN real, el DNS de casa, el cliente macOS de punta a punta, y nada de esto corre en CI.
 
 La default que se mueve es la **de esa sesión** (tabla de policy routing, `iif` del TAP `asp-{id8}`). No se instala `ip route replace default` en la tabla principal del nodo ni del portátil. `AllowedIPs = 0.0.0.0/0` en `wg set` elige el peer; no añade esa ruta al sistema. Sin el flag, el egress sigue siendo el proxy del nodo (ADR-0002).
 
@@ -76,7 +76,7 @@ Identidad: `owner_sub` del create. Otro sujeto con JWT no obtiene grant. El gues
 
 - `wireguard-tools` (`wg`) y `iproute2` en el portátil y en el nodo.
 - `CAP_NET_ADMIN` (en la práctica, root o una capability acotada) para crear el dispositivo. Sin eso el CLI solo imprime los comandos y el nodo falla el Start de un sandbox con `local_net=true` en vez de caer al proxy.
-- `nft` en el portátil si se quiere el MASQUERADE (`iifname` del `wg-asp-…`). Si no está, el dispositivo puede crearse y el NAT no se instala. Este repo no ha comprobado el reenvío.
+- `nft` en el portátil si se quiere el MASQUERADE (`iifname` del `wg-asp-…`). Si no está, el dispositivo puede crearse y el NAT no se instala. Este repo no ha comprobado el reenvío hasta una LAN real (solo hasta el namespace del cliente).
 - Una dirección del nodo alcanzable desde el portátil: `--local-net-dial` en cada node-agent (`host` o `host:puerto`). Si el nodo no la declara, el grant usa `ASP_LOCAL_NET_DIAL` del plano de control, que solo vale con un único nodo. Vacío = el `wg set` del cliente no lleva `endpoint` y no hay paquetes. El control plane no reenvía el payload. Con varios nodos, abre UDP `47000–54999` hacia cada uno ([`ops-multi-node.md`](ops-multi-node.md)). Cada sesión tiene su propio puerto de ese rango, asignado por el nodo sin colisiones; el reparto se guarda en `<id>.alloc` junto a la clave en `ASP_LOCAL_NET_KEY_DIR`.
 - No poner `AllowedIPs = 0.0.0.0/0` con `wg-quick` en la tabla principal. Está prohibido.
 

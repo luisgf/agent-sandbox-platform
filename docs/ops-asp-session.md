@@ -173,7 +173,7 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 | `ASP_CONTROL_PLANE_URL` / `--control-plane-url` | En `start`, la URL que se guarda. En `exec`/`status`/`stop`, si **no** pasas `--control-plane-url`, se usa la URL guardada. |
 | Resto `ASP_IDP_*`, `ASP_ID_TOKEN`, `ASP_API_KEY` | Igual que [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). |
 | `--force` | Solo `start`. Destruye el id anotado en ese nombre (404 = ya no está) y crea otro. |
-| `--local` | Solo `stop`. No llama al CP. |
+| `--local` | Solo `rm`. No llama al CP: borra el fichero de sesión y la sandbox y su disco siguen en el plano de control. |
 | `--keep` | **No** existe en `session`. El sandbox vive hasta `stop` o el reaper. |
 
 Migrar el fichero único antiguo:

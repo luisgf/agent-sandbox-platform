@@ -28,7 +28,7 @@ Sin este cableado, “IdP listo en código” sigue siendo teórico: el binary n
 |---|---|
 | No es Entra/Okta | Keycloak lab; el mapeo de grupos corporativos (`ASP_IDP_ROLE_MAP`) aún no está cableado a AD. |
 | Sin `tenant_memberships` | El rol sale del JWT; no hay tabla SQL de membership por tenant. |
-| Store memory en este lab CP | El unit actual no fuerza `ASP_DATABASE_URL`; audit/owner no persisten entre reinicios salvo que ops añada Postgres. |
+| Store del CP lab | Postgres desde 2026-10-07 (contenedor `asp-postgres`; ver abajo): audit, dueños y sandboxes **sí** persisten entre reinicios. Con el store en memoria no lo harían. |
 | Puerto 18112 solo loopback | No hay TLS ni reverse-proxy delante del CP lab; acceso remoto = SSH tunnel / bastion. |
 | Admin Keycloak en edge | Históricamente ADR infra pedía tunnel-only; **hoy** nginx de `auth.luisgf.es` hace `proxy_pass` de `location /` (incluye `/admin`) a `127.0.0.1:8081`. Postura segura recomendada: administrar por tunnel y **re-bloquear** `/admin` en edge cuando se pueda. |
 | Password grant | Útil para lab/CI scripts; OAuth corporativo real suele ser auth code / device / client credentials — no depender de ROPC en prod. |

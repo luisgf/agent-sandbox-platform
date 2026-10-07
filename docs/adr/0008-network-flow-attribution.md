@@ -20,14 +20,14 @@ Hoy el dataplane de red sabe (de forma fiable o semi-fiable):
 | `sandbox_id` opcional en header `X-ASP-Sandbox-ID` | Forward proxy audit JSON | Solo si el cliente lo manda y se confía | **No** — el guest puede forjar/omitir el header |
 | Allowlist / deny / CONNECT host:port | Proxy + DNS sink | Tenant vía política adjunta a exec | Parcial: tenant/política, no `owner_sub` |
 | Nombre TAP `asp-{shortID}` | Host (`--tap-auto`) | Sandbox (8 chars del UUID) | Sí a sandbox **si** se correlaciona; hoy no se propaga a logs de egress |
-| IP host TAP | `10.200.0.1/24` por defecto en **cada** TAP | Colisión de diseño | **No** — mismo CIDR host en todos los TAP; guest tip. `10.200.0.2` por L2 distinto |
+| IP host TAP | una `/30` propia por sandbox dentro de `--guest-subnet` (`10.200.0.0/16`): TAP `.1`, guest `.2` (`--tap-auto`) | Sandbox, dentro del nodo | **Sí, dentro del nodo** — la IP origen identifica la sandbox; el proxy ya la usa para elegir la política del tenant. *Actualizado 2026-10: antes era `10.200.0.1/24` en cada TAP* |
 | nft `asp_egress` redirect | iif del subnet guest → proxy | Flujo forzado al proxy | Atribución aún no etiquetada |
 | `sandbox_events` / OIDC `user_sub` | CP / JWT | Humano en plano de control | No aparece en conntrack ni en SIEM de red |
 
 Restricciones reales del código actual (no wishful):
 
 - `node-agent/internal/egress.ForwardProxy` audita `sandbox_id` leído del header; **no** consulta store/`owner_sub`.
-- `tap.Manager` usa `DefaultHostCIDR = "10.200.0.1/24"` para todos los sandboxes → **no** hay IP única global por sandbox en el diseño actual.
+- *Actualizado 2026-10:* el reconciler da a cada TAP su propia `/30` (`tap.GuestNet`), así que dentro de un nodo la IP origen sí es única por sandbox (`tap.Manager.DefaultHostCIDR` solo queda para quien crea un TAP sin pasar por el reconciler). **No** hay IP única global: dos nodos reparten el mismo `--guest-subnet`.
 - nft redirect opera por **subnet** (`10.200.0.0/16`), no por mark por sandbox.
 - El guest **no es confiable** (ADR-0002/0003): no `NET_ADMIN` de producción; cualquier mark/header que el guest elija es forgeable.
 - ADR-0007 rechazó UID Linux guest ↔ humano; lo mismo aplica a “el proceso dentro del guest pone un mark”.
@@ -141,7 +141,7 @@ Requisito: nft enforce + deny default (ADR-0002/0006). Sin enforce, el guest dia
 
 ### Negativas / coste
 
-- Hay que **romper o evolucionar** el esquema actual “todos los TAP con `10.200.0.1/24`” → plan de direccionamiento (p.ej. `10.200.0.0/16` con host `.1` común por bridge, o /30 por sandbox, o mark-only sin IP única).
+- *Superado en parte (2026-10): ya hay una `/30` por sandbox.* Quedaba por **romper o evolucionar** el esquema “todos los TAP con `10.200.0.1/24`” → plan de direccionamiento (p.ej. `10.200.0.0/16` con host `.1` común por bridge, o /30 por sandbox, o mark-only sin IP única).
 - Node-agent necesita cache `sandbox_id → owner_sub` (reconciler ya ve el sandbox; hoy no lo usa el proxy).
 - Raw TCP y UDP/QUIC siguen siendo ciudadanos de segunda: o gateway o solo mark L4.
 - Más superficie ops: mapas nft, agotar espacio de marks (32-bit), documentar colisiones.

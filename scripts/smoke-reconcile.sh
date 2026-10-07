@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Dry-run reconciler: Create stays requested → node claims → FakeVMM start → running → destroy → stopped.
+# Dry-run reconciler: Create stays requested → node claims → FakeVMM start → running → boot attestation
+# → stop (the disk is kept, the work poll lists it as retained) → resume (boot 2) → delete → deleted.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=smoke-lib.sh
