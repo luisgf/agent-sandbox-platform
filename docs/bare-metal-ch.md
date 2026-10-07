@@ -327,7 +327,7 @@ export ASP_CLIENT_CA=/var/lib/asp/certs/ca.crt
 
 export ASP_BOOTSTRAP_API_KEY='…secreto-tenant…'     # Bearer API
 export ASP_NODE_BOOTSTRAP_TOKEN='…secreto-nodo…'    # enroll
-export ASP_REQUIRE_API_KEY=1
+# (la autenticación está siempre activa: no hay variable que "forzarla")
 export ASP_EGRESS_DENY_DEFAULT=1
 export ASP_AUTO_PROVISION=0                         # obligatorio en bare-metal real
 export ASP_OIDC_ISSUER='https://cp.ejemplo.corp:8443'
@@ -673,7 +673,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 | Control | Acción |
 |---|---|
 | mTLS nodos | `ASP_TLS_*` + `ASP_CLIENT_CA` + node `--mtls`; bootstrap token solo en enroll bootstrap |
-| API keys | `ASP_REQUIRE_API_KEY=1`; `ASP_BOOTSTRAP_API_KEY` en secret manager, no en git |
+| API keys | siempre exigidas (sin ellas ni IdP el CP no arranca); `ASP_BOOTSTRAP_API_KEY` en secret manager, no en git. `ASP_INSECURE_OPEN_API=1` solo en labs |
 | Auto-provision | **`ASP_AUTO_PROVISION=0`** (nunca stub sync en prod) |
 | Egress | `ASP_EGRESS_DENY_DEFAULT=1`; allowlist por tenant; `--egress-enforce`; NAT deny-forward default (§3) |
 | Secretos | CA/keys en `/var/lib/asp/certs` mode `0600`; rotación = fase 2 |

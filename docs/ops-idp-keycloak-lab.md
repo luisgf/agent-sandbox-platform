@@ -138,6 +138,19 @@ Si `ASP_IDP_ISSUER` vacío → validador nil:
 Con IdP on + required (este lab): sin token en `GET /v1/sandboxes` → **401**  
 `{"error":"missing or invalid idp bearer token"}`.
 
+### Autenticación siempre activa y credencial del nodo (desde 2026-10, #95)
+
+Ninguna ruta que haga algo responde a una petición sin credencial, y el CP no arranca si no hay forma de autenticarse (ninguna API key en el store, sin IdP; `ASP_INSECURE_OPEN_API=1` es la salida explícita de los labs). Los nodos usan su certificado (mTLS) o, por HTTP plano como este lab, una API key de ámbito `platform`. Para este lab, una vez y antes de reiniciar CP y agente:
+
+```bash
+# 1. La clave: la crea el CP al arrancar a partir de ASP_BOOTSTRAP_API_KEY (en el env file, modo 600)
+head -c 24 /dev/urandom | base64 | sudo install -m 0600 -o ubuntu -g ubuntu /dev/stdin ~/.secrets/asp-node.key
+echo "ASP_BOOTSTRAP_API_KEY=$(cat ~/.secrets/asp-node.key)" >> ~/.secrets/asp-idp.env
+# 2. El agente la manda: ASP_NODE_API_KEY_FILE=/home/ubuntu/.secrets/asp-node.key (legible por quien corra el agente)
+```
+
+Con `ASP_IDP_REQUIRED=1` las rutas de usuario siguen pidiendo token del IdP; la API key solo vale para las de nodo y de plataforma.
+
 ---
 
 ## Admin UI Keycloak

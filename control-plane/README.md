@@ -47,7 +47,8 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `LISTEN_ADDR` | `:8080` | Bind address |
 | `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
 | `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
-| `ASP_REQUIRE_API_KEY` | unset | `1` fuerza Bearer auth |
+| `ASP_BOOTSTRAP_API_KEY` | unset | Crea la primera API key (ámbito `platform`). Sin ninguna key en el store ni IdP configurado el CP **no arranca** (código 2) |
+| `ASP_INSECURE_OPEN_API` | unset | `1` acepta peticiones sin credencial (solo labs y smokes dry-run; avisa al arrancar). Una credencial incorrecta se rechaza igual. `ASP_REQUIRE_API_KEY` ya no hace nada: la autenticación está siempre activa |
 | `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
 | `ASP_IDP_AUDIENCE` | unset | Audiencia esperada del JWT (`aud`). **Obligatoria con `ASP_IDP_REQUIRED=1`**: sin ella el control plane no arranca (código 2), porque aceptaría el token que el emisor haya dado a cualquier otra aplicación de su realm. Con el IdP opcional solo deja un aviso |
 | `ASP_IDP_ALLOW_ANY_AUDIENCE` | unset | `1` permite `ASP_IDP_REQUIRED=1` sin `ASP_IDP_AUDIENCE` (solo lab; avisa en el log) |

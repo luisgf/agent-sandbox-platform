@@ -231,8 +231,9 @@ make smoke-asp   # CLI end-to-end in dry-run
 ```bash
 export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 
-# terminal 1 — control plane (in-memory store, :8080)
-(cd control-plane && go run ./cmd/api)
+# terminal 1 — control plane (in-memory store, 127.0.0.1:8080). Authentication is always
+# on; this dry-run has no keys, so it opts out explicitly (labs and laptops only).
+(cd control-plane && ASP_INSECURE_OPEN_API=1 go run ./cmd/api)
 
 # terminal 2 — pod-daemon on a unix socket (stands in for the guest)
 (cd pod-daemon && cargo run -- --listen unix --unix-socket /tmp/pod-daemon.sock)
@@ -420,7 +421,10 @@ Only the most common settings. Full lists live in each component's README.
 | `ASP_IDP_TENANT_CLAIM` / `ASP_IDP_DEFAULT_TENANT` | CP | Where a user's tenant comes from (claim `tenant_id` by default); every request is confined to it. |
 | `ASP_IDP_REQUIRED` | CLI, CP | Require an IdP token. |
 | `ASP_SESSION_DIR` | CLI | Where session files live (default `~/.cache/asp/sessions`, mode `0700`). |
-| `LISTEN_ADDR` | CP | API listen address. |
+| `LISTEN_ADDR` | CP | API listen address (default `127.0.0.1:8080`). |
+| `ASP_BOOTSTRAP_API_KEY` | CP | Creates the first API key (platform scope). Without a key or an IdP the control plane refuses to start. |
+| `ASP_INSECURE_OPEN_API` | CP | `1` accepts requests with no credential (labs and dry-run only; logged at start). |
+| `ASP_NODE_API_KEY` / `ASP_NODE_API_KEY_FILE` | node-agent | The platform key a node sends to a control plane reached over plain HTTP. |
 | `DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. A stop keeps the disk. |
 | `ASP_STOPPED_SANDBOX_TTL` | CP | Delete a sandbox (and its disk) stopped for this long. Default `7d`; `0`/`off` keeps it until deleted. Needs Postgres to mean anything. |

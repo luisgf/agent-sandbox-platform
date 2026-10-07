@@ -11,7 +11,7 @@ Hoy la plataforma es **multi-tenant** (`tenant_id`) y multi-sandbox, pero la ide
 
 | Capa | Qué identifica hoy | Quién autentica |
 |---|---|---|
-| API cliente | API key → `tenant_id` | Bearer opcional (`ASP_REQUIRE_API_KEY`) |
+| API cliente | API key → `tenant_id` | Bearer obligatorio (desde 2026-10, #95; antes opcional con `ASP_REQUIRE_API_KEY`) |
 | Sandbox | `sandbox_id` + `tenant_id` (+ `node_id`) | Store / reconciler |
 | Guest OIDC | `sub = sandbox/{id}`, claims `tenant_id`/`sandbox_id` **inyectados por el host** | CP firma; guest solo elige `aud` |
 | SSH | Un bridge host-held por node-agent (`SSH_AUTH_SOCK` o `FakeAgent`) | Confirm gate opcional, **global** al proceso |

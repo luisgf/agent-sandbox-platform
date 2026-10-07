@@ -8,6 +8,8 @@ WORKDIR="${TMPDIR:-/tmp}/asp-smoke-rec-$$"
 mkdir -p "$WORKDIR"
 # The node-agent creates this file; the control plane reads it to call the agent.
 export ASP_AGENT_TOKEN_FILE="$WORKDIR/agent.token"
+# Dry-run smoke: no API keys and no IdP, so the control plane is opened on purpose.
+export ASP_INSECURE_OPEN_API=1
 CERT_DIR="$WORKDIR/certs"
 CP_LOG="$WORKDIR/cp.log"
 NA_LOG="$WORKDIR/na.log"

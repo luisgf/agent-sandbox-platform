@@ -14,6 +14,8 @@ WORKDIR="${TMPDIR:-/tmp}/asp-smoke-multi-$$"
 mkdir -p "$WORKDIR"
 # The node-agent creates this file; the control plane reads it to call the agent.
 export ASP_AGENT_TOKEN_FILE="$WORKDIR/agent.token"
+# Dry-run smoke: no API keys and no IdP, so the control plane is opened on purpose.
+export ASP_INSECURE_OPEN_API=1
 CP=http://127.0.0.1:18090
 NODE_A="smoke-a-$$"
 NODE_B="smoke-b-$$"

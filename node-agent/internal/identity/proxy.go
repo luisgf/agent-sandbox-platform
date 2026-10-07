@@ -35,6 +35,9 @@ const (
 type Proxy struct {
 	ControlPlaneURL string
 	HTTP            *http.Client
+	// APIKey is the node's credential for the control plane over plain HTTP
+	// (a platform-scoped key); with mutual TLS the certificate is.
+	APIKey string
 	// TrustSandboxHeader (lab only) lets requests on connections without a
 	// sandbox binding take the sandbox from SandboxHeader, then
 	// DefaultSandboxID. Any client that reaches such a listener can then mint
@@ -189,6 +192,9 @@ func (p *Proxy) mint(ctx context.Context, sandboxID, aud, nonce string) (mintRes
 		return out, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if p.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
 	client := p.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}

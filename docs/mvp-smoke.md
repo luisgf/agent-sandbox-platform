@@ -34,8 +34,9 @@ docker compose up -d postgres
 export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 # opcional: API key de bootstrap
 export ASP_BOOTSTRAP_API_KEY='dev-bootstrap-key'
-# opcional: forzar auth
-# export ASP_REQUIRE_API_KEY=1
+# La autenticación está siempre activa. Sin API key ni IdP el CP no arranca; para estos
+# smokes sin autenticación (solo laboratorio, solo loopback):
+export ASP_INSECURE_OPEN_API=1
 ```
 
 Sin Docker/`DATABASE_URL`, el API usa `MemoryStore` (los tests offline también).
@@ -46,7 +47,7 @@ Sin Docker/`DATABASE_URL`, el API usa `MemoryStore` (los tests offline también)
 cd control-plane
 # Enrollment CA: ASP_CA_CERT/ASP_CA_KEY o auto-create en /tmp/asp-dev-ca
 export ASP_NODE_BOOTSTRAP_TOKEN='dev-node-bootstrap'
-LISTEN_ADDR=:8080 go run ./cmd/api
+LISTEN_ADDR=127.0.0.1:8080 go run ./cmd/api
 ```
 
 Health (siempre público):

@@ -35,7 +35,8 @@ set +a
 
 export LISTEN_ADDR="127.0.0.1:${CP_PORT}"
 export ASP_OIDC_ISSUER="${ASP_OIDC_ISSUER:-http://127.0.0.1:${CP_PORT}}"
-export ASP_REQUIRE_API_KEY="${ASP_REQUIRE_API_KEY:-0}"
+# Authentication is always on; nodes of this lab authenticate with a platform key.
+export ASP_INSECURE_OPEN_API="${ASP_INSECURE_OPEN_API:-1}"
 # Keys: the systemd unit's persistent ones when present, else the old /tmp
 # files. A node on this host must sign attestations with the same
 # ASP_ATTEST_KEY: the control plane trusts no key it is not configured with.

@@ -20,6 +20,20 @@ import (
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
+	// APIKey is sent as a bearer token on every call but enrollment. Over plain
+	// HTTP it is how a node proves itself to the control plane (a platform-scoped
+	// key); over mutual TLS the certificate does, and a key is not needed.
+	APIKey string
+}
+
+// newRequest builds a call to the control plane, with the node's API key when
+// it has one.
+func (c *Client) newRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err == nil && c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	return req, err
 }
 
 type EnrollRequest struct {
@@ -170,7 +184,7 @@ func (c *Client) Enroll(ctx context.Context, bootstrapToken string, req EnrollRe
 
 func (c *Client) Register(ctx context.Context, req RegisterRequest) error {
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/nodes/register", bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPost, c.BaseURL+"/v1/nodes/register", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -203,7 +217,7 @@ func (c *Client) Heartbeat(ctx context.Context, nodeID string, info HeartbeatInf
 		raw, _ := json.Marshal(info)
 		body = bytes.NewReader(raw)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	httpReq, err := c.newRequest(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return err
 	}
@@ -350,7 +364,7 @@ type Work struct {
 
 func (c *Client) ListWork(ctx context.Context, nodeID string) (Work, error) {
 	url := fmt.Sprintf("%s/v1/nodes/%s/work", c.BaseURL, nodeID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	httpReq, err := c.newRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Work{}, err
 	}
@@ -388,7 +402,7 @@ func (c *Client) Claim(ctx context.Context, sandboxID, nodeID string) (Sandbox, 
 	var out Sandbox
 	body, _ := json.Marshal(map[string]string{"node_id": nodeID})
 	url := fmt.Sprintf("%s/v1/sandboxes/%s/claim", c.BaseURL, sandboxID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return out, err
 	}
@@ -416,7 +430,7 @@ func (c *Client) ReportStatus(ctx context.Context, sandboxID, state, detail stri
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/v1/sandboxes/%s/status", c.BaseURL, sandboxID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return out, err
 	}
@@ -456,7 +470,7 @@ func (c *Client) PublishLocalNetNode(ctx context.Context, sandboxID, publicKey s
 		"client_tunnel_addr": tun.ClientAddr,
 	})
 	url := fmt.Sprintf("%s/v1/sandboxes/%s/local-net/node-public", c.BaseURL, sandboxID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -479,7 +493,7 @@ func (c *Client) Attest(ctx context.Context, sandboxID string, evidence any) err
 		return err
 	}
 	url := fmt.Sprintf("%s/v1/sandboxes/%s/attest", c.BaseURL, sandboxID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

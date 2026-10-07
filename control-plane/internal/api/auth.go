@@ -25,10 +25,17 @@ const (
 	callerTenantKey  ctxKey = 4
 )
 
-// AuthConfig controls optional Bearer API-key middleware, IdP JWT (ADR-0007), and mTLS route policy.
+// AuthConfig controls Bearer API-key middleware, IdP JWT (ADR-0007), and mTLS route policy.
+//
+// Authentication is always on: a request that carries no credential is refused,
+// and so is every request when no key exists. The only way to run without it is
+// the explicit InsecureOpen.
 type AuthConfig struct {
-	// Require forces API-key auth even when no keys exist (ASP_REQUIRE_API_KEY=1).
-	Require bool
+	// InsecureOpen lets a request with no credential through
+	// (ASP_INSECURE_OPEN_API=1): any caller can create sandboxes and run
+	// commands in them. For dry-run smokes and a laptop; it is logged at start.
+	// A request that does carry a credential is still checked.
+	InsecureOpen bool
 	// RequireNodeClientCert enforces a verified peer cert on node agent routes
 	// (register/heartbeat/oidc mint). Enrollment is exempt and uses the bootstrap token.
 	// Used with TLS ClientAuth=VerifyClientCertIfGiven so enroll can proceed
@@ -43,15 +50,18 @@ type AuthConfig struct {
 }
 
 func AuthConfigFromEnv() AuthConfig {
-	v := strings.TrimSpace(os.Getenv("ASP_REQUIRE_API_KEY"))
 	clientCA := strings.TrimSpace(os.Getenv("ASP_CLIENT_CA"))
 	return AuthConfig{
-		Require:               v == "1" || strings.EqualFold(v, "true"),
+		InsecureOpen:          EnvTruthy(EnvInsecureOpenAPI),
 		RequireNodeClientCert: clientCA != "",
 		RejectRevokedCerts:    clientCA != "",
 		IdPRequired:           idp.ConfigFromEnv().Required,
 	}
 }
+
+// EnvInsecureOpenAPI turns authentication off for requests that carry no
+// credential. Lab and dry-run only.
+const EnvInsecureOpenAPI = "ASP_INSECURE_OPEN_API"
 
 // APIKeyFromContext returns the authenticated ApiKey if present.
 func APIKeyFromContext(ctx context.Context) (store.ApiKey, bool) {
@@ -170,33 +180,8 @@ func PeerCertFingerprint(r *http.Request) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// keyCountTTL is how long the middleware trusts its count of API keys. Keys are
-// created at start-up (ASP_BOOTSTRAP_API_KEY), so the count rarely changes.
-const keyCountTTL = 10 * time.Second
-
 // keyTouchEvery is the most often a key's last_used_at is written.
 const keyTouchEvery = time.Minute
-
-// keyCountCache saves the SELECT count(*) every request used to run.
-type keyCountCache struct {
-	mu sync.Mutex
-	at time.Time
-	n  int64
-}
-
-func (c *keyCountCache) get(s store.Store) (int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.at.IsZero() && time.Since(c.at) < keyCountTTL {
-		return c.n, nil
-	}
-	n, err := s.CountAPIKeys()
-	if err != nil {
-		return 0, err
-	}
-	c.n, c.at = n, time.Now()
-	return n, nil
-}
 
 // keyTouches writes last_used_at at most every keyTouchEvery per key, instead
 // of an UPDATE on every request.
@@ -227,7 +212,6 @@ func (k *keyTouches) touch(s store.Store, id string) {
 // When RejectRevokedCerts is set, revoked fingerprints are rejected with 401.
 // Node mTLS routes never require human IdP JWTs.
 func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handler {
-	keyCount := &keyCountCache{}
 	touches := &keyTouches{}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -280,15 +264,6 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Lab HTTP: allow oidc mint without API key (mTLS optional); still not public to internet.
-			if r.URL.Path == "/v1/internal/oidc/token" && !cfg.Require {
-				n, _ := keyCount.get(s)
-				if n == 0 {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-
 			raw := bearerToken(r.Header.Get("Authorization"))
 
 			// IdP JWT path: when validator configured and bearer looks like a JWT,
@@ -322,17 +297,11 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				return
 			}
 
-			n, err := keyCount.get(s)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "auth store error")
-				return
-			}
-			enabled := cfg.Require || n > 0
-			if !enabled {
-				next.ServeHTTP(w, r)
-				return
-			}
 			if raw == "" {
+				if cfg.InsecureOpen {
+					next.ServeHTTP(w, r)
+					return
+				}
 				writeError(w, http.StatusUnauthorized, "missing bearer token")
 				return
 			}
@@ -340,6 +309,12 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 			key, err := s.LookupAPIKeyByHash(hash)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, "invalid api key")
+				return
+			}
+			// A node authenticates with its certificate or, over plain HTTP, with a
+			// platform key: a tenant's key must not be able to act as a node.
+			if isNodeAgentPath(r.URL.Path) && key.Scope != store.APIKeyScopePlatform {
+				writeError(w, http.StatusForbidden, "node routes need the node's certificate or a platform-scoped api key: a tenant key cannot act as a node")
 				return
 			}
 			touches.touch(s, key.ID)
