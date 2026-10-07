@@ -118,7 +118,7 @@ Cada petición deja una línea `request` con método, ruta, estado, bytes, durac
 
 **Por qué.** Una sesión `asp session` (o un create olvidado) deja la microVM encendida hasta que alguien la pare. El reaper del control-plane marca `stopping` (o `stopped` si nunca se asignó nodo) cuando no hay actividad durante el umbral, y el reconciler del nodo apaga la VM **conservando su disco**: es una parada, no un borrado, y `asp session resume` la trae de vuelta.
 
-**Qué cuenta como actividad.** `last_activity_at` se mueve en: create, transición a `running` (start) y **exec con respuesta correcta del node-agent** (aunque el proceso del guest salga ≠ 0). No cuentan: GET, heartbeat, sondeos de `/work`, ni un exec que ni siquiera llega al guest.
+**Qué cuenta como actividad.** `last_activity_at` se mueve en: create, transición a `running` (start) y **un exec**: al empezar, cada `min(1 min, timeout/3)` mientras la llamada al node-agent sigue abierta (un stream o una llamada acumulada que espera su respuesta) y al terminar con respuesta correcta (aunque el proceso del guest salga ≠ 0). «Inactiva» es «ningún exec en marcha y ninguno terminado hace N»: el reaper no para una sandbox en mitad de un comando que lleva más que el timeout. No cuentan: GET, heartbeat, sondeos de `/work`, ni el fin de un exec que no llegó a responder.
 
 **Cómo se configura.** Default del binario: apagado. En lab/producción:
 

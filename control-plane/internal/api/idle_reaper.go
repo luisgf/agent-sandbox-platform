@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
@@ -88,4 +89,48 @@ func nodeIDOf(sb store.Sandbox) string {
 		return ""
 	}
 	return *sb.NodeID
+}
+
+// touchEvery is how often keepActive touches a sandbox for an idle timeout: a few
+// times inside it, so one missed touch does not let the reaper in, and at most
+// once a minute. 0 when the reaper is off.
+func touchEvery(idleTimeout time.Duration) time.Duration {
+	if idleTimeout <= 0 {
+		return 0
+	}
+	every := idleTimeout / 3
+	if every > time.Minute {
+		every = time.Minute
+	}
+	if every < 10*time.Millisecond {
+		every = 10 * time.Millisecond
+	}
+	return every
+}
+
+// keepActive marks the sandbox active now and again at touchEvery until the
+// returned function is called. Idle means "no exec running and none finished for
+// the idle timeout": the reaper must not stop a sandbox in the middle of a
+// command that streams for longer than the timeout.
+func (s *Server) keepActive(sandboxID string) (stop func()) {
+	_ = s.Store.TouchSandboxActivity(sandboxID)
+	every := touchEvery(s.IdleTimeout)
+	if every == 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				_ = s.Store.TouchSandboxActivity(sandboxID)
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
 }

@@ -183,11 +183,12 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("idle timeout: %w", err)
 	}
+	srv.IdleTimeout = idleTimeout
 	if idleTimeout > 0 {
 		sweep := store.IdleSweepInterval(os.Getenv(store.EnvSandboxIdleSweep))
 		go srv.RunIdleReaper(ctx, idleTimeout, sweep)
 		slog.Info("sandbox idle reaper enabled", "timeout", idleTimeout.String(), "sweep", sweep.String(),
-			"note", "activity = create, transition to running, successful exec; lease renew is not activity")
+			"note", "activity = create, transition to running, an exec while it starts and runs, and when it ends; lease renew is not activity")
 	} else {
 		slog.Info("sandbox idle reaper disabled",
 			"hint", "set ASP_SANDBOX_IDLE_TIMEOUT=2h (or 1h) or -idle-timeout 2h; 0/off disables")
