@@ -53,6 +53,7 @@ type execBody struct {
 	Stdin           string            `json:"stdin,omitempty"`
 	StdinStream     bool              `json:"stdin_stream,omitempty"`
 	AsRoot          bool              `json:"as_root,omitempty"`
+	TimeoutSeconds  int               `json:"timeout_seconds,omitempty"`
 	EgressAllowlist *egressPolicyDTO  `json:"egress_allowlist,omitempty"`
 }
 
@@ -246,6 +247,7 @@ func execRequestFromBody(body execBody) poddaemon.ExecRequest {
 		Stdin:       body.Stdin,
 		StdinStream: body.StdinStream,
 		AsRoot:      body.AsRoot,
+		TimeoutSecs: body.TimeoutSeconds,
 	}
 }
 

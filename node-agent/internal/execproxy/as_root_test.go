@@ -71,3 +71,38 @@ func TestAsRootReachesTheGuest(t *testing.T) {
 		t.Errorf("a command that did not ask for root sends the field anyway: %s %s", raws[1], raws[3])
 	}
 }
+
+// timeout_seconds reaches pod-daemon as timeout_secs, so a buffered exec runs for
+// as long as it was allowed to.
+func TestTimeoutSecondsReachesTheGuest(t *testing.T) {
+	var got []poddaemon.ExecRequest
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body poddaemon.ExecRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = append(got, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"stdout":"","stderr":"","exit_code":0}`))
+	})}
+	go func() { _ = guest.Serve(ln) }()
+	defer guest.Close()
+	proxy := httptest.NewServer((&Server{Pod: poddaemon.NewClientFromDialer(tcpDialer{addr: ln.Addr().String()})}).Handler())
+	defer proxy.Close()
+	for _, body := range []string{
+		`{"sandbox_id":"sb","cmd":["make"],"timeout_seconds":1800}`,
+		`{"sandbox_id":"sb","cmd":["make"]}`,
+	} {
+		resp, err := http.Post(proxy.URL+"/v1/internal/exec", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	if len(got) != 2 || got[0].TimeoutSecs != 1800 || got[1].TimeoutSecs != 0 {
+		t.Fatalf("guest saw %+v", got)
+	}
+}

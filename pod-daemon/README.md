@@ -5,7 +5,7 @@ Daemon Rust dentro de la microVM. Sirve HTTP/1.1 JSON:
 - `GET /healthz` → `{"status":"ok"}`
 - `POST /v1/exec` body `{"cmd":["echo","hi"],"env":{},"cwd":"","as_root":false}` → `{"stdout","stderr","exit_code"}` (sync + timeout)
 
-El exec acumulado lee stdout y stderr mientras el comando corre y escribe `stdin` desde otro hilo, así que no se bloquea por mucha salida ni por mucha entrada. Cuando el comando termina, espera como mucho 1 s a que se cierren sus pipes: un proceso que lanzó en segundo plano y que heredó stdout no lo retiene. Si vence `--exec-timeout-secs`, mata el comando y devuelve lo que llevaba escrito con `exit_code` 124 y el aviso al final de `stderr`.
+El exec acumulado lee stdout y stderr mientras el comando corre y escribe `stdin` desde otro hilo, así que no se bloquea por mucha salida ni por mucha entrada. Cuando el comando termina, espera como mucho 1 s a que se cierren sus pipes: un proceso que lanzó en segundo plano y que heredó stdout no lo retiene. Si vence el tiempo, mata el comando y devuelve lo que llevaba escrito con `exit_code` 124 y el aviso al final de `stderr`. El tiempo es `--exec-timeout-secs` (30 por defecto) o, si la petición trae `timeout_secs`, ese valor con tope `--exec-max-timeout-secs` (3600); `0` es el valor por defecto, no «sin límite». Un stream lo ignora.
 
 Las peticiones acumuladas (`/healthz`, `/v1/exec` sin stream, `/v1/exec/stdin`) dejan la conexión abierta para la siguiente (HTTP/1.1 keep-alive) salvo que el cliente mande `Connection: close`; el node-agent reutiliza así la conexión vsock en vez de repetir el `CONNECT` en cada llamada. El stream siempre cierra la conexión al terminar.
 

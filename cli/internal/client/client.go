@@ -139,6 +139,10 @@ type ExecRequest struct {
 	// AsRoot runs the command as root in the guest. Without it the guest's
 	// pod-daemon runs it as the owner of the workspace, or as its default user.
 	AsRoot bool `json:"as_root,omitempty"`
+	// TimeoutSeconds is how long a buffered exec (Exec, not the stream) may run.
+	// 0 leaves it to the control plane's limit (ASP_BUFFERED_EXEC_TIMEOUT, 10
+	// minutes by default); the control plane also caps what is asked.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 // ExecResult is the exec response from the control plane.
@@ -374,11 +378,35 @@ func (c *Client) StartSandbox(ctx context.Context, id string) (Sandbox, error) {
 	return out, err
 }
 
+// ExecWait is how long Exec waits for the control plane when the request names no
+// timeout: a little more than the control plane's own default limit (10 minutes),
+// so its answer for a command that took too long arrives before the client gives up.
+const ExecWait = 11 * time.Minute
+
+// execMargin is what Exec waits beyond the time the request gives the command.
+var execMargin = 30 * time.Second
+
 // Exec runs a command in the sandbox via the control-plane proxy.
 // The response is buffered JSON (stdout/stderr/exit_code). Smokes use this path.
+// A buffered call is not cut at the 60 s of the client's JSON calls: it waits as
+// long as the command may run (TimeoutSeconds, else ExecWait).
 func (c *Client) Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error) {
+	wait := ExecWait
+	if req.TimeoutSeconds > 0 {
+		wait = time.Duration(req.TimeoutSeconds)*time.Second + execMargin
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	long := *c
+	base := c.HTTPClient
+	if base == nil {
+		base = http.DefaultClient
+	}
+	hc := *base
+	hc.Timeout = 0 // the context bounds the call
+	long.HTTPClient = &hc
 	var out ExecResult
-	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/exec", req, http.StatusOK, &out)
+	err := long.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/exec", req, http.StatusOK, &out)
 	return out, err
 }
 

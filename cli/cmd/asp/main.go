@@ -409,6 +409,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
 	asRoot := fs.Bool("root", false, "run as root in the guest (default: as the owner of the workspace, or the guest's default user)")
+	execTimeout := fs.Duration("exec-timeout", 0, "how long the command may run (default: the control plane's limit for a buffered exec, 10m; longer needs asp session exec, which streams)")
 	pos, err := parseInterspersed(fs, before)
 	if err != nil {
 		return 2
@@ -432,7 +433,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
-	res, err := c.Exec(context.Background(), id, client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot})
+	res, err := c.Exec(context.Background(), id, client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot, TimeoutSeconds: execSeconds(*execTimeout)})
 	if err != nil {
 		fmt.Fprintf(stderr, "exec: %v\n", err)
 		return 1
@@ -449,6 +450,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
 	asRoot := fs.Bool("root", false, "run as root in the guest (default: as the owner of the workspace, or the guest's default user)")
+	execTimeout := fs.Duration("exec-timeout", 0, "how long the command may run (default: the control plane's limit for a buffered exec, 10m; longer needs asp session exec, which streams)")
 	keep := fs.Bool("keep", false, "do not destroy sandbox on exit")
 	image := fs.String("image", "debian:bookworm-slim", "image_ref")
 	cpu := fs.Int("cpu-millis", 1000, "cpu_millis")
@@ -515,9 +517,13 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	res, err := c.Exec(ctx, sb.ID, client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot})
+	res, err := c.Exec(ctx, sb.ID, client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot, TimeoutSeconds: execSeconds(*execTimeout)})
 	if err != nil {
 		fmt.Fprintf(stderr, "run exec: %v\n", err)
+		if destroy {
+			// The command may still be running: say what happens to it.
+			fmt.Fprintf(stderr, "asp: the sandbox is destroyed with its command (--keep leaves it up for inspection; --exec-timeout allows a longer command; asp session exec streams without a limit)\n")
+		}
 		return 1
 	}
 	if code := writeExec(stdout, stderr, res, g.jsonOut); code != 0 {
@@ -697,4 +703,12 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// execSeconds is a --exec-timeout in whole seconds, rounded up; 0 (unset) stays 0.
+func execSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	return int((d + time.Second - 1) / time.Second)
 }

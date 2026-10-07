@@ -39,6 +39,11 @@ struct ExecRequest {
     /// as the default exec user (see `runas`).
     #[serde(default)]
     as_root: bool,
+    /// Timeout of a buffered exec, in seconds, for this request: it replaces
+    /// `--exec-timeout-secs` and is capped by `--exec-max-timeout-secs`. Ignored
+    /// by a streamed exec, which has no overall timeout.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,8 +74,11 @@ struct ErrorBody {
 /// Time limits of the exec endpoints.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecLimits {
-    /// Kills a buffered exec (`POST /v1/exec` without `?stream=1`) after this long.
+    /// Kills a buffered exec (`POST /v1/exec` without `?stream=1`) after this long,
+    /// unless the request asks for another time (`timeout_secs`).
     pub buffered: Duration,
+    /// The longest a request may ask a buffered exec to run.
+    pub max_buffered: Duration,
     /// Kills a streamed exec after this long without output and without stdin.
     /// None: a stream lasts as long as its command and its client.
     pub stream_idle: Option<Duration>,
@@ -84,6 +92,7 @@ impl ExecLimits {
     pub fn new(buffered: Duration, stream_idle: Option<Duration>) -> ExecLimits {
         ExecLimits {
             buffered,
+            max_buffered: Duration::from_secs(3600),
             stream_idle,
             policy: ExecPolicy::no_switch_static(),
         }
@@ -246,12 +255,22 @@ fn respond_buffered(method: &str, path: &str, body: &[u8], limits: ExecLimits) -
         ("POST", "/v1/exec/stdin") => stdin_response(body),
         ("POST", "/v1/exec") => match parse_exec(body) {
             Err(resp) => resp,
-            Ok(req) => match run_exec(&req, limits.buffered, limits.policy) {
+            Ok(req) => match run_exec(&req, buffered_timeout(&req, limits), limits.policy) {
                 Ok(out) => json_body(200, &out),
                 Err(e) => json_body(exec_error_status(&e), &ErrorBody { error: e.to_string() }),
             },
         },
         _ => (404, br#"{"error":"not found"}"#.to_vec()),
+    }
+}
+
+/// How long a buffered exec may run: what the request asks for (`timeout_secs`),
+/// at most `max_buffered`, else the default. A request for 0 seconds means the
+/// default, not "no time".
+fn buffered_timeout(req: &ExecRequest, limits: ExecLimits) -> Duration {
+    match req.timeout_secs {
+        Some(secs) if secs > 0 => Duration::from_secs(secs).min(limits.max_buffered),
+        _ => limits.buffered,
     }
 }
 
@@ -1026,6 +1045,7 @@ mod tests {
             stdin: stdin.map(str::to_string),
             stdin_stream: false,
             as_root: false,
+            timeout_secs: None,
         };
         run_exec(&req, timeout, ExecPolicy::no_switch_static()).unwrap()
     }
@@ -1259,6 +1279,7 @@ mod tests {
     fn run(policy: &'static ExecPolicy, body: &str) -> (u16, String) {
         let limits = ExecLimits {
             buffered: Duration::from_secs(10),
+            max_buffered: Duration::from_secs(3600),
             stream_idle: None,
             policy,
         };
@@ -1465,5 +1486,58 @@ mod tests {
         assert_eq!(status, 200);
         let _ = std::fs::remove_dir_all(&ws);
         let _ = std::fs::remove_dir_all(&secret);
+    }
+
+    // ---- the timeout of a buffered exec comes from the request (#115) ----
+
+    fn req_with(timeout_secs: Option<u64>) -> ExecRequest {
+        serde_json::from_str(&format!(
+            r#"{{"cmd":["true"]{}}}"#,
+            timeout_secs.map(|s| format!(r#","timeout_secs":{s}"#)).unwrap_or_default()
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_request_picks_its_buffered_timeout_within_the_cap() {
+        let limits = ExecLimits {
+            buffered: Duration::from_secs(30),
+            max_buffered: Duration::from_secs(600),
+            stream_idle: None,
+            policy: ExecPolicy::no_switch_static(),
+        };
+        assert_eq!(buffered_timeout(&req_with(None), limits), Duration::from_secs(30));
+        assert_eq!(buffered_timeout(&req_with(Some(0)), limits), Duration::from_secs(30)); // 0 is not "no time"
+        assert_eq!(buffered_timeout(&req_with(Some(120)), limits), Duration::from_secs(120));
+        assert_eq!(buffered_timeout(&req_with(Some(86_400)), limits), Duration::from_secs(600)); // capped
+        assert_eq!(buffered_timeout(&req_with(Some(5)), limits), Duration::from_secs(5)); // lower than the default is fine
+    }
+
+    #[test]
+    fn a_buffered_exec_runs_for_the_time_its_request_asks() {
+        let limits = ExecLimits::new(Duration::from_secs(30), None);
+        // The default would let `sleep 5` finish; the request cuts it at 1 second.
+        let started = Instant::now();
+        let (status, body) = respond_buffered(
+            "POST",
+            "/v1/exec",
+            br#"{"cmd":["/bin/sh","-c","echo before; sleep 5; echo late-output"],"timeout_secs":1}"#,
+            limits,
+        );
+        let waited = started.elapsed();
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("\"exit_code\":124") && body.contains("before") && !body.contains("late-output"), "{body}");
+        assert!(waited < Duration::from_secs(4), "took {waited:?}: the request's timeout was not used");
+        // A longer request than the default runs a command the default would have killed.
+        let short = ExecLimits::new(Duration::from_millis(300), None);
+        let (_, body) = respond_buffered(
+            "POST",
+            "/v1/exec",
+            br#"{"cmd":["/bin/sh","-c","sleep 1; echo finished"],"timeout_secs":10}"#,
+            short,
+        );
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("finished") && body.contains("\"exit_code\":0"), "{body}");
     }
 }
