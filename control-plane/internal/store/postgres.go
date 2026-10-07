@@ -635,7 +635,7 @@ func (p *PostgresStore) RegisterNode(ctx context.Context, input RegisterNodeInpu
 			strings.TrimSpace(input.AgentInstanceID), input.EgressEnforced,
 		))
 		if err == nil && agentRestarted(prevInstance, strings.TrimSpace(input.AgentInstanceID)) {
-			err = failRestartOrphansTx(ctx, tx, id, now)
+			err = failRestartOrphansTx(ctx, tx, id, now, input.AdoptedSandboxes)
 		}
 	}
 	if err != nil {

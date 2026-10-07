@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
 
 func confineCfg(mode string) config {
@@ -54,5 +56,62 @@ func TestVMConfinementValidatesItsNumbers(t *testing.T) {
 	cfg.VMSlice = ""
 	if c, err := vmConfinement(cfg, nil); err != nil || c.Slice != "" {
 		t.Errorf("empty slice: %+v %v", c, err)
+	}
+}
+
+// A VM survives the agent unless it is bound to it: the units are bound only when
+// --vm-survive-restart is off, and only a confined VM is recorded to be adopted.
+func TestVMsSurviveTheAgentByDefault(t *testing.T) {
+	cfg := confineCfg("on")
+	cfg.VMSurviveRestart = true
+	c, err := vmConfinement(cfg, nil)
+	if err != nil || c.BindTo != "" {
+		t.Fatalf("survive: %+v %v", c, err)
+	}
+	cfg.VMSurviveRestart = false
+	c, err = vmConfinement(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BindTo != bindTo(cfg) {
+		t.Fatalf("bound to %q, want the agent's own service %q", c.BindTo, bindTo(cfg))
+	}
+	// Under systemd that is the agent's service; from a shell there is none.
+	if bindTo(config{VMSurviveRestart: true}) != "" {
+		t.Fatal("survive still binds the VMs")
+	}
+}
+
+func TestVMStateDirOnlyForVMsThatCanSurvive(t *testing.T) {
+	confine := &vmm.Confinement{}
+	base := config{CHSocketDir: "/run/asp", VMSurviveRestart: true}
+	if got := vmStateDir(base, confine); got != "/run/asp/state" {
+		t.Fatalf("state dir %q", got)
+	}
+	for name, mod := range map[string]func(*config){
+		"dry-run":     func(c *config) { c.DryRun = true },
+		"shared CH":   func(c *config) { c.CHAPISocket = "/run/ch.sock" },
+		"not survive": func(c *config) { c.VMSurviveRestart = false },
+		"unconfined":  nil,
+	} {
+		cfg, c := base, confine
+		if mod == nil {
+			c = nil
+		} else {
+			mod(&cfg)
+		}
+		if got := vmStateDir(cfg, c); got != "" {
+			t.Errorf("%s: state dir %q, want none", name, got)
+		}
+	}
+}
+
+func TestRegisterRequestCarriesTheAdoptedVMs(t *testing.T) {
+	cfg := config{NodeID: "n1", AdoptedSandboxes: []string{"a", "b"}}
+	if got := registerRequest(cfg).AdoptedSandboxes; len(got) != 2 || got[0] != "a" {
+		t.Fatalf("adopted %v", got)
+	}
+	if registerRequest(config{NodeID: "n1"}).AdoptedSandboxes != nil {
+		t.Fatal("nothing adopted, nothing sent")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostproc"
@@ -198,4 +199,35 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// Adopt takes over the virtiofsd an earlier agent started in the service
+// cfg.Unit describes and left running: it must still be active and serve its
+// socket. The returned function stops it and removes its socket and pid file,
+// as Start's does.
+func Adopt(cfg Config) (func(), error) {
+	if cfg.Launcher == nil || cfg.Unit.Name == "" || cfg.SocketPath == "" {
+		return nil, fmt.Errorf("virtiofs: adopting needs the launcher, the unit and the socket of the daemon")
+	}
+	if !cfg.Launcher.Active(cfg.Unit.Name) {
+		return nil, fmt.Errorf("virtiofs: %s.service is not active", cfg.Unit.Name)
+	}
+	if _, err := os.Stat(cfg.SocketPath); err != nil {
+		return nil, fmt.Errorf("virtiofs: %w", err)
+	}
+	proc := cfg.Launcher.Adopt(cfg.Unit.Name)
+	pidFile := cfg.SocketPath + PIDFileSuffix
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = proc.Kill()
+			deadline := time.Now().Add(2 * time.Second)
+			for cfg.Launcher.Active(cfg.Unit.Name) && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			proc.Stop()
+			_ = os.Remove(pidFile)
+			_ = os.Remove(cfg.SocketPath)
+		})
+	}, nil
 }

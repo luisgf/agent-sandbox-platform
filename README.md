@@ -461,7 +461,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Harness integration | A shell wrapper is the integration point; for OpenCode, `integrations/opencode/` adds a plugin, instructions and example configs. |
 | Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |
 | Kubernetes | Optional, only to deploy the API. Sandboxes are not Pods. |
-| Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Agents do not adopt running VMs after a restart: the systemd unit stops them with the agent, and a starting agent removes whatever a previous one left (VMs, TAPs, tunnels, disks). One node-agent per server. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
+| Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Running VMs survive a node-agent restart or upgrade and the new process adopts them ([ADR-0014](docs/adr/0014-vms-outlive-the-agent.md)); only the first upgrade to a version with this still stops them. A starting agent removes whatever a previous one left dead (VMs, TAPs, tunnels, sockets). One node-agent per server. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
 
 ---
 
@@ -523,6 +523,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0010](docs/adr/0010-on-demand-local-net.md) | On-demand local network: full tunnel, opt-in |
 | [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes, capacity placement |
 | [0012](docs/adr/0012-retained-disks.md) | Stop is not delete: a sandbox's disk survives a stop, bounded by a TTL |
+| [0014](docs/adr/0014-vms-outlive-the-agent.md) | VMs outlive the node-agent: a restart leaves them running and the next process adopts them |
 
 Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 

@@ -244,3 +244,79 @@ func TestMemoryAgentRestartOrphans(t *testing.T) {
 func TestPostgresAgentRestartOrphans(t *testing.T) {
 	testAgentRestartOrphans(t, newPostgresTestStore(t))
 }
+
+// An agent that restarted and took over some VMs says so on register: those
+// sandboxes stay as they are, the others are orphaned as before, and a sandbox of
+// another node in the list is not touched either way.
+func testAgentRestartKeepsAdoptedSandboxes(t *testing.T, s Store) {
+	t.Helper()
+	ctx := context.Background()
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	register := func(node, instance string, adopted ...string) {
+		t.Helper()
+		if _, err := s.RegisterNode(ctx, RegisterNodeInput{ID: node, AgentEndpoint: "http://127.0.0.1:9100", AgentInstanceID: instance, AdoptedSandboxes: adopted}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("node-a", "a1")
+	register("node-b", "b1")
+	run := func(node string) Sandbox {
+		t.Helper()
+		sb, err := s.CreateSandbox(ctx, CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: node})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimSandbox(ctx, sb.ID, node); err != nil {
+			t.Fatal(err)
+		}
+		out, err := s.UpdateSandboxStatus(ctx, sb.ID, SandboxRunning, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	kept := run("node-a")
+	lost := run("node-a")
+	stopping := run("node-a")
+	if _, err := s.StopSandbox(ctx, stopping.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := run("node-b")
+
+	// node-a restarts and says it still runs two of its three sandboxes, and, by mistake,
+	// one that belongs to node-b.
+	register("node-a", "a2", kept.ID, stopping.ID, elsewhere.ID)
+	for id, want := range map[string]SandboxState{
+		kept.ID:      SandboxRunning,  // adopted: its VM kept running
+		stopping.ID:  SandboxStopping, // adopted: the node finishes the stop it had begun
+		lost.ID:      SandboxStopped,  // not adopted: its VM is gone
+		elsewhere.ID: SandboxRunning,  // another node's, and node-b did not restart
+	} {
+		if got := sandboxOf(t, s, id); got.State != want {
+			t.Errorf("%s: %s, want %s", id, got.State, want)
+		}
+	}
+	if got := sandboxOf(t, s, lost.ID); got.StopReason != StopReasonAgentRestarted {
+		t.Errorf("the one that was not adopted: stop_reason=%q", got.StopReason)
+	}
+	if got := sandboxOf(t, s, kept.ID); got.StopReason != "" {
+		t.Errorf("the adopted one has stop_reason=%q", got.StopReason)
+	}
+
+	// node-b restarts too, adopting nothing, and cannot save node-a's sandbox by name.
+	register("node-b", "b2", kept.ID)
+	if got := sandboxOf(t, s, elsewhere.ID); got.State != SandboxStopped {
+		t.Errorf("node-b adopted nothing of its own: %s", got.State)
+	}
+	if got := sandboxOf(t, s, kept.ID); got.State != SandboxRunning {
+		t.Errorf("node-b's list changed node-a's sandbox: %s", got.State)
+	}
+}
+
+func TestMemoryAgentRestartKeepsAdoptedSandboxes(t *testing.T) {
+	testAgentRestartKeepsAdoptedSandboxes(t, NewMemoryStore())
+}
+
+func TestPostgresAgentRestartKeepsAdoptedSandboxes(t *testing.T) {
+	testAgentRestartKeepsAdoptedSandboxes(t, newPostgresTestStore(t))
+}

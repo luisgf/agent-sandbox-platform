@@ -269,7 +269,7 @@ func (r *Reconciler) gcDisks(work cpclient.Work) {
 	}
 	r.mu.Unlock()
 
-	disks, err := leftoverDisks(r.DiskDir, keep)
+	disks, err := leftoverDisks(r.DiskDir, keep, spareSet{})
 	if err != nil {
 		if !os.IsNotExist(err) {
 			r.Logger.Warn("disk GC: list", "dir", r.DiskDir, "error", err)

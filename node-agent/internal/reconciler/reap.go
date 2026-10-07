@@ -37,6 +37,9 @@ type ReapConfig struct {
 	// Keep are paths never removed even when named like a leftover: the base
 	// rootfs, the shared --ch-api-socket, the bridge and identity sockets.
 	Keep []string
+	// Adopt are sandboxes whose VM is alive and will be taken over (Adopt): their
+	// processes, sockets, TAP and tunnel are not leftovers.
+	Adopt []string
 	// Report logs what would be removed and removes nothing.
 	Report bool
 
@@ -106,6 +109,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 			keep[filepath.Clean(p)] = true
 		}
 	}
+	spare := newSpareSet(cfg.Adopt)
 	var rep ReapReport
 	var errs []error
 	fail := func(what string, err error) {
@@ -118,7 +122,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 	// to such a socket is still the process's own and stays.
 	running := map[string]bool{}
 	if cfg.Procs != nil {
-		procs, err := orphanProcesses(cfg.Procs, socketDir, keep)
+		procs, err := orphanProcesses(cfg.Procs, socketDir, keep, spare)
 		fail("list processes", err)
 		stop := make([]hostproc.Proc, 0, len(procs))
 		for _, p := range procs {
@@ -143,6 +147,13 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 	if cfg.LocalNet != nil {
 		ids, err := localNetLeftovers(cfg.LocalNet, cfg.SysClassNet)
 		fail("list local-net state", err)
+		kept := ids[:0]
+		for _, id := range ids {
+			if !spare.has(id) {
+				kept = append(kept, id)
+			}
+		}
+		ids = kept
 		for _, id := range ids {
 			log.Info(msg, "kind", "local-net", "sandbox_id", id, "iface", localnet.IfacePrefix+localnet.ShortID(id))
 			if !cfg.Report {
@@ -160,7 +171,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 			mgr = &tap.Manager{Logger: log}
 		}
 		for _, name := range names {
-			if short, _ := strings.CutPrefix(name, tap.DevicePrefix); !isShortID(short) {
+			if short, _ := strings.CutPrefix(name, tap.DevicePrefix); !isShortID(short) || spare.hasShort(short) {
 				continue
 			}
 			log.Info(msg, "kind", "tap", "tap", name)
@@ -171,7 +182,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 		}
 	}
 
-	socks, err := leftoverSockets(socketDir, keep, running)
+	socks, err := leftoverSockets(socketDir, keep, running, spare)
 	fail("list "+socketDir, err)
 	// Sockets, links and runtime files are small and many (up to eight per
 	// sandbox): debug unless the operator asked for the list.
@@ -195,7 +206,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 	rep.Sockets = socks
 
 	if cfg.DiskDir != "" {
-		disks, err := leftoverDisks(cfg.DiskDir, keep)
+		disks, err := leftoverDisks(cfg.DiskDir, keep, spare)
 		fail("list "+cfg.DiskDir, err)
 		for _, p := range disks {
 			log.Info(msg, "kind", "rootfs", "path", p)
@@ -219,7 +230,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 
 // orphanProcesses finds the Cloud Hypervisor and virtiofsd processes serving a
 // per-sandbox socket in socketDir. This process and Keep sockets are skipped.
-func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool) ([]ReapedProcess, error) {
+func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool, spare spareSet) ([]ReapedProcess, error) {
 	all, err := t.List()
 	if err != nil {
 		return nil, err
@@ -232,7 +243,7 @@ func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool) (
 		}
 		if id, ok := vmm.SpawnedSandbox(p.Argv, socketDir); ok {
 			sock := filepath.Join(socketDir, vmm.APISocketName(id))
-			if isSandboxID(id) && !keep[sock] {
+			if isSandboxID(id) && !keep[sock] && !spare.has(id) {
 				out = append(out, ReapedProcess{Proc: p, Kind: "cloud-hypervisor", SandboxID: id, Socket: sock})
 			}
 			continue
@@ -241,7 +252,7 @@ func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool) (
 		if !ok || filepath.Clean(filepath.Dir(sock)) != filepath.Clean(socketDir) {
 			continue
 		}
-		if id, ok := between(filepath.Base(sock), virtiofsPrefix, ".sock"); ok && isSandboxID(id) {
+		if id, ok := between(filepath.Base(sock), virtiofsPrefix, ".sock"); ok && isSandboxID(id) && !spare.has(id) {
 			sock = filepath.Join(socketDir, filepath.Base(sock))
 			out = append(out, ReapedProcess{Proc: p, Kind: "virtiofsd", SandboxID: id, Socket: sock})
 		}
@@ -287,7 +298,7 @@ func localNetLeftovers(h *localnet.Host, sysClassNet string) ([]string, error) {
 // the lock and pid files next to them. A name of another file type (a
 // directory, a regular file named like a socket) is not ours and stays. A lock
 // or pid file stays with its socket when that is kept or its process running.
-func leftoverSockets(socketDir string, keep, running map[string]bool) ([]string, error) {
+func leftoverSockets(socketDir string, keep, running map[string]bool, spare spareSet) ([]string, error) {
 	entries, err := os.ReadDir(socketDir)
 	if err != nil {
 		return nil, err
@@ -296,7 +307,7 @@ func leftoverSockets(socketDir string, keep, running map[string]bool) ([]string,
 	for _, e := range entries {
 		path := filepath.Join(socketDir, e.Name())
 		want, ok := socketDirKind(e.Name())
-		if !ok || e.Type() != want || keep[path] {
+		if !ok || e.Type() != want || keep[path] || spare.ownsSocketName(e.Name()) {
 			continue
 		}
 		if sock, ok := runtimeFileOf(e.Name()); ok {
@@ -359,7 +370,7 @@ func runtimeFileOf(name string) (string, bool) {
 
 // leftoverDisks lists the rootfs copies in diskDir. The base image stays even
 // if it lives there under such a name (Keep, compared as files).
-func leftoverDisks(diskDir string, keep map[string]bool) ([]string, error) {
+func leftoverDisks(diskDir string, keep map[string]bool, spare spareSet) ([]string, error) {
 	entries, err := os.ReadDir(diskDir)
 	if err != nil {
 		return nil, err
@@ -373,7 +384,7 @@ func leftoverDisks(diskDir string, keep map[string]bool) ([]string, error) {
 	var out []string
 	for _, e := range entries {
 		id, ok := between(e.Name(), rootfsPrefix, ".img")
-		if !ok || !isSandboxID(id) || !e.Type().IsRegular() {
+		if !ok || !isSandboxID(id) || !e.Type().IsRegular() || spare.has(id) {
 			continue
 		}
 		path := filepath.Join(diskDir, e.Name())
@@ -456,3 +467,48 @@ func isShortID(s string) bool {
 func isLowerHex(c byte) bool { return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' }
 
 func isDigits(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
+
+// spareSet are the sandboxes the reaper must leave alone: their VMs are alive and
+// will be adopted.
+type spareSet struct {
+	ids    map[string]bool
+	shorts map[string]bool
+}
+
+func newSpareSet(ids []string) spareSet {
+	s := spareSet{ids: map[string]bool{}, shorts: map[string]bool{}}
+	for _, id := range ids {
+		s.ids[id] = true
+		if len(id) >= 8 {
+			s.shorts[id[:8]] = true
+		}
+	}
+	return s
+}
+
+func (s spareSet) has(id string) bool      { return s.ids[id] }
+func (s spareSet) hasShort(sh string) bool { return s.shorts[sh] }
+
+// ownsSocketName reports whether a name in SocketDir belongs to a spared sandbox:
+// its API socket, vsock muxer and the listeners next to it, virtiofsd's socket,
+// the SSH agent link, the console socket, and the lock and pid files of those.
+func (s spareSet) ownsSocketName(name string) bool {
+	if len(s.ids) == 0 {
+		return false
+	}
+	if sock, ok := runtimeFileOf(name); ok {
+		name = sock
+	}
+	if id, ok := vmm.ParseAPISocketName(name); ok {
+		return s.ids[id]
+	}
+	if muxer, _, ok := strings.Cut(name, ".sock_"); ok {
+		name = muxer + ".sock"
+	}
+	for _, prefix := range []string{vsockPrefix, virtiofsPrefix, serialPrefix, sshAgentPrefix} {
+		if id, ok := between(name, prefix, ".sock"); ok {
+			return s.ids[id]
+		}
+	}
+	return false
+}

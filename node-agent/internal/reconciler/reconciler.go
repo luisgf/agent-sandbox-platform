@@ -47,7 +47,14 @@ type Handle struct {
 	// BaseDigest is "sha256:<hex>" of the base image the disk was copied from; ""
 	// when that is not known (not measured, or a disk older than the record).
 	BaseDigest string
-	stopFS     func() // stops virtiofsd when a workspace was mounted
+	// What a restarted agent needs to take the VM over (see adopt.go).
+	TenantID  string
+	OwnerSub  string
+	StartedAt time.Time
+	Serial    string // the socket its console is served on
+	FSUnit    string // the service virtiofsd runs in, when there is a workspace
+	FSSocket  string // the socket virtiofsd serves
+	stopFS    func() // stops virtiofsd when a workspace was mounted
 }
 
 // Reconciler polls control-plane work, claims sandboxes, and starts/stops VMs.
@@ -88,6 +95,10 @@ type Reconciler struct {
 	GuestSubnet netip.Prefix
 	// Metrics counts starts, stops and exits. Nil counts nothing.
 	Metrics *Metrics
+	// StateDir is where a record of each running VM is kept, so that an agent
+	// started after this one takes it over (Adopt). Empty: VMs are not recorded
+	// and none survives the agent.
+	StateDir string
 	// GuestDNS hands each guest its gateway as the resolver: the node's DNS sink
 	// answers there (the nft redirect sends port 53 to it). Off when nothing would
 	// answer, so a lookup fails at once instead of timing out.
@@ -629,7 +640,11 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 
 	sshSock := r.linkSSHAgent(sb.ID)
 
-	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, RootFS: rootfs, BaseDigest: baseDigest, stopFS: stopFS}
+	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, RootFS: rootfs, BaseDigest: baseDigest, stopFS: stopFS,
+		TenantID: sb.TenantID, OwnerSub: sb.OwnerSub, StartedAt: time.Now().UTC(), Serial: cfg.SerialSocket}
+	if cfg.WorkspaceFSSocket != "" && r.Confine != nil && r.FSLauncher == nil {
+		h.FSUnit, h.FSSocket = vmm.FSUnitName(sb.ID), cfg.WorkspaceFSSocket
+	}
 	r.mu.Lock()
 	r.handles[sb.ID] = h
 	r.mu.Unlock()
@@ -655,6 +670,8 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 		return fmt.Errorf("start: %w", err)
 	}
 
+	// The guest is up: from here a restart of the agent does not take it down.
+	r.saveState(sb.ID, h)
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "vmm started"); err != nil {
 		if cpclient.IsConflict(err) {
 			// The boot outlived the assignment (failover or destroy meanwhile).
@@ -770,6 +787,9 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string, opts teardown
 	r.releasing[id] = true
 	delete(r.exits, id)
 	r.mu.Unlock()
+	// Its record goes first: a VM half torn down must not be adopted by an agent
+	// that starts in the middle of it.
+	r.removeState(id)
 	// A guest that powers off during the graceful wait ends its VM's process before
 	// Stop runs: the watcher reports it, and by the time the VM is released that
 	// report is stale. It would fail the next start of this sandbox (a resume).

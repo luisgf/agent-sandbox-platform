@@ -66,6 +66,7 @@ scrape_configs:
 | `asp_agent_disk_free_bytes` | gauge | | Espacio libre de `--disk-dir`: lo que se agota primero con sandboxes paradas. |
 | `asp_agent_disk_gc_removed_total` | contador | | Discos que el GC borró por no tener dueño. |
 | `asp_agent_poll_failures_total` | contador | | Sondeos al plano de control que fallaron. |
+| `asp_agent_vms_adopted_total` | contador | `result` | VMs que un proceso anterior del agente dejó corriendo: `ok` (adoptadas) o `stale` (ya no vivían o no se pudieron adoptar; se limpian). |
 | `asp_agent_egress_enforced` | gauge | | 1 si el nodo fuerza el egress de sus guests (proxy + reglas nft en `enforce`). |
 | `asp_agent_egress_requests_total` | contador | `decision`, `reason`, `tenant` | Decisiones del proxy: `allow` (`http` o `connect`) o `deny` (`allowlist`, `destination_blocked`, `rate_limited`…), por tenant de la sandbox; `none` para un origen que no es sandbox. |
 | `asp_agent_egress_bytes_total` | contador | `direction` | Bytes que acarrea el proxy: `to_upstream` desde el guest, `from_upstream` de vuelta. |

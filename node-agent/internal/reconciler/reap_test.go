@@ -503,3 +503,72 @@ func TestReapReleasesLocalNetAllocations(t *testing.T) {
 		t.Fatalf("allocation file still there: %v", err)
 	}
 }
+
+// A VM that will be adopted is not a leftover: its processes, sockets, TAP,
+// tunnel and disk stay, and the rest of what the previous agent left is cleaned.
+func TestReapSparesTheVMsThatWillBeAdopted(t *testing.T) {
+	f := newReapFixture(t)
+	f.cfg.Adopt = []string{leftID}
+	rep := Reap(context.Background(), f.cfg)
+	if rep.Err != nil {
+		t.Fatal(rep.Err)
+	}
+	if len(rep.Processes) != 0 || len(f.procs.signals) != 0 {
+		t.Fatalf("processes=%v signals=%q", rep.Processes, f.procs.signals)
+	}
+	if len(f.taps.Calls) != 0 {
+		t.Fatalf("the TAP of an adopted VM was touched: %q", f.taps.Calls)
+	}
+	if want := []string{"7777aaaa"}; !slices.Equal(rep.LocalNet, want) {
+		t.Fatalf("local-net=%q: only the tunnel nobody owns goes", rep.LocalNet)
+	}
+	log := string(mustRead(t, f.argvLog))
+	if strings.Contains(log, "wg-asp-0a1b2c3d") || !strings.Contains(log, "ip link delete dev wg-asp-7777aaaa") {
+		t.Fatalf("tunnels:\n%s", log)
+	}
+	if len(rep.Sockets) != 0 || len(rep.Disks) != 0 {
+		t.Fatalf("sockets=%q disks=%q", rep.Sockets, rep.Disks)
+	}
+	f.assertKept(t, f.gone) // everything the first test removes stays now
+	f.assertKept(t, f.kept)
+}
+
+// Only the sandbox that is spared: another one's leftovers still go.
+func TestReapSpareIsPerSandbox(t *testing.T) {
+	f := newReapFixture(t)
+	f.cfg.Adopt = []string{otherID}
+	rep := Reap(context.Background(), f.cfg)
+	if rep.Err != nil {
+		t.Fatal(rep.Err)
+	}
+	if len(rep.Processes) != 2 || len(rep.Taps) != 1 {
+		t.Fatalf("processes=%v taps=%v: sparing another sandbox must not spare these", rep.Processes, rep.Taps)
+	}
+	f.assertGone(t)
+}
+
+func TestSpareSetOwnsTheNamesOfASandbox(t *testing.T) {
+	s := newSpareSet([]string{leftID})
+	for _, name := range []string{
+		vmm.APISocketName(leftID), vmm.APISocketName(leftID) + vmm.APISocketLockSuffix,
+		vsockName(leftID), vsockName(leftID) + "_26501", vsockName(leftID) + "_26502",
+		virtiofsName(leftID), virtiofsName(leftID) + virtiofs.PIDFileSuffix, serialName(leftID), sshAgentName(leftID),
+	} {
+		if !s.ownsSocketName(name) {
+			t.Errorf("%s should belong to the spared sandbox", name)
+		}
+	}
+	for _, name := range []string{
+		vmm.APISocketName(otherID), vsockName(otherID) + "_26501", virtiofsName(otherID), "ssh-agent.sock", "node-agent.lock", "ch-debug.sock",
+	} {
+		if s.ownsSocketName(name) {
+			t.Errorf("%s does not belong to the spared sandbox", name)
+		}
+	}
+	if !s.hasShort("0a1b2c3d") || s.hasShort("9f8e7d6c") {
+		t.Error("short ids")
+	}
+	if newSpareSet(nil).ownsSocketName(vmm.APISocketName(leftID)) {
+		t.Error("an empty set spares nothing")
+	}
+}

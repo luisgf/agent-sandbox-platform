@@ -407,6 +407,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | secreto de esa API; el nodo lo crea (0600) y el plano de control del mismo host lo lee con el mismo `ASP_AGENT_TOKEN_FILE`. Defecto `/var/lib/asp/agent.token` |
 | `--guest-kernel` / `--guest-rootfs` | `ASP_GUEST_KERNEL` / `ASP_GUEST_ROOTFS` | `/opt/sandbox/vmlinux` y `/opt/sandbox/rootfs.img`. El kernel (un `vmlinux` sin comprimir) que arranca toda VM y la imagen base de la que se copia el disco de cada sandbox (nunca se arranca ella misma). Una prueba con otra imagen (un guest nuevo, un kernel distinto) no necesita tocar `/opt/sandbox`; la lista de imágenes permitidas de la atestación (`--print-measurement`) mide estos mismos ficheros |
 | `--workspace-root` | `ASP_WORKSPACE_ROOTS` | donde puede vivir el workspace de una sandbox: dentro de `<raíz>/<tenant>/` (enlaces resueltos). Defecto `/srv/asp/workspaces` (créalo: `install -d /srv/asp/workspaces/<tenant>`); sin raíz que exista no hay workspaces. `virtiofsd` corre con `--sandbox chroot` si el agente es root (`--virtiofsd-sandbox`) |
+| `--vm-survive-restart` | `ASP_VM_SURVIVE_RESTART` | `true` por defecto: una VM confinada sigue corriendo cuando el agente para o se reinicia, y el proceso siguiente la adopta (§5.6). `=false` ata el servicio de cada VM al del agente, como antes |
 | `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
 | `--vm-slice` | `ASP_VM_SLICE` | slice de esos servicios (`asp-vms.slice`) |
 | `--vm-memory-overhead-mib` | `ASP_VM_MEMORY_OVERHEAD_MIB` | memoria que se suma a la del guest en el `MemoryMax` del servicio (por defecto 256) |
@@ -540,11 +541,22 @@ node-agent \
 
 ### 5.6 Servicio systemd y reinicios del agente
 
-El node-agent guarda sus VMs solo en memoria y un proceso nuevo no las adopta: al registrarse con otro `agent_instance_id`, el plano de control pasa sus sandboxes `running`/`paused` a `stopped` con `stop_reason=node_agent_restarted`: la VM murió con el proceso, pero su disco sigue en el nodo y se conserva (`asp session resume` la arranca de nuevo; [ADR-0011](adr/0011-multi-node.md), [ADR-0012](adr/0012-retained-disks.md)). Lo que dejara el proceso anterior en el host ya no es de nadie. Dos defensas:
+**Reiniciar el agente no para sus VMs** ([ADR-0014](adr/0014-vms-outlive-the-agent.md)). Con confinamiento (`--vm-confine`, por defecto en un host con systemd y root) cada VMM y cada `virtiofsd` corren en un servicio transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) que **no** está atado al del agente: una actualización, un `systemctl restart` o un fallo del agente no tocan las VMs, y el proceso nuevo las **adopta**. Cada VM que está en marcha deja un registro en `{--ch-socket-dir}/state/<id>.json` (su CID, su TAP y su /30, sus sockets, su disco y su `virtiofsd`; `0600`, en el `tmpfs` de `/run`, así que un reinicio del host lo borra con las VMs). Al arrancar, antes de registrarse:
 
-**1. La unit** [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service), con `KillMode=control-group`: al parar o reiniciar el servicio, y si el agente muere, systemd mata con él todos sus `cloud-hypervisor` y `virtiofsd`. Después, `ExecStopPost=-node-agent --reap-only` borra lo que tenían.
+1. Por cada registro, el VMM comprueba que la VM sigue viva: su servicio está activo y su API (`vm.info`) contesta `Running` o `Paused`.
+2. La limpieza de §5.6.2 **salva** todo lo de esas VMs (procesos, sockets, TAP, túnel local-net, disco) y borra el resto.
+3. El reconciler toma las vivas: las vigila otra vez (un fallo posterior se informa como siempre, [ADR-0012](adr/0012-retained-disks.md) § 9), recupera su endpoint de exec, los aceptores guest→host (agente SSH, identidad), el prefijo del proxy de egress, su `virtiofsd`, y aparta su CID y su /30 del reparto. El registro de una VM que ya no vive se borra.
+4. El agente se registra con `adopted_sandboxes: [...]`: el plano de control **no** pasa esas sandboxes a `stopped` como huérfanas del reinicio. Las que no adoptó (su VM murió mientras el agente estaba parado) sí: `stopped` con `stop_reason=node_agent_restarted` y su disco intacto (`asp session resume`; [ADR-0011](adr/0011-multi-node.md), [ADR-0012](adr/0012-retained-disks.md)).
 
-**Con confinamiento (`--vm-confine`, por defecto en un host con systemd y root)** cada VMM y cada `virtiofsd` corren en un servicio transitorio propio, así que ya no están en el cgroup del agente y `KillMode` no los alcanza. Lo sustituye el propio servicio de la VM: nace con `BindsTo=asp-node-agent.service`, de modo que systemd lo para cuando el agente para o muere (misma garantía: ninguna VM queda corriendo para nadie), con `TimeoutStopSec=15`. `ExecStopPost=--reap-only` sigue limpiando lo demás. Un agente lanzado a mano (no es un servicio) no ata sus VMs a nada: el siguiente arranque las limpia, como antes.
+Lo que se pierde en un reinicio: el historial de la consola serie (el agente se reengancha y lee lo que escriba el guest desde ese momento), la política de egress hasta el primer sondeo (2 s: sin ella el proxy deniega) y, en una sesión local-net, el plan se reaplica en ese sondeo. Una sandbox con un `exec` en curso lo pierde (el agente era el intermediario) pero la VM y sus procesos siguen. Con un plano de control anterior a esto (no entiende `adopted_sandboxes`) el reinicio acaba igual que antes: las pasa a `stopped` y el agente, al verlas sin asignar, las para (seguro, y por eso se actualiza primero el plano de control).
+
+**La primera actualización a una versión con esto sí detiene las VMs**: las que arrancó el agente anterior nacieron atadas a su servicio (`BindsTo=`) y no tienen registro que adoptar. Haz `cordon` y drena esa vez; las siguientes ya no hace falta.
+
+`--vm-survive-restart=false` (`ASP_VM_SURVIVE_RESTART=0`) devuelve el comportamiento anterior: el servicio de cada VM nace con `BindsTo=asp-node-agent.service` y systemd lo para con el agente (ninguna VM queda corriendo para nadie); nada se registra ni se adopta. Un agente lanzado a mano (no es un servicio), sin confinamiento o con `--ch-api-socket` tampoco deja VMs que adoptar: sus VMs son hijos suyos y acaban con él.
+
+Dos defensas contra lo que el agente deje de verdad huérfano:
+
+**1. La unit** [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service), con `KillMode=control-group`: al parar o reiniciar el servicio mata a lo que cuelga del agente (también los `systemd-run` que vigilan sus VMs, que no son las VMs). Sin confinamiento, ahí están los `cloud-hypervisor` y `virtiofsd`, y mueren con él. Después, `ExecStopPost=-node-agent --reap-only` borra lo que esté muerto y **salva lo que sigue vivo** y adoptable. Para parar de verdad todas las VMs de un nodo: `sudo systemctl stop asp-vms.slice`.
 
 ```bash
 systemctl list-units 'asp-vm-*'               # una VM = asp-vm-<id>.service (y -fs si tiene workspace)
@@ -574,7 +586,7 @@ Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`,
 
 | Resto | Cómo lo reconoce |
 |---|---|
-| Procesos `cloud-hypervisor` | argv `--api-socket {--ch-socket-dir}/ch-{id}.sock`. SIGTERM, 5 s, SIGKILL |
+| Procesos `cloud-hypervisor` | argv `--api-socket {--ch-socket-dir}/ch-{id}.sock`. SIGTERM, 5 s, SIGKILL. **No** los de una VM viva con registro (§5.6, se adopta) |
 | Procesos `virtiofsd` | argv `--socket-path {--ch-socket-dir}/virtiofs-{id}.sock` |
 | Túneles local-net | claves `{id}.key` en `ASP_LOCAL_NET_KEY_DIR` y devices WireGuard `wg-asp-*`. Borra el device, las `ip rule`, la tabla, las reglas FORWARD y las excepciones nft, como al parar la sandbox |
 | TAPs | devices TUN/TAP `asp-{8 hex}` |
@@ -587,7 +599,7 @@ Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`,
 - `--reap-only` hace solo la limpieza y sale (código 0 si todo se borró). Para ver qué queda en un nodo con el servicio parado: `sudo node-agent --reap-only --reap-leftovers=report`, con los mismos `--ch-socket-dir` y `--disk-dir` que el servicio si no son los de por defecto.
 - **Un agente por host.** Mientras vive, el agente mantiene un `flock` sobre `{--ch-socket-dir}/node-agent.lock`. Un segundo agente en ese directorio no arranca (`refusing to start … is held by pid N`), y `--reap-only` tampoco corre. Los TAPs y túneles son de todo el host: dos agentes reales en una misma máquina (solo lab) necesitan directorios de sockets distintos y `--reap-leftovers=off`.
 - Modo shared (`--ch-api-socket`): ese CH no es del agente y no se toca; su VM sigue ahí tras el reinicio (`vm.delete` a mano).
-- **Actualizar el agente detiene sus VMs.** Haz `asp node cordon` y drena antes de `systemctl restart` ([`ops-multi-node.md`](ops-multi-node.md)).
+- **Actualizar el agente ya no detiene sus VMs** (confinadas): el proceso nuevo las adopta. Sin confinamiento, o con `--vm-survive-restart=false`, sí: haz `asp node cordon` y drena antes de `systemctl restart` ([`ops-multi-node.md`](ops-multi-node.md)).
 
 ## 6. Imagen guest y dataplane exec
 
@@ -911,6 +923,8 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 | La sandbox queda `failed` con `guest_not_ready` | El guest no respondió al `/healthz` del pod-daemon en `--guest-ready-timeout` (120 s): imagen rota, kernel que no encuentra el disco, o un pod-daemon que no arranca. La VM se paró y su disco nuevo se borró | El log del agente trae lo último de la consola serie (`last output of the guest's console`) y `status_detail` su última línea; en una reanudación la sandbox vuelve a `stopped` con su disco |
 | La sandbox queda `stopped` con `stop_reason=vmm_exited` | El proceso de Cloud Hypervisor acabó solo mientras corría: lo mató el OOM killer o `kill`, falló, o el guest se apagó (`poweroff`). El nodo lo detecta en el siguiente sondeo (2 s) y lo informa con la causa en `status_detail` (`vmm_exited: … Finished with result: signal/oom-kill …` o `the guest powered off`) | `asp session status` lo cuenta; el disco está intacto: `asp session resume`. `journalctl -u asp-node-agent` trae `cloud-hypervisor exited on its own` y `the VM ended on its own` con la última línea de la consola; si se repite, busca el OOM en `journalctl -k` y sube `--vm-memory-overhead-mib` |
 | `cloud-hypervisor` o TAP `asp-*` huérfanos tras reiniciar el agente | Agente fuera de systemd, unit con `KillMode=process`, o `--reap-leftovers=off` | Usa la unit de §5.6; el siguiente arranque los borra |
+| Tras reiniciar el agente las VMs siguen corriendo, y el log dice `adopted the VMs a previous agent left running` | Es lo esperado (§5.6, ADR-0014) | Nada. Para pararlas todas: `systemctl stop asp-vms.slice` |
+| `a VM of a previous agent could not be adopted` | La VM murió mientras el agente estaba parado, o su API no contesta | El motivo va en el log; la sandbox queda `stopped` (`node_agent_restarted`) con su disco: `asp session resume` |
 
 ---
 

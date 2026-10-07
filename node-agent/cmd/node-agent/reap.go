@@ -23,11 +23,11 @@ const (
 	reapOff    = "off"
 )
 
-// cleanHost runs before this agent binds a socket or registers. VMs are not
-// adopted across restarts: registering with a new instance id makes the
-// control plane fail the previous process's sandboxes, so whatever that
-// process left on this host (VMs, TAPs, tunnels) belongs to nobody. Disks are not
-// in that list: see reapConfig.
+// cleanHost runs before this agent binds a socket or registers. What the previous
+// process left on this host (VMs, TAPs, tunnels) belongs to nobody, except the VMs
+// that are still alive and recorded: those are adopted (see reconciler.Adopt), and
+// their processes, sockets, TAP and tunnel are spared. Disks are not in that list:
+// see reapConfig.
 //
 // A real agent keeps the socket-dir lock for its whole life, whatever
 // --reap-leftovers says, so that a second agent or --reap-only never takes its
@@ -60,7 +60,9 @@ func cleanHost(ctx context.Context, cfg config) (*reconciler.SocketDirLock, erro
 		return nil, nil
 	}
 	if cfg.ReapLeftovers != reapOff {
-		if rep := reconciler.Reap(ctx, reapConfig(cfg, cfg.ReapLeftovers == reapReport)); rep.Err != nil {
+		rc := reapConfig(cfg, cfg.ReapLeftovers == reapReport)
+		rc.Adopt = adoptableIDs(ctx, cfg)
+		if rep := reconciler.Reap(ctx, rc); rep.Err != nil {
 			slog.Warn("host cleanup incomplete; starting anyway", "error", rep.Err)
 		}
 	}
@@ -68,8 +70,9 @@ func cleanHost(ctx context.Context, cfg config) (*reconciler.SocketDirLock, erro
 }
 
 // reapOnly is --reap-only: the cleanup cleanHost runs at start, without
-// registering, then exit. The systemd unit runs it as ExecStopPost, after
-// systemd has stopped the VMs together with the agent.
+// registering, then exit. The systemd unit runs it as ExecStopPost, after the
+// agent stopped. VMs that keep running without it (--vm-survive-restart, the
+// default) are spared: it removes what is dead, not what is alive.
 func reapOnly(cfg config) int {
 	if cfg.ReapLeftovers == reapOff {
 		slog.Error("--reap-only with --reap-leftovers=off has nothing to do")
@@ -84,7 +87,9 @@ func reapOnly(cfg config) int {
 	}
 	defer lock.Release()
 	report := cfg.DryRun || cfg.ReapLeftovers == reapReport
-	if rep := reconciler.Reap(ctx, reapConfig(cfg, report)); rep.Err != nil {
+	rc := reapConfig(cfg, report)
+	rc.Adopt = adoptableIDs(ctx, cfg)
+	if rep := reconciler.Reap(ctx, rc); rep.Err != nil {
 		slog.Error("host cleanup incomplete", "error", rep.Err)
 		return 1
 	}
