@@ -124,6 +124,20 @@ type Store interface {
 	EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error)
 	CountAPIKeys() (int64, error)
 	TouchAPIKey(id string) error
+	// CreateAPIKey adds a key. ErrConflict when the tenant already has a key
+	// with that name or another key has that prefix (the caller picks a new
+	// secret and tries again).
+	CreateAPIKey(tenantID, name, scope, keyPrefix, secretHash string, expiresAt *time.Time) (ApiKey, error)
+	// ListAPIKeys returns the keys of a tenant, or of every tenant when tenantID
+	// is empty, revoked ones included. Never a secret or its hash.
+	ListAPIKeys(tenantID string) ([]ApiKey, error)
+	// GetAPIKey returns one key by id; ErrNotFound if there is none.
+	GetAPIKey(id string) (ApiKey, error)
+	// RevokeAPIKey stops a key from authenticating; revoking twice is a no-op.
+	RevokeAPIKey(id string) (ApiKey, error)
+	// RotateAPIKey gives a key a new secret: the old one stops working at once.
+	// ErrConflict for a revoked key or a taken prefix.
+	RotateAPIKey(id, keyPrefix, secretHash string) (ApiKey, error)
 
 	ListEgressRules(tenantID string) ([]EgressRule, error)
 	// ListEgressRulesForTenants returns the rules of several tenants in one
