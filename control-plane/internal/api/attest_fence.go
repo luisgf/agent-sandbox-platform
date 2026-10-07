@@ -79,6 +79,18 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "attestation verify: "+err.Error())
 		return
 	}
+	var image attest.AllowedImage
+	if s.AttestAllow != nil {
+		var err error
+		if image, err = s.AttestAllow.Check(req.Statement); err != nil {
+			_ = s.Store.EmitEvent(store.EmitEventInput{
+				SandboxID: id, TenantID: sb.TenantID, EventType: "sandbox.attestation_refused", Actor: "node-agent",
+				Payload: mustJSONPayload(map[string]any{"node_id": req.Statement.NodeID, "reason": err.Error()}),
+			})
+			writeError(w, http.StatusBadRequest, "attestation refused: "+err.Error())
+			return
+		}
+	}
 	ts, _ := time.Parse(time.RFC3339, req.Statement.TS)
 	bundle, _ := json.Marshal(ev)
 	rec, err := s.Store.PutAttestation(store.PutAttestationInput{
@@ -102,7 +114,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		TenantID:  sb.TenantID,
 		EventType: "sandbox.attested",
 		Actor:     "node-agent",
-		Payload:   mustJSONPayload(map[string]any{"node_id": rec.NodeID, "image_digest": rec.ImageDigest, "cid": rec.CID}),
+		Payload:   mustJSONPayload(attestedPayload(rec, req.Statement, image)),
 	})
 	writeJSON(w, http.StatusOK, rec)
 }
@@ -147,18 +159,57 @@ func (s *Server) GetAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	stmt := statementOf(rec)
 	fresh := false
 	if s.Attestor != nil {
-		ev := attest.Evidence{Statement: attest.BootStatement{
-			SandboxID: rec.SandboxID, ImageDigest: rec.ImageDigest, VMMProfile: rec.VMMProfile,
-			CID: rec.CID, NodeID: rec.NodeID, TS: rec.StatementTS.UTC().Format(time.RFC3339),
-		}}
-		fresh = s.Attestor.IsFresh(ev, time.Now().UTC())
+		fresh = s.Attestor.IsFresh(attest.Evidence{Statement: stmt}, time.Now().UTC())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"attestation": rec,
 		"fresh":       fresh,
-	})
+		"measured":    stmt.Measured(),
+	}
+	if s.AttestAllow != nil {
+		img, err := s.AttestAllow.Check(stmt)
+		resp["allowlisted"] = err == nil
+		if err == nil {
+			resp["image_name"] = img.Name
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// statementOf is the boot statement behind a stored record: the signed
+// statement kept in its bundle, so the fields the record has no column for
+// (kernel digest, hypervisor version, boot kind) are there. Without a readable
+// bundle it is rebuilt from the record's columns.
+func statementOf(rec store.AttestationRecord) attest.BootStatement {
+	var ev attest.Evidence
+	if err := json.Unmarshal(rec.Bundle, &ev); err == nil && ev.Statement.SandboxID == rec.SandboxID {
+		return ev.Statement
+	}
+	return attest.BootStatement{
+		SandboxID: rec.SandboxID, ImageDigest: rec.ImageDigest, VMMProfile: rec.VMMProfile,
+		CID: rec.CID, NodeID: rec.NodeID, TS: rec.StatementTS.UTC().Format(time.RFC3339),
+	}
+}
+
+// attestedPayload is the journal entry for an accepted statement.
+func attestedPayload(rec store.AttestationRecord, st attest.BootStatement, image attest.AllowedImage) map[string]any {
+	p := map[string]any{"node_id": rec.NodeID, "image_digest": rec.ImageDigest, "cid": rec.CID, "measured": st.Measured()}
+	if st.KernelDigest != "" {
+		p["kernel_digest"] = st.KernelDigest
+	}
+	if st.VMMVersion != "" {
+		p["vmm_version"] = st.VMMVersion
+	}
+	if st.Boot != "" {
+		p["boot"] = st.Boot
+	}
+	if image.Name != "" {
+		p["image_name"] = image.Name
+	}
+	return p
 }
 
 // VerifyAttestation verifies a bundle without storing it.
@@ -201,6 +252,17 @@ func mustJSONPayload(v any) json.RawMessage {
 }
 
 // attestationClaim builds optional x_asp_attestation for OIDC mint.
+//
+// The claim says what the node measured, not that the control plane checked
+// it: "measured" is whether the statement carries real digests of the kernel
+// and the base image, and "allowlisted" is whether the control plane has an
+// image allowlist and the digests are on it. The digests are the node's own
+// hashing, signed by the node: a node the control plane trusts, not a hardware
+// root of trust. A statement from a node that does not measure carries no
+// digests here, only who signed it and when.
+//
+// With an allowlist, evidence for an image that is no longer on it yields no
+// claim at all.
 func (s *Server) attestationClaim(sandboxID string) map[string]any {
 	if s.Attestor == nil {
 		return nil
@@ -209,22 +271,39 @@ func (s *Server) attestationClaim(sandboxID string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	ev := attest.Evidence{Statement: attest.BootStatement{
-		SandboxID: rec.SandboxID, ImageDigest: rec.ImageDigest, VMMProfile: rec.VMMProfile,
-		CID: rec.CID, NodeID: rec.NodeID, TS: rec.StatementTS.UTC().Format(time.RFC3339),
-	}}
-	if !s.Attestor.IsFresh(ev, time.Now().UTC()) {
+	stmt := statementOf(rec)
+	if !s.Attestor.IsFresh(attest.Evidence{Statement: stmt}, time.Now().UTC()) {
 		return nil
 	}
-	return map[string]any{
-		"node_id":      rec.NodeID,
-		"image_digest": rec.ImageDigest,
-		"vmm_profile":  rec.VMMProfile,
-		"cid":          rec.CID,
-		"ts":           rec.StatementTS.UTC().Format(time.RFC3339),
-		"alg":          rec.Alg,
-		"key_id":       rec.KeyID,
+	claim := map[string]any{
+		"node_id":     rec.NodeID,
+		"vmm_profile": rec.VMMProfile,
+		"cid":         rec.CID,
+		"ts":          rec.StatementTS.UTC().Format(time.RFC3339),
+		"alg":         rec.Alg,
+		"key_id":      rec.KeyID,
+		"measured":    stmt.Measured(),
+		"allowlisted": false,
 	}
+	if s.AttestAllow != nil {
+		img, err := s.AttestAllow.Check(stmt)
+		if err != nil {
+			return nil
+		}
+		claim["allowlisted"] = true
+		claim["image_name"] = img.Name
+	}
+	if stmt.Measured() {
+		claim["image_digest"] = stmt.ImageDigest
+		claim["kernel_digest"] = stmt.KernelDigest
+		if stmt.VMMVersion != "" {
+			claim["vmm_version"] = stmt.VMMVersion
+		}
+		if stmt.Boot != "" {
+			claim["boot"] = stmt.Boot
+		}
+	}
+	return claim
 }
 
 // fenceNode powers off a lost node through the configured FenceProvider before

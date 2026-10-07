@@ -450,7 +450,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 |---|---|
 | Dry-run | `FakeVMM` exercises the control plane only. No KVM, no isolation. |
 | nftables | `soft` mode tolerates missing root; `enforce` needs privileges. CI does not prove bypass resistance. |
-| Attestation | Software signature, not TPM/SEV. The control plane only trusts keys it is configured with (`ASP_ATTEST_KEY`, `ASP_ATTEST_TRUSTED_PUBS`) or, over mTLS, the key of the node certificate the request came with. It proves which node signed, not what actually booted. |
+| Attestation | Software signature, not TPM/SEV. The control plane only trusts keys it is configured with (`ASP_ATTEST_KEY`, `ASP_ATTEST_TRUSTED_PUBS`) or, over mTLS, the key of the node certificate the request came with. The signed statement carries the SHA-256 of the kernel and of the base image the node booted, hashed on the node; with `ASP_ATTEST_ALLOWED_IMAGES` the control plane accepts only images the operator listed. It proves what that node says it booted, not what a hardware root of trust measured: a compromised node can lie. |
 | Fencing | Lost-node failover calls a `FenceProvider` (the webhook works; Redfish and IPMI are stubs). Not real BMC STONITH. |
 | Exec timeouts | Only buffered execs have a time limit (30 s in the control plane and the guest's `--exec-timeout-secs`). Streams and PTY sessions last as long as the command. See [timeouts](control-plane/README.md#timeouts-hacia-el-node-agent). |
 | Idle timeout | Off by default. Does not delete the local session file. |

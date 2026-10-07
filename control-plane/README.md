@@ -89,6 +89,7 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `ASP_ATTEST_PUB` | — | PEM de clave pública que sustituye a la de `ASP_ATTEST_KEY` para verificar |
 | `ASP_ATTEST_TRUSTED_PUBS` | — | Bundle PEM (`PUBLIC KEY` y/o `CERTIFICATE`) de más claves de confianza. La clave que trae la evidencia (`public_key_pem`) nunca vale; por mTLS vale además la del certificado del nodo que llama |
 | `ASP_ATTEST_MAX_AGE` | `10m` | Freshness para verify + claim OIDC |
+| `ASP_ATTEST_ALLOWED_IMAGES` | — | JSON `{"images":[{"name","kernel","rootfs","vmm"}]}` con las imágenes (SHA-256 del kernel y de la imagen base, y opcionalmente la versión del hipervisor) para las que se acepta evidencia de arranque. Con él, una evidencia de otra imagen o sin digests se rechaza (400) y no genera claim; se relee al cambiar el fichero. Sin él se guardan los digests que declare el nodo. `node-agent --print-measurement` imprime la entrada de un nodo |
 | `ASP_FENCE_PROVIDER` | `noop` | `noop`\|`http_webhook`\|`redfish`\|`ipmi` |
 | `ASP_FENCE_USER` | | Usuario Redfish/IPMI |
 | `ASP_FENCE_PASS` | | Contraseña IPMI/Redfish por defecto si el nodo no tiene token. Un `ipmitool` la recibe por `IPMI_PASSWORD` |

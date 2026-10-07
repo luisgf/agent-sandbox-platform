@@ -62,6 +62,23 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - `POST /v1/attestation/verify` solo usa las claves configuradas: no hay certificado de nodo en esa petición.
 - `ASP_ATTEST_PUB` ahora también se aplica cuando el fichero de `ASP_ATTEST_KEY` ya existía (antes solo al crearlo). Sin `ASP_ATTEST_KEY`, el control plane usa el mismo fichero por defecto que el node-agent (`$TMPDIR/asp-attest-key.pem`).
 
+**Actualizado 2026-10 (medición, #107):** la evidencia firmaba `image_digest = image_ref`, una cadena que el control plane ya tenía, y el verificador solo miraba firma, frescura y nodo. Nadie había hashado el kernel ni la imagen, pero el claim `x_asp_attestation` iba en los tokens y un tercero podía creer que la imagen estaba medida. Se eligió **medir** (la alternativa, renombrarlo a `boot_statement` y quitarlo de los claims, dejaba un token sin información). El `BootStatement` firmado ahora lleva:
+
+| Campo | Qué es |
+|---|---|
+| `image_digest` | `sha256:<hex>` de la **imagen base** de la que se copió el disco, calculado en el nodo antes de la copia |
+| `kernel_digest` | `sha256:<hex>` del kernel que cargó la VM |
+| `vmm_version` | lo que imprime `cloud-hypervisor --version` |
+| `boot` | `new`, o `resume` (disco retenido: el guest ya escribió en él) |
+
+- El nodo cachea el hash por tamaño, mtime e inodo: una imagen de varios GB se lee una vez por versión, no por sandbox, y se calcula en segundo plano al arrancar el agente. El digest de la imagen se guarda junto al disco (`rootfs-<id>.base-sha256`) para que un `resume` declare **de qué imagen salió ese disco**, aunque el nodo haya cambiado de imagen mientras tanto. Un disco anterior a este cambio no tiene registro y se reanuda sin `image_digest`. Si un fichero no se puede leer, la sandbox arranca igual y la evidencia sale sin digests.
+- El control plane compara con una **lista de imágenes permitidas** (`ASP_ATTEST_ALLOWED_IMAGES`, un JSON `{"images":[{"name","kernel","rootfs","vmm"}]}` que sigue a su fichero sin reiniciar). Con lista, una evidencia cuyo kernel e imagen no formen una entrada se rechaza con 400, queda en el diario como `sandbox.attestation_refused`, y no se firma claim; una entrada quitada de la lista retira el claim de las sandboxes ya atestadas con ella. Sin lista, se guardan y se muestran los digests que declare el nodo. `node-agent --print-measurement` imprime la entrada de un nodo.
+- El claim lleva `measured` (la evidencia trae digests reales de kernel e imagen) y `allowlisted` (hay lista y los digests están en ella, con `image_name`). Una evidencia de un nodo que no mide lleva `measured: false` y ni `image_digest` ni `kernel_digest`.
+- `GET /v1/sandboxes/{id}/attestation` devuelve además `measured` y, con lista, `allowlisted` e `image_name`.
+- **Orden de actualización:** el control plane primero. Un nodo nuevo firma campos que un control plane anterior no conoce y, al volver a serializar el statement, la firma no cuadra: no hay atestación hasta actualizarlo.
+
+Lo que esto **sí** da: los hashes los calcula el nodo y los firma el nodo, y el control plane solo acepta los que el operador listó. Un nodo que arranca un kernel o una imagen que nadie ha revisado deja de obtener claims. Lo que **no** da: el nodo sigue en la base de confianza (uno comprometido firma lo que quiera), y un disco `resume` ha divergido de la imagen que declara. Eso solo lo cierra una raíz de confianza de hardware (TPM/SEV), que sigue fuera de alcance.
+
 **Actualizado 2026-10:** el proxy tomaba el sandbox de la cabecera `X-ASP-Sandbox-ID`, que escribe el guest. Un guest podía pedir el token de cualquier otra sandbox de su nodo, y el control plane no lo ve: con mTLS comprueba que la sandbox sea del nodo que llama ([0011](0011-multi-node.md)), y lo es. Ahora el acceptor hybrid de cada sandbox liga su id a cada petición, en el contexto de la petición y no en una cabecera:
 
 | Listener | Sandbox del token | `X-ASP-Sandbox-ID` |
@@ -106,7 +123,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
 - Confirm gate puede romper automatizaciones que firman en bucle → hay que aprobar o desactivar el flag en lab.
 - Indisponibilidad de JWKS/atestación → **falla cerrada** (no hay token de respaldo persistente).
 - Desde 2026-10, `--identity-listen` y los listeners host-vsock globales devuelven 403 a los tokens salvo con `--insecure-identity-sandbox-header` (lab); `--default-sandbox-id` solo aplica con ese flag.
-- Attestation MVP es software-signed (ECDSA: `ASP_ATTEST_KEY`, claves de confianza o la clave del certificado de nodo), no TPM/SEV. Prueba qué nodo firmó, no qué arrancó de verdad.
+- Attestation MVP es software-signed (ECDSA: `ASP_ATTEST_KEY`, claves de confianza o la clave del certificado de nodo), no TPM/SEV. Prueba qué nodo firmó y qué kernel e imagen base dice ese nodo haber arrancado (hashes calculados en él; con `ASP_ATTEST_ALLOWED_IMAGES`, solo vale lo que el operador listó). Un nodo comprometido sigue pudiendo mentir.
 
 ### Follow-ups
 

@@ -42,7 +42,10 @@ type Handle struct {
 	SSHSock   string // per-sandbox symlink path under VsockDir (virtiofs docs)
 	Slot      int    // index of the guest /30 in GuestSubnet; -1 without a TAP
 	RootFS    string // this sandbox's private rootfs copy; "" when not cloned
-	stopFS    func() // stops virtiofsd when a workspace was mounted
+	// BaseDigest is "sha256:<hex>" of the base image the disk was copied from; ""
+	// when that is not known (not measured, or a disk older than the record).
+	BaseDigest string
+	stopFS     func() // stops virtiofsd when a workspace was mounted
 }
 
 // Reconciler polls control-plane work, claims sandboxes, and starts/stops VMs.
@@ -112,6 +115,13 @@ type Reconciler struct {
 	// accepts one (the node certificate key over mTLS, then ASP_ATTEST_KEY).
 	// Empty uses ASP_ATTEST_KEY (attest.SignNow).
 	Attest []*attest.Signer
+	// Measure returns "sha256:<hex>" of a file. Boot attestations use it for the
+	// kernel and the base image, so they say what was booted. Nil leaves them
+	// unmeasured, as in dry-run, which boots nothing.
+	Measure func(path string) (string, error)
+	// VMMVersion is what the hypervisor binary reports as its version, for the
+	// boot attestation. Empty is left out.
+	VMMVersion string
 
 	// WorkspaceRoots are the directories a sandbox's workspace may live under
 	// (<root>/<tenant>/…). With none, no sandbox may have a workspace: the path
@@ -530,7 +540,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		return fmt.Errorf("local-net: %w", err)
 	}
 
-	rootfs, resumed, err := r.rootFSFor(sb)
+	rootfs, baseDigest, resumed, err := r.rootFSFor(sb)
 	if err != nil {
 		err = fmt.Errorf("rootfs: %w", err)
 	} else {
@@ -562,7 +572,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 
 	sshSock := r.linkSSHAgent(sb.ID)
 
-	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, RootFS: rootfs, stopFS: stopFS}
+	h := Handle{CID: cfg.VsockCID, VsockPath: cfg.VsockPath, TapName: cfg.TapDevice, SSHSock: sshSock, Slot: slot, RootFS: rootfs, BaseDigest: baseDigest, stopFS: stopFS}
 	r.mu.Lock()
 	r.handles[sb.ID] = h
 	r.mu.Unlock()
@@ -587,22 +597,40 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		return fmt.Errorf("report running: %w", err)
 	}
-	r.postAttestation(ctx, sb, h)
+	boot := "new"
+	if resumed {
+		boot = "resume"
+	}
+	r.postAttestation(ctx, sb, h, boot)
 	r.Logger.Info("sandbox running", "sandbox_id", sb.ID, "vsock_cid", h.CID, "vsock_path", h.VsockPath, "tap", h.TapName)
 	return nil
 }
 
-func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h Handle) {
-	digest := sb.ImageRef
-	if digest == "" {
-		digest = r.RootFSPath
+// measurement is what this boot loaded, as far as it can be said: the kernel the
+// VM was started with (hashed now), the base image its disk was copied from
+// (hashed when the disk was made, or read back for a resume), and the VMM
+// version. What cannot be measured is left empty and the statement says less
+// instead of naming something it did not check.
+func (r *Reconciler) measurement(sb cpclient.Sandbox, h Handle, boot string) attest.Measurement {
+	m := attest.Measurement{ImageDigest: h.BaseDigest, VMMVersion: r.VMMVersion, Boot: boot}
+	if r.Measure != nil {
+		kernel, err := r.Measure(r.KernelPath)
+		if err != nil {
+			r.Logger.Warn("attestation: kernel not measured", "sandbox_id", sb.ID, "path", r.KernelPath, "error", err)
+		}
+		m.KernelDigest = kernel
 	}
+	return m
+}
+
+func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h Handle, boot string) {
+	m := r.measurement(sb, h, boot)
 	profile := sb.VMMProfile
 	if profile == "" {
 		profile = "cloud-hypervisor"
 	}
 	if len(r.Attest) == 0 {
-		ev, err := attest.SignNow(sb.ID, r.NodeID, digest, profile, h.CID)
+		ev, err := attest.SignNow(sb.ID, r.NodeID, profile, h.CID, m)
 		if err != nil {
 			r.Logger.Warn("attest sign", "sandbox_id", sb.ID, "error", err)
 			return
@@ -615,7 +643,7 @@ func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h
 		return
 	}
 	for i, s := range r.Attest {
-		ev, err := s.SignBoot(sb.ID, r.NodeID, digest, profile, h.CID)
+		ev, err := s.SignBoot(sb.ID, r.NodeID, profile, h.CID, m)
 		if err == nil {
 			err = r.CP.Attest(ctx, sb.ID, ev)
 		}
@@ -1041,34 +1069,52 @@ func (r *Reconciler) releaseCID(cid uint32) {
 
 // cloneRootFS makes this sandbox's private disk. It returns "" when DiskDir
 // is unset (dry-run), so the shared RootFSPath is used as before.
-func (r *Reconciler) cloneRootFS(sandboxID string) (string, error) {
+//
+// It also returns the digest of the base image the copy was made from, hashed
+// just before the copy and kept next to the disk so a resume can say where the
+// disk came from. "" when the image is not measured.
+func (r *Reconciler) cloneRootFS(sandboxID string) (path, baseDigest string, err error) {
 	if r.DiskDir == "" {
-		return "", nil
+		return "", "", nil
 	}
 	if err := os.MkdirAll(r.DiskDir, 0o700); err != nil {
-		return "", err
+		return "", "", err
 	}
 	dst := filepath.Join(r.DiskDir, rootfsName(sandboxID))
-	_ = os.Remove(dst) // a leftover from a crash must not be reused
+	removeDiskFiles(dst) // a leftover from a crash must not be reused
+	if r.Measure != nil {
+		d, err := r.Measure(r.RootFSPath)
+		if err != nil {
+			r.Logger.Warn("attestation: base image not measured", "sandbox_id", sandboxID, "path", r.RootFSPath, "error", err)
+		}
+		baseDigest = d
+	}
 	clone := r.CloneDisk
 	if clone == nil {
 		clone = cloneDisk
 	}
 	if err := clone(r.RootFSPath, dst); err != nil {
-		_ = os.Remove(dst)
-		return "", err
+		removeDiskFiles(dst)
+		return "", "", err
 	}
 	if err := os.Chmod(dst, 0o600); err != nil {
-		_ = os.Remove(dst)
-		return "", err
+		removeDiskFiles(dst)
+		return "", "", err
 	}
-	return dst, nil
+	if baseDigest != "" {
+		if err := writeBaseDigest(dst, baseDigest); err != nil {
+			r.Logger.Warn("attestation: base image digest not recorded", "sandbox_id", sandboxID, "error", err)
+			baseDigest = ""
+		}
+	}
+	return dst, baseDigest, nil
 }
 
 func (r *Reconciler) removeRootFS(path string) {
 	if path == "" {
 		return
 	}
+	defer removeBaseDigest(path)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		r.Logger.Warn("remove sandbox rootfs", "path", path, "error", err)
 	}

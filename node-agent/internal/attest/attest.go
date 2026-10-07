@@ -18,14 +18,34 @@ import (
 	"time"
 )
 
-// BootStatement mirrors control-plane attest.BootStatement.
+// BootStatement mirrors control-plane attest.BootStatement. The order of the
+// fields is the order they are signed in: both sides must keep it.
 type BootStatement struct {
-	SandboxID   string `json:"sandbox_id"`
+	SandboxID string `json:"sandbox_id"`
+	// ImageDigest is "sha256:<hex>" of the base image the sandbox's disk was
+	// copied from, as hashed on the node. Empty when it was not measured.
 	ImageDigest string `json:"image_digest"`
 	VMMProfile  string `json:"vmm_profile"`
 	CID         uint32 `json:"cid"`
 	NodeID      string `json:"node_id"`
 	TS          string `json:"ts"`
+	// KernelDigest is "sha256:<hex>" of the kernel the VM loaded.
+	KernelDigest string `json:"kernel_digest,omitempty"`
+	// VMMVersion is what the hypervisor binary reports as its version.
+	VMMVersion string `json:"vmm_version,omitempty"`
+	// Boot is "new" (a disk copied from the base image for this boot) or
+	// "resume" (a retained disk, which has diverged from the base image it was
+	// copied from).
+	Boot string `json:"boot,omitempty"`
+}
+
+// Measurement is what a node measured of the boot a statement is about. A field
+// that was not measured is empty.
+type Measurement struct {
+	ImageDigest  string
+	KernelDigest string
+	VMMVersion   string
+	Boot         string
 }
 
 // Evidence is the signed bundle POSTed to the control plane.
@@ -174,22 +194,25 @@ func parseKey(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 }
 
 // SignNow signs with ASP_ATTEST_KEY; the reconciler uses it without a Signer.
-func SignNow(sandboxID, nodeID, imageDigest, vmmProfile string, cid uint32) (Evidence, error) {
+func SignNow(sandboxID, nodeID, vmmProfile string, cid uint32, m Measurement) (Evidence, error) {
 	s, err := LoadOrCreate()
 	if err != nil {
 		return Evidence{}, err
 	}
-	return s.SignBoot(sandboxID, nodeID, imageDigest, vmmProfile, cid)
+	return s.SignBoot(sandboxID, nodeID, vmmProfile, cid, m)
 }
 
 // SignBoot signs a boot statement stamped now.
-func (s *Signer) SignBoot(sandboxID, nodeID, imageDigest, vmmProfile string, cid uint32) (Evidence, error) {
+func (s *Signer) SignBoot(sandboxID, nodeID, vmmProfile string, cid uint32, m Measurement) (Evidence, error) {
 	return s.Sign(BootStatement{
-		SandboxID:   sandboxID,
-		ImageDigest: imageDigest,
-		VMMProfile:  vmmProfile,
-		CID:         cid,
-		NodeID:      nodeID,
-		TS:          time.Now().UTC().Format(time.RFC3339),
+		SandboxID:    sandboxID,
+		ImageDigest:  m.ImageDigest,
+		VMMProfile:   vmmProfile,
+		CID:          cid,
+		NodeID:       nodeID,
+		TS:           time.Now().UTC().Format(time.RFC3339),
+		KernelDigest: m.KernelDigest,
+		VMMVersion:   m.VMMVersion,
+		Boot:         m.Boot,
 	})
 }

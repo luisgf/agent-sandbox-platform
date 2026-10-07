@@ -37,14 +37,55 @@ func KeyPathFromEnv() string {
 	return filepath.Join(os.TempDir(), "asp-attest-key.pem")
 }
 
-// BootStatement is the canonical sandbox boot evidence payload.
+// BootStatement is the canonical sandbox boot evidence payload. The order of
+// the fields is the order they are signed in: the node-agent keeps the same.
 type BootStatement struct {
-	SandboxID   string `json:"sandbox_id"`
+	SandboxID string `json:"sandbox_id"`
+	// ImageDigest is "sha256:<hex>" of the base image the sandbox's disk was
+	// copied from, as the node hashed it. Statements from nodes that predate
+	// measurement carry the image reference here instead (see Measured).
 	ImageDigest string `json:"image_digest"`
 	VMMProfile  string `json:"vmm_profile"`
 	CID         uint32 `json:"cid"`
 	NodeID      string `json:"node_id"`
 	TS          string `json:"ts"` // RFC3339 UTC
+	// KernelDigest is "sha256:<hex>" of the kernel the VM loaded.
+	KernelDigest string `json:"kernel_digest,omitempty"`
+	// VMMVersion is the version the hypervisor binary reported.
+	VMMVersion string `json:"vmm_version,omitempty"`
+	// Boot is "new" or "resume". A resumed sandbox boots a retained disk that has
+	// diverged from the base image ImageDigest names.
+	Boot string `json:"boot,omitempty"`
+}
+
+// Boot values.
+const (
+	BootNew    = "new"
+	BootResume = "resume"
+)
+
+// MaxVMMVersionLen bounds VMMVersion.
+const MaxVMMVersionLen = 128
+
+// ValidDigest reports whether s is "sha256:" and 64 lowercase hex digits.
+func ValidDigest(s string) bool {
+	hexPart, ok := strings.CutPrefix(s, "sha256:")
+	if !ok || len(hexPart) != 64 {
+		return false
+	}
+	for _, c := range hexPart {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// Measured reports whether the node hashed what it booted: both the kernel and
+// the base image are digests. A statement that is not measured says which node
+// signed it and when, and nothing about what the VM loaded.
+func (s BootStatement) Measured() bool {
+	return ValidDigest(s.ImageDigest) && ValidDigest(s.KernelDigest)
 }
 
 // Evidence is a signed attestation bundle stored by the control plane.
@@ -356,6 +397,17 @@ func validateStatement(stmt BootStatement) error {
 	}
 	if _, err := time.Parse(time.RFC3339, stmt.TS); err != nil {
 		return fmt.Errorf("ts: %w", err)
+	}
+	if stmt.KernelDigest != "" && !ValidDigest(stmt.KernelDigest) {
+		return errors.New("kernel_digest must be sha256:<64 lowercase hex digits>")
+	}
+	switch stmt.Boot {
+	case "", BootNew, BootResume:
+	default:
+		return fmt.Errorf("boot must be %q or %q", BootNew, BootResume)
+	}
+	if len(stmt.VMMVersion) > MaxVMMVersionLen {
+		return fmt.Errorf("vmm_version is longer than %d bytes", MaxVMMVersionLen)
 	}
 	return nil
 }

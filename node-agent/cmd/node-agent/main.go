@@ -32,6 +32,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostvsock"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/measure"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
@@ -105,10 +106,14 @@ type config struct {
 	DiskMinFreeMiB       int           // --disk-min-free-mib: -1 twice the base image, 0 not checked
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
 	ReapOnly             bool          // --reap-only: clean up and exit, without registering
+	PrintMeasurement     bool          // --print-measurement: print what this node would attest and exit
 }
 
 func main() {
 	cfg := loadConfig()
+	if cfg.PrintMeasurement {
+		os.Exit(printMeasurement(cfg, reconciler.DefaultKernelPath, reconciler.DefaultRootFSPath, os.Stdout, os.Stderr))
+	}
 	if err := checkNodeKeyLocations(cfg); err != nil {
 		slog.Error("refusing to start", "error", err)
 		os.Exit(2)
@@ -576,6 +581,20 @@ func main() {
 		rec.SSHAgentShared = cfg.SSHAgentBridge
 		rec.SSHRegistry = sshRegistry
 		rec.Attest = attestSigners(cfg, nodeCert)
+		if !cfg.DryRun {
+			measurer := measure.NewCache()
+			rec.Measure = measurer.SHA256
+			rec.VMMVersion = vmmVersion(ctx, cfg.VMMBinary)
+			// Hash the kernel and the base image now, in the background, so the
+			// first boot does not wait for it.
+			go func() {
+				for _, path := range []string{rec.KernelPath, rec.RootFSPath} {
+					if _, err := measurer.SHA256(path); err != nil {
+						slog.Warn("boot attestation: file not measured", "path", path, "error", err)
+					}
+				}
+			}()
+		}
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
 		roots, err := workspace.ParseRoots(cfg.WorkspaceRoots)
 		if err != nil {
@@ -692,6 +711,7 @@ func loadConfig() config {
 	flag.IntVar(&cfg.DiskMinFreeMiB, "disk-min-free-mib", getenvInt("ASP_DISK_MIN_FREE_MIB", -1), "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
 	flag.StringVar(&cfg.ReapLeftovers, "reap-leftovers", getenv("ASP_REAP_LEFTOVERS", reapOn), "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing (not the rootfs copies in --disk-dir: the reconciler removes the ones no sandbox owns). on | report (log, remove nothing) | off; --dry-run only reports")
+	flag.BoolVar(&cfg.PrintMeasurement, "print-measurement", false, "print the digests of the kernel and base image and the hypervisor version this node attests, as an entry for the control plane's ASP_ATTEST_ALLOWED_IMAGES, and exit")
 	flag.BoolVar(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
 	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "loopback listen addr for the exec proxy and operator routes (ssh-agent approve, egress-check); plain HTTP, no authentication")

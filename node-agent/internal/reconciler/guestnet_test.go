@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
@@ -97,6 +98,8 @@ type fakeCP struct {
 	requests map[string]int
 	// egress, when set, is sent as each tenant's policy with the work poll.
 	egress map[string]cpclient.EgressPolicy
+	// attests holds the boot attestations posted for each sandbox, oldest first.
+	attests map[string][]attest.Evidence
 }
 
 type fakeSandbox struct {
@@ -110,7 +113,7 @@ type fakeSandbox struct {
 }
 
 func newFakeCP(t *testing.T, ids ...string) *fakeCP {
-	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}, conflict: map[string]bool{}, requests: map[string]int{}}
+	f := &fakeCP{t: t, boxes: map[string]*fakeSandbox{}, conflict: map[string]bool{}, requests: map[string]int{}, attests: map[string][]attest.Evidence{}}
 	for _, id := range ids {
 		f.boxes[id] = &fakeSandbox{ID: id, Tenant: "t1", State: "requested"}
 	}
@@ -120,6 +123,17 @@ func newFakeCP(t *testing.T, ids ...string) *fakeCP {
 }
 
 func (f *fakeCP) client() *cpclient.Client { return cpclient.New(f.srv.URL, f.srv.Client()) }
+
+// lastAttest is the newest attestation posted for id.
+func (f *fakeCP) lastAttest(id string) (attest.BootStatement, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	list := f.attests[id]
+	if len(list) == 0 {
+		return attest.BootStatement{}, false
+	}
+	return list[len(list)-1].Statement, true
+}
 
 func (f *fakeCP) setState(id, state string) {
 	f.mu.Lock()
@@ -177,6 +191,11 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		nid := "n1"
 		b.Node, b.State = &nid, "starting"
 		_ = json.NewEncoder(w).Encode(b)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attest"):
+		var ev attest.Evidence
+		_ = json.NewDecoder(r.Body).Decode(&ev)
+		f.attests[parts[3]] = append(f.attests[parts[3]], ev)
+		_, _ = w.Write([]byte(`{}`))
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
 		var body struct {
 			State  string `json:"state"`
