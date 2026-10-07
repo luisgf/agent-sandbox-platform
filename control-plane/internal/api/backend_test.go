@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,17 +18,19 @@ import (
 
 // The tests are written against the store contract, not against one store: each
 // takes its store from newBackend, and this package's tests run on the memory store
-// and, when DATABASE_URL names a Postgres server, a second time on Postgres. A
-// difference between the two shows as a test that passes in one run and fails in
-// the other (the failing test says which store it ran on).
+// then on SQLite (a file in the test's directory, so it needs nothing) and, when
+// DATABASE_URL names a Postgres server, on Postgres. A difference between the stores
+// shows as a test that passes in one run and fails in another (the failing test says
+// which store it ran on).
 //
-// ASP_TEST_STORE=memory or =postgres runs only that pass.
+// ASP_TEST_STORE=memory, =sqlite or =postgres runs only that pass.
 
 // EnvTestStore restricts the run to one store.
 const EnvTestStore = "ASP_TEST_STORE"
 
 const (
 	kindMemory   = "memory"
+	kindSQLite   = "sqlite"
 	kindPostgres = "postgres"
 )
 
@@ -64,6 +67,8 @@ func passes() ([]string, error) {
 	switch only := strings.TrimSpace(os.Getenv(EnvTestStore)); only {
 	case kindMemory:
 		return []string{kindMemory}, nil
+	case kindSQLite:
+		return []string{kindSQLite}, nil
 	case kindPostgres:
 		if pgtest.Server() == "" {
 			return nil, fmt.Errorf("%s=postgres needs %s", EnvTestStore, pgtest.EnvURL)
@@ -71,11 +76,11 @@ func passes() ([]string, error) {
 		return []string{kindPostgres}, nil
 	case "":
 		if pgtest.Server() != "" {
-			return []string{kindMemory, kindPostgres}, nil
+			return []string{kindMemory, kindSQLite, kindPostgres}, nil
 		}
-		return []string{kindMemory}, nil
+		return []string{kindMemory, kindSQLite}, nil
 	default:
-		return nil, fmt.Errorf("%s=%q: want memory or postgres", EnvTestStore, only)
+		return nil, fmt.Errorf("%s=%q: want memory, sqlite or postgres", EnvTestStore, only)
 	}
 }
 
@@ -120,6 +125,13 @@ func newBackend(t *testing.T) *backend {
 	switch currentKind {
 	case kindPostgres:
 		b.Store = emptyPostgres(t)
+	case kindSQLite:
+		s, err := store.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "asp.db"))
+		if err != nil {
+			t.Fatalf("open sqlite: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		b.Store = s
 	default:
 		b.Store = store.NewMemoryStore()
 	}
@@ -172,6 +184,11 @@ func (b *backend) SetProvisionNodeID(id string) {
 		if _, err := s.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 			b.t.Fatalf("register provision node %s: %v", id, err)
 		}
+	case *store.SQLiteStore:
+		s.SetProvisionNodeID(id)
+		if _, err := s.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+			b.t.Fatalf("register provision node %s: %v", id, err)
+		}
 	}
 }
 
@@ -183,6 +200,8 @@ func (b *backend) SetStateForTest(id string, state store.SandboxState) {
 		s.SetStateForTest(id, state)
 	case *store.PostgresStore:
 		b.exec(`UPDATE sandboxes SET state = $2 WHERE id = $1`, id, string(state))
+	case *store.SQLiteStore:
+		b.execLite(`UPDATE sandboxes SET state = ? WHERE id = ?`, string(state), id)
 	}
 }
 
@@ -194,6 +213,8 @@ func (b *backend) SetLastActivityForTest(id string, at time.Time) {
 		s.SetLastActivityForTest(id, at)
 	case *store.PostgresStore:
 		b.exec(`UPDATE sandboxes SET last_activity_at = $2 WHERE id = $1`, id, at)
+	case *store.SQLiteStore:
+		b.execLite(`UPDATE sandboxes SET last_activity_at = ? WHERE id = ?`, store.SQLiteTime(at), id)
 	}
 }
 
@@ -205,6 +226,8 @@ func (b *backend) SetStoppedAtForTest(id string, at time.Time) {
 		s.SetStoppedAtForTest(id, at)
 	case *store.PostgresStore:
 		b.exec(`UPDATE sandboxes SET stopped_at = $2 WHERE id = $1`, id, at)
+	case *store.SQLiteStore:
+		b.execLite(`UPDATE sandboxes SET stopped_at = ? WHERE id = ?`, store.SQLiteTime(at), id)
 	}
 }
 
@@ -216,6 +239,8 @@ func (b *backend) SetNodeLastSeenForTest(id string, at time.Time) {
 		s.SetNodeLastSeenForTest(id, at)
 	case *store.PostgresStore:
 		b.exec(`UPDATE nodes SET last_seen_at = $2 WHERE id = $1`, id, at)
+	case *store.SQLiteStore:
+		b.execLite(`UPDATE nodes SET last_seen_at = ? WHERE id = ?`, store.SQLiteTime(at), id)
 	}
 }
 
@@ -225,5 +250,15 @@ func (b *backend) exec(sql string, args ...any) {
 	defer cancel()
 	if _, err := pgPool.Exec(ctx, sql, args...); err != nil {
 		b.t.Fatalf("%s: %v", strings.Fields(sql)[0], err)
+	}
+}
+
+// execLite runs a statement on the SQLite database of the pass.
+func (b *backend) execLite(query string, args ...any) {
+	b.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := b.Store.(*store.SQLiteStore).DB().ExecContext(ctx, query, args...); err != nil {
+		b.t.Fatalf("%s: %v", strings.Fields(query)[0], err)
 	}
 }

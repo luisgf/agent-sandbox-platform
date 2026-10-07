@@ -53,9 +53,10 @@ func newPostgresTestStore(t *testing.T) *PostgresStore {
 	return NewPostgresStore(pool)
 }
 
-func TestPostgresStoreIntegration(t *testing.T) {
-	t.Setenv("ASP_AUTO_PROVISION", "1")
-	pg := newPostgresTestStore(t)
+func testStoreIntegration(t *testing.T, pg interface {
+	Store
+	EnsureBootstrapNode(context.Context) error
+}) {
 	ctx := context.Background()
 	if err := pg.EnsureBootstrapNode(ctx); err != nil {
 		t.Fatal(err)
@@ -103,8 +104,17 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 }
 
-func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
-	pg := newPostgresTestStore(t)
+func TestPostgresStoreIntegration(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "1")
+	testStoreIntegration(t, newPostgresTestStore(t))
+}
+
+func TestSQLiteStoreIntegration(t *testing.T) {
+	t.Setenv("ASP_AUTO_PROVISION", "1")
+	testStoreIntegration(t, newSQLiteTestStore(t))
+}
+
+func testRevokedNodeStaysRevokedUntilReEnroll(t *testing.T, pg Store) {
 	if _, err := pg.RegisterNode(context.Background(), RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
@@ -135,8 +145,15 @@ func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	}
 }
 
-func TestPostgresAPIKeyScope(t *testing.T) {
-	pg := newPostgresTestStore(t)
+func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
+	testRevokedNodeStaysRevokedUntilReEnroll(t, newPostgresTestStore(t))
+}
+
+func TestSQLiteRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
+	testRevokedNodeStaysRevokedUntilReEnroll(t, newSQLiteTestStore(t))
+}
+
+func testAPIKeyScope(t *testing.T, pg Store) {
 	secret := "scope-" + newID()
 	k, err := pg.EnsureAPIKey(context.Background(), "tenant-scope", "scoped", APIKeyScopeTenant, KeyPrefix(secret), HashAPIKeySecret(secret))
 	if err != nil {
@@ -162,10 +179,13 @@ func TestPostgresAPIKeyScope(t *testing.T) {
 	}
 }
 
+func TestPostgresAPIKeyScope(t *testing.T) { testAPIKeyScope(t, newPostgresTestStore(t)) }
+
+func TestSQLiteAPIKeyScope(t *testing.T) { testAPIKeyScope(t, newSQLiteTestStore(t)) }
+
 // Enroll tokens are single use, even when enrollments race for one, and
 // only a pinned token takes over a node that holds a certificate.
-func TestPostgresEnrollTokens(t *testing.T) {
-	pg := newPostgresTestStore(t)
+func testEnrollTokens(t *testing.T, pg Store) {
 	future := time.Now().Add(time.Hour)
 	tokFor := func(raw, nodeID string) EnrollAuth {
 		t.Helper()
@@ -225,8 +245,11 @@ func TestPostgresEnrollTokens(t *testing.T) {
 	}
 }
 
-func TestPostgresNodeCertNotAfter(t *testing.T) {
-	pg := newPostgresTestStore(t)
+func TestPostgresEnrollTokens(t *testing.T) { testEnrollTokens(t, newPostgresTestStore(t)) }
+
+func TestSQLiteEnrollTokens(t *testing.T) { testEnrollTokens(t, newSQLiteTestStore(t)) }
+
+func testNodeCertNotAfter(t *testing.T, pg Store) {
 	first := time.Now().Add(365 * 24 * time.Hour).UTC().Truncate(time.Second)
 	if _, err := pg.EnrollNode(context.Background(), EnrollNodeInput{ID: "exp", AgentEndpoint: "http://127.0.0.1:9100"},
 		CertMeta{Fingerprint: "fp-exp-1", NotAfter: first}, EnrollAuth{}); err != nil {
@@ -245,8 +268,11 @@ func TestPostgresNodeCertNotAfter(t *testing.T) {
 	}
 }
 
-func TestPostgresListEgressRulesForTenants(t *testing.T) {
-	pg := newPostgresTestStore(t)
+func TestPostgresNodeCertNotAfter(t *testing.T) { testNodeCertNotAfter(t, newPostgresTestStore(t)) }
+
+func TestSQLiteNodeCertNotAfter(t *testing.T) { testNodeCertNotAfter(t, newSQLiteTestStore(t)) }
+
+func testListEgressRulesForTenants(t *testing.T, pg Store) {
 	if _, err := pg.PutEgressRules(context.Background(), "eg-t1", []EgressRule{{HostPattern: "api.github.com", Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
@@ -265,9 +291,16 @@ func TestPostgresListEgressRulesForTenants(t *testing.T) {
 	}
 }
 
-func TestPostgresLocalNetNodeTunnel(t *testing.T) {
+func TestPostgresListEgressRulesForTenants(t *testing.T) {
+	testListEgressRulesForTenants(t, newPostgresTestStore(t))
+}
+
+func TestSQLiteListEgressRulesForTenants(t *testing.T) {
+	testListEgressRulesForTenants(t, newSQLiteTestStore(t))
+}
+
+func testLocalNetNodeTunnel(t *testing.T, pg Store) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	pg := newPostgresTestStore(t)
 	registerPlacementNodes(t, pg, 0, "ln-node")
 	on := true
 	sb, err := pg.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, LocalNet: &on})
@@ -289,6 +322,10 @@ func TestPostgresLocalNetNodeTunnel(t *testing.T) {
 		t.Fatalf("missing tunnel parameters: want ErrInvalidInput, got %v", err)
 	}
 }
+
+func TestPostgresLocalNetNodeTunnel(t *testing.T) { testLocalNetNodeTunnel(t, newPostgresTestStore(t)) }
+
+func TestSQLiteLocalNetNodeTunnel(t *testing.T) { testLocalNetNodeTunnel(t, newSQLiteTestStore(t)) }
 
 // countingTracer records the statements a store call sends (pgx.QueryTracer).
 type countingTracer struct {
