@@ -40,6 +40,9 @@ The first release will be 0.1.0. Until then this is what `main` has.
   release's kernel and image and refuses anything that does not match its checksums; the node-agent
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
+- **`scripts/e2e-kvm.sh`**: the life of a sandbox on a real KVM host (a workspace, a command as its owner
+  and as root, data nobody syncs, stop, a clean disk, resume, delete, a clean node), on a throwaway stack or
+  against a deployment through its API; the nightly workflow runs it with the other KVM smokes.
 - A Postgres run of the API tests, and a parity script that holds the memory and Postgres stores to
   one contract.
 

@@ -25,113 +25,21 @@ CH="${ASP_SMOKE_CH:-cloud-hypervisor}"
 WORK="${ASP_SMOKE_DIR:-/var/tmp/asp-smoke-vmm-user}"
 CP_PORT=18399
 AGENT_PORT=19301
-CP="http://127.0.0.1:$CP_PORT"
-UID_BASE=1879048192 # --vm-uid-base default (0x70000000)
-VMDIR="$WORK/run-vm" # --vm-run-dir default: --ch-socket-dir with -vm appended
 
-[[ $EUID -eq 0 ]] || { echo "needs root (systemd units, TAPs, chown)" >&2; exit 2; }
-for f in "$BIN/api" "$BIN/node-agent" "$BIN/asp" "$KERNEL" "$ROOTFS" /dev/kvm; do
-  [[ -e "$f" ]] || { echo "missing: $f" >&2; exit 2; }
-done
-for c in ip python3 "$CH" curl setpriv systemd-run systemctl virtiofsd; do
-  command -v "$c" >/dev/null || { echo "missing command: $c" >&2; exit 2; }
-done
+NODE_ID=smoke-vmm-user
+GUEST_SUBNET=10.235.0.0/16
 # shellcheck source=scripts/smoke-lib.sh
 source "$ROOT/scripts/smoke-lib.sh"
+# shellcheck source=scripts/kvm-lib.sh
+source "$ROOT/scripts/kvm-lib.sh"
+kvm_check_requirements
+trap kvm_cleanup EXIT
 
-pids=()
-AGENT_PID=
-AGENT_LOG="$WORK/agent.log"
-fail() { echo "FAIL: $*" >&2; exit 1; }
-# asp runs the CLI against the control plane. Its stdin is /dev/null unless ASP_STDIN
-# names a file: a buffered exec reads stdin until EOF and hangs on an open terminal.
-asp() {
-  env HOME="$WORK/home" ASP_CONTROL_PLANE_URL="$CP" ASP_SESSION_DIR="$WORK/sessions" \
-    ASP_REQUIRE_TOKEN= ASP_IDP_REQUIRED= ASP_API_KEY= ASP_ID_TOKEN= "$BIN/asp" "$@" <"${ASP_STDIN:-/dev/null}"
-}
-gx() { asp session exec --name "$1" --buffered --cmd "$2" 2>&1; } # run a command in a guest
-sid() { json_field sandbox_id <"$WORK/sessions/$1.json"; }
-want() { # label pattern answer
-  if grep -qE -- "$2" <<<"$3"; then
-    echo "  ok   $1 -> $(head -c 70 <<<"$3" | tr '\n' ' ')"
-  else
-    fail "$1: wanted /$2/, got: $3"
-  fi
-}
-vmm_pid() { systemctl show -p MainPID --value "asp-vm-$1.service"; }
-status_of() { grep -E "^$2:" "/proc/$1/status" | cut -f2- | tr -s '\t' ' '; }
-owner_uid() { stat -c %u "$1" 2>/dev/null || echo gone; }
-
-start_agent() {
-  "$BIN/node-agent" --control-plane-url="$CP" --node-id=smoke-vmm-user \
-    --ch-binary="$(command -v "$CH")" --ch-socket-dir="$WORK/run" --disk-dir="$WORK/disks" \
-    --guest-kernel="$KERNEL" --guest-rootfs="$ROOTFS" --guest-ready-timeout=120s \
-    --agent-listen="127.0.0.1:$AGENT_PORT" --agent-token-file="$WORK/agent.token" \
-    --reconcile --reconcile-interval=2s --tap-auto --host-vsock --host-vsock-dir="$WORK/hv" \
-    --workspace-root="$WORK/ws" --guest-subnet=10.235.0.0/16 --reap-leftovers=on --stop-grace=10s \
-    --vm-confine=on --vm-unprivileged=on "$@" >>"$AGENT_LOG" 2>&1 &
-  AGENT_PID=$!
-  # The node is schedulable from the heartbeat of the agent before this one: wait for
-  # this one to have adopted what it finds and registered.
-  for _ in $(seq 1 300); do
-    grep -q "reconciler started" "$AGENT_LOG" 2>/dev/null && break
-    kill -0 "$AGENT_PID" 2>/dev/null || fail "the node-agent exited: $(tail -5 "$AGENT_LOG")"
-    sleep 0.2
-  done
-  grep -q "reconciler started" "$AGENT_LOG" || fail "the node never registered: $(tail -5 "$AGENT_LOG")"
-  wait_node_schedulable "$CP" smoke-vmm-user 60 || fail "the node is not schedulable: $(tail -5 "$AGENT_LOG")"
-}
-# The VMs outlive the agent, so killing it is how a restart is simulated.
-kill_agent() {
-  [[ -n "$AGENT_PID" ]] && kill "$AGENT_PID" 2>/dev/null || true
-  [[ -n "$AGENT_PID" ]] && wait "$AGENT_PID" 2>/dev/null || true
-  AGENT_PID=
-}
-
-cleanup() {
-  local rc=$?
-  set +e
-  if [[ $rc -ne 0 ]]; then
-    echo "--- node-agent log (tail)" >&2
-    tail -40 "$AGENT_LOG" 2>/dev/null >&2
-  fi
-  if [[ -n "${ASP_SMOKE_KEEP:-}" && $rc -ne 0 ]]; then
-    echo "ASP_SMOKE_KEEP: leaving the node, the control plane and $WORK in place (agent pid ${AGENT_PID:-none}, control plane pid ${pids[*]:-none})" >&2
-    exit $rc
-  fi
-  kill_agent
-  # Only the sandboxes this script started: the host's slice is shared.
-  for f in "$WORK"/run/state/*.json; do
-    [[ -e "$f" ]] || continue
-    local id
-    id=$(basename "$f" .json)
-    systemctl stop "asp-vm-$id.service" "asp-vm-$id-fs.service" 2>/dev/null
-  done
-  "$BIN/node-agent" --reap-only --ch-socket-dir="$WORK/run" --disk-dir="$WORK/disks" >/dev/null 2>&1
-  for p in "${pids[@]}"; do kill "$p" 2>/dev/null; done
-  rm -rf "$WORK"
-  exit $rc
-}
-trap cleanup EXIT
-
-rm -rf "$WORK"
-mkdir -p "$WORK"/{run,disks,keys,home,sessions,hv} "$WORK/ws/default/proj"
-chmod 755 "$WORK" "$WORK/ws" "$WORK/ws/default"
-chmod 777 "$WORK/ws/default/proj"
-echo host-file >"$WORK/ws/default/proj/host.txt"
-
-# --- the control plane
-export ASP_ATTEST_KEY="$WORK/keys/attest.pem"
-env ASP_LISTEN_ADDR="127.0.0.1:$CP_PORT" ASP_INSECURE_OPEN_API=1 ASP_AUTO_PROVISION=0 \
-  ASP_AGENT_TOKEN_FILE="$WORK/agent.token" ASP_WORKSPACE_ROOTS="$WORK/ws" \
-  ASP_CA_CERT="$WORK/keys/ca.crt" ASP_CA_KEY="$WORK/keys/ca.key" ASP_OIDC_KEY="$WORK/keys/oidc.pem" \
-  "$BIN/api" >"$WORK/cp.log" 2>&1 &
-pids+=($!)
-for _ in $(seq 1 50); do curl -fsS "$CP/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
-curl -fsS "$CP/healthz" >/dev/null || fail "the control plane did not start: $(tail -5 "$WORK/cp.log")"
+kvm_prepare
+kvm_start_cp
 
 echo "==> start the node (--vm-unprivileged=on)"
-start_agent
+kvm_start_agent
 grep -q "unprivileged=true" "$AGENT_LOG" || fail "the agent does not run its VMMs as users: $(grep -E 'unprivileged|WARN|ERROR' "$AGENT_LOG" | head -3)"
 
 echo "==> two sandboxes"
@@ -205,10 +113,10 @@ want "the guest data survived" 'kept' "$(gx a 'cat /var/tmp/marker')"
 
 echo "==> the agent restarts: both VMs are adopted, as they are"
 UP_A=$(gx a 'cut -d. -f1 /proc/uptime')
-kill_agent
+kvm_kill_agent
 [[ "$(vmm_pid "$A")" == "$A_VMM" ]] || fail "the VMM of a did not survive the agent"
 : >"$AGENT_LOG"
-start_agent
+kvm_start_agent
 grep -q "adopted the VMs a previous agent left running" "$AGENT_LOG" || fail "nothing was adopted: $(tail -5 "$AGENT_LOG")"
 [[ "$(vmm_pid "$A")" == "$A_VMM" ]] || fail "the VMM of a changed"
 UP_A2=$(gx a 'cut -d. -f1 /proc/uptime')
@@ -233,12 +141,12 @@ echo "==> an agent that dies, and a VMM that dies meanwhile: the next start take
 asp session resume --name b >/dev/null || fail "resume b"
 B_VMM=$(vmm_pid "$B")
 B_UID=$(ps -o uid= -p "$B_VMM" | tr -d ' ')
-kill_agent
+kvm_kill_agent
 kill -9 "$B_VMM"
 sleep 2
 want "the disk stays its user's while nobody looks" "^$B_UID\$" "$(owner_uid "$WORK/disks/rootfs-$B.img")"
 : >"$AGENT_LOG"
-start_agent
+kvm_start_agent
 want "the disk is root's again after the cleanup" '^0$' "$(owner_uid "$WORK/disks/rootfs-$B.img")"
 want "and its directory is gone" '^gone$' "$(owner_uid "$VMDIR/$B")"
 want "a is still running, adopted" 'kept' "$(gx a 'cat /var/tmp/marker')"
