@@ -41,14 +41,27 @@ The first release will be 0.1.0. Until then this is what `main` has.
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
 - **An installer**: `curl -fsSL …/releases/latest/download/install.sh | sudo sh` (roles `cli`, `server`,
-  `agent`) installs a release's packages after checking them against `SHA256SUMS`, writes `/etc/asp/*.env`
-  from `INSTALL_ASP_*` variables, pulls the guest image and starts the service; `asp-killall.sh` and
-  `asp-uninstall.sh` take ASP away again.
+  `agent`) installs a release's packages after checking them against `SHA256SUMS`, writes the
+  settings of the `INSTALL_ASP_*` variables into a drop-in under `/etc/asp`, pulls the guest image and
+  starts the service; `asp-killall.sh` and `asp-uninstall.sh` take ASP away again.
+- **A configuration file** for each component, with drop-ins like k3s's: `/etc/asp/agent.yaml` and
+  `agent.yaml.d/*.yaml` (node-agent), `server.yaml` (control plane), `asp.yaml` (CLI, also
+  `~/.config/asp/asp.yaml`). The order is flag, environment, file, default, in all three; an unknown
+  key stops the start and names the nearest setting. `--print-config` (node-agent, control plane) and
+  `asp config show [--effective]` list every setting with its value and where it came from, with the
+  credentials hidden. [docs/how-to/config-file.md](docs/how-to/config-file.md)
 - A Postgres run of the API tests, and a parity script that holds the memory and Postgres stores to
   one contract.
 
 ### Changed
 
+- **The packaged units read a file, not `Environment=` lines:** `ExecStart=… --config /etc/asp/agent.yaml`
+  (or `server.yaml`), with the settings the unit used to carry in the file the package installs. The
+  control plane's files belong to the group `asp-control-plane`, whose user reads them itself, so the
+  package makes that user before it unpacks. The lab units (`scripts/systemd/`) do the same, with
+  their settings in `scripts/systemd/lab/`. `asp doctor` no longer loads `/etc/asp/node-agent.env` by
+  default (the node-agent reads its own file); `--env-file` still does for a unit that has one.
+- `--local-net-key-dir` (`ASP_LOCAL_NET_KEY_DIR`) is a setting of the node-agent, so a file can set it.
 - **Every setting has one name,** the flag's name in capitals with the `ASP_` prefix, in the three
   binaries; the old names still work and print a warning once. Booleans take `1/true/yes/on` and
   `0/false/no/off`, and anything else is an error.

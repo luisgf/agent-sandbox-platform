@@ -85,7 +85,7 @@ node-agent \
 
 El bootstrap token compartido (`--bootstrap-token`, `ASP_NODE_BOOTSTRAP_TOKEN`) sigue funcionando en labs, pero solo enrola un id sin certificado o un nodo revocado: no re-enrola un nodo vivo. Si reinicias el agente con `--enroll`, el plano de control responde que el nodo ya está enrolado y el agente sigue con el certificado de `--cert-dir`. Para cambiarle la clave a un nodo vivo, pide un token fijado a él (`asp node enroll-token --node-id node2`) o usa `POST /v1/nodes/{id}/rotate-cert`.
 
-En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)): los mismos ajustes van en `/etc/asp/node-agent.env` como variables de entorno. Un solo node-agent por servidor.
+En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)): los mismos ajustes van en `/etc/asp/agent.yaml` y `agent.yaml.d/` ([el fichero de configuración](how-to/config-file.md)). Un solo node-agent por servidor.
 
 El agente corre cada `cloud-hypervisor` como un usuario sin privilegios propio ([bare-metal §5.7](bare-metal-ch.md#57-el-vmm-sin-privilegios-un-usuario-por-vm)); necesita `setpriv`, y el kernel y el binario del hipervisor legibles por todos. Al arrancar lo comprueba y, si el host no puede, lo dice en el log (`microVMs run as root: …`) y los deja como root: míralo en el primer arranque de cada nodo (`journalctl -u asp-node-agent | grep -i unprivileged`).
 

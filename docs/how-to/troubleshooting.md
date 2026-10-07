@@ -10,7 +10,7 @@ Cuando un nodo no arranca, no registra o arranca sandboxes que fallan, el sínto
 | `sudo asp doctor [--json] [-- flags del agente]` | en el nodo, como root | ejecuta `node-agent --doctor` con los ajustes del nodo, **sin arrancar el agente**: es la herramienta para el nodo que no arranca |
 | `sudo node-agent --doctor [--doctor-json] [flags]` | en el nodo, como root | lo mismo, sin pasar por `asp` |
 
-`asp doctor` carga las variables de `/etc/asp/node-agent.env` (`--env-file` para otro fichero), como hace la unit de systemd, y pasa al agente lo que pongas detrás de `--` (las banderas que la unit lleva en `ExecStart`: `--disk-dir`, `--ch-socket-dir`, `--egress-proxy-listen`…). Con `--json` imprime el informe para automatizar. **El código de salida es 1 si alguna comprobación falla** (los avisos no cuentan); 2 si no encuentra el `node-agent`.
+`asp doctor` ejecuta las comprobaciones del propio node-agent, que lee `/etc/asp/agent.yaml` (y `agent.yaml.d/`) como cuando lo arranca systemd, y le pasa lo que pongas detrás de `--` (`--config OTRO.yaml`, o cualquier bandera: `--disk-dir`, `--ch-socket-dir`…). Si tu unit carga un `EnvironmentFile`, `--env-file` lo carga también. Con `--json` imprime el informe para automatizar. **El código de salida es 1 si alguna comprobación falla** (los avisos no cuentan); 2 si no encuentra el `node-agent`.
 
 ```text
 $ asp node doctor node1

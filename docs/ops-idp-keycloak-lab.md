@@ -181,6 +181,8 @@ Plantilla en repo: [`scripts/systemd/asp-control-plane.service`](../scripts/syst
 | Drop-ins | `/etc/systemd/system/asp-control-plane.service.d/`: `keys.conf` (claves fuera de `/tmp`), `local-net-dial.conf`, `postgres.conf` (espera a Docker y reintenta sin límite) e `idle.conf` (`ASP_SANDBOX_IDLE_TIMEOUT=2h`) |
 | Node-agent | `asp-node-agent.service` (ver abajo), `/usr/local/bin/node-agent` |
 
+**Plantilla y unit instalada.** La plantilla del repo lleva sus ajustes en `/etc/asp/server.yaml` ([`scripts/systemd/lab/server.yaml`](../scripts/systemd/lab/server.yaml): escucha, issuer, reaper de inactividad y rutas de las claves) y deja en el `EnvironmentFile` solo los secretos, que mandan sobre el fichero; su `ExecStart` es `build/api --config /etc/asp/server.yaml`. La unit que corre hoy en ncc1701d es la anterior (líneas `Environment=` y los drop-ins de la tabla) y sigue valiendo: el fichero es una capa más, por debajo del entorno ([el fichero de configuración](how-to/config-file.md)). Pasar a la plantilla es un despliegue que se hace con el OK del operador; `build/api --config /etc/asp/server.yaml --print-config` dice qué valdría cada ajuste antes de hacerlo.
+
 ### Instalar / reemplazar el runner ad-hoc
 
 ```bash
@@ -227,6 +229,7 @@ El node-agent de este host corre como unidad persistente (antes, una unidad tran
 
 ```bash
 sudo install -o root -g root -m 0755 build/node-agent /usr/local/bin/node-agent   # de root: la unidad corre como root
+sudo install -d -m 0700 /etc/asp && sudo install -m 0600 scripts/systemd/lab/agent.yaml /etc/asp/agent.yaml   # lo que eran las banderas de ExecStart
 sudo cp scripts/systemd/asp-node-agent-lab.service /etc/systemd/system/asp-node-agent.service
 sudo systemctl daemon-reload && sudo systemctl enable --now asp-node-agent.service
 journalctl -u asp-node-agent -f

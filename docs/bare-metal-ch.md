@@ -580,16 +580,16 @@ journalctl -u asp-vm-<id>                       # la salida de cloud-hypervisor,
 
 ```bash
 sudo install -m 0755 build/node-agent /usr/local/bin/node-agent
-sudo install -d -m 0750 /etc/asp
-sudo install -m 0600 /dev/null /etc/asp/node-agent.env
-sudoedit /etc/asp/node-agent.env   # ASP_CONTROL_PLANE_URL, ASP_CONTROL_PLANE_CA, ASP_ENDPOINT… (ejemplo en la unit)
+sudo install -d -m 0700 /etc/asp/agent.yaml.d
+sudo install -m 0600 packaging/etc/agent.yaml /etc/asp/agent.yaml        # lo que necesita todo nodo
+sudoedit /etc/asp/agent.yaml.d/10-site.yaml   # control_plane_url, control_plane_ca, endpoint… (ejemplos en agent.yaml)
 sudo cp scripts/systemd/asp-node-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now asp-node-agent.service
 journalctl -u asp-node-agent -f
 ```
 
-Primer arranque: añade `ASP_ENROLL=1` y `ASP_NODE_BOOTSTRAP_TOKEN=…` al env file y quítalos cuando el journal diga `enrolled`; el token no debe quedarse en el nodo. Las líneas del env file mandan sobre las `Environment=` de la unit.
+Primer arranque: añade `enroll: true` y `enroll_token: …` en un fichero propio (`/etc/asp/agent.yaml.d/20-enroll.yaml`) y bórralo cuando el journal diga `enrolled`; el token no debe quedarse en el nodo. Los ajustes viven en el YAML (la unit solo lleva `ExecStart=… --config /etc/asp/agent.yaml`) y `node-agent --print-config` dice qué vale cada uno y de dónde viene; [el fichero de configuración](how-to/config-file.md) lo explica.
 
 Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`, cada 5 s): el agente sale si no puede registrarse, y con el límite por defecto de systemd (5 arranques en 10 s) un plano de control que tarde en responder al arrancar el servidor dejaría el nodo caído hasta arrancarlo a mano. Un nodo de laboratorio con el plano de control en el mismo host (HTTP por loopback, sin mTLS ni enroll) usa [`scripts/systemd/asp-node-agent-lab.service`](../scripts/systemd/asp-node-agent-lab.service), descrita en [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md#systemd--asp-node-agentservice).
 
