@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -16,7 +17,7 @@ import (
 
 func nodeCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "node subcommand required (list|cordon|uncordon|enroll-token)")
+		fmt.Fprintln(stderr, "node subcommand required (list|cordon|uncordon|enroll-token|fence)")
 		return 2
 	}
 	switch args[0] {
@@ -28,6 +29,8 @@ func nodeCmd(args []string, stdout, stderr io.Writer) int {
 		return cmdNodeCordon(args[1:], stdout, stderr, false)
 	case "enroll-token":
 		return cmdNodeEnrollToken(args[1:], stdout, stderr)
+	case "fence":
+		return cmdNodeFence(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printRootUsage(stderr)
 		return 0
@@ -217,4 +220,113 @@ func nodeOf(sb client.Sandbox) string {
 		return "-"
 	}
 	return *sb.NodeID
+}
+
+// cmdNodeFence sets or clears how the control plane powers a node off when it
+// declares it lost. Only an admin can, and the credential is never printed or
+// returned: a reference (--token-env, --token-file) is resolved by the control
+// plane when it fences, so the secret need not be stored at all.
+func cmdNodeFence(args []string, stdout, stderr io.Writer) int {
+	usage := func() int {
+		fmt.Fprintln(stderr, `usage:
+  asp node fence set <node-id> --endpoint URL [--token-env NAME | --token-file /abs/path | --token-stdin]
+  asp node fence clear <node-id>
+
+--token-env and --token-file name a variable or a file of the control plane's
+host, which it reads when it fences. --token-stdin reads the credential from
+standard input and stores it.`)
+		return 2
+	}
+	if len(args) == 0 {
+		return usage()
+	}
+	switch args[0] {
+	case "set":
+		return cmdNodeFenceSet(args[1:], stdout, stderr)
+	case "clear":
+		return cmdNodeFenceClear(args[1:], stdout, stderr)
+	}
+	return usage()
+}
+
+func cmdNodeFenceSet(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("node fence set", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	endpoint := fs.String("endpoint", "", "where the control plane asks for the power-off: webhook URL, Redfish base URL or IPMI host")
+	tokenEnv := fs.String("token-env", "", "credential: the control plane's environment variable NAME")
+	tokenFile := fs.String("token-file", "", "credential: an absolute path on the control plane's host")
+	tokenStdin := fs.Bool("token-stdin", false, "read the credential from standard input")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(pos) != 1 || strings.TrimSpace(*endpoint) == "" {
+		fmt.Fprintln(stderr, "usage: asp node fence set <node-id> --endpoint URL [--token-env NAME | --token-file /abs/path | --token-stdin]")
+		return 2
+	}
+	n := 0
+	for _, set := range []bool{*tokenEnv != "", *tokenFile != "", *tokenStdin} {
+		if set {
+			n++
+		}
+	}
+	if n > 1 {
+		fmt.Fprintln(stderr, "node fence set: give at most one of --token-env, --token-file and --token-stdin")
+		return 2
+	}
+	token := ""
+	switch {
+	case *tokenEnv != "":
+		token = "env:" + strings.TrimSpace(*tokenEnv)
+	case *tokenFile != "":
+		token = "file:" + strings.TrimSpace(*tokenFile)
+	case *tokenStdin:
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, 8192))
+		if err != nil {
+			fmt.Fprintf(stderr, "node fence set: reading the credential: %v\n", err)
+			return 1
+		}
+		token = strings.TrimSpace(string(b))
+		if token == "" {
+			fmt.Fprintln(stderr, "node fence set: empty credential on standard input")
+			return 2
+		}
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	if err := c.SetNodeFence(context.Background(), pos[0], strings.TrimSpace(*endpoint), token); err != nil {
+		fmt.Fprintf(stderr, "node fence set: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "node %s: fence target set\n", pos[0])
+	return 0
+}
+
+func cmdNodeFenceClear(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("node fence clear", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(pos) != 1 {
+		fmt.Fprintln(stderr, "usage: asp node fence clear <node-id>")
+		return 2
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	if err := c.ClearNodeFence(context.Background(), pos[0]); err != nil {
+		fmt.Fprintf(stderr, "node fence clear: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "node %s: fence target cleared\n", pos[0])
+	return 0
 }

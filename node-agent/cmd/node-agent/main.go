@@ -727,6 +727,11 @@ func loadConfig() config {
 		slog.Error("--capacity-cpu and --capacity-mem-mib take -1 (detect), 0 (not enforced) or a count; --max-sandboxes takes 0 or more")
 		os.Exit(2)
 	}
+	for _, k := range []string{"ASP_FENCE_ENDPOINT", "ASP_FENCE_TOKEN"} {
+		if os.Getenv(k) != "" {
+			slog.Warn(k+" is ignored: a node does not choose how it is powered off; an operator sets the fence target on the control plane (asp node fence set)", "variable", k)
+		}
+	}
 	cfg.InstanceID = newInstanceID()
 	host := capacity.Detect()
 	cfg.CapacityCPU = capacity.CPU(cfg.CapacityCPU, host)
@@ -790,8 +795,6 @@ func registerRequest(cfg config) cpclient.RegisterRequest {
 		AcceptsWork:     &acceptsWork,
 		LocalNetDial:    cfg.LocalNetDial,
 		AgentInstanceID: cfg.InstanceID,
-		FenceEndpoint:   os.Getenv("ASP_FENCE_ENDPOINT"),
-		FenceToken:      os.Getenv("ASP_FENCE_TOKEN"),
 	}
 }
 

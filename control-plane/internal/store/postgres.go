@@ -609,33 +609,30 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		node, err = scanNode(tx.QueryRow(ctx, `
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
-				capacity_cpu, capacity_mem_mib, fence_endpoint, fence_token,
+				capacity_cpu, capacity_mem_mib,
 				last_seen_at, created_at, updated_at,
 				max_sandboxes, accepts_work, local_net_dial, agent_instance_id
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$11,$12,$13,$14)
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$8,$8,$9,$10,$11,$12)
 			RETURNING `+nodeColumns,
-			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
-			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
+			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB, now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 			strings.TrimSpace(input.AgentInstanceID),
 		))
 	} else {
-		// cordoned is an admin decision: register never touches it.
+		// cordoned and the fence target are admin decisions: register never
+		// touches them.
 		node, err = scanNode(tx.QueryRow(ctx, `
 			UPDATE nodes SET
 				name=$2, endpoint=$3,
 				agent_endpoint=CASE WHEN $4 = '' THEN agent_endpoint ELSE $4 END,
 				state='ready', vmm_profiles=$5,
 				capacity_cpu=$6, capacity_mem_mib=$7,
-				fence_endpoint=CASE WHEN $8 = '' THEN fence_endpoint ELSE $8 END,
-				fence_token=CASE WHEN $9 = '' THEN fence_token ELSE $9 END,
-				last_seen_at=$10, updated_at=$10,
-				max_sandboxes=$11, accepts_work=$12, local_net_dial=$13,
-				agent_instance_id=CASE WHEN $14 = '' THEN agent_instance_id ELSE $14 END
+				last_seen_at=$8, updated_at=$8,
+				max_sandboxes=$9, accepts_work=$10, local_net_dial=$11,
+				agent_instance_id=CASE WHEN $12 = '' THEN agent_instance_id ELSE $12 END
 			WHERE id=$1
 			RETURNING `+nodeColumns,
-			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB,
-			strings.TrimSpace(input.FenceEndpoint), strings.TrimSpace(input.FenceToken), now,
+			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB, now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 			strings.TrimSpace(input.AgentInstanceID),
 		))
@@ -1062,6 +1059,42 @@ func (p *PostgresStore) SetNodeCordoned(id string, cordoned bool) (Node, error) 
 	eventType := "node.uncordoned"
 	if cordoned {
 		eventType = "node.cordoned"
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO node_events (node_id, event_type, actor, payload)
+		VALUES ($1,$2,'api','{}'::jsonb)`, id, eventType); err != nil {
+		return Node{}, fmt.Errorf("node event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Node{}, err
+	}
+	return node, nil
+}
+
+func (p *PostgresStore) SetNodeFence(id, endpoint, token string) (Node, error) {
+	ctx := context.Background()
+	endpoint = strings.TrimSpace(endpoint)
+	token = strings.TrimSpace(token)
+	if endpoint == "" {
+		token = ""
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return Node{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	node, err := scanNode(tx.QueryRow(ctx, `UPDATE nodes SET fence_endpoint=$2, fence_token=$3, updated_at=$4 WHERE id=$1 RETURNING `+nodeColumns,
+		id, endpoint, token, time.Now().UTC()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Node{}, ErrNotFound
+	}
+	if err != nil {
+		return Node{}, err
+	}
+	// The event says a target was set or cleared, never what it is.
+	eventType := "node.fence_set"
+	if endpoint == "" {
+		eventType = "node.fence_cleared"
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO node_events (node_id, event_type, actor, payload)

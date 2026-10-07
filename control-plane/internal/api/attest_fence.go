@@ -238,7 +238,11 @@ func (s *Server) fenceNode(ctx context.Context, n store.Node) (bool, error) {
 		slog.Info("fence skipped: no fence_endpoint", "node_id", n.ID)
 		return false, nil
 	}
-	if err := s.Fence.Fence(ctx, fence.Target{NodeID: n.ID, Endpoint: n.FenceEndpoint, Token: n.FenceToken}); err != nil {
+	token, err := fence.ResolveSecret(n.FenceToken)
+	if err != nil {
+		return false, err
+	}
+	if err := s.Fence.Fence(ctx, fence.Target{NodeID: n.ID, Endpoint: n.FenceEndpoint, Token: token}); err != nil {
 		return false, err
 	}
 	return true, nil

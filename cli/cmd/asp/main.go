@@ -68,6 +68,8 @@ Usage:
   asp node list [--json]
   asp node cordon|uncordon <id>
   asp node enroll-token [--node-id ID] [--ttl 1h] [--json]
+  asp node fence set <id> --endpoint URL [--token-env NAME | --token-file /abs/path | --token-stdin]
+  asp node fence clear <id>
   asp version
 
 Global env:

@@ -54,8 +54,6 @@ type RegisterRequest struct {
 	// AgentInstanceID is random per process: a new one tells the control plane
 	// this agent restarted and lost track of its running VMs.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
-	FenceEndpoint   string `json:"fence_endpoint,omitempty"`
-	FenceToken      string `json:"fence_token,omitempty"`
 }
 
 func New(baseURL string, httpClient *http.Client) *Client {
