@@ -23,6 +23,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 		_, _ = w.Write([]byte(`{"nodes":[
 			{"id":"node-a","state":"ready","schedulable":true,"last_seen_at":"` + time.Now().UTC().Add(-3*time.Second).Format(time.RFC3339) + `",
 			 "cert_not_after":"` + time.Now().UTC().Add(200*24*time.Hour+time.Hour).Format(time.RFC3339) + `",
+			 "stopped_sandboxes":3,"disk_free_mib":716800,
 			 "allocated":{"cpu_millis":1500,"memory_mib":1024,"sandboxes":1},"allocatable":{"cpu_millis":16000,"memory_mib":7168,"sandboxes":0}},
 			{"id":"node-b","state":"ready","cordoned":true,"schedulable":false,"unschedulable_reason":"cordoned","last_seen_at":null,
 			 "allocated":{"cpu_millis":0,"memory_mib":0,"sandboxes":0},"allocatable":{"cpu_millis":0,"memory_mib":0,"sandboxes":4}}]}`))
@@ -47,10 +48,27 @@ func TestNodeListCordonUncordon(t *testing.T) {
 		t.Fatalf("list exit=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d"} {
+	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d", "STOPPED (DISKS)", "DISK FREE", "700 GiB"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("node list missing %q:\n%s", want, out)
 		}
+	}
+
+	// Each node's row says how many stopped sandboxes keep a disk on it, and its free disk.
+	var rowA, rowB string
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "node-a"):
+			rowA = line
+		case strings.HasPrefix(line, "node-b"):
+			rowB = line
+		}
+	}
+	if f := strings.Fields(rowA); len(f) < 9 || f[6] != "3" {
+		t.Errorf("node-a row should show 3 stopped sandboxes: %q", rowA)
+	}
+	if !strings.Contains(rowB, "  0  ") || !strings.Contains(rowB, " -  ") {
+		t.Errorf("node-b reported no disk and has no stopped sandboxes: %q", rowB)
 	}
 
 	stdout.Reset()

@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -151,7 +152,7 @@ func TestStatusErrorsAreTyped(t *testing.T) {
 	defer srv.Close()
 	c := New(srv.URL, srv.Client())
 
-	err := c.Heartbeat(context.Background(), "n1")
+	err := c.Heartbeat(context.Background(), "n1", HeartbeatInfo{})
 	if !IsNotFound(err) || IsConflict(err) || err.Error() != `heartbeat status 404: {"error":"node not found"}` {
 		t.Fatalf("heartbeat 404: %v", err)
 	}
@@ -235,5 +236,33 @@ func TestListWorkRetainedAndBootCount(t *testing.T) {
 	}
 	if work.Sandboxes[0].BootCount != 3 || work.Sandboxes[1].BootCount != 0 {
 		t.Fatalf("boot counts: %+v", work.Sandboxes)
+	}
+}
+
+// The heartbeat carries the free disk space when it is known, and no body when
+// it is not, so a control plane that predates the field sees what it always did.
+func TestHeartbeatCarriesFreeDisk(t *testing.T) {
+	var body string
+	var contentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body, contentType = string(raw), r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := New(srv.URL, srv.Client())
+
+	if err := c.Heartbeat(context.Background(), "n1", HeartbeatInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	if body != "" || contentType != "" {
+		t.Fatalf("a heartbeat without info must have no body: %q (%s)", body, contentType)
+	}
+	free := int64(123456)
+	if err := c.Heartbeat(context.Background(), "n1", HeartbeatInfo{DiskFreeMiB: &free}); err != nil {
+		t.Fatal(err)
+	}
+	if body != `{"disk_free_mib":123456}` || contentType != "application/json" {
+		t.Fatalf("body=%q content-type=%q", body, contentType)
 	}
 }

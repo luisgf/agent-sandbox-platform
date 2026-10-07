@@ -468,3 +468,14 @@ func TestOnlyAStopThatKeepsTheDiskPowersTheGuestOff(t *testing.T) {
 		t.Fatalf("events=%q, want only a hard stop", got)
 	}
 }
+
+// The node can say how much room its disks have left.
+func TestDiskFreeMiB(t *testing.T) {
+	mib, ok := DiskFreeMiB(t.TempDir())
+	if !ok || mib <= 0 {
+		t.Fatalf("DiskFreeMiB of a temp dir: %d %v", mib, ok)
+	}
+	if _, ok := DiskFreeMiB(filepath.Join(t.TempDir(), "missing", "dir")); ok {
+		t.Fatal("a missing directory has no free space to report")
+	}
+}

@@ -275,7 +275,17 @@ docker compose up -d postgres
 export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 ```
 
-Migraciones `001`–`017` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo).
+Migraciones `001`–`019` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo, discos retenidos al parar — `deleting`/`deleted`, `boot_count`, `stopped_at`, `status_detail` —, espacio libre de disco del nodo).
+
+**Postgres es requisito para que parar conserve el disco** ([ADR-0012](adr/0012-retained-disks.md)). Con el store en memoria, reiniciar el plano de control olvida las sandboxes y cada nodo borra sus discos; el plano de control lo avisa al arrancar. En un servidor que ya corre otras cosas (ncc1701d comparte Docker con otra aplicación):
+
+1. **Un Postgres propio de ASP**, no el de otra aplicación: `docker compose up -d postgres` desde este repo crea `asp-postgres` (Postgres 16, usuario y base `asp`). En el servidor, antes de arrancarlo: publícalo solo en `127.0.0.1:5432` (o el puerto libre que toque), pon la **contraseña generada** en `POSTGRES_PASSWORD` y `DATABASE_URL`, y los datos en un disco persistente fuera de `/var` (que en ncc1701d tiene 2,9 GB): por ejemplo un bind mount a `/sandbox/postgres` o `/home/ubuntu/asp-postgres/data`, en vez del volumen por defecto.
+2. **`DATABASE_URL` en el fichero de secretos** que ya carga la unit del plano de control (`~/.secrets/asp-idp.env`, modo `0600`), nunca en la unit ni en el repo. Las claves ya viven en `/var/lib/asp-control-plane`, que es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`).
+3. **Reinicia el plano de control** sin sesiones activas: las migraciones se aplican solas (`using Postgres store` en el log). El node-agent se registra solo; las sandboxes que viviesen en memoria se pierden, y los discos de las que quedasen paradas los recoge el GC del nodo.
+4. **Comprueba:** `asp sandbox list` vacío; arranca una sesión, páriala, `systemctl restart asp-control-plane`, y `asp session resume` debe funcionar y el disco seguir en `--disk-dir`.
+5. **Copias:** `pg_dump` a `~/asp-backup-<fecha>/` antes de desplegar migraciones nuevas.
+
+Retención: `ASP_STOPPED_SANDBOX_TTL` (por defecto **7 días**; `0`/`off` conserva hasta borrar) y `ASP_MAX_STOPPED_PER_TENANT` (sin tope por defecto) acotan cuánto tiempo y cuántas sandboxes paradas guardan su disco ([`control-plane/README.md`](../control-plane/README.md#retención-de-sandboxes-paradas)).
 
 ### 4.2 TLS + client CA + bootstrap
 

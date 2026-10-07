@@ -56,6 +56,14 @@ type Store interface {
 	// (or stopped when never assigned). idleFor <= 0 is a no-op (reaper disabled).
 	StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error)
 
+	// ExpireStoppedSandboxes deletes the sandboxes stopped for at least ttl: deleting
+	// for their node to remove the disk, or deleted when no node holds one, with
+	// stop_reason retention_expired. ttl <= 0 is a no-op (kept until deleted).
+	ExpireStoppedSandboxes(now time.Time, ttl time.Duration) ([]Sandbox, error)
+	// EvictStoppedOverCap deletes, per tenant, the oldest stopped sandboxes beyond
+	// max (stop_reason tenant_cap). max <= 0 is a no-op.
+	EvictStoppedOverCap(max int) ([]Sandbox, error)
+
 	RegisterNode(input RegisterNodeInput) (Node, error)
 	// CreateEnrollToken stores a single-use enroll token by its hash.
 	CreateEnrollToken(tok EnrollToken) error
@@ -74,6 +82,11 @@ type Store interface {
 	// IsCertRevoked reports whether a client-cert fingerprint must be rejected by mTLS middleware.
 	IsCertRevoked(fingerprint string) (bool, error)
 	HeartbeatNode(id string) (Node, error)
+	// SetNodeDiskFree records the free space of the node's --disk-dir, as it
+	// reported it on a heartbeat. ErrNotFound for an unknown node.
+	SetNodeDiskFree(id string, freeMiB int64) error
+	// CountStoppedByNode counts the stopped sandboxes (the disks a stop keeps) on each node.
+	CountStoppedByNode() (map[string]int64, error)
 	// TouchNodePoll records that the node polled for work: it is alive. Writes are
 	// throttled; ErrNotFound for an unknown node.
 	TouchNodePoll(id string, now time.Time) error

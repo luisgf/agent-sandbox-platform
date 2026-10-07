@@ -74,7 +74,7 @@ Después, desde un puesto con rol admin u operador:
 asp node list
 ```
 
-El nodo debe salir como `SCHEDULABLE yes`.
+El nodo debe salir como `SCHEDULABLE yes`. `STOPPED (DISKS)` cuenta las sandboxes paradas que guardan su disco en ese nodo (no usan CPU ni memoria, solo disco) y `DISK FREE` es el espacio libre de su `--disk-dir`, que el nodo informa en cada heartbeat: si baja de lo que piden las guardas (`--disk-min-free-mib`), ese nodo deja de clonar y reanudar sandboxes.
 
 **Firewall:**
 
@@ -104,7 +104,7 @@ El nodo debe salir como `SCHEDULABLE yes`.
 ## Mantenimiento
 
 - **Sacar un nodo del reparto:** `asp node cordon node2`. Las sandboxes que ya corren siguen ahí; no se colocan nuevas.
-- **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor.
+- **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor. Las **paradas** no cuentan en `SANDBOXES` pero siguen fijadas a ese nodo (`STOPPED (DISKS)`): no se pueden reanudar mientras esté en cordon, y se borran solas al pasar `ASP_STOPPED_SANDBOX_TTL` (7 días); para vaciarlo antes, `asp session rm` / `asp sandbox delete`.
 - **Volver al reparto:** `asp node uncordon node2`.
 - **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
 - **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`, con un admin del IdP o una API key de plataforma. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.

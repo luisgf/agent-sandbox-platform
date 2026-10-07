@@ -19,17 +19,20 @@ type nodeView struct {
 	// Allocated memory includes the per-VM overhead (VMOverheadMiB per sandbox).
 	Allocated store.NodeUsage `json:"allocated"`
 	// Allocatable is what the node offers after CPU overcommit; 0 = not enforced.
-	Allocatable         store.NodeUsage `json:"allocatable"`
-	VMOverheadMiB       int64           `json:"vm_overhead_mib"`
-	Schedulable         bool            `json:"schedulable"`
-	UnschedulableReason string          `json:"unschedulable_reason,omitempty"`
+	Allocatable   store.NodeUsage `json:"allocatable"`
+	VMOverheadMiB int64           `json:"vm_overhead_mib"`
+	// StoppedSandboxes counts the stopped sandboxes on the node: each keeps a
+	// disk there and holds no CPU or memory (ADR-0012).
+	StoppedSandboxes    int64  `json:"stopped_sandboxes"`
+	Schedulable         bool   `json:"schedulable"`
+	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
 }
 
 type listNodesResponse struct {
 	Nodes []nodeView `json:"nodes"`
 }
 
-func (s *Server) nodeView(n store.Node, u store.NodeUsage, now time.Time) nodeView {
+func (s *Server) nodeView(n store.Node, u store.NodeUsage, stopped int64, now time.Time) nodeView {
 	c := store.Candidate(n, u)
 	cpu, mem, slots := sched.Allocatable(s.Sched, c)
 	reason := sched.Unschedulable(s.Sched, c, now)
@@ -40,6 +43,7 @@ func (s *Server) nodeView(n store.Node, u store.NodeUsage, now time.Time) nodeVi
 		Allocated:           allocated,
 		Allocatable:         store.NodeUsage{CPUMillis: cpu, MemoryMiB: mem, Sandboxes: slots},
 		VMOverheadMiB:       s.Sched.VMOverheadMiB,
+		StoppedSandboxes:    stopped,
 		Schedulable:         reason == "",
 		UnschedulableReason: string(reason),
 	}
@@ -61,11 +65,16 @@ func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	stopped, err := s.Store.CountStoppedByNode()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 	now := time.Now().UTC()
 	out := make([]nodeView, 0, len(list))
 	for _, n := range list {
-		out = append(out, s.nodeView(n, usage[n.ID], now))
+		out = append(out, s.nodeView(n, usage[n.ID], stopped[n.ID], now))
 	}
 	writeJSON(w, http.StatusOK, listNodesResponse{Nodes: out})
 }
@@ -103,6 +112,11 @@ func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordone
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	stopped, err := s.Store.CountStoppedByNode()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	slog.Info("node cordon changed", "node_id", id, "cordoned", cordoned, "actor_sub", resolveActorSub(r, "", ""))
-	writeJSON(w, http.StatusOK, s.nodeView(n, usage[id], time.Now().UTC()))
+	writeJSON(w, http.StatusOK, s.nodeView(n, usage[id], stopped[id], time.Now().UTC()))
 }

@@ -114,6 +114,9 @@ type Node struct {
 	CertSerial      string `json:"cert_serial,omitempty"`
 	// CertNotAfter is when the current node certificate expires (016).
 	CertNotAfter *time.Time `json:"cert_not_after,omitempty"`
+	// DiskFreeMiB is the free space of the node's --disk-dir at its last
+	// heartbeat (019). Nil until a node that reports it has heartbeated.
+	DiskFreeMiB *int64 `json:"disk_free_mib,omitempty"`
 	// Fence credentials can power the node off; they never leave the control plane.
 	FenceToken    string     `json:"-"`
 	FenceEndpoint string     `json:"-"`

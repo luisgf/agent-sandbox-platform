@@ -2,6 +2,7 @@
 
 - **Estado:** Propuesta / **Aceptada como dirección**
 - **Fecha:** 2026-10-03
+- **Enmendada por:** [0012](0012-retained-disks.md): parar ya no borra. `asp session stop` y el idle reap conservan el disco (`asp session resume` lo arranca otra vez) y `asp session rm` borra la sandbox; `--local` pasó de `stop` a `rm`. Donde este texto dice que el reaper «destruye» o que `stop` hace `DELETE`, léase con esa enmienda.
 - **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide; no implementada), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [`../why-agent-sessions.md`](../why-agent-sessions.md), [`../why-cli-asp.md`](../why-cli-asp.md), [`../roadmap.md`](../roadmap.md)
 - **No es:** un plugin de OpenCode. El segundo seguimiento (misma fecha) sí arranca virtiofsd y añade PTY/stdin al exec. Un tercer corte monta el tag en la imagen (`workspace-virtiofs.service`); un rootfs viejo no. Sigue sin SSH.
 
@@ -125,7 +126,7 @@ Estados que no son fin de sesión:
 
 | Acción | Efecto real |
 |---|---|
-| `session stop --local` | Borra solo el puntero. La microVM **sigue**. Escape de ops, no el camino del agente |
+| `session rm --local` (antes `stop --local`) | Borra solo el puntero. La microVM **sigue**. Escape de ops, no el camino del agente |
 | `GET`, heartbeat, sondeo de `/work` | No son actividad. Si lo fueran, el reconciler impediría el idle para siempre |
 | Exec que falla antes del guest (red, 502) | No refresca actividad |
 | Caducidad del JWT | El siguiente `exec` recibe 401. El sandbox no se entera. El puntero sigue. Nuevo Bearer y se continúa |
