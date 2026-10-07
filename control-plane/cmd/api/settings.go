@@ -25,10 +25,26 @@ func listenAddr() string {
 	return strings.TrimSpace(v)
 }
 
-// databaseURL is the Postgres connection string ("" for the memory store).
+// databaseURL is the Postgres connection string, or sqlite:///path for a SQLite file ("" for
+// the memory store).
 func databaseURL() string {
 	v, _, _ := envcfg.Get(nil, EnvDatabaseURL, "DATABASE_URL")
 	return strings.TrimSpace(v)
+}
+
+// sqlitePath says whether raw names a SQLite file (sqlite:///var/lib/asp/asp.db, or
+// sqlite:relative.db) and which. A sqlite: URL with no path is an error.
+func sqlitePath(raw string) (path string, ok bool, err error) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(raw), "sqlite:")
+	if !found {
+		return "", false, nil
+	}
+	// sqlite:///abs/path → /abs/path; sqlite://rel.db and sqlite:rel.db → rel.db
+	rest = strings.TrimPrefix(rest, "//")
+	if rest == "" || rest == "/" {
+		return "", true, fmt.Errorf("%s=%q has no path: want sqlite:///var/lib/asp/asp.db", EnvDatabaseURL, "sqlite:")
+	}
+	return rest, true, nil
 }
 
 // resolveEgressDefault settles what a tenant with no rules may reach, once, and

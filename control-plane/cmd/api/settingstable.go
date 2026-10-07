@@ -22,7 +22,7 @@ var settingsTable = []setting{
 	{Env: "ASP_INSECURE_OBS_LISTEN", Help: "1 lets the metrics and pprof listeners listen outside the loopback (they have no authentication)"},
 
 	// The database.
-	{Env: "ASP_DATABASE_URL", Help: "Postgres connection URL; without it the state is in memory", Secret: true},
+	{Env: "ASP_DATABASE_URL", Help: "Postgres connection URL, or sqlite:///path for one file on this host; without it the state is in memory", Secret: true},
 	{Env: "ASP_DB_STATEMENT_TIMEOUT", Default: "30s", Help: "server-side limit for any one statement"},
 	{Env: "ASP_DB_LOCK_TIMEOUT", Default: "10s", Help: "server-side limit for waiting on a lock"},
 	{Env: "ASP_DB_IDLE_TX_TIMEOUT", Default: "60s", Help: "server-side limit for an idle transaction"},
