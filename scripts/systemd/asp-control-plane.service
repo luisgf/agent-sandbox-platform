@@ -1,18 +1,21 @@
 # Template: ASP control-plane (lab IdP on ncc1701d).
 # Install (on host): 
+#   sudo install -d -m 0755 /etc/asp
+#   sudo install -m 0644 scripts/systemd/lab/server.yaml /etc/asp/server.yaml
 #   sudo cp scripts/systemd/asp-control-plane.service /etc/systemd/system/
 #   # adjust User/paths if clone ≠ /home/ubuntu/src/bots
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now asp-control-plane.service
 #
-# Secrets: EnvironmentFile only — never commit ~/.secrets/asp-idp.env
+# Settings: /etc/asp/server.yaml (scripts/systemd/lab/server.yaml), which holds no secret.
+# Secrets: EnvironmentFile only — never commit ~/.secrets/asp-idp.env; the environment beats the file.
 # Docs: docs/ops-idp-keycloak-lab.md
 [Unit]
 Description=ASP control-plane (Keycloak lab IdP)
 Documentation=file:///home/ubuntu/src/bots/docs/ops-idp-keycloak-lab.md
 After=network-online.target
 Wants=network-online.target
-# With ASP_DATABASE_URL pointing at a Postgres that may start later (a container, or another
+# With database_url pointing at a Postgres that may start later (a container, or another
 # host) the control plane exits until it answers: retry for ever instead of hitting
 # systemd's start limit (5 starts in 10 s). For a Postgres container on this host also add
 # After=docker.service and Wants=docker.service (docs/bare-metal-ch.md section 4.1).
@@ -25,32 +28,15 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/src/bots
 # Non-secret ASP_IDP_* live here (mode 600). Missing file = unit fail (lab expects IdP on).
 EnvironmentFile=/home/ubuntu/.secrets/asp-idp.env
-Environment=ASP_LISTEN_ADDR=127.0.0.1:18112
-Environment=ASP_OIDC_ISSUER=http://127.0.0.1:18112
-# Authentication is always on. The first key comes from ASP_BOOTSTRAP_API_KEY (in the env file) and
-# the node-agent sends it (ASP_NODE_API_KEY_FILE) because there is no client certificate over plain HTTP.
-# Stop sandboxes idle for 2h (successful exec / create / start). 0 or off disables.
-# Process default is off so unit tests and short smokes do not reap; this lab unit opts in.
-Environment=ASP_SANDBOX_IDLE_TIMEOUT=2h
-# Key material must survive a reboot. ASP_IDP_REQUIRED=1 (in the env file)
-# puts the control plane in production mode, which refuses keys in /tmp and
-# exits 2. systemd creates /var/lib/asp-control-plane for User=, and missing
-# keys are created there. When upgrading from /tmp keys, copy
-# /tmp/asp-dev-ca/ca.crt, /tmp/asp-dev-ca/ca.key, /tmp/asp-oidc-key.pem and
-# /tmp/asp-attest-key.pem there first: otherwise node certificates stop
-# verifying and tokens change kid. A node-agent on this host without mTLS
-# signs attestations with the same key: run it with
-# ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem.
+# The other settings (listen address, issuer, idle timeout, where the keys are) are in
+# /etc/asp/server.yaml. Key material must survive a reboot: systemd creates
+# /var/lib/asp-control-plane for User= (see the comments in the YAML).
 StateDirectory=asp-control-plane
 StateDirectoryMode=0700
-Environment=ASP_CA_CERT=/var/lib/asp-control-plane/ca.crt
-Environment=ASP_CA_KEY=/var/lib/asp-control-plane/ca.key
-Environment=ASP_OIDC_KEY=/var/lib/asp-control-plane/oidc-key.pem
-Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
-ExecStart=/home/ubuntu/src/bots/build/api
+ExecStart=/home/ubuntu/src/bots/build/api --config /etc/asp/server.yaml
 Restart=on-failure
 RestartSec=5
-# Bind is loopback-only via ASP_LISTEN_ADDR; do not expose 18112 on 0.0.0.0 without TLS+authz.
+# Bind is loopback-only via listen_addr; do not expose 18112 on 0.0.0.0 without TLS+authz.
 
 [Install]
 WantedBy=multi-user.target

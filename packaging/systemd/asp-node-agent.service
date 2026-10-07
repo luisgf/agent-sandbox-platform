@@ -1,9 +1,10 @@
 # ASP node-agent, as the asp-node-agent package installs it. This is
 # scripts/systemd/asp-node-agent.service with the binary where the package puts it
 # (a test keeps the two the same).
-# Settings go in /etc/asp/node-agent.env (mode 0600, it can hold the enroll token);
-# the example the package leaves there lists the usual ones. First start:
-#   sudoedit /etc/asp/node-agent.env       # the control plane URL, the enroll token
+# Settings go in /etc/asp/agent.yaml (mode 0600, it can hold the enroll token) and in the
+# drop-ins in /etc/asp/agent.yaml.d/; the file the package leaves there has the ones every
+# node needs and lists the usual others. First start:
+#   sudoedit /etc/asp/agent.yaml.d/10-site.yaml   # the control plane URL, the enroll token
 #   sudo systemctl enable --now asp-node-agent
 #   journalctl -u asp-node-agent -f        # until it says "enrolled"; then remove the token
 #
@@ -22,24 +23,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-Environment=ASP_CH_SOCKET_DIR=/run/asp
-Environment=ASP_DISK_DIR=/var/lib/asp/disks
-Environment=ASP_LOCAL_NET_KEY_DIR=/var/lib/asp/local-net
-Environment=ASP_CERT_DIR=/var/lib/asp/node-certs
-Environment=ASP_MTLS=1
-Environment=ASP_RECONCILE=1
-Environment=ASP_TAP_AUTO=1
-Environment=ASP_HOST_VSOCK=1
-Environment=ASP_EGRESS_ENFORCE=1
-# Guests reach the network only through the node's forward proxy and DNS sink, forced
-# with nftables (table asp_egress; the script is built into the binary). With the proxy
-# set the redirect is on and in enforce mode: a node that cannot apply the rules (no
-# root, no nft) does not start instead of running guests without egress control.
-# `asp node list` shows EGRESS enforced once it registered. Docs: docs/bare-metal-ch.md section 3.
-Environment=ASP_EGRESS_PROXY_LISTEN=:8888
-Environment=ASP_EGRESS_DNS_SINK=:5353
-EnvironmentFile=/etc/asp/node-agent.env
-ExecStart=/usr/bin/asp-node-agent
+# Every setting is in /etc/asp/agent.yaml (and its drop-ins): `asp-node-agent --print-config`.
+ExecStart=/usr/bin/asp-node-agent --config /etc/asp/agent.yaml
 # Each Cloud Hypervisor also runs as an unprivileged user of its own, without any
 # capability (--vm-unprivileged, ADR-0015): the kernel and the hypervisor binary must be
 # readable by everybody, and the agent says at start if the host cannot do it.
@@ -55,7 +40,7 @@ TimeoutStopSec=30
 # Then remove what the dead VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs
 # copies. The VMs that are still alive and have a state record are left alone. The
 # agent does the same when it starts (--reap-leftovers=on).
-ExecStopPost=-/usr/bin/asp-node-agent --reap-only
+ExecStopPost=-/usr/bin/asp-node-agent --config /etc/asp/agent.yaml --reap-only
 Restart=always
 RestartSec=5
 

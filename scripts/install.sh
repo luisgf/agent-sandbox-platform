@@ -7,9 +7,10 @@
 #       INSTALL_ASP_TOKEN=<token from `asp node enroll-token`> sh
 #
 # It downloads the packages of a release (.deb or .rpm; a tarball on any other Linux), checks
-# them against the release's SHA256SUMS, installs them, writes /etc/asp/*.env from the
-# variables below, and starts the service. It never starts a service on a host without
-# systemd, and it never overwrites a settings file that is already there.
+# them against the release's SHA256SUMS, installs them, writes the settings the variables below
+# give into a drop-in (/etc/asp/server.yaml.d/10-install.yaml, /etc/asp/agent.yaml.d/10-install.yaml)
+# and starts the service. It never starts a service on a host without systemd, and it never
+# overwrites a drop-in that is already there.
 #
 #   INSTALL_ASP_ROLE      cli (default), server (control plane + cli) or agent (node + cli)
 #   INSTALL_ASP_VERSION   a release, e.g. 0.1.0 (default: the latest)
@@ -17,7 +18,7 @@
 #                         a directory served over HTTP); default: this project's GitHub release
 #   INSTALL_ASP_METHOD    deb, rpm or tar (default: the package manager of the host)
 #   INSTALL_ASP_NO_START  1 = install and configure, start nothing
-#   INSTALL_ASP_FORCE     1 = replace /etc/asp/*.env even if it exists (the old one is kept as .bak)
+#   INSTALL_ASP_FORCE     1 = replace a 10-install.yaml that exists (the old one is kept as .bak)
 #
 # server:
 #   INSTALL_ASP_LISTEN        address to listen on (default 127.0.0.1:8080; nodes on other hosts
@@ -155,10 +156,19 @@ install_component() {
 			# The packaged units run /usr/bin/<name>; a tarball puts it in /usr/local/bin.
 			sed "s|/usr/bin/$name|/usr/local/bin/$name|g" "$d/$name.service" >/etc/systemd/system/"$name.service"
 		fi
-		for e in "$d"/*.env; do
+		# The settings file the packages leave in /etc/asp, and its drop-in directory. The control
+		# plane reads its own as its own user; the node-agent runs as root.
+		for e in "$d"/*.yaml; do
 			[ -f "$e" ] || continue
-			mkdir -p "$ETC"
-			[ -e "$ETC/$(basename "$e")" ] || install -m 0600 "$e" "$ETC/$(basename "$e")"
+			b=$(basename "$e")
+			mkdir -p "$ETC" "$ETC/$b.d"
+			if [ "$name" = asp-control-plane ] && getent group asp-control-plane >/dev/null 2>&1; then
+				[ -e "$ETC/$b" ] || install -m 0640 -g asp-control-plane "$e" "$ETC/$b"
+				chgrp asp-control-plane "$ETC/$b.d" && chmod 0750 "$ETC/$b.d"
+			else
+				[ -e "$ETC/$b" ] || install -m 0600 "$e" "$ETC/$b"
+				chmod 0700 "$ETC/$b.d"
+			fi
 		done
 		;;
 	esac
@@ -181,23 +191,37 @@ fi
 systemd_up() { [ -d /run/systemd/system ] && have systemctl; }
 want_start() { [ "${INSTALL_ASP_NO_START:-}" != 1 ] && systemd_up; }
 
-# write_env <name> <content>: a settings file of mode 0600. A file that has settings already is
-# left as it is (INSTALL_ASP_FORCE=1 replaces it and keeps the old one as .bak); the commented
-# example a package leaves does not count.
-write_env() {
-	f="$ETC/$1.env"
-	mkdir -p "$ETC"
-	if [ -e "$f" ] && grep -q '^[A-Za-z_]' "$f" 2>/dev/null; then
+# write_dropin <server|agent> <file name> <content>: a settings drop-in of mode 0600 (the control
+# plane's belongs to its user, which reads it itself). A file that has settings already is left as
+# it is (INSTALL_ASP_FORCE=1 replaces it and keeps the old one as .bak).
+write_dropin() {
+	dir="$ETC/$1.yaml.d"
+	f="$dir/$2"
+	mkdir -p "$dir"
+	if [ "$1" = server ] && getent group asp-control-plane >/dev/null 2>&1; then
+		chgrp asp-control-plane "$dir" && chmod 0750 "$dir"
+	else
+		chmod 0700 "$dir"
+	fi
+	if [ -s "$f" ]; then
 		if [ "${INSTALL_ASP_FORCE:-}" != 1 ]; then
-			warn "$f has settings already: left as it is (INSTALL_ASP_FORCE=1 replaces it)"
+			warn "$f exists already: left as it is (INSTALL_ASP_FORCE=1 replaces it)"
 			return 1
 		fi
 		cp -p "$f" "$f.bak"
 	fi
-	(umask 077 && printf '%s' "$2" >"$f")
-	chmod 0600 "$f"
+	(umask 077 && printf '%s' "$3" >"$f")
+	if [ "$1" = server ] && getent group asp-control-plane >/dev/null 2>&1; then
+		chgrp asp-control-plane "$f" && chmod 0640 "$f"
+	else
+		chmod 0600 "$f"
+	fi
 	return 0
 }
+
+# yaml_str <text>: a YAML string, quoted. The only characters that matter in a double-quoted
+# string are the backslash and the quote.
+yaml_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
 random_hex() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
@@ -228,8 +252,8 @@ if has_role server; then
 	fi
 	if [ -n "${INSTALL_ASP_TLS_CERT:-}" ] && [ -n "${INSTALL_ASP_TLS_KEY:-}" ]; then
 		SCHEME=https
-		TLS="ASP_TLS_CERT=$INSTALL_ASP_TLS_CERT
-ASP_TLS_KEY=$INSTALL_ASP_TLS_KEY
+		TLS="tls_cert: $(yaml_str "$INSTALL_ASP_TLS_CERT")
+tls_key: $(yaml_str "$INSTALL_ASP_TLS_KEY")
 "
 		# The service's user reads the key; nobody else does.
 		if getent group asp-control-plane >/dev/null 2>&1; then
@@ -241,7 +265,7 @@ ASP_TLS_KEY=$INSTALL_ASP_TLS_KEY
 		fi
 		# The enrollment CA of the control plane (it makes it at its first start) is what vouches
 		# for the nodes' certificates: with it, each route of a node demands that node's certificate.
-		TLS="${TLS}ASP_CLIENT_CA=/var/lib/asp-control-plane/ca.crt
+		TLS="${TLS}client_ca: /var/lib/asp-control-plane/ca.crt
 "
 	fi
 	case "$LISTEN" in 127.* | localhost:* | "[::1]:"*) ;; *) [ -n "$TLS" ] || warn "listening on $LISTEN without TLS: authentication is on, but keys and tokens cross the network in the clear" ;; esac
@@ -258,11 +282,11 @@ ASP_TLS_KEY=$INSTALL_ASP_TLS_KEY
 	fi
 	chmod 0600 "$ETC/admin-key"
 	DBLINE=""
-	[ -z "${INSTALL_ASP_DATABASE_URL:-}" ] || DBLINE="ASP_DATABASE_URL=$INSTALL_ASP_DATABASE_URL
+	[ -z "${INSTALL_ASP_DATABASE_URL:-}" ] || DBLINE="database_url: $(yaml_str "$INSTALL_ASP_DATABASE_URL")
 "
-	write_env control-plane "# Written by install.sh. Every variable: control-plane/README.md.
-ASP_LISTEN_ADDR=$LISTEN
-ASP_BOOTSTRAP_API_KEY=$KEY
+	write_dropin server 10-install.yaml "# Written by install.sh. Every setting: control-plane/README.md; the package's own are in ../server.yaml.
+listen_addr: $(yaml_str "$LISTEN")
+bootstrap_api_key: $(yaml_str "$KEY")
 ${TLS}${DBLINE}" || true
 	[ -n "$DBLINE" ] || warn "no database (INSTALL_ASP_DATABASE_URL): the state is lost when the control plane restarts"
 	if want_start; then
@@ -302,19 +326,23 @@ if has_role agent; then
 		mkdir -p "$ETC"
 		[ "$INSTALL_ASP_CA" = "$ETC/cp-ca.pem" ] || cp "$INSTALL_ASP_CA" "$ETC/cp-ca.pem"
 		chmod 0644 "$ETC/cp-ca.pem"
-		CA="ASP_CONTROL_PLANE_CA=$ETC/cp-ca.pem
+		CA="control_plane_ca: $(yaml_str "$ETC/cp-ca.pem")
 "
 	fi
+	write_dropin agent 10-install.yaml "# Written by install.sh. Every setting: node-agent -h; the package's own are in ../agent.yaml.
+control_plane_url: $(yaml_str "$INSTALL_ASP_SERVER")
+node_id: $(yaml_str "$NODE_ID")
+agent_tls_listen: 0.0.0.0:9443
+endpoint: $(yaml_str "$ENDPOINT")
+${CA}" || true
+	# The enroll token has a file of its own, so that it can go once the node has enrolled.
 	ENROLL=""
-	[ -z "${INSTALL_ASP_TOKEN:-}" ] || ENROLL="ASP_ENROLL=1
-ASP_NODE_ENROLL_TOKEN=$INSTALL_ASP_TOKEN
-"
-	write_env node-agent "# Written by install.sh. The enroll lines go away once the node has enrolled.
-ASP_CONTROL_PLANE_URL=$INSTALL_ASP_SERVER
-ASP_NODE_ID=$NODE_ID
-ASP_AGENT_TLS_LISTEN=0.0.0.0:9443
-ASP_ENDPOINT=$ENDPOINT
-${CA}${ENROLL}" || true
+	if [ -n "${INSTALL_ASP_TOKEN:-}" ]; then
+		if write_dropin agent 20-enroll.yaml "# Written by install.sh. It goes away once the node has enrolled: the token must not stay in a file.
+enroll: true
+enroll_token: $(yaml_str "$INSTALL_ASP_TOKEN")
+"; then ENROLL=1; fi
+	fi
 	if [ "${INSTALL_ASP_SKIP_IMAGE:-}" != 1 ]; then
 		say "    pulling the guest kernel and image of $VERSION"
 		# asp image pull reads INSTALL_ASP_URL's layout: the files of the release.
@@ -333,11 +361,9 @@ ${CA}${ENROLL}" || true
 			sleep 1
 		done
 		# The token has done its job, and must not stay in a file.
-		if [ -n "$ENROLL" ] && [ -f "$ETC/node-agent.env" ]; then
-			grep -v -E '^(ASP_ENROLL|ASP_NODE_ENROLL_TOKEN)=' "$ETC/node-agent.env" >"$ETC/node-agent.env.new" || true
-			chmod 0600 "$ETC/node-agent.env.new"
-			mv "$ETC/node-agent.env.new" "$ETC/node-agent.env"
-			say "    the enroll token is out of $ETC/node-agent.env"
+		if [ -n "$ENROLL" ] && [ -f "$ETC/agent.yaml.d/20-enroll.yaml" ]; then
+			rm -f "$ETC/agent.yaml.d/20-enroll.yaml" "$ETC/agent.yaml.d/20-enroll.yaml.bak"
+			say "    the enroll token is out of $ETC/agent.yaml.d"
 		fi
 	else
 		say "    not started (INSTALL_ASP_NO_START, or no systemd): systemctl enable --now asp-node-agent"

@@ -64,8 +64,8 @@ archives:
         dst: README.md
       - src: packaging/systemd/asp-control-plane.service
         dst: asp-control-plane.service
-      - src: packaging/etc/control-plane.env
-        dst: control-plane.env
+      - src: packaging/etc/server.yaml
+        dst: server.yaml
   - id: node-agent
     ids: [node-agent]
     name_template: "asp-node-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -76,8 +76,8 @@ archives:
         dst: README.md
       - src: packaging/systemd/asp-node-agent.service
         dst: asp-node-agent.service
-      - src: packaging/etc/node-agent.env
-        dst: node-agent.env
+      - src: packaging/etc/agent.yaml
+        dst: agent.yaml
 
 nfpms:
   - id: asp
@@ -105,11 +105,22 @@ nfpms:
     contents:
       - src: packaging/systemd/asp-control-plane.service
         dst: /lib/systemd/system/asp-control-plane.service
-      - src: packaging/etc/control-plane.env
-        dst: /etc/asp/control-plane.env
+      # Both packages put files in /etc/asp, and a package that does not name the directory
+      # gives it the group of the first file it holds.
+      - dst: /etc/asp
+        type: dir
+        file_info: {mode: 0755, owner: root, group: root}
+      # The service reads its settings itself, as its own user: they belong to its group
+      # (packaging/scripts/preinstall.sh makes the user before the files are unpacked).
+      - src: packaging/etc/server.yaml
+        dst: /etc/asp/server.yaml
         type: config|noreplace
-        file_info: {mode: 0600}
+        file_info: {mode: 0640, owner: root, group: asp-control-plane}
+      - dst: /etc/asp/server.yaml.d
+        type: dir
+        file_info: {mode: 0750, owner: root, group: asp-control-plane}
     scripts:
+      preinstall: packaging/scripts/preinstall.sh
       postinstall: packaging/scripts/postinstall.sh
       preremove: packaging/scripts/preremove.sh
   - id: asp-node-agent
@@ -129,10 +140,16 @@ nfpms:
     contents:
       - src: packaging/systemd/asp-node-agent.service
         dst: /lib/systemd/system/asp-node-agent.service
-      - src: packaging/etc/node-agent.env
-        dst: /etc/asp/node-agent.env
+      - dst: /etc/asp
+        type: dir
+        file_info: {mode: 0755, owner: root, group: root}
+      - src: packaging/etc/agent.yaml
+        dst: /etc/asp/agent.yaml
         type: config|noreplace
         file_info: {mode: 0600}
+      - dst: /etc/asp/agent.yaml.d
+        type: dir
+        file_info: {mode: 0700}
     scripts:
       postinstall: packaging/scripts/postinstall.sh
       preremove: packaging/scripts/preremove.sh

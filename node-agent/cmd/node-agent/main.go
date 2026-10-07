@@ -111,11 +111,14 @@ type config struct {
 	VirtiofsdSandbox     string // --virtiofsd-sandbox: none | chroot | namespace; "" = chroot as root, none otherwise
 	WorkspaceRoots       string // --workspace-root: where sandboxes' workspaces may live
 	DiskDir              string
+	LocalNetKeyDir       string        // --local-net-key-dir: the per-sandbox WireGuard node keys ("" = /var/lib/asp/local-net)
 	StopGrace            time.Duration // --stop-grace
 	DiskMinFreeMiB       int           // --disk-min-free-mib: -1 twice the base image, 0 not checked
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
 	ReapOnly             bool          // --reap-only: clean up and exit, without registering
 	ShowVersion          bool          // --version: print which build this is and exit
+	ConfigFile           string        // --config: the settings file (default /etc/asp/agent.yaml, read when it exists)
+	PrintConfig          bool          // --print-config: print the effective configuration and where each value came from, and exit
 	PrintMeasurement     bool          // --print-measurement: print what this node would attest and exit
 	Doctor               bool          // --doctor: check this host and this configuration, print the report and exit
 	DoctorJSON           bool          // --doctor-json: the report as JSON
@@ -815,6 +818,7 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.Int(&cfg.VMTasksMax, "vm-tasks-max", vmm.DefaultTasksMax, "most processes and threads of one microVM service")
 	s.String(&cfg.VirtiofsdSandbox, "virtiofsd-sandbox", "", "virtiofsd --sandbox mode: chroot (confine the daemon to the workspace), namespace or none. Default chroot when running as root, none otherwise")
 	s.String(&cfg.VirtiofsdBin, "virtiofsd-bin", "virtiofsd", "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set", settings.Legacy("VIRTIOFSD_BIN"))
+	s.String(&cfg.LocalNetKeyDir, "local-net-key-dir", "", "where the per-sandbox WireGuard node keys of on-demand local-net are kept (default /var/lib/asp/local-net; under the temp dir with --dry-run)")
 	s.String(&cfg.DiskDir, "disk-dir", "/var/lib/asp/disks", "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")
 	s.Duration(&cfg.StopGrace, "stop-grace", 15*time.Second, "a stop asks the guest to power off and waits up to this long for the VM to exit before stopping it hard (0: stop hard at once; ignored with --dry-run)")
 	s.Int(&cfg.DiskMinFreeMiB, "disk-min-free-mib", -1, "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")
@@ -823,6 +827,8 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.Bool(&cfg.Doctor, "doctor", false, "check this host and this configuration (KVM, hypervisor, virtiofsd, guest images, disk, nftables, TAPs, clock, the control plane) and print what is wrong and how to fix it; exit 1 when a check failed", settings.NoEnv())
 	s.Bool(&cfg.DoctorJSON, "doctor-json", false, "with --doctor, print the report as JSON", settings.NoEnv())
 	s.Bool(&cfg.ShowVersion, "version", false, "print which build this is and exit", settings.NoEnv())
+	s.String(&cfg.ConfigFile, "config", "", "settings file (YAML, keys named like the flags); its drop-ins are read from <file>.d/*.yaml. Default: "+defaultConfigFile+" when it exists. Flags and environment variables win over it")
+	s.Bool(&cfg.PrintConfig, "print-config", false, "print the effective configuration, with where each value came from (flag, environment, file, default), and exit", settings.NoEnv())
 	s.Bool(&cfg.PrintMeasurement, "print-measurement", false, "print the digests of the kernel and base image and the hypervisor version this node attests, as an entry for the control plane's ASP_ATTEST_ALLOWED_IMAGES, and exit", settings.NoEnv())
 	s.Bool(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir", settings.NoEnv())
 	s.String(&cfg.Endpoint, "endpoint", "", "node callback endpoint advertised to control plane", settings.Legacy("NODE_ENDPOINT"))
@@ -830,8 +836,8 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.String(&cfg.AgentTLSListen, "agent-tls-listen", "", "listen addr for the control plane's mTLS exec API (e.g. 0.0.0.0:9443) when the control plane runs on another host; uses the enrolled node certificate")
 	s.Bool(&cfg.InsecureAgentListen, "insecure-agent-listen", false, "allow --agent-listen on a non-loopback address (plain HTTP, no authentication; lab only)")
 	s.Bool(&cfg.Enroll, "enroll", false, "perform bootstrap enrollment before register")
-	s.String(&cfg.BootstrapToken, "bootstrap-token", "", "shared bootstrap token for enrollment: enrolls a new node id or a revoked node, never re-keys an enrolled one", settings.Env("ASP_NODE_BOOTSTRAP_TOKEN"))
-	s.String(&cfg.EnrollToken, "enroll-token", "", "single-use enroll token from an admin (asp node enroll-token), used instead of --bootstrap-token; one pinned to this node re-keys it even when it is enrolled", settings.Env("ASP_NODE_ENROLL_TOKEN"))
+	s.String(&cfg.BootstrapToken, "bootstrap-token", "", "shared bootstrap token for enrollment: enrolls a new node id or a revoked node, never re-keys an enrolled one", settings.Env("ASP_NODE_BOOTSTRAP_TOKEN"), settings.Secret())
+	s.String(&cfg.EnrollToken, "enroll-token", "", "single-use enroll token from an admin (asp node enroll-token), used instead of --bootstrap-token; one pinned to this node re-keys it even when it is enrolled", settings.Env("ASP_NODE_ENROLL_TOKEN"), settings.Secret())
 	s.String(&cfg.CertDir, "cert-dir", "/var/lib/asp/node-certs", "directory for node client certs")
 	s.Bool(&cfg.MTLS, "mtls", false, "require mTLS client certs for control-plane calls")
 	s.String(&cfg.PodDaemonSock, "pod-daemon-sock", "", "unix socket path for pod-daemon (dry-run / local fallback)")
@@ -879,9 +885,19 @@ func loadConfig() config {
 	var cfg config
 	s := settings.New(flag.CommandLine, nil)
 	declareSettings(s, &cfg)
+	src, err := useConfigFile(s, os.Args[1:], nil)
+	if err != nil {
+		slog.Error("configuration", "error", err)
+		os.Exit(2)
+	}
+	src.warnLooseSecrets(s, stderrWarn)
 	if err := s.Parse(os.Args[1:]); err != nil {
 		slog.Error("configuration", "error", err)
 		os.Exit(2)
+	}
+	if cfg.PrintConfig {
+		printConfig(os.Stdout, s, src)
+		os.Exit(0)
 	}
 
 	// ADR-0007 phase 4: confirm is on in the multi-user profile and with a per-sandbox

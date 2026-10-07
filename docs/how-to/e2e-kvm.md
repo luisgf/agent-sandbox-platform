@@ -30,7 +30,7 @@ ASP_E2E_WORKSPACE=/srv/asp/workspaces/default/e2e \   # un directorio del nodo, 
      scripts/e2e-kvm.sh
 ```
 
-Hace lo mismo menos lo que solo ve el host del nodo (el estado del disco, el TAP, las units). Crea la sandbox `e2e-<pid>` y la borra al terminar, también si falla.
+Hace lo mismo menos lo que solo ve el host del nodo (el estado del disco, el TAP, las units). Crea la sandbox `e2e-<pid>` y la borra al terminar, también si falla. Los scripts ignoran los ficheros de configuración (`ASP_CONFIG=/dev/null`, [el fichero de configuración](config-file.md)): ni el `/etc/asp` del host donde corren ni el `asp.yaml` de quien los lanza entran en la prueba, y las credenciales para un despliegue van en el entorno.
 
 ## En CI
 

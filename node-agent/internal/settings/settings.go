@@ -43,6 +43,8 @@ type Setting struct {
 	Kind    string
 	Default string
 	Usage   string
+	// Secret: the value is a credential, shown as <redacted> when the configuration is printed.
+	Secret bool
 
 	// fromEnv sets the variable from an environment value.
 	fromEnv func(raw string) error
@@ -80,6 +82,9 @@ func Legacy(names ...string) Option {
 func LegacyFlag(names ...string) Option {
 	return func(s *Setting) { s.LegacyFlags = append(s.LegacyFlags, names...) }
 }
+
+// Secret marks a setting whose value is a credential.
+func Secret() Option { return func(s *Setting) { s.Secret = true } }
 
 // NoEnv makes a setting flag-only: an action (--reap-only), not a configuration.
 func NoEnv() Option { return func(s *Setting) { s.Env = "-" } }
@@ -273,6 +278,19 @@ func (s *Set) Settings() []Setting {
 	}
 	return out
 }
+
+// Fallback makes the settings read from lookup when the environment has no value: a
+// configuration file sits below the environment and above the defaults.
+func (s *Set) Fallback(lookup envcfg.Lookup) {
+	env := s.look
+	if env == nil {
+		env = envcfg.Getenv
+	}
+	s.look = envcfg.Layer(env, lookup)
+}
+
+// Flags is the flag set the settings are declared on.
+func (s *Set) Flags() *flag.FlagSet { return s.fs }
 
 // Parse parses args, then applies the environment to every setting no flag set.
 // The error lists every value of the environment that is not valid, by variable.

@@ -6,7 +6,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 
 Cada ajuste es una bandera y una variable de entorno con la misma regla (`internal/settings`, y el test `TestEverySettingHasOneNameWithThePrefix` la comprueba):
 
-- **la bandera manda sobre la variable, y la variable sobre el valor por defecto.** El entorno se lee después de las banderas, así que `-h` nunca muestra un valor (un token) que venga de él;
+- **la bandera manda sobre la variable, la variable sobre el fichero y el fichero sobre el valor por defecto.** El entorno se lee después de las banderas, así que `-h` nunca muestra un valor (un token) que venga de él. El fichero es `/etc/asp/agent.yaml` (si existe) y los `agent.yaml.d/*.yaml` que lo acompañan, o el que nombre `--config` / `ASP_CONFIG` (que tiene que existir); las claves son los nombres de las banderas con guiones bajos (`control_plane_url`, `egress_proxy_listen`), y una clave que no es un ajuste es un error que dice cuál. `--print-config` imprime cada ajuste con su valor y de dónde viene, sin las credenciales ([el fichero de configuración](../docs/how-to/config-file.md));
 - la variable es `ASP_` + el nombre de la bandera en mayúsculas con guiones bajos (`--control-plane-url` → `ASP_CONTROL_PLANE_URL`). Las pocas que no siguen la regla ya estaban en uso y están listadas con su motivo en el test (`ASP_WORKSPACE_ROOTS` es la misma lista que lee el plano de control);
 - los booleanos se escriben igual en la bandera y en la variable: `1`, `true`, `yes`, `on` / `0`, `false`, `no`, `off`. Cualquier otra cosa es un error que nombra la variable, no un ajuste que no hace nada;
 - `--reap-only` y `--print-measurement` son acciones, no ajustes: solo tienen bandera.

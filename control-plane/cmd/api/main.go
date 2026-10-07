@@ -66,6 +66,14 @@ func run(ctx context.Context, args []string) error {
 		fmt.Printf("asp-control-plane %s\n", version.Get())
 		return nil
 	}
+	// The settings file goes under the environment: it sets what the environment does not.
+	if err := loadConfigFile(args); err != nil {
+		return configError{err}
+	}
+	if wantsPrintConfig(args) {
+		printConfig(os.Stdout)
+		return nil
+	}
 	addr := listenAddr()
 	if addr == "" {
 		// Loopback unless the operator says otherwise: an API that can create
