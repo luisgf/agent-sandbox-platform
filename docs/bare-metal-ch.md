@@ -744,8 +744,9 @@ asp node fence clear ncc1701d
 **Por qué:** un cert robado no debe seguir hablando al CP. **Qué ganamos:** rotate + revoke + middleware.
 
 ```bash
-# Emitir cert nuevo (bootstrap token, ASP_BOOTSTRAP_API_KEY u otra API key de plataforma)
-curl -fsS -X POST -H "Authorization: Bearer $ASP_NODE_BOOTSTRAP_TOKEN" \
+# Emitir cert nuevo (API key de plataforma o admin del IdP; el bootstrap token no sirve, solo enrola.
+# Un nodo con mTLS se renueva solo con su certificado vigente)
+curl -fsS -X POST -H "Authorization: Bearer $ASP_BOOTSTRAP_API_KEY" \
   https://cp:8080/v1/nodes/$NODE_ID/rotate-cert | jq .
 # Instalar PEMs en --cert-dir del node-agent y reiniciar agente
 

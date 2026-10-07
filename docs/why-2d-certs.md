@@ -14,7 +14,7 @@ En un entorno corporativo FOSS esto es el primer hallazgo de cualquier revisión
 
 ## Qué ganamos
 
-- **`POST /v1/nodes/{id}/rotate-cert`** — con un admin del IdP, una API key de plataforma o el bootstrap token (nunca una API key de tenant). Emite PEMs nuevos, guarda `cert_serial` + `cert_fingerprint` en `nodes`, y mete el fingerprint anterior en `node_cert_revocations`.
+- **`POST /v1/nodes/{id}/rotate-cert`** — con un admin del IdP, una API key de plataforma o el certificado vigente del propio nodo por mTLS (nunca una API key de tenant ni el bootstrap token, que tienen todos los nodos). Emite PEMs nuevos, guarda `cert_serial` + `cert_fingerprint` en `nodes`, y mete el fingerprint anterior en `node_cert_revocations`.
 - **`POST /v1/nodes/{id}/revoke`** — admin del IdP o API key de plataforma; el bootstrap token no basta, porque lo tienen todos los nodos. Marca `nodes.revoked_at` y revoca el fingerprint actual. El nodo deja de poder hablar por mTLS hasta re-enroll.
 - Middleware en `control-plane/internal/api/auth.go` rechaza fingerprints revocados (`client certificate revoked`).
 - Migración **`006_node_cert_rotation.sql`**.
@@ -22,7 +22,7 @@ En un entorno corporativo FOSS esto es el primer hallazgo de cualquier revisión
 ## Cómo se usa (ops)
 
 ```bash
-# Rotar (nodo ya enrollado; API key de plataforma, admin del IdP o bootstrap token)
+# Rotar (nodo ya enrollado; API key de plataforma o admin del IdP)
 curl -s -X POST "https://cp/v1/nodes/node-a/rotate-cert" \
   -H "Authorization: Bearer $ASP_BOOTSTRAP_API_KEY" \
   -o /tmp/rotate.json

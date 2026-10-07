@@ -264,13 +264,6 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			// rotate-cert also takes the node bootstrap token, which is not an API
-			// key; the handler checks it again. Every other credential, and every
-			// other node admin route, goes through the checks below.
-			if isRotateCertPath(r.URL.Path) && checkBootstrapToken(r) {
-				next.ServeHTTP(w, r)
-				return
-			}
 			// A node renews its certificate with the current one: bind the verified
 			// node identity (not required here: admins call this route too) and let
 			// the handler check it names the node being rotated.
