@@ -49,7 +49,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox_id mismatch")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -83,7 +83,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 	if s.AttestAllow != nil {
 		var err error
 		if image, err = s.AttestAllow.Check(req.Statement); err != nil {
-			_ = s.Store.EmitEvent(store.EmitEventInput{
+			_ = s.Store.EmitEvent(r.Context(), store.EmitEventInput{
 				SandboxID: id, TenantID: sb.TenantID, EventType: "sandbox.attestation_refused", Actor: "node-agent",
 				Payload: mustJSONPayload(map[string]any{"node_id": req.Statement.NodeID, "reason": err.Error()}),
 			})
@@ -93,7 +93,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 	}
 	ts, _ := time.Parse(time.RFC3339, req.Statement.TS)
 	bundle, _ := json.Marshal(ev)
-	rec, err := s.Store.PutAttestation(store.PutAttestationInput{
+	rec, err := s.Store.PutAttestation(r.Context(), store.PutAttestationInput{
 		SandboxID:   id,
 		NodeID:      req.Statement.NodeID,
 		ImageDigest: req.Statement.ImageDigest,
@@ -109,7 +109,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = s.Store.EmitEvent(store.EmitEventInput{
+	_ = s.Store.EmitEvent(r.Context(), store.EmitEventInput{
 		SandboxID: id,
 		TenantID:  sb.TenantID,
 		EventType: "sandbox.attested",
@@ -138,7 +138,7 @@ func (s *Server) GetAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -150,7 +150,7 @@ func (s *Server) GetAttestation(w http.ResponseWriter, r *http.Request) {
 	if !sandboxVisible(w, r, sb) {
 		return
 	}
-	rec, err := s.Store.GetAttestation(id)
+	rec, err := s.Store.GetAttestation(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "attestation not found")
@@ -263,11 +263,11 @@ func mustJSONPayload(v any) json.RawMessage {
 //
 // With an allowlist, evidence for an image that is no longer on it yields no
 // claim at all.
-func (s *Server) attestationClaim(sandboxID string) map[string]any {
+func (s *Server) attestationClaim(ctx context.Context, sandboxID string) map[string]any {
 	if s.Attestor == nil {
 		return nil
 	}
-	rec, err := s.Store.GetAttestation(sandboxID)
+	rec, err := s.Store.GetAttestation(ctx, sandboxID)
 	if err != nil {
 		return nil
 	}

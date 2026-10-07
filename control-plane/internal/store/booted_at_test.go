@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -14,21 +15,21 @@ func testBootedAt(t *testing.T, s Store) {
 
 	// Created and stopped while still requested: no run, no booted_at, and a
 	// resume does not invent one.
-	unclaimed, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n1"})
+	unclaimed, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unclaimed.BootedAt != nil {
 		t.Fatalf("a new sandbox has booted_at=%v", unclaimed.BootedAt)
 	}
-	stopped, err := s.StopSandbox(unclaimed.ID, "")
+	stopped, err := s.StopSandbox(context.Background(), unclaimed.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stopped.State != SandboxStopped || stopped.BootedAt != nil {
 		t.Fatalf("stopped before it ran: state=%s booted_at=%v", stopped.State, stopped.BootedAt)
 	}
-	resumed, err := s.ResumeSandbox(unclaimed.ID, "")
+	resumed, err := s.ResumeSandbox(context.Background(), unclaimed.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func testBootedAt(t *testing.T, s Store) {
 	if got := sandboxOf(t, s, sb.ID); got.BootedAt == nil || !got.BootedAt.Equal(first) {
 		t.Fatalf("stored booted_at=%v, want %v", got.BootedAt, first)
 	}
-	stopping, err := s.StopSandbox(sb.ID, "")
+	stopping, err := s.StopSandbox(context.Background(), sb.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,17 +58,17 @@ func testBootedAt(t *testing.T, s Store) {
 		t.Fatalf("a stop cleared booted_at: %v", stopping.BootedAt)
 	}
 	report(t, s, sb.ID, SandboxStopped, "")
-	again, err := s.ResumeSandbox(sb.ID, "")
+	again, err := s.ResumeSandbox(context.Background(), sb.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again.BootedAt == nil || !again.BootedAt.Equal(first) || again.BootCount != 2 {
 		t.Fatalf("resume of a sandbox that ran: booted_at=%v boot_count=%d", again.BootedAt, again.BootCount)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "n1"); err != nil && !isConflict(err) {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "n1"); err != nil && !isConflict(err) {
 		t.Fatal(err)
 	}
-	if run2, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, ""); err != nil {
+	if run2, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, ""); err != nil {
 		t.Fatal(err)
 	} else if run2.BootedAt == nil || !run2.BootedAt.Equal(first) {
 		t.Fatalf("a second run moved booted_at to %v (first %v)", run2.BootedAt, first)

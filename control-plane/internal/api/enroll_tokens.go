@@ -86,7 +86,7 @@ func (s *Server) CreateEnrollToken(w http.ResponseWriter, r *http.Request) {
 		CreatedBy: actor,
 		CreatedAt: now,
 	}
-	if err := s.Store.CreateEnrollToken(tok); err != nil {
+	if err := s.Store.CreateEnrollToken(r.Context(), tok); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestParseIdleTimeout(t *testing.T) {
 
 func TestStopIdleSandboxesMemory(t *testing.T) {
 	s := newMemoryStoreWithNodes(t, "n1")
-	fresh, err := s.CreateSandbox(CreateSandboxInput{
+	fresh, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128, NodeID: "n1",
 	})
 	if err != nil {
@@ -85,17 +86,17 @@ func TestStopIdleSandboxesMemory(t *testing.T) {
 	if fresh.LastActivityAt.IsZero() {
 		t.Fatal("create must stamp last_activity_at")
 	}
-	stale, err := s.CreateSandbox(CreateSandboxInput{
+	stale, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Pin a node so the assigned one goes to stopping, not straight to stopped.
-	if _, err := s.UpdateSandboxStatus(fresh.ID, SandboxRunning, ""); err != nil {
+	if _, err := s.UpdateSandboxStatus(context.Background(), fresh.ID, SandboxRunning, ""); err != nil {
 		t.Fatal(err)
 	}
-	running, err := s.GetSandbox(fresh.ID)
+	running, err := s.GetSandbox(context.Background(), fresh.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,21 +112,21 @@ func TestStopIdleSandboxesMemory(t *testing.T) {
 	s.SetLastActivityForTest(stale.ID, past)
 
 	// Disabled reaper touches nothing.
-	none, err := s.StopIdleSandboxes(time.Now().UTC(), 0)
+	none, err := s.StopIdleSandboxes(context.Background(), time.Now().UTC(), 0)
 	if err != nil || len(none) != 0 {
 		t.Fatalf("disabled: %v %+v", err, none)
 	}
-	still, _ := s.GetSandbox(running.ID)
+	still, _ := s.GetSandbox(context.Background(), running.ID)
 	if still.State != SandboxRunning {
 		t.Fatalf("disabled changed state to %s", still.State)
 	}
 
 	// Recent exec keeps the running sandbox; the untouched one is expired.
-	if err := s.TouchSandboxActivity(running.ID); err != nil {
+	if err := s.TouchSandboxActivity(context.Background(), running.ID); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	reaped, err := s.StopIdleSandboxes(now, RecommendedIdleTimeout)
+	reaped, err := s.StopIdleSandboxes(context.Background(), now, RecommendedIdleTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,14 +136,14 @@ func TestStopIdleSandboxesMemory(t *testing.T) {
 	if reaped[0].State != SandboxStopped || reaped[0].StopReason != StopReasonIdle {
 		t.Fatalf("unassigned requested should stop immediately: %+v", reaped[0])
 	}
-	kept, err := s.GetSandbox(running.ID)
+	kept, err := s.GetSandbox(context.Background(), running.ID)
 	if err != nil || kept.State != SandboxRunning || kept.StopReason != "" {
 		t.Fatalf("active sandbox: %+v %v", kept, err)
 	}
 
 	// After the touch ages out, the running sandbox is marked stopping for the node reconciler.
 	s.SetLastActivityForTest(running.ID, past)
-	reaped, err = s.StopIdleSandboxes(time.Now().UTC(), time.Hour)
+	reaped, err = s.StopIdleSandboxes(context.Background(), time.Now().UTC(), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestStopIdleSandboxesMemory(t *testing.T) {
 	if reaped[0].State != SandboxStopping || reaped[0].StopReason != StopReasonIdle {
 		t.Fatalf("running idle: %+v", reaped[0])
 	}
-	ev, err := s.ListEvents(running.ID)
+	ev, err := s.ListEvents(context.Background(), running.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ func TestStopIdleSandboxesMemory(t *testing.T) {
 	}
 
 	// Already stopping is not reaped again.
-	again, err := s.StopIdleSandboxes(time.Now().UTC().Add(5*time.Hour), time.Hour)
+	again, err := s.StopIdleSandboxes(context.Background(), time.Now().UTC().Add(5*time.Hour), time.Hour)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("second pass: %v %+v", err, again)
 	}

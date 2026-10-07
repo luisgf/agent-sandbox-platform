@@ -46,10 +46,10 @@ func stoppedFor(t *testing.T, mem *store.MemoryStore, ago time.Duration) string 
 	t.Helper()
 	id := newPlacedSandbox(t, mem)
 	runSandbox(t, mem, id)
-	if _, err := mem.StopSandbox(id, ""); err != nil {
+	if _, err := mem.StopSandbox(context.Background(), id, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.UpdateSandboxStatus(id, store.SandboxStopped, ""); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), id, store.SandboxStopped, ""); err != nil {
 		t.Fatal(err)
 	}
 	mem.SetStoppedAtForTest(id, time.Now().Add(-ago))
@@ -65,9 +65,9 @@ func TestSweepRetention(t *testing.T) {
 	mid := stoppedFor(t, mem, 3*24*time.Hour)
 	recent := stoppedFor(t, mem, time.Hour)
 
-	srv.sweepRetention(time.Now().UTC(), RetentionConfig{TTL: 7 * 24 * time.Hour, MaxStoppedPerTenant: 1})
+	srv.sweepRetention(context.Background(), time.Now().UTC(), RetentionConfig{TTL: 7 * 24 * time.Hour, MaxStoppedPerTenant: 1})
 	state := func(id string) store.SandboxState {
-		sb, _ := mem.GetSandbox(id)
+		sb, _ := mem.GetSandbox(context.Background(), id)
 		return sb.State
 	}
 	if state(old) != store.SandboxDeleting {
@@ -79,7 +79,7 @@ func TestSweepRetention(t *testing.T) {
 	if state(recent) != store.SandboxStopped {
 		t.Fatalf("the newest stopped sandbox was deleted: %s", state(recent))
 	}
-	if sb, _ := mem.GetSandbox(mid); sb.StopReason != store.StopReasonTenantCap {
+	if sb, _ := mem.GetSandbox(context.Background(), mid); sb.StopReason != store.StopReasonTenantCap {
 		t.Fatalf("reason=%q", sb.StopReason)
 	}
 }
@@ -142,7 +142,7 @@ func TestNodeListShowsRetainedDisksAndFreeDisk(t *testing.T) {
 	if n.StoppedSandboxes != 1 || n.Allocated.Sandboxes != 0 || n.Allocated.CPUMillis != 0 || n.Allocated.MemoryMiB != 0 {
 		t.Fatalf("one stopped sandbox: stopped=%d allocated=%+v (it holds a disk, not CPU or memory)", n.StoppedSandboxes, n.Allocated)
 	}
-	if _, err := mem.ResumeSandbox(id, ""); err != nil {
+	if _, err := mem.ResumeSandbox(context.Background(), id, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := nodeViewOf(t, h, "n1"); n.StoppedSandboxes != 0 || n.Allocated.Sandboxes != 1 {

@@ -112,7 +112,7 @@ func (m *MemoryStore) retainDelete(sb Sandbox, reason string, now time.Time) San
 	return cloneSandbox(sb)
 }
 
-func (m *MemoryStore) ExpireStoppedSandboxes(now time.Time, ttl time.Duration) ([]Sandbox, error) {
+func (m *MemoryStore) ExpireStoppedSandboxes(ctx context.Context, now time.Time, ttl time.Duration) ([]Sandbox, error) {
 	if ttl <= 0 {
 		return nil, nil
 	}
@@ -129,13 +129,13 @@ func (m *MemoryStore) ExpireStoppedSandboxes(now time.Time, ttl time.Duration) (
 	}
 	m.mu.Unlock()
 	for _, sb := range out {
-		_ = m.EmitEvent(retentionEvent(sb, StopReasonRetention, map[string]any{"ttl": ttl.String()}))
+		_ = m.EmitEvent(ctx, retentionEvent(sb, StopReasonRetention, map[string]any{"ttl": ttl.String()}))
 	}
 	sortByID(out)
 	return out, nil
 }
 
-func (m *MemoryStore) EvictStoppedOverCap(max int) ([]Sandbox, error) {
+func (m *MemoryStore) EvictStoppedOverCap(ctx context.Context, max int) ([]Sandbox, error) {
 	if max <= 0 {
 		return nil, nil
 	}
@@ -159,7 +159,7 @@ func (m *MemoryStore) EvictStoppedOverCap(max int) ([]Sandbox, error) {
 	}
 	m.mu.Unlock()
 	for _, sb := range out {
-		_ = m.EmitEvent(retentionEvent(sb, StopReasonTenantCap, map[string]any{"max_stopped_per_tenant": max}))
+		_ = m.EmitEvent(ctx, retentionEvent(sb, StopReasonTenantCap, map[string]any{"max_stopped_per_tenant": max}))
 	}
 	sortByID(out)
 	return out, nil
@@ -167,14 +167,14 @@ func (m *MemoryStore) EvictStoppedOverCap(max int) ([]Sandbox, error) {
 
 // ---- postgres ----
 
-func (p *PostgresStore) ExpireStoppedSandboxes(now time.Time, ttl time.Duration) ([]Sandbox, error) {
+func (p *PostgresStore) ExpireStoppedSandboxes(ctx context.Context, now time.Time, ttl time.Duration) ([]Sandbox, error) {
 	if ttl <= 0 {
 		return nil, nil
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	return p.retentionSweep(`
+	return p.retentionSweep(ctx, `
 		UPDATE sandboxes s SET
 		    state=CASE WHEN s.node_id IS NULL OR s.node_id='' THEN 'deleted' ELSE 'deleting' END,
 		    stop_reason=$3, state_version=s.state_version+1, updated_at=$2,
@@ -185,12 +185,12 @@ func (p *PostgresStore) ExpireStoppedSandboxes(now time.Time, ttl time.Duration)
 		StopReasonRetention, map[string]any{"ttl": ttl.String()}, now.Add(-ttl), now, StopReasonRetention)
 }
 
-func (p *PostgresStore) EvictStoppedOverCap(max int) ([]Sandbox, error) {
+func (p *PostgresStore) EvictStoppedOverCap(ctx context.Context, max int) ([]Sandbox, error) {
 	if max <= 0 {
 		return nil, nil
 	}
 	now := time.Now().UTC()
-	return p.retentionSweep(`
+	return p.retentionSweep(ctx, `
 		WITH ranked AS (
 		    SELECT id,
 		           row_number() OVER (PARTITION BY tenant_id ORDER BY COALESCE(stopped_at, updated_at), id) AS rn,
@@ -209,8 +209,7 @@ func (p *PostgresStore) EvictStoppedOverCap(max int) ([]Sandbox, error) {
 
 // retentionSweep runs one retention UPDATE and its events in one transaction.
 // args follow the query's own $1…: the caller names the reason and event extras first.
-func (p *PostgresStore) retentionSweep(query, reason string, extra map[string]any, args ...any) ([]Sandbox, error) {
-	ctx := context.Background()
+func (p *PostgresStore) retentionSweep(ctx context.Context, query, reason string, extra map[string]any, args ...any) ([]Sandbox, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -268,7 +267,7 @@ func (m *MemoryStore) SetStoppedAtForTest(id string, at time.Time) {
 	}
 }
 
-func (m *MemoryStore) SetNodeDiskFree(id string, freeMiB int64) error {
+func (m *MemoryStore) SetNodeDiskFree(ctx context.Context, id string, freeMiB int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n, ok := m.nodes[id]
@@ -280,7 +279,7 @@ func (m *MemoryStore) SetNodeDiskFree(id string, freeMiB int64) error {
 	return nil
 }
 
-func (m *MemoryStore) CountStoppedByNode() (map[string]int64, error) {
+func (m *MemoryStore) CountStoppedByNode(ctx context.Context) (map[string]int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := map[string]int64{}
@@ -292,8 +291,8 @@ func (m *MemoryStore) CountStoppedByNode() (map[string]int64, error) {
 	return out, nil
 }
 
-func (p *PostgresStore) SetNodeDiskFree(id string, freeMiB int64) error {
-	tag, err := p.pool.Exec(context.Background(), `UPDATE nodes SET disk_free_mib=$2 WHERE id=$1`, id, freeMiB)
+func (p *PostgresStore) SetNodeDiskFree(ctx context.Context, id string, freeMiB int64) error {
+	tag, err := p.pool.Exec(ctx, `UPDATE nodes SET disk_free_mib=$2 WHERE id=$1`, id, freeMiB)
 	if err != nil {
 		return err
 	}
@@ -303,8 +302,8 @@ func (p *PostgresStore) SetNodeDiskFree(id string, freeMiB int64) error {
 	return nil
 }
 
-func (p *PostgresStore) CountStoppedByNode() (map[string]int64, error) {
-	rows, err := p.pool.Query(context.Background(), `
+func (p *PostgresStore) CountStoppedByNode(ctx context.Context) (map[string]int64, error) {
+	rows, err := p.pool.Query(ctx, `
 		SELECT node_id, count(*) FROM sandboxes
 		WHERE state='stopped' AND node_id IS NOT NULL AND node_id<>'' GROUP BY node_id`)
 	if err != nil {

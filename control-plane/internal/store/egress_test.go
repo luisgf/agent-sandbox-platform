@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestEffectiveEgressEmptyDeny(t *testing.T) {
 func TestMemoryEgressCRUD(t *testing.T) {
 	m := NewMemoryStore()
 	port := 443
-	out, err := m.PutEgressRules("t1", []EgressRule{
+	out, err := m.PutEgressRules(context.Background(), "t1", []EgressRule{
 		{HostPattern: "API.GitHub.com", Port: &port, Enabled: true},
 	})
 	if err != nil {
@@ -46,7 +47,7 @@ func TestMemoryEgressCRUD(t *testing.T) {
 	if len(out) != 1 || out[0].HostPattern != "api.github.com" {
 		t.Fatalf("%+v", out)
 	}
-	list, err := m.ListEgressRules("t1")
+	list, err := m.ListEgressRules(context.Background(), "t1")
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list=%v err=%v", list, err)
 	}

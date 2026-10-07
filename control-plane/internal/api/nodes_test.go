@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"net/http"
@@ -14,10 +15,10 @@ import (
 
 func TestRevokedNodeCannotHeartbeatOrRegister(t *testing.T) {
 	mem := store.NewMemoryStore()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.RevokeNode("n1"); err != nil {
+	if _, err := mem.RevokeNode(context.Background(), "n1"); err != nil {
 		t.Fatal(err)
 	}
 	mux := testMux(NewServer(mem))
@@ -97,7 +98,7 @@ func TestCreateExplainsPlacementRefusals(t *testing.T) {
 		t.Fatalf("no nodes: %d %q %s", rr.Code, rr.Header().Get("Retry-After"), rr.Body.String())
 	}
 
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if rr := create(sb + `}`); rr.Code != http.StatusCreated {
@@ -132,16 +133,16 @@ func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
 	key, kid, v := testIdP(t)
 	mem := store.NewMemoryStore()
 	for _, id := range []string{"node-b", "node-a"} {
-		if _, err := mem.RegisterNode(store.RegisterNodeInput{
+		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 			ID: id, AgentEndpoint: "http://127.0.0.1:9100", CapacityCPU: 2, CapacityMemMiB: 4096, MaxSandboxes: 4,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mem.SetNodeFence(id, "https://bmc.example/"+id, "bmc-secret"); err != nil {
+		if _, err := mem.SetNodeFence(context.Background(), id, "https://bmc.example/"+id, "bmc-secret"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1500, MemoryMiB: 1024, NodeID: "node-a"}); err != nil {
+	if _, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1500, MemoryMiB: 1024, NodeID: "node-a"}); err != nil {
 		t.Fatal(err)
 	}
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(NewServer(mem)))
@@ -195,11 +196,11 @@ func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
 func TestLateStatusReportIs409(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t)
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.StopSandbox(sb.ID, ""); err != nil { // never claimed → stopped
+	if _, err := mem.StopSandbox(context.Background(), sb.ID, ""); err != nil { // never claimed → stopped
 		t.Fatal(err)
 	}
 	mux := testMux(NewServer(mem))

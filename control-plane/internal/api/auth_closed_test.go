@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,7 +53,7 @@ func TestNothingIsOpenByDefault(t *testing.T) {
 func TestInsecureOpenAllowsRequestsWithNoCredential(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t, "n1")
-	if _, err := mem.EnsureAPIKey("t1", "k", store.APIKeyScopeTenant, "asp_k", store.HashAPIKeySecret("tenant-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "t1", "k", store.APIKeyScopeTenant, "asp_k", store.HashAPIKeySecret("tenant-key")); err != nil {
 		t.Fatal(err)
 	}
 	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(NewServer(mem)))
@@ -80,7 +81,7 @@ func TestInsecureOpenAllowsRequestsWithNoCredential(t *testing.T) {
 // Removing the last key leaves the API closed: it never falls back to open.
 func TestLosingTheLastKeyDoesNotOpenTheAPI(t *testing.T) {
 	mem := newTestStore(t, "n1")
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	h := AuthMiddleware(mem, AuthConfig{})(testMux(NewServer(mem)))
@@ -116,7 +117,7 @@ func TestNodeRoutesNeedAPlatformKeyOrACertificate(t *testing.T) {
 		{"default", "node", store.APIKeyScopePlatform, "asp_node", "node-key"},
 		{"t1", "svc", store.APIKeyScopeTenant, "asp_svc1", "tenant-key"},
 	} {
-		if _, err := mem.EnsureAPIKey(k.tenant, k.name, k.scope, k.prefix, store.HashAPIKeySecret(k.secret)); err != nil {
+		if _, err := mem.EnsureAPIKey(context.Background(), k.tenant, k.name, k.scope, k.prefix, store.HashAPIKeySecret(k.secret)); err != nil {
 			t.Fatal(err)
 		}
 	}

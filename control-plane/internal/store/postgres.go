@@ -87,7 +87,7 @@ func (p *PostgresStore) Pool() *pgxpool.Pool { return p.pool }
 
 // EnsureBootstrapNode upserts the stub provision node so FK assigns succeed.
 func (p *PostgresStore) EnsureBootstrapNode(ctx context.Context) error {
-	_, err := p.RegisterNode(RegisterNodeInput{
+	_, err := p.RegisterNode(ctx, RegisterNodeInput{
 		ID:             p.provisionNodeID,
 		Name:           p.provisionNodeID,
 		Endpoint:       "local://stub",
@@ -105,11 +105,10 @@ func (p *PostgresStore) ensureTenant(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
+func (p *PostgresStore) CreateSandbox(ctx context.Context, input CreateSandboxInput) (Sandbox, error) {
 	if err := prepareCreateSandbox(&input); err != nil {
 		return Sandbox{}, err
 	}
-	ctx := context.Background()
 	if err := p.ensureTenant(ctx, input.TenantID); err != nil {
 		return Sandbox{}, fmt.Errorf("ensure tenant: %w", err)
 	}
@@ -255,8 +254,7 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 	return created, nil
 }
 
-func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
-	ctx := context.Background()
+func (p *PostgresStore) GetSandbox(ctx context.Context, id string) (Sandbox, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT `+sandboxColumns+`
 		FROM sandboxes WHERE id=$1`, id)
@@ -270,8 +268,7 @@ func (p *PostgresStore) GetSandbox(id string) (Sandbox, error) {
 	return sb, nil
 }
 
-func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
-	ctx := context.Background()
+func (p *PostgresStore) ListSandboxes(ctx context.Context, tenantID string) ([]Sandbox, error) {
 	var rows pgx.Rows
 	var err error
 	if tenantID == "" {
@@ -298,11 +295,10 @@ func (p *PostgresStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
+func (p *PostgresStore) ClaimSandbox(ctx context.Context, id, nodeID string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(nodeID) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id and node_id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -318,7 +314,7 @@ func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 		RETURNING `+sandboxColumns,
 		id, nodeID, now))
 	if errors.Is(err, pgx.ErrNoRows) {
-		sb, gerr := p.GetSandbox(id)
+		sb, gerr := p.GetSandbox(ctx, id)
 		if gerr != nil {
 			return Sandbox{}, gerr
 		}
@@ -348,11 +344,10 @@ func (p *PostgresStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	return claimed, nil
 }
 
-func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
+func (p *PostgresStore) ListNodeWork(ctx context.Context, nodeID string) (NodeWork, error) {
 	if strings.TrimSpace(nodeID) == "" {
 		return NodeWork{}, fmt.Errorf("%w: node_id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	// What holds capacity, what is being deleted, and what a stop keeps.
 	states := append(occupyingStateNames(), string(SandboxStopped))
 	rows, err := p.pool.Query(ctx, `
@@ -379,14 +374,13 @@ func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	return work, nil
 }
 
-func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error) {
+func (p *PostgresStore) UpdateSandboxStatus(ctx context.Context, id string, state SandboxState, detail string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
 	if !ValidAgentStatus(state) {
 		return Sandbox{}, fmt.Errorf("%w: invalid status %s", ErrInvalidInput, state)
 	}
-	ctx := context.Background()
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -423,7 +417,7 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 		RETURNING prev.state, `+sandboxColumnsS,
 		id, string(state), now, agentFromStates(state), detail), &from)
 	if errors.Is(err, pgx.ErrNoRows) {
-		cur, gerr := p.GetSandbox(id)
+		cur, gerr := p.GetSandbox(ctx, id)
 		if gerr != nil {
 			return Sandbox{}, gerr
 		}
@@ -465,11 +459,10 @@ func agentFromStates(to SandboxState) []string {
 	return out
 }
 
-func (p *PostgresStore) TouchSandboxActivity(id string) error {
+func (p *PostgresStore) TouchSandboxActivity(ctx context.Context, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	now := time.Now().UTC()
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sandboxes SET last_activity_at=$2 WHERE id=$1`, id, now)
@@ -482,7 +475,7 @@ func (p *PostgresStore) TouchSandboxActivity(id string) error {
 	return nil
 }
 
-func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error) {
+func (p *PostgresStore) StopIdleSandboxes(ctx context.Context, now time.Time, idleFor time.Duration) ([]Sandbox, error) {
 	if idleFor <= 0 {
 		return nil, nil
 	}
@@ -490,7 +483,6 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 		now = time.Now().UTC()
 	}
 	cutoff := now.Add(-idleFor)
-	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
 		SELECT `+sandboxColumns+`
 		FROM sandboxes
@@ -565,14 +557,13 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 	return out, nil
 }
 
-func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
+func (p *PostgresStore) RegisterNode(ctx context.Context, input RegisterNodeInput) (Node, error) {
 	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.Name) == "" {
 		return Node{}, fmt.Errorf("%w: id or name required", ErrInvalidInput)
 	}
 	if err := validateNodeCapacity(input.CapacityCPU, input.CapacityMemMiB, input.MaxSandboxes); err != nil {
 		return Node{}, err
 	}
-	ctx := context.Background()
 	id := input.ID
 	if id == "" {
 		id = newID()
@@ -670,11 +661,10 @@ func (p *PostgresStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	return node, nil
 }
 
-func (p *PostgresStore) CreateEnrollToken(tok EnrollToken) error {
+func (p *PostgresStore) CreateEnrollToken(ctx context.Context, tok EnrollToken) error {
 	if err := validateEnrollToken(tok); err != nil {
 		return err
 	}
-	ctx := context.Background()
 	now := time.Now().UTC()
 	if tok.CreatedAt.IsZero() {
 		tok.CreatedAt = now
@@ -694,8 +684,8 @@ func (p *PostgresStore) CreateEnrollToken(tok EnrollToken) error {
 	return nil
 }
 
-func (p *PostgresStore) CheckEnroll(id string, auth EnrollAuth) error {
-	_, _, err := enrollCheckTx(context.Background(), p.pool, id, auth, time.Now().UTC(), false)
+func (p *PostgresStore) CheckEnroll(ctx context.Context, id string, auth EnrollAuth) error {
+	_, _, err := enrollCheckTx(ctx, p.pool, id, auth, time.Now().UTC(), false)
 	return err
 }
 
@@ -742,7 +732,7 @@ func enrollCheckTx(ctx context.Context, q interface {
 	return oldFP, exists, enrollAllowed(id, tok, live, now)
 }
 
-func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error) {
+func (p *PostgresStore) EnrollNode(ctx context.Context, input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error) {
 	fp := strings.TrimSpace(cert.Fingerprint)
 	serial := strings.TrimSpace(cert.Serial)
 	if fp == "" {
@@ -751,7 +741,6 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.Name) == "" {
 		return Node{}, fmt.Errorf("%w: id or name required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	id := input.ID
 	if id == "" {
 		id = newID()
@@ -843,7 +832,7 @@ func (p *PostgresStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth En
 	return node, nil
 }
 
-func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, error) {
+func (p *PostgresStore) RotateNodeCert(ctx context.Context, nodeID string, cert CertMeta) (Node, error) {
 	fp := strings.TrimSpace(cert.Fingerprint)
 	serial := strings.TrimSpace(cert.Serial)
 	if strings.TrimSpace(nodeID) == "" {
@@ -852,7 +841,6 @@ func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, erro
 	if fp == "" {
 		return Node{}, fmt.Errorf("%w: cert_fingerprint required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return Node{}, err
@@ -910,11 +898,10 @@ func (p *PostgresStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, erro
 	return node, nil
 }
 
-func (p *PostgresStore) RevokeNode(nodeID string) (Node, error) {
+func (p *PostgresStore) RevokeNode(ctx context.Context, nodeID string) (Node, error) {
 	if strings.TrimSpace(nodeID) == "" {
 		return Node{}, fmt.Errorf("%w: node id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return Node{}, err
@@ -961,12 +948,11 @@ func (p *PostgresStore) RevokeNode(nodeID string) (Node, error) {
 	return node, nil
 }
 
-func (p *PostgresStore) IsCertRevoked(fingerprint string) (bool, error) {
+func (p *PostgresStore) IsCertRevoked(ctx context.Context, fingerprint string) (bool, error) {
 	fp := strings.TrimSpace(fingerprint)
 	if fp == "" {
 		return false, nil
 	}
-	ctx := context.Background()
 	var n int
 	err := p.pool.QueryRow(ctx, `
 		SELECT 1 FROM node_cert_revocations WHERE fingerprint=$1
@@ -982,11 +968,10 @@ func (p *PostgresStore) IsCertRevoked(fingerprint string) (bool, error) {
 	return true, nil
 }
 
-func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
+func (p *PostgresStore) HeartbeatNode(ctx context.Context, id string) (Node, error) {
 	if strings.TrimSpace(id) == "" {
 		return Node{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	now := time.Now().UTC()
 	var prevState string
 	// The previous state comes from a locking sub-select in FROM, which runs
@@ -1017,8 +1002,7 @@ func (p *PostgresStore) HeartbeatNode(id string) (Node, error) {
 	return node, nil
 }
 
-func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
-	ctx := context.Background()
+func (p *PostgresStore) TouchNodePoll(ctx context.Context, id string, now time.Time) error {
 	var prevState string
 	// As in HeartbeatNode. The throttle is in the sub-select, so a poll inside
 	// the window neither locks nor writes the row.
@@ -1047,8 +1031,7 @@ func (p *PostgresStore) TouchNodePoll(id string, now time.Time) error {
 	return nil // seen recently; nothing to write
 }
 
-func (p *PostgresStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
-	ctx := context.Background()
+func (p *PostgresStore) SetNodeCordoned(ctx context.Context, id string, cordoned bool) (Node, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return Node{}, err
@@ -1077,8 +1060,7 @@ func (p *PostgresStore) SetNodeCordoned(id string, cordoned bool) (Node, error) 
 	return node, nil
 }
 
-func (p *PostgresStore) SetNodeFence(id, endpoint, token string) (Node, error) {
-	ctx := context.Background()
+func (p *PostgresStore) SetNodeFence(ctx context.Context, id, endpoint, token string) (Node, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	token = strings.TrimSpace(token)
 	if endpoint == "" {
@@ -1113,8 +1095,7 @@ func (p *PostgresStore) SetNodeFence(id, endpoint, token string) (Node, error) {
 	return node, nil
 }
 
-func (p *PostgresStore) ListNodeUsage() (map[string]NodeUsage, error) {
-	ctx := context.Background()
+func (p *PostgresStore) ListNodeUsage(ctx context.Context) (map[string]NodeUsage, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT node_id, COALESCE(SUM(cpu_millis),0)::bigint, COALESCE(SUM(memory_mib),0)::bigint, COUNT(*)
 		FROM sandboxes WHERE node_id IS NOT NULL AND state = ANY($1)
@@ -1135,8 +1116,7 @@ func (p *PostgresStore) ListNodeUsage() (map[string]NodeUsage, error) {
 	return usage, rows.Err()
 }
 
-func (p *PostgresStore) ListNodes() ([]Node, error) {
-	ctx := context.Background()
+func (p *PostgresStore) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT `+nodeColumns+`
 		FROM nodes ORDER BY created_at`)
@@ -1155,8 +1135,7 @@ func (p *PostgresStore) ListNodes() ([]Node, error) {
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) GetNode(id string) (Node, error) {
-	ctx := context.Background()
+func (p *PostgresStore) GetNode(ctx context.Context, id string) (Node, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT `+nodeColumns+`
 		FROM nodes WHERE id=$1`, id)
@@ -1170,13 +1149,11 @@ func (p *PostgresStore) GetNode(id string) (Node, error) {
 	return n, nil
 }
 
-func (p *PostgresStore) EmitEvent(input EmitEventInput) error {
-	ctx := context.Background()
+func (p *PostgresStore) EmitEvent(ctx context.Context, input EmitEventInput) error {
 	return emitEventTx(ctx, p.pool, EmitEventInput(input))
 }
 
-func (p *PostgresStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
-	ctx := context.Background()
+func (p *PostgresStore) ListEvents(ctx context.Context, sandboxID string) ([]SandboxEvent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, sandbox_id, tenant_id, event_type, from_state, to_state,
 		       actor, actor_sub, request_id, payload, created_at
@@ -1202,8 +1179,7 @@ func (p *PostgresStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
-	ctx := context.Background()
+func (p *PostgresStore) LookupAPIKeyByHash(ctx context.Context, secretHash string) (ApiKey, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, name, scope, key_prefix, secret_hash,
 		       last_used_at, expires_at, revoked_at, created_at
@@ -1224,7 +1200,7 @@ func (p *PostgresStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
 	return k, nil
 }
 
-func (p *PostgresStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error) {
+func (p *PostgresStore) EnsureAPIKey(ctx context.Context, tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error) {
 	if tenantID == "" || name == "" || keyPrefix == "" || secretHash == "" {
 		return ApiKey{}, fmt.Errorf("%w: tenant_id, name, key_prefix, secret_hash required", ErrInvalidInput)
 	}
@@ -1232,7 +1208,6 @@ func (p *PostgresStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHas
 	if err != nil {
 		return ApiKey{}, err
 	}
-	ctx := context.Background()
 	if err := p.ensureTenant(ctx, tenantID); err != nil {
 		return ApiKey{}, err
 	}
@@ -1280,16 +1255,14 @@ func (p *PostgresStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHas
 	}, nil
 }
 
-func (p *PostgresStore) CountAPIKeys() (int64, error) {
-	ctx := context.Background()
+func (p *PostgresStore) CountAPIKeys(ctx context.Context) (int64, error) {
 	var n int64
 	err := p.pool.QueryRow(ctx,
 		`SELECT count(*) FROM api_keys WHERE revoked_at IS NULL`).Scan(&n)
 	return n, err
 }
 
-func (p *PostgresStore) TouchAPIKey(id string) error {
-	ctx := context.Background()
+func (p *PostgresStore) TouchAPIKey(ctx context.Context, id string) error {
 	// The middleware already writes at most once a minute per key and process;
 	// the guard keeps several control-plane replicas to the same pace.
 	_, err := p.pool.Exec(ctx, `
@@ -1397,11 +1370,10 @@ func emitEventTx(ctx context.Context, q interface {
 	return err
 }
 
-func (p *PostgresStore) ListEgressRules(tenantID string) ([]EgressRule, error) {
+func (p *PostgresStore) ListEgressRules(ctx context.Context, tenantID string) ([]EgressRule, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return nil, fmt.Errorf("%w: tenant_id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, host_pattern, port, enabled
 		FROM tenant_egress_rules WHERE tenant_id=$1
@@ -1421,7 +1393,7 @@ func (p *PostgresStore) ListEgressRules(tenantID string) ([]EgressRule, error) {
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) ListEgressRulesForTenants(tenantIDs []string) (map[string][]EgressRule, error) {
+func (p *PostgresStore) ListEgressRulesForTenants(ctx context.Context, tenantIDs []string) (map[string][]EgressRule, error) {
 	out := make(map[string][]EgressRule, len(tenantIDs))
 	for _, t := range tenantIDs {
 		out[t] = []EgressRule{}
@@ -1429,7 +1401,7 @@ func (p *PostgresStore) ListEgressRulesForTenants(tenantIDs []string) (map[strin
 	if len(tenantIDs) == 0 {
 		return out, nil
 	}
-	rows, err := p.pool.Query(context.Background(), `
+	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, host_pattern, port, enabled
 		FROM tenant_egress_rules WHERE tenant_id = ANY($1)
 		ORDER BY tenant_id, host_pattern, port NULLS FIRST`, tenantIDs)
@@ -1447,11 +1419,10 @@ func (p *PostgresStore) ListEgressRulesForTenants(tenantIDs []string) (map[strin
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) PutEgressRules(tenantID string, rules []EgressRule) ([]EgressRule, error) {
+func (p *PostgresStore) PutEgressRules(ctx context.Context, tenantID string, rules []EgressRule) ([]EgressRule, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return nil, fmt.Errorf("%w: tenant_id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	if err := p.ensureTenant(ctx, tenantID); err != nil {
 		return nil, err
 	}
@@ -1495,17 +1466,16 @@ func (p *PostgresStore) PutEgressRules(tenantID string, rules []EgressRule) ([]E
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return p.ListEgressRules(tenantID)
+	return p.ListEgressRules(ctx, tenantID)
 }
 
 var _ Store = (*PostgresStore)(nil)
 
-func (p *PostgresStore) PutAttestation(input PutAttestationInput) (AttestationRecord, error) {
+func (p *PostgresStore) PutAttestation(ctx context.Context, input PutAttestationInput) (AttestationRecord, error) {
 	if strings.TrimSpace(input.SandboxID) == "" {
 		return AttestationRecord{}, fmt.Errorf("%w: sandbox_id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
-	if _, err := p.GetSandbox(input.SandboxID); err != nil {
+	if _, err := p.GetSandbox(ctx, input.SandboxID); err != nil {
 		return AttestationRecord{}, err
 	}
 	now := time.Now().UTC()
@@ -1535,14 +1505,13 @@ func (p *PostgresStore) PutAttestation(input PutAttestationInput) (AttestationRe
 	if err != nil {
 		return AttestationRecord{}, err
 	}
-	return p.GetAttestation(input.SandboxID)
+	return p.GetAttestation(ctx, input.SandboxID)
 }
 
-func (p *PostgresStore) GetAttestation(sandboxID string) (AttestationRecord, error) {
+func (p *PostgresStore) GetAttestation(ctx context.Context, sandboxID string) (AttestationRecord, error) {
 	if strings.TrimSpace(sandboxID) == "" {
 		return AttestationRecord{}, fmt.Errorf("%w: sandbox_id required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	var rec AttestationRecord
 	var cid int
 	err := p.pool.QueryRow(ctx, `

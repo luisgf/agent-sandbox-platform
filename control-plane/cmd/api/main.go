@@ -16,8 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/api"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
@@ -72,7 +70,11 @@ func run(ctx context.Context, args []string) error {
 	storeName := "memory"
 
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
-		pool, err := pgxpool.New(ctx, dbURL)
+		dbTimeouts, err := store.DBTimeoutsFromEnv()
+		if err != nil {
+			return configError{err}
+		}
+		pool, err := store.NewPool(ctx, dbURL, dbTimeouts)
 		if err != nil {
 			return fmt.Errorf("connect postgres: %w", err)
 		}
@@ -112,7 +114,7 @@ func run(ctx context.Context, args []string) error {
 		"node_stale_after", schedCfg.StaleAfter.String(), "auto_provision", store.AutoProvisionEnabled())
 
 	if secret := os.Getenv("ASP_BOOTSTRAP_API_KEY"); secret != "" {
-		key, err := api.BootstrapAPIKey(st, secret)
+		key, err := api.BootstrapAPIKey(ctx, st, secret)
 		if err != nil {
 			return fmt.Errorf("bootstrap api key: %w", err)
 		}
@@ -177,7 +179,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	authCfg.IdP = idpVal
 	authCfg.IdPRequired = idpCfg.Required
-	if err := checkAuthConfigured(st, idpVal != nil, authCfg); err != nil {
+	if err := checkAuthConfigured(ctx, st, idpVal != nil, authCfg); err != nil {
 		return err
 	}
 	if idpVal != nil {

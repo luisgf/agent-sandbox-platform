@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -117,7 +118,7 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -134,8 +135,8 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "local_net grant requires owner_sub")
 		return
 	}
-	dial := s.localNetDial(sb)
-	grant, exp, err := s.Store.IssueLocalNetGrant(id, dial, time.Now().UTC(), store.LocalNetGrantTTL)
+	dial := s.localNetDial(r.Context(), sb)
+	grant, exp, err := s.Store.IssueLocalNetGrant(r.Context(), id, dial, time.Now().UTC(), store.LocalNetGrantTTL)
 	if err != nil {
 		writeLocalNetErr(w, err)
 		return
@@ -158,9 +159,9 @@ func (s *Server) IssueLocalNetGrant(w http.ResponseWriter, r *http.Request) {
 // localNetDial is where the laptop dials the sandbox's node: the node's own
 // local_net_dial (each server has its own address), else the control plane's
 // ASP_LOCAL_NET_DIAL for single-node setups.
-func (s *Server) localNetDial(sb store.Sandbox) string {
+func (s *Server) localNetDial(ctx context.Context, sb store.Sandbox) string {
 	if sb.NodeID != nil && *sb.NodeID != "" {
-		if n, err := s.Store.GetNode(*sb.NodeID); err == nil && strings.TrimSpace(n.LocalNetDial) != "" {
+		if n, err := s.Store.GetNode(ctx, *sb.NodeID); err == nil && strings.TrimSpace(n.LocalNetDial) != "" {
 			return strings.TrimSpace(n.LocalNetDial)
 		}
 	}
@@ -201,7 +202,7 @@ func (s *Server) HeartbeatLocalNet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -218,7 +219,7 @@ func (s *Server) HeartbeatLocalNet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "local_net heartbeat requires owner_sub")
 		return
 	}
-	out, err := s.Store.HeartbeatLocalNet(id, req.Grant, req.ClientPublicKey, time.Now().UTC())
+	out, err := s.Store.HeartbeatLocalNet(r.Context(), id, req.Grant, req.ClientPublicKey, time.Now().UTC())
 	if err != nil {
 		writeLocalNetErr(w, err)
 		return
@@ -238,7 +239,7 @@ func (s *Server) DetachLocalNet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -255,7 +256,7 @@ func (s *Server) DetachLocalNet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "local_net detach requires owner_sub")
 		return
 	}
-	out, err := s.Store.WithdrawLocalNet(id)
+	out, err := s.Store.WithdrawLocalNet(r.Context(), id)
 	if err != nil {
 		writeLocalNetErr(w, err)
 		return
@@ -316,7 +317,7 @@ func (s *Server) RegisterLocalNetNode(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeSandboxNodeByID(w, r, id) {
 		return
 	}
-	out, err := s.Store.SetLocalNetNodePublic(id, req.PublicKey, store.LocalNetTunnel{
+	out, err := s.Store.SetLocalNetNodePublic(r.Context(), id, req.PublicKey, store.LocalNetTunnel{
 		ListenPort: req.ListenPort, NodeAddr: req.NodeTunnelAddr, ClientAddr: req.ClientTunnelAddr,
 	})
 	if err != nil {

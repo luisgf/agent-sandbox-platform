@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,7 +28,7 @@ func newExecStateFixture(t *testing.T, agent http.HandlerFunc) *execStateFixture
 	}))
 	t.Cleanup(srvAgent.Close)
 	mem := store.NewMemoryStore()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", AgentEndpoint: srvAgent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", AgentEndpoint: srvAgent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -37,7 +38,7 @@ func newExecStateFixture(t *testing.T, agent http.HandlerFunc) *execStateFixture
 
 func (f *execStateFixture) sandbox() string {
 	f.t.Helper()
-	sb, err := f.mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
+	sb, err := f.mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func TestExecRefusesSandboxesThatAreNotRunning(t *testing.T) {
 	f := newExecStateFixture(t, okAgent)
 	requested := f.sandbox()
 	starting := f.sandbox()
-	if _, err := f.mem.ClaimSandbox(starting, "n"); err != nil {
+	if _, err := f.mem.ClaimSandbox(context.Background(), starting, "n"); err != nil {
 		t.Fatal(err)
 	}
 	paused := f.sandbox()

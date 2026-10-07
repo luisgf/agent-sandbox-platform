@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func newKeyEnv(t *testing.T) *keyEnv {
 		{"default", "ops", store.APIKeyScopePlatform, "asp_ops1", "platform-key"},
 		{"acme", "svc", store.APIKeyScopeTenant, "asp_acm1", "tenant-key"},
 	} {
-		if _, err := mem.EnsureAPIKey(k.tenant, k.name, k.scope, k.prefix, store.HashAPIKeySecret(k.secret)); err != nil {
+		if _, err := mem.EnsureAPIKey(context.Background(), k.tenant, k.name, k.scope, k.prefix, store.HashAPIKeySecret(k.secret)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,7 +106,7 @@ func TestOnlyPlatformKeysAndIdPAdminsManageKeys(t *testing.T) {
 			t.Errorf("%s: %d %s, want %d", tc.name, rr.Code, rr.Body.String(), tc.want)
 		}
 	}
-	if keys, _ := e.mem.ListAPIKeys(""); len(keys) != 2 {
+	if keys, _ := e.mem.ListAPIKeys(context.Background(), ""); len(keys) != 2 {
 		t.Fatalf("a refused request changed the keys: %d", len(keys))
 	}
 }
@@ -184,9 +185,9 @@ func TestRotateAndRevokeAPIKey(t *testing.T) {
 // Revoking every key does not open the API.
 func TestRevokingEveryKeyDoesNotOpenTheAPI(t *testing.T) {
 	e := newKeyEnv(t)
-	keys, _ := e.mem.ListAPIKeys("")
+	keys, _ := e.mem.ListAPIKeys(context.Background(), "")
 	for _, k := range keys {
-		if _, err := e.mem.RevokeAPIKey(k.ID); err != nil {
+		if _, err := e.mem.RevokeAPIKey(context.Background(), k.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -200,7 +201,7 @@ func TestRevokingEveryKeyDoesNotOpenTheAPI(t *testing.T) {
 // An IdP admin manages the keys of their own tenant and nothing else.
 func TestIdPAdminManagesOnlyTheirTenantsKeys(t *testing.T) {
 	mem := newTestStore(t, "n1")
-	if _, err := mem.EnsureAPIKey("other", "svc", store.APIKeyScopeTenant, "asp_oth1", store.HashAPIKeySecret("other-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "other", "svc", store.APIKeyScopeTenant, "asp_oth1", store.HashAPIKeySecret("other-key")); err != nil {
 		t.Fatal(err)
 	}
 	key, kid, v := testIdP(t)
@@ -244,7 +245,7 @@ func TestIdPAdminManagesOnlyTheirTenantsKeys(t *testing.T) {
 	if rr := do("GET", "/v1/api-keys?tenant_id=other", admin, ""); rr.Code != http.StatusForbidden {
 		t.Fatalf("admin listing another tenant: %d", rr.Code)
 	}
-	others, _ := mem.ListAPIKeys("other")
+	others, _ := mem.ListAPIKeys(context.Background(), "other")
 	if rr := do("DELETE", "/v1/api-keys/"+others[0].ID, admin, ""); rr.Code != http.StatusNotFound {
 		t.Fatalf("admin revoking another tenant's key: %d", rr.Code)
 	}

@@ -44,7 +44,7 @@ func TestAttestRefusesABundleSignedByAnUnknownKey(t *testing.T) {
 	mem := newTestStore(t, "node-a")
 	srv := NewServer(mem)
 	srv.Attestor = attest.NewSoftwareAttestorFromKey(cpKey)
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestAttestRefusesABundleSignedByAnUnknownKey(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("forged bundle: want 400, got %d %s", rr.Code, rr.Body.String())
 	}
-	if _, err := mem.GetAttestation(sb.ID); err == nil {
+	if _, err := mem.GetAttestation(context.Background(), sb.ID); err == nil {
 		t.Fatal("a refused bundle was stored")
 	}
 }
@@ -83,7 +83,7 @@ func TestAttestWithTheNodeCertificateKey(t *testing.T) {
 	srv := NewServer(mem)
 	srv.Attestor = attest.NewSoftwareAttestorFromKey(cpKey)
 	h := AuthMiddleware(mem, AuthConfig{RequireNodeClientCert: true, InsecureOpen: true})(testMux(srv))
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 	if err != nil {
 		t.Fatal(err)
 	}

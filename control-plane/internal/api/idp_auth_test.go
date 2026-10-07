@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -168,14 +169,14 @@ func TestIdPOffKeepsLabBodyOwner(t *testing.T) {
 func TestIdPDoesNotBreakNodeWorkWithAPlatformKey(t *testing.T) {
 	mem := store.NewMemoryStore()
 	srv := NewServer(mem)
-	_, err := mem.RegisterNode(store.RegisterNodeInput{
+	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "n1", Name: "n1", AgentEndpoint: "http://127.0.0.1:9",
 		CapacityCPU: 1, CapacityMemMiB: 512,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.EnsureAPIKey("default", "node", store.APIKeyScopePlatform, "asp_node", store.HashAPIKeySecret("node-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "node", store.APIKeyScopePlatform, "asp_node", store.HashAPIKeySecret("node-key")); err != nil {
 		t.Fatal(err)
 	}
 	key, kid, v := testIdP(t)

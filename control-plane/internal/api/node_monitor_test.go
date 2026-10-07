@@ -22,14 +22,14 @@ func monitorFixture(t *testing.T) (*store.MemoryStore, *Server, map[string]strin
 	mem := newTestStore(t, "n1", "n2")
 	ids := map[string]string{}
 	for _, n := range []string{"n1", "n2"} {
-		sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: n})
+		sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: n})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mem.ClaimSandbox(sb.ID, n); err != nil {
+		if _, err := mem.ClaimSandbox(context.Background(), sb.ID, n); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mem.UpdateSandboxStatus(sb.ID, store.SandboxRunning, ""); err != nil {
+		if _, err := mem.UpdateSandboxStatus(context.Background(), sb.ID, store.SandboxRunning, ""); err != nil {
 			t.Fatal(err)
 		}
 		ids[n] = sb.ID
@@ -39,7 +39,7 @@ func monitorFixture(t *testing.T) (*store.MemoryStore, *Server, map[string]strin
 
 func state(t *testing.T, mem *store.MemoryStore, id string) store.Sandbox {
 	t.Helper()
-	sb, err := mem.GetSandbox(id)
+	sb, err := mem.GetSandbox(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestNodeMonitorMarksOfflineThenFailsSandboxes(t *testing.T) {
 
 	mem.SetNodeLastSeenForTest("n1", now.Add(-2*time.Minute)) // stale, not yet lost
 	srv.sweepNodes(context.Background(), now, started, monCfg)
-	if n, _ := mem.GetNode("n1"); n.State != "offline" {
+	if n, _ := mem.GetNode(context.Background(), "n1"); n.State != "offline" {
 		t.Fatalf("n1 after the stale window: %s", n.State)
 	}
 	if sb := state(t, mem, ids["n1"]); sb.State != store.SandboxRunning {
@@ -68,7 +68,7 @@ func TestNodeMonitorMarksOfflineThenFailsSandboxes(t *testing.T) {
 	if sb := state(t, mem, ids["n2"]); sb.State != store.SandboxRunning {
 		t.Fatalf("healthy node's sandbox changed: %s", sb.State)
 	}
-	if n, _ := mem.GetNode("n2"); n.State != "ready" {
+	if n, _ := mem.GetNode(context.Background(), "n2"); n.State != "ready" {
 		t.Fatalf("healthy node went %s", n.State)
 	}
 
@@ -88,7 +88,7 @@ func TestNodeMonitorGivesGraceAfterStart(t *testing.T) {
 	mem.SetNodeLastSeenForTest("n1", now.Add(-time.Hour))
 
 	srv.sweepNodes(context.Background(), now, started, monCfg)
-	if n, _ := mem.GetNode("n1"); n.State == "offline" {
+	if n, _ := mem.GetNode(context.Background(), "n1"); n.State == "offline" {
 		t.Fatal("marked offline within the grace after start")
 	}
 	if sb := state(t, mem, ids["n1"]); sb.State != store.SandboxRunning {
@@ -110,14 +110,14 @@ func TestNodeMonitorFailoverOffStillHandlesRevokedNodes(t *testing.T) {
 	mem.SetNodeLastSeenForTest("n1", now.Add(-time.Hour))
 
 	srv.sweepNodes(context.Background(), now, now.Add(-2*time.Hour), cfg)
-	if n, _ := mem.GetNode("n1"); n.State != "offline" {
+	if n, _ := mem.GetNode(context.Background(), "n1"); n.State != "offline" {
 		t.Fatalf("n1 should be offline: %s", n.State)
 	}
 	if sb := state(t, mem, ids["n1"]); sb.State != store.SandboxRunning {
 		t.Fatalf("failover is off, the sandbox must stay: %s", sb.State)
 	}
 
-	if _, err := mem.RevokeNode("n2"); err != nil {
+	if _, err := mem.RevokeNode(context.Background(), "n2"); err != nil {
 		t.Fatal(err)
 	}
 	srv.sweepNodes(context.Background(), now, now.Add(-2*time.Hour), cfg)
@@ -162,14 +162,14 @@ func TestNodeMonitorFencesALostNodeOncePerOutage(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := store.NewMemoryStore()
 	for _, id := range []string{"busy", "idle"} {
-		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mem.SetNodeFence(id, webhook.URL, "tok-"+id); err != nil {
+		if _, err := mem.SetNodeFence(context.Background(), id, webhook.URL, "tok-"+id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "busy"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "busy"})
 	if err != nil {
 		t.Fatal(err)
 	}

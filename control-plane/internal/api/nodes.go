@@ -60,17 +60,17 @@ func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
 	if !authorizeNodeView(w, r) {
 		return
 	}
-	list, err := s.Store.ListNodes()
+	list, err := s.Store.ListNodes(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	usage, err := s.Store.ListNodeUsage()
+	usage, err := s.Store.ListNodeUsage(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	stopped, err := s.Store.CountStoppedByNode()
+	stopped, err := s.Store.CountStoppedByNode(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -147,7 +147,7 @@ func (s *Server) ClearNodeFence(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) storeNodeFence(w http.ResponseWriter, r *http.Request, id, endpoint, token string) {
-	if _, err := s.Store.SetNodeFence(id, endpoint, token); err != nil {
+	if _, err := s.Store.SetNodeFence(r.Context(), id, endpoint, token); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
 			return
@@ -169,7 +169,7 @@ func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordone
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
-	n, err := s.Store.SetNodeCordoned(id, cordoned)
+	n, err := s.Store.SetNodeCordoned(r.Context(), id, cordoned)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -178,12 +178,12 @@ func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordone
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	usage, err := s.Store.ListNodeUsage()
+	usage, err := s.Store.ListNodeUsage(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	stopped, err := s.Store.CountStoppedByNode()
+	stopped, err := s.Store.CountStoppedByNode(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

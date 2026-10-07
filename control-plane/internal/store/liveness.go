@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"sort"
 	"time"
 )
@@ -44,7 +45,7 @@ func nodeLost(n Node, silentSince time.Time) bool {
 	return n.RevokedAt != nil || n.LastSeenAt == nil || n.LastSeenAt.Before(silentSince)
 }
 
-func (m *MemoryStore) MarkNodeOffline(id string, silentSince time.Time) (bool, error) {
+func (m *MemoryStore) MarkNodeOffline(ctx context.Context, id string, silentSince time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n, ok := m.nodes[id]
@@ -65,7 +66,7 @@ type lostSandbox struct {
 	from, to   SandboxState
 }
 
-func (m *MemoryStore) FailNodeSandboxes(nodeID, reason string, silentSince time.Time) ([]Sandbox, error) {
+func (m *MemoryStore) FailNodeSandboxes(ctx context.Context, nodeID, reason string, silentSince time.Time) ([]Sandbox, error) {
 	m.mu.Lock()
 	n, ok := m.nodes[nodeID]
 	if !ok {
@@ -104,7 +105,7 @@ func (m *MemoryStore) FailNodeSandboxes(nodeID, reason string, silentSince time.
 	m.mu.Unlock()
 	for _, l := range lost {
 		from := string(l.from)
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: l.id,
 			TenantID:  l.tenant,
 			EventType: "sandbox.node_lost",
@@ -118,7 +119,7 @@ func (m *MemoryStore) FailNodeSandboxes(nodeID, reason string, silentSince time.
 	return out, nil
 }
 
-func (m *MemoryStore) FailUnassignedRequested(createdBefore time.Time, reason string) ([]Sandbox, error) {
+func (m *MemoryStore) FailUnassignedRequested(ctx context.Context, createdBefore time.Time, reason string) ([]Sandbox, error) {
 	m.mu.Lock()
 	now := time.Now().UTC()
 	var out []Sandbox
@@ -137,7 +138,7 @@ func (m *MemoryStore) FailUnassignedRequested(createdBefore time.Time, reason st
 	m.mu.Unlock()
 	for _, sb := range out {
 		from := string(SandboxRequested)
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: sb.ID,
 			TenantID:  sb.TenantID,
 			EventType: "sandbox.unscheduled",
@@ -170,7 +171,9 @@ func restartOrphanTarget(state SandboxState) (SandboxState, bool) {
 }
 
 // EmitNodeEvent: the memory store keeps no node events.
-func (m *MemoryStore) EmitNodeEvent(string, string, string, map[string]any) error { return nil }
+func (m *MemoryStore) EmitNodeEvent(_ context.Context, _, _, _ string, _ map[string]any) error {
+	return nil
+}
 
 // SetNodeLastSeenForTest moves a node's last_seen_at (tests only).
 func (m *MemoryStore) SetNodeLastSeenForTest(id string, t time.Time) {

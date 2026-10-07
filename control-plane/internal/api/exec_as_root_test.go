@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -27,7 +28,7 @@ func TestExecAsRootIsForwardedAndJournaled(t *testing.T) {
 
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -56,7 +57,7 @@ func TestExecAsRootIsForwardedAndJournaled(t *testing.T) {
 		t.Fatalf("node agent saw %v", bodies)
 	}
 
-	evs, _ := mem.ListEvents(sb.ID)
+	evs, _ := mem.ListEvents(context.Background(), sb.ID)
 	var flags []any
 	for _, ev := range evs {
 		if ev.EventType != "sandbox.exec" {

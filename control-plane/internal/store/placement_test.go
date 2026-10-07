@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func registerPlacementNodes(t *testing.T, s Store, maxSandboxes int, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
-		if _, err := s.RegisterNode(RegisterNodeInput{
+		if _, err := s.RegisterNode(context.Background(), RegisterNodeInput{
 			ID: id, AgentEndpoint: "http://127.0.0.1:9100",
 			CapacityCPU: 4, CapacityMemMiB: 8192, MaxSandboxes: maxSandboxes,
 		}); err != nil {
@@ -31,7 +32,7 @@ func createN(s Store, n int) (placed map[string]int, refused int, other []error)
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			sb, err := s.CreateSandbox(CreateSandboxInput{
+			sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 				TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512,
 				OwnerSub: fmt.Sprintf("user-%d", i),
 			})
@@ -79,7 +80,7 @@ func testPlacementPolicyAndPins(t *testing.T, s Store, setCfg func(sched.Config)
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	registerPlacementNodes(t, s, 2, "node-a", "node-b")
 	create := func(pin string) (Sandbox, error) {
-		return s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: pin})
+		return s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: pin})
 	}
 
 	// spread: the second sandbox goes to the other node.
@@ -108,10 +109,10 @@ func testPlacementPolicyAndPins(t *testing.T, s Store, setCfg func(sched.Config)
 	}
 
 	// Stopping does not free capacity (the VM may still run); stopped does.
-	if _, err := s.StopSandbox(pinned.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), pinned.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.GetSandbox(pinned.ID)
+	got, _ := s.GetSandbox(context.Background(), pinned.ID)
 	if got.State != SandboxStopped {
 		t.Fatalf("destroying a never-claimed sandbox stops it at once, got %s", got.State)
 	}
@@ -120,7 +121,7 @@ func testPlacementPolicyAndPins(t *testing.T, s Store, setCfg func(sched.Config)
 		t.Fatalf("capacity freed by a stopped sandbox: %+v %v", again, err)
 	}
 
-	events, err := s.ListEvents(again.ID)
+	events, err := s.ListEvents(context.Background(), again.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func testBinpackStacksSandboxes(t *testing.T, s Store, setCfg func(sched.Config)
 	registerPlacementNodes(t, s, 3, "node-c", "node-d")
 	var got []string
 	for i := 0; i < 4; i++ {
-		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+		sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,27 +183,27 @@ func testClaimOnlyByAssignedNode(t *testing.T, s Store) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	registerPlacementNodes(t, s, 0, "node-a", "node-b")
-	sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work, _ := s.ListNodeWork("node-b"); len(work.Sandboxes) != 0 || len(work.Assigned) != 0 {
+	if work, _ := s.ListNodeWork(context.Background(), "node-b"); len(work.Sandboxes) != 0 || len(work.Assigned) != 0 {
 		t.Fatalf("node-b sees another node's sandbox: %+v", work)
 	}
-	if work, _ := s.ListNodeWork("node-a"); len(work.Sandboxes) != 1 || work.Sandboxes[0].ID != sb.ID || len(work.Assigned) != 1 || work.Assigned[0] != sb.ID {
+	if work, _ := s.ListNodeWork(context.Background(), "node-a"); len(work.Sandboxes) != 1 || work.Sandboxes[0].ID != sb.ID || len(work.Assigned) != 1 || work.Assigned[0] != sb.ID {
 		t.Fatalf("node-a work: %+v", work)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "node-b"); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-b"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("claim by another node: %v", err)
 	}
-	claimed, err := s.ClaimSandbox(sb.ID, "node-a")
+	claimed, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a")
 	if err != nil || claimed.State != SandboxStarting {
 		t.Fatalf("claim by the assigned node: %+v %v", claimed, err)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second claim: %v", err)
 	}
-	if _, err := s.ClaimSandbox("missing", "node-a"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ClaimSandbox(context.Background(), "missing", "node-a"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("claim of an unknown sandbox: %v", err)
 	}
 }
@@ -219,33 +220,33 @@ func TestPostgresClaimOnlyByAssignedNode(t *testing.T) {
 func testTouchNodePoll(t *testing.T, s Store) {
 	t.Helper()
 	registerPlacementNodes(t, s, 0, "node-a")
-	if err := s.TouchNodePoll("ghost", time.Now().UTC()); !errors.Is(err, ErrNotFound) {
+	if err := s.TouchNodePoll(context.Background(), "ghost", time.Now().UTC()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown node: %v", err)
 	}
 	later := time.Now().UTC().Add(time.Minute)
-	if err := s.TouchNodePoll("node-a", later); err != nil {
+	if err := s.TouchNodePoll(context.Background(), "node-a", later); err != nil {
 		t.Fatal(err)
 	}
-	n, _ := s.GetNode("node-a")
+	n, _ := s.GetNode(context.Background(), "node-a")
 	if n.LastSeenAt == nil || n.LastSeenAt.Before(later.Add(-time.Millisecond)) {
 		t.Fatalf("poll did not refresh last_seen_at: %v", n.LastSeenAt)
 	}
 	// Within the throttle window nothing is written.
-	if err := s.TouchNodePoll("node-a", later.Add(time.Second)); err != nil {
+	if err := s.TouchNodePoll(context.Background(), "node-a", later.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	n2, _ := s.GetNode("node-a")
+	n2, _ := s.GetNode(context.Background(), "node-a")
 	if !n2.LastSeenAt.Equal(*n.LastSeenAt) {
 		t.Fatalf("throttled poll wrote last_seen_at: %v -> %v", n.LastSeenAt, n2.LastSeenAt)
 	}
 	// A revoked node stays revoked and offline.
-	if _, err := s.RevokeNode("node-a"); err != nil {
+	if _, err := s.RevokeNode(context.Background(), "node-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TouchNodePoll("node-a", later.Add(time.Hour)); err != nil {
+	if err := s.TouchNodePoll(context.Background(), "node-a", later.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if n3, _ := s.GetNode("node-a"); n3.State != "offline" {
+	if n3, _ := s.GetNode(context.Background(), "node-a"); n3.State != "offline" {
 		t.Fatalf("poll revived a revoked node: %+v", n3)
 	}
 }
@@ -263,28 +264,28 @@ func testCordonAndUsage(t *testing.T, s Store) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	registerPlacementNodes(t, s, 0, "node-a", "node-b")
-	if _, err := s.SetNodeCordoned("ghost", true); !errors.Is(err, ErrNotFound) {
+	if _, err := s.SetNodeCordoned(context.Background(), "ghost", true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cordon unknown node: %v", err)
 	}
-	n, err := s.SetNodeCordoned("node-a", true)
+	n, err := s.SetNodeCordoned(context.Background(), "node-a", true)
 	if err != nil || !n.Cordoned {
 		t.Fatalf("cordon: %+v %v", n, err)
 	}
 	// An agent re-registering never lifts an admin's cordon.
 	registerPlacementNodes(t, s, 0, "node-a")
-	if n, _ := s.GetNode("node-a"); !n.Cordoned {
+	if n, _ := s.GetNode(context.Background(), "node-a"); !n.Cordoned {
 		t.Fatal("re-register lifted the cordon")
 	}
 	for i := 0; i < 3; i++ {
-		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+		sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
 		if err != nil || *sb.NodeID != "node-b" {
 			t.Fatalf("placement must skip the cordoned node: %+v %v", sb, err)
 		}
 	}
-	if _, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"}); !errors.Is(err, ErrNodeUnavailable) {
+	if _, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"}); !errors.Is(err, ErrNodeUnavailable) {
 		t.Fatalf("pin to a cordoned node: %v", err)
 	}
-	usage, err := s.ListNodeUsage()
+	usage, err := s.ListNodeUsage(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,10 +295,10 @@ func testCordonAndUsage(t *testing.T, s Store) {
 	if u := usage["node-a"]; u.Sandboxes != 0 {
 		t.Fatalf("usage node-a = %+v", u)
 	}
-	if _, err := s.SetNodeCordoned("node-a", false); err != nil {
+	if _, err := s.SetNodeCordoned(context.Background(), "node-a", false); err != nil {
 		t.Fatal(err)
 	}
-	sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
 	if err != nil || *sb.NodeID != "node-a" {
 		t.Fatalf("after uncordon spread goes to node-a: %+v %v", sb, err)
 	}
@@ -314,7 +315,7 @@ func TestPostgresCordonAndUsage(t *testing.T) {
 // assignedTo reports whether node's work poll lists id as assigned to it.
 func assignedTo(t *testing.T, s Store, node, id string) bool {
 	t.Helper()
-	work, err := s.ListNodeWork(node)
+	work, err := s.ListNodeWork(context.Background(), node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,62 +336,62 @@ func testAgentTransitionsAndAssignment(t *testing.T, s Store) {
 	registerPlacementNodes(t, s, 0, "node-a", "node-b")
 	newClaimed := func() Sandbox {
 		t.Helper()
-		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+		sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !assignedTo(t, s, "node-a", sb.ID) {
 			t.Fatal("a placed sandbox is assigned to its node before the claim")
 		}
-		if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+		if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a"); err != nil {
 			t.Fatal(err)
 		}
 		return sb
 	}
 
 	sb := newClaimed()
-	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "booted"); err != nil {
+	if _, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "booted"); err != nil {
 		t.Fatal(err)
 	}
 	if !assignedTo(t, s, "node-a", sb.ID) || assignedTo(t, s, "node-b", sb.ID) {
 		t.Fatal("a running sandbox is assigned to its node only")
 	}
-	if work, _ := s.ListNodeWork("node-a"); len(work.Sandboxes) != 0 {
+	if work, _ := s.ListNodeWork(context.Background(), "node-a"); len(work.Sandboxes) != 0 {
 		t.Fatalf("a running sandbox without local-net needs no action: %+v", work.Sandboxes)
 	}
-	if _, err := s.StopSandbox(sb.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), sb.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
+	if _, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("running after stopping: %v", err)
 	}
 	if !assignedTo(t, s, "node-a", sb.ID) {
 		t.Fatal("a stopping sandbox stays assigned: its VM still exists")
 	}
-	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxStopped, "cleaned"); err != nil {
+	if _, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxStopped, "cleaned"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
+	if _, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("running after stopped: %v", err)
 	}
 	if assignedTo(t, s, "node-a", sb.ID) {
 		t.Fatal("a stopped sandbox must leave the assigned set, so the node stops any VM left")
 	}
-	if got, _ := s.GetSandbox(sb.ID); got.State != SandboxStopped {
+	if got, _ := s.GetSandbox(context.Background(), sb.ID); got.State != SandboxStopped {
 		t.Fatalf("state = %s, want stopped", got.State)
 	}
 
 	failed := newClaimed()
-	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxFailed, "boot error"); err != nil {
+	if _, err := s.UpdateSandboxStatus(context.Background(), failed.ID, SandboxFailed, "boot error"); err != nil {
 		t.Fatal(err)
 	}
 	if assignedTo(t, s, "node-a", failed.ID) {
 		t.Fatal("a failed sandbox must leave the assigned set")
 	}
-	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
+	if _, err := s.UpdateSandboxStatus(context.Background(), failed.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("running after failed: %v", err)
 	}
-	if _, err := s.UpdateSandboxStatus(failed.ID, SandboxStopped, "cleanup"); err != nil {
+	if _, err := s.UpdateSandboxStatus(context.Background(), failed.ID, SandboxStopped, "cleanup"); err != nil {
 		t.Fatalf("failed → stopped: %v", err)
 	}
 }
@@ -405,11 +406,11 @@ func TestPostgresAgentTransitionsAndAssignment(t *testing.T) {
 
 func TestCreateRejectsGuestsBelowTheMinimumMemory(t *testing.T) {
 	m := newMemoryStoreWithNodes(t, "n1")
-	_, err := m.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 32})
+	_, err := m.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 32})
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "at least 64") {
 		t.Fatalf("memory_mib 32: want invalid input naming the minimum, got %v", err)
 	}
-	if _, err := m.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: MinSandboxMemoryMiB}); err != nil {
+	if _, err := m.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: MinSandboxMemoryMiB}); err != nil {
 		t.Fatalf("memory_mib 64: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -57,14 +58,14 @@ func TestTheReaperSparesASandboxWithAnOpenStream(t *testing.T) {
 
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
 	srv.Client = agent.Client()
 	srv.IdleTimeout = idle
 	mux := testMux(srv)
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +82,7 @@ func TestTheReaperSparesASandboxWithAnOpenStream(t *testing.T) {
 			case <-stopSweep:
 				return
 			case <-tk.C:
-				if got, err := mem.StopIdleSandboxes(time.Now().UTC(), idle); err == nil && len(got) > 0 {
+				if got, err := mem.StopIdleSandboxes(context.Background(), time.Now().UTC(), idle); err == nil && len(got) > 0 {
 					swept <- got
 				}
 			}
@@ -102,7 +103,7 @@ func TestTheReaperSparesASandboxWithAnOpenStream(t *testing.T) {
 		t.Fatalf("the reaper stopped a sandbox with an open stream: %+v", got)
 	default:
 	}
-	if cur, _ := mem.GetSandbox(sb.ID); cur.State != store.SandboxRunning {
+	if cur, _ := mem.GetSandbox(context.Background(), sb.ID); cur.State != store.SandboxRunning {
 		t.Fatalf("state=%s while the stream was open", cur.State)
 	}
 
@@ -132,7 +133,7 @@ func TestKeepActiveWithoutAReaperOnlyTouchesOnce(t *testing.T) {
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
 	srv := NewServer(mem)
-	stop := srv.keepActive("no-such-sandbox") // an unknown sandbox is not an error
+	stop := srv.keepActive(context.Background(), "no-such-sandbox") // an unknown sandbox is not an error
 	stop()
 	stop() // stopping twice is fine
 }

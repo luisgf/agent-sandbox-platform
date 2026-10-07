@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,7 +57,7 @@ func TestCreateRefusesAWorkspaceOutsideTheRoots(t *testing.T) {
 			t.Errorf("workspace %q: %d %s", bad, rr.Code, rr.Body.String())
 		}
 	}
-	if list, _ := mem.ListSandboxes("acme"); len(list) != 0 {
+	if list, _ := mem.ListSandboxes(context.Background(), "acme"); len(list) != 0 {
 		t.Fatalf("a refused create left %d sandboxes", len(list))
 	}
 	if rr := create("/srv/asp/workspaces/acme/proj"); rr.Code != http.StatusCreated {

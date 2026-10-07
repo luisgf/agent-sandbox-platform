@@ -56,7 +56,7 @@ func (s *Server) authorizeSandboxNodeByID(w http.ResponseWriter, r *http.Request
 	if _, ok := NodeIdentityFromContext(r.Context()); !ok {
 		return true
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")

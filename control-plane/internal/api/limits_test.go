@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -40,7 +41,7 @@ func newLimitsEnv(t *testing.T) (h http.Handler, mem *store.MemoryStore, sandbox
 		t.Fatal(err)
 	}
 	mem = newTestStore(t, "n1")
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,10 +29,10 @@ func newEnrollEnv(t *testing.T) *enrollEnv {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.EnsureAPIKey("t1", "tenant", store.APIKeyScopeTenant, "asp_tenant", store.HashAPIKeySecret("tenant-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "t1", "tenant", store.APIKeyScopeTenant, "asp_tenant", store.HashAPIKeySecret("tenant-key")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -135,7 +136,7 @@ func TestEnrollTokenIsSingleUse(t *testing.T) {
 func TestEnrollTokenExpires(t *testing.T) {
 	e := newEnrollEnv(t)
 	raw := enrollTokenPrefix + "expired"
-	if err := e.mem.CreateEnrollToken(store.EnrollToken{Hash: store.HashEnrollToken(raw), ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
+	if err := e.mem.CreateEnrollToken(context.Background(), store.EnrollToken{Hash: store.HashEnrollToken(raw), ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	if rr := e.enroll("late", raw); rr.Code != http.StatusUnauthorized {
@@ -171,7 +172,7 @@ func TestBootstrapTokenCannotTakeOverALiveNode(t *testing.T) {
 	if rr := e.enroll("live", unpinned); rr.Code != http.StatusConflict {
 		t.Fatalf("unpinned token on a live node: want 409, got %d", rr.Code)
 	}
-	if revoked, _ := e.mem.IsCertRevoked(oldFP); revoked {
+	if revoked, _ := e.mem.IsCertRevoked(context.Background(), oldFP); revoked {
 		t.Fatal("a refused enrollment revoked the node's certificate")
 	}
 	// The refused attempt did not use the token up.
@@ -184,7 +185,7 @@ func TestBootstrapTokenCannotTakeOverALiveNode(t *testing.T) {
 	if rekey.Code != http.StatusCreated {
 		t.Fatalf("pinned re-enroll: %d %s", rekey.Code, rekey.Body.String())
 	}
-	if revoked, _ := e.mem.IsCertRevoked(oldFP); !revoked {
+	if revoked, _ := e.mem.IsCertRevoked(context.Background(), oldFP); !revoked {
 		t.Fatal("re-keying must revoke the previous certificate")
 	}
 }
@@ -194,14 +195,14 @@ func TestBootstrapTokenReEnrollsARevokedNode(t *testing.T) {
 	if rr := e.enroll("gone", "boot-secret"); rr.Code != http.StatusCreated {
 		t.Fatalf("enroll: %d", rr.Code)
 	}
-	if _, err := e.mem.RevokeNode("gone"); err != nil {
+	if _, err := e.mem.RevokeNode(context.Background(), "gone"); err != nil {
 		t.Fatal(err)
 	}
 	if rr := e.enroll("gone", "boot-secret"); rr.Code != http.StatusCreated {
 		t.Fatalf("bootstrap re-enroll of a revoked node: want 201, got %d %s", rr.Code, rr.Body.String())
 	}
 	// A node that registered without a certificate can get its first one.
-	if _, err := e.mem.RegisterNode(store.RegisterNodeInput{ID: "plain", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+	if _, err := e.mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "plain", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
 	if rr := e.enroll("plain", "boot-secret"); rr.Code != http.StatusCreated {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -11,7 +12,7 @@ import (
 
 func TestCheckAuthConfigured(t *testing.T) {
 	withKey := store.NewMemoryStore()
-	if _, err := withKey.EnsureAPIKey("default", "k", store.APIKeyScopePlatform, "asp_k", store.HashAPIKeySecret("secret-secret-secret")); err != nil {
+	if _, err := withKey.EnsureAPIKey(context.Background(), "default", "k", store.APIKeyScopePlatform, "asp_k", store.HashAPIKeySecret("secret-secret-secret")); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -27,7 +28,7 @@ func TestCheckAuthConfigured(t *testing.T) {
 		{"open on purpose", store.NewMemoryStore(), false, api.AuthConfig{InsecureOpen: true}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkAuthConfigured(tc.st, tc.idp, tc.cfg)
+			err := checkAuthConfigured(context.Background(), tc.st, tc.idp, tc.cfg)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
 			}

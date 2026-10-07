@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,11 +41,11 @@ func TestNodeResponsesNeverIncludeFenceCredentials(t *testing.T) {
 	// A node cannot choose its own fence target: the fields are ignored.
 	reg := `{"id":"n1","agent_endpoint":"http://127.0.0.1:9100","fence_endpoint":"https://evil.example/redfish","fence_token":"evil"}`
 	responses := map[string]string{"register": do(http.MethodPost, "/v1/nodes/register", reg, false)}
-	if n, err := mem.GetNode("n1"); err != nil || n.FenceEndpoint != "" || n.FenceToken != "" {
+	if n, err := mem.GetNode(context.Background(), "n1"); err != nil || n.FenceEndpoint != "" || n.FenceToken != "" {
 		t.Fatalf("a node registered its own fence target: %+v %v", n, err)
 	}
 	// The operator sets it; it survives the node registering again.
-	if _, err := mem.SetNodeFence("n1", "https://bmc.example/redfish", "bmc-password"); err != nil {
+	if _, err := mem.SetNodeFence(context.Background(), "n1", "https://bmc.example/redfish", "bmc-password"); err != nil {
 		t.Fatal(err)
 	}
 	responses["register again"] = do(http.MethodPost, "/v1/nodes/register", reg, false)
@@ -60,7 +61,7 @@ func TestNodeResponsesNeverIncludeFenceCredentials(t *testing.T) {
 	}
 
 	// The control plane still has them for fencing.
-	node, err := mem.GetNode("n1")
+	node, err := mem.GetNode(context.Background(), "n1")
 	if err != nil {
 		t.Fatal(err)
 	}

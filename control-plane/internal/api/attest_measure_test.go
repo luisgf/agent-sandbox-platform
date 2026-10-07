@@ -202,7 +202,7 @@ func TestAllowlistRefusesUnknownImages(t *testing.T) {
 	if c := e.claim(); c != nil {
 		t.Fatalf("a claim without evidence: %v", c)
 	}
-	evs, _ := e.mem.ListEvents(e.sbID)
+	evs, _ := e.mem.ListEvents(context.Background(), e.sbID)
 	refused := 0
 	for _, ev := range evs {
 		if ev.EventType == "sandbox.attestation_refused" {

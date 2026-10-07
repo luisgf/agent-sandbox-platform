@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -36,7 +37,7 @@ func newTenantFixture(t *testing.T, cfg AuthConfig) *tenantFixture {
 		{"tenant-b", "b", store.APIKeyScopeTenant, keyTenantB},
 		{"default", "ops", store.APIKeyScopePlatform, keyPlatform},
 	} {
-		if _, err := mem.EnsureAPIKey(k.tenant, k.name, k.scope, store.KeyPrefix(k.secret), store.HashAPIKeySecret(k.secret)); err != nil {
+		if _, err := mem.EnsureAPIKey(context.Background(), k.tenant, k.name, k.scope, store.KeyPrefix(k.secret), store.HashAPIKeySecret(k.secret)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,7 +55,7 @@ func newTenantFixture(t *testing.T, cfg AuthConfig) *tenantFixture {
 
 func (f *tenantFixture) sandbox(tenant string) string {
 	f.t.Helper()
-	sb, err := f.mem.CreateSandbox(store.CreateSandboxInput{TenantID: tenant, ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
+	sb, err := f.mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: tenant, ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestTenantKeyCannotReachAnotherTenant(t *testing.T) {
 			t.Errorf("%s %s with tenant-a key: want %d, got %d %s", c.method, c.path, c.want, rr.Code, rr.Body.String())
 		}
 	}
-	if sb, err := f.mem.GetSandbox(f.sbB); err != nil || sb.State != store.SandboxRunning {
+	if sb, err := f.mem.GetSandbox(context.Background(), f.sbB); err != nil || sb.State != store.SandboxRunning {
 		t.Fatalf("tenant-b sandbox changed by a tenant-a caller: %+v %v", sb, err)
 	}
 }

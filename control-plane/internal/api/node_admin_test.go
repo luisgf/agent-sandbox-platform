@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ func nodeAdminServer(t *testing.T, cfg AuthConfig) (http.Handler, *store.MemoryS
 // one call's revoke never changes what the next one sees.
 func callNodeRoute(t *testing.T, h http.Handler, mem *store.MemoryStore, node, suffix, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: node, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: node, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/nodes/"+node+suffix, nil)
@@ -49,10 +50,10 @@ func callNodeRoute(t *testing.T, h http.Handler, mem *store.MemoryStore, node, s
 func TestNodeAdministrationNeedsAnAdminOrAPlatformKey(t *testing.T) {
 	key, kid, v := testIdP(t)
 	h, mem := nodeAdminServer(t, AuthConfig{IdP: v})
-	if _, err := mem.EnsureAPIKey("t1", "tenant", store.APIKeyScopeTenant, "asp_tenant", store.HashAPIKeySecret("tenant-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "t1", "tenant", store.APIKeyScopeTenant, "asp_tenant", store.HashAPIKeySecret("tenant-key")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,7 +103,7 @@ func TestNodeAdministrationInTheOpenLab(t *testing.T) {
 func TestNodeAdministrationWithIdPRequired(t *testing.T) {
 	_, _, v := testIdP(t)
 	h, mem := nodeAdminServer(t, AuthConfig{IdP: v, IdPRequired: true})
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	if rr := callNodeRoute(t, h, mem, "idp-1", "/revoke", "platform-key"); rr.Code != http.StatusUnauthorized {

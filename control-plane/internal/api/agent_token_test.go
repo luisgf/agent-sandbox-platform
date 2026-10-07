@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -43,12 +44,12 @@ func runningSandboxOn(t *testing.T, agent *httptest.Server) (http.Handler, strin
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := store.NewMemoryStore()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
 	srv.Client = agent.Client()
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n1"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n1"})
 	if err != nil {
 		t.Fatal(err)
 	}

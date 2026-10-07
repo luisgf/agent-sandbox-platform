@@ -113,7 +113,7 @@ func resumedEvent(sb Sandbox, actorSub string) EmitEventInput {
 
 // ---- memory store ----
 
-func (m *MemoryStore) StopSandbox(id, actorSub string) (Sandbox, error) {
+func (m *MemoryStore) StopSandbox(ctx context.Context, id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -146,11 +146,11 @@ func (m *MemoryStore) StopSandbox(id, actorSub string) (Sandbox, error) {
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
 	m.mu.Unlock()
-	_ = m.EmitEvent(transitionEvent(out, from, actorSub, reason))
+	_ = m.EmitEvent(ctx, transitionEvent(out, from, actorSub, reason))
 	return out, nil
 }
 
-func (m *MemoryStore) DeleteSandbox(id, actorSub string) (Sandbox, error) {
+func (m *MemoryStore) DeleteSandbox(ctx context.Context, id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -175,11 +175,11 @@ func (m *MemoryStore) DeleteSandbox(id, actorSub string) (Sandbox, error) {
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
 	m.mu.Unlock()
-	_ = m.EmitEvent(transitionEvent(out, from, actorSub, reason))
+	_ = m.EmitEvent(ctx, transitionEvent(out, from, actorSub, reason))
 	return out, nil
 }
 
-func (m *MemoryStore) ResumeSandbox(id, actorSub string) (Sandbox, error) {
+func (m *MemoryStore) ResumeSandbox(ctx context.Context, id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -216,7 +216,7 @@ func (m *MemoryStore) ResumeSandbox(id, actorSub string) (Sandbox, error) {
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
 	m.mu.Unlock()
-	_ = m.EmitEvent(resumedEvent(out, actorSub))
+	_ = m.EmitEvent(ctx, resumedEvent(out, actorSub))
 	return out, nil
 }
 
@@ -248,12 +248,11 @@ func deletableStates() []string {
 		string(SandboxFailed)}
 }
 
-func (p *PostgresStore) StopSandbox(id, actorSub string) (Sandbox, error) {
+func (p *PostgresStore) StopSandbox(ctx context.Context, id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
 	actorSub = strings.TrimSpace(actorSub)
-	ctx := context.Background()
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -276,7 +275,7 @@ func (p *PostgresStore) StopSandbox(id, actorSub string) (Sandbox, error) {
 		RETURNING prev.state, `+sandboxColumnsS,
 		id, now, stoppableStates()), &from)
 	if errors.Is(err, pgx.ErrNoRows) {
-		cur, gerr := p.GetSandbox(id)
+		cur, gerr := p.GetSandbox(ctx, id)
 		if gerr != nil {
 			return Sandbox{}, gerr
 		}
@@ -298,12 +297,11 @@ func (p *PostgresStore) StopSandbox(id, actorSub string) (Sandbox, error) {
 	return sb, nil
 }
 
-func (p *PostgresStore) DeleteSandbox(id, actorSub string) (Sandbox, error) {
+func (p *PostgresStore) DeleteSandbox(ctx context.Context, id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
 	actorSub = strings.TrimSpace(actorSub)
-	ctx := context.Background()
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -326,7 +324,7 @@ func (p *PostgresStore) DeleteSandbox(id, actorSub string) (Sandbox, error) {
 		RETURNING prev.state, `+sandboxColumnsS,
 		id, now, deletableStates()), &from)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return p.GetSandbox(id) // deleting or deleted already, or ErrNotFound
+		return p.GetSandbox(ctx, id) // deleting or deleted already, or ErrNotFound
 	}
 	if err != nil {
 		return Sandbox{}, err
@@ -341,12 +339,11 @@ func (p *PostgresStore) DeleteSandbox(id, actorSub string) (Sandbox, error) {
 	return sb, nil
 }
 
-func (p *PostgresStore) ResumeSandbox(id, actorSub string) (Sandbox, error) {
+func (p *PostgresStore) ResumeSandbox(ctx context.Context, id, actorSub string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
 	actorSub = strings.TrimSpace(actorSub)
-	ctx := context.Background()
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {

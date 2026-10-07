@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -77,14 +78,14 @@ func newBufferedEnv(t *testing.T, serverCap time.Duration) *bufferedEnv {
 	t.Cleanup(agent.Close)
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
 	srv.Client = agent.Client()
 	srv.BufferedExecTimeout = serverCap
 	e.mux = testMux(srv)
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +181,14 @@ func TestBufferedExecIsNotCutByTheResponseHeaderTimeout(t *testing.T) {
 	defer agent.Close()
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
 	srv.Client = newAgentHTTPClient(AgentTimeouts{Dial: time.Second, TLSHandshake: time.Second, ResponseHeader: 200 * time.Millisecond})
 	srv.BufferedExecTimeout = 10 * time.Second
 	mux := testMux(srv)
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
 	if err != nil {
 		t.Fatal(err)
 	}
