@@ -25,9 +25,9 @@ func testMux(s *Server) http.Handler {
 
 // newTestStore returns a memory store with healthy nodes, so creates without
 // ASP_AUTO_PROVISION have somewhere to go (ADR-0011).
-func newTestStore(t *testing.T, ids ...string) *store.MemoryStore {
+func newTestStore(t *testing.T, ids ...string) *backend {
 	t.Helper()
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if len(ids) == 0 {
 		ids = []string{"test-node"}
 	}
@@ -62,7 +62,7 @@ func runSandbox(t *testing.T, st store.Store, id string) {
 
 func TestCreateGetListSandbox(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "1")
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newBackend(t))
 	mux := testMux(srv)
 
 	body := `{"tenant_id":"t1","image_ref":"debian:bookworm","cpu_millis":1000,"memory_mib":512}`
@@ -117,7 +117,7 @@ func TestCreateGetListSandbox(t *testing.T) {
 }
 
 func TestCreateSandboxBadRequest(t *testing.T) {
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newBackend(t))
 	mux := testMux(srv)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(`{"tenant_id":"t"}`))
 	rr := httptest.NewRecorder()
@@ -128,7 +128,7 @@ func TestCreateSandboxBadRequest(t *testing.T) {
 }
 
 func TestGetSandboxNotFound(t *testing.T) {
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newBackend(t))
 	mux := testMux(srv)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sandboxes/does-not-exist", nil)
 	rr := httptest.NewRecorder()
@@ -139,7 +139,7 @@ func TestGetSandboxNotFound(t *testing.T) {
 }
 
 func TestRegisterAndListNodes(t *testing.T) {
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newBackend(t))
 	mux := testMux(srv)
 	body := `{"id":"n1","name":"dev","endpoint":"http://127.0.0.1:1","agent_endpoint":"http://127.0.0.1:9100","capacity_cpu":4,"capacity_mem_mib":8192}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/nodes/register", bytes.NewBufferString(body))
@@ -167,7 +167,7 @@ func TestRegisterAndListNodes(t *testing.T) {
 }
 
 func TestHeartbeatNode(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	mux := testMux(srv)
 	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "hb1", Name: "hb1", Endpoint: "http://127.0.0.1:9"})
@@ -188,7 +188,7 @@ func TestEnrollNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	srv.CA = ca
 	mux := testMux(srv)
@@ -241,7 +241,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 	}))
 	defer agent.Close()
 
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("exec-node")
 	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "exec-node", Name: "exec-node",
@@ -347,7 +347,7 @@ func TestAuthMiddlewareRequire(t *testing.T) {
 func TestTenantEgressPutGetCheck(t *testing.T) {
 	t.Setenv("ASP_EGRESS_DEFAULT_ALLOW", "")
 	t.Setenv("ASP_EGRESS_DENY_DEFAULT", "1")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	mux := testMux(srv)
 
@@ -465,7 +465,7 @@ func TestOIDCMintAndJWKS(t *testing.T) {
 
 func TestClaimWorkStatusDestroy(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	mux := testMux(srv)
 
@@ -544,7 +544,7 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +637,7 @@ func TestAuthMiddlewareRejectsRevokedCert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	_, err = mem.EnrollNode(context.Background(), store.EnrollNodeInput{ID: "n-rev", Name: "n-rev"}, store.CertMeta{
 		Fingerprint: issued.Fingerprint, Serial: issued.Serial,
 	}, store.EnrollAuth{})
@@ -692,7 +692,7 @@ func TestRotateRefusesTheBootstrapToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.EnsureAPIKey(context.Background(), "default", "k", store.APIKeyScopePlatform, "asp_test", store.HashAPIKeySecret("not-the-bootstrap")); err != nil {
 		t.Fatal(err)
 	}

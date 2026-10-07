@@ -49,7 +49,7 @@ func TestExecTouchesActivity(t *testing.T) {
 	}))
 	defer agent.Close()
 
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL,
 	}); err != nil {

@@ -14,7 +14,7 @@ import (
 
 type execStateFixture struct {
 	t     *testing.T
-	mem   *store.MemoryStore
+	mem   *backend
 	mux   http.Handler
 	calls *atomic.Int32
 }
@@ -27,7 +27,7 @@ func newExecStateFixture(t *testing.T, agent http.HandlerFunc) *execStateFixture
 		agent(w, r)
 	}))
 	t.Cleanup(srvAgent.Close)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", AgentEndpoint: srvAgent.URL}); err != nil {
 		t.Fatal(err)
 	}

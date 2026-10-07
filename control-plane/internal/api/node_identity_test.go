@@ -41,7 +41,7 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	f := &identityFixture{t: t, certs: map[string]*x509.Certificate{}}
 	for _, id := range []string{"n1", "n2"} {
 		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
@@ -194,7 +194,7 @@ func TestNodeRoutesRejectCertificatesThatAreNotNodeCertificates(t *testing.T) {
 
 // Open lab (no ASP_CLIENT_CA): node routes keep their previous behaviour.
 func TestNodeIdentityNotEnforcedInOpenLab(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}

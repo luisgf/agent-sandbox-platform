@@ -26,7 +26,7 @@ func scrape(t *testing.T, h http.Handler, token string) (int, string) {
 // route and status, creates by outcome, sandboxes by tenant and state, and each
 // node's liveness and allocation.
 func TestMetricsReportWhatTheControlPlaneDid(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "node-a", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
 		t.Fatal(err)
 	}

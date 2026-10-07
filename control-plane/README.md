@@ -117,6 +117,13 @@ go test ./...
 ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
 ```
 
+**Tests contra Postgres.** Sin `DATABASE_URL` los tests corren con el store en memoria. Con ella (un servidor Postgres; el rol necesita `CREATEDB`) cada paquete crea una base propia, la borra al terminar y no pisa a los demás, y se añade:
+
+- la suite de `internal/api` corre una segunda vez sobre Postgres (`ASP_TEST_STORE=postgres` o `=memory` deja solo una de las dos pasadas). Un test que falla dice sobre qué store corría;
+- `TestPostgresParityWithMemory` (`internal/store`) juega un mismo guion contra `MemoryStore` y `PostgresStore`, con todos los métodos de `Store`, y exige el mismo resultado y la misma clase de error en cada paso. Un método nuevo de `Store` sin paso en el guion hace fallar `TestParityScriptCoversStore`.
+
+Los dos stores son dos implementaciones de un contrato, y nada más los mantiene de acuerdo: lo que un test da por bueno en memoria puede no serlo en Postgres.
+
 
 **Claves en directorios temporales.** Las rutas por defecto de la CA, la clave OIDC y la de atestación están en `/tmp` o `$TMPDIR`: un reinicio las borra, los certificados de nodo dejan de verificar y los tokens cambian de `kid`. En modo producción (`ASP_DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1`) el control plane no arranca (código 2) si `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` o `ASP_ATTEST_KEY` apuntan a `/tmp`, `/var/tmp`, `/dev/shm` o `$TMPDIR`, y el error nombra cada variable. Apúntalas a almacenamiento persistente (las que falten se crean ahí) o usa `ASP_ALLOW_TMP_KEYS=1`. En lab solo deja un aviso con las rutas.
 ## Logs y coste por petición

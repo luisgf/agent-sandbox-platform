@@ -17,14 +17,14 @@ import (
 )
 
 const (
-	keyTenantA  = "secret-tenant-a"
-	keyTenantB  = "secret-tenant-b"
-	keyPlatform = "secret-platform"
+	keyTenantA  = "tenant-a-secret"
+	keyTenantB  = "tenant-b-secret"
+	keyPlatform = "platform-secret"
 )
 
 type tenantFixture struct {
 	t        *testing.T
-	mem      *store.MemoryStore
+	mem      *backend
 	h        http.Handler
 	sbA, sbB string
 }

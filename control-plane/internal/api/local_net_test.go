@@ -239,7 +239,7 @@ func boolPtr(v bool) *bool { return &v }
 func TestLocalNetGrantDialsTheSandboxNode(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	t.Setenv("ASP_LOCAL_NET_DIAL", "198.51.100.1")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	for id, dial := range map[string]string{"node-a": "203.0.113.10", "node-b": ""} {
 		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100", LocalNetDial: dial}); err != nil {
 			t.Fatal(err)

@@ -639,7 +639,7 @@ func (p *PostgresStore) RegisterNode(ctx context.Context, input RegisterNodeInpu
 		}
 	}
 	if err != nil {
-		return Node{}, err
+		return Node{}, nodeWriteError(err, name)
 	}
 
 	eventType := "node.registered"
@@ -811,7 +811,7 @@ func (p *PostgresStore) EnrollNode(ctx context.Context, input EnrollNodeInput, c
 		}
 	}
 	if err != nil {
-		return Node{}, err
+		return Node{}, nodeWriteError(err, name)
 	}
 	_, _ = tx.Exec(ctx, `DELETE FROM node_cert_revocations WHERE fingerprint=$1`, fp)
 	_, err = tx.Exec(ctx, `
@@ -1228,7 +1228,7 @@ func (p *PostgresStore) EnsureAPIKey(ctx context.Context, tenantID, name, scope,
 				UPDATE api_keys SET secret_hash=$2, key_prefix=$3, scope=$4, revoked_at=NULL
 				WHERE id=$1`, k.ID, secretHash, keyPrefix, scope)
 			if uerr != nil {
-				return ApiKey{}, uerr
+				return ApiKey{}, apiKeyWriteError(uerr, tenantID, name, keyPrefix)
 			}
 			k.SecretHash = secretHash
 			k.KeyPrefix = keyPrefix
@@ -1248,7 +1248,7 @@ func (p *PostgresStore) EnsureAPIKey(ctx context.Context, tenantID, name, scope,
 		id, tenantID, name, scope, keyPrefix, secretHash, now,
 	)
 	if err != nil {
-		return ApiKey{}, err
+		return ApiKey{}, apiKeyWriteError(err, tenantID, name, keyPrefix)
 	}
 	return ApiKey{
 		ID: id, TenantID: tenantID, Name: name, Scope: scope,
@@ -1266,10 +1266,23 @@ func (p *PostgresStore) CountAPIKeys(ctx context.Context) (int64, error) {
 func (p *PostgresStore) TouchAPIKey(ctx context.Context, id string) error {
 	// The middleware already writes at most once a minute per key and process;
 	// the guard keeps several control-plane replicas to the same pace.
-	_, err := p.pool.Exec(ctx, `
-		UPDATE api_keys SET last_used_at=now()
-		WHERE id=$1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, id)
-	return err
+	// The write is throttled, so no row changed does not mean there is no key: the
+	// same statement says whether there is, as the memory store does.
+	var exists bool
+	err := p.pool.QueryRow(ctx, `
+		WITH touched AS (
+			UPDATE api_keys SET last_used_at=now()
+			WHERE id=$1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')
+			RETURNING 1
+		)
+		SELECT EXISTS (SELECT 1 FROM api_keys WHERE id=$1)`, id).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNotFound
+	}
+	return nil
 }
 
 type scannable interface {
@@ -1368,6 +1381,9 @@ func emitEventTx(ctx context.Context, q interface {
 		input.FromState, input.ToState, actor, strings.TrimSpace(input.ActorSub),
 		input.RequestID, []byte(payload),
 	)
+	if c, ok := pgViolation(err, pgForeignKeyViolation); ok && c == constraintEventSandbox {
+		return ErrNotFound
+	}
 	return err
 }
 
@@ -1378,7 +1394,7 @@ func (p *PostgresStore) ListEgressRules(ctx context.Context, tenantID string) ([
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, host_pattern, port, enabled
 		FROM tenant_egress_rules WHERE tenant_id=$1
-		ORDER BY host_pattern, port NULLS FIRST`, tenantID)
+		ORDER BY host_pattern COLLATE "C", port NULLS FIRST`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1405,7 +1421,7 @@ func (p *PostgresStore) ListEgressRulesForTenants(ctx context.Context, tenantIDs
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, host_pattern, port, enabled
 		FROM tenant_egress_rules WHERE tenant_id = ANY($1)
-		ORDER BY tenant_id, host_pattern, port NULLS FIRST`, tenantIDs)
+		ORDER BY tenant_id, host_pattern COLLATE "C", port NULLS FIRST`, tenantIDs)
 	if err != nil {
 		return nil, err
 	}

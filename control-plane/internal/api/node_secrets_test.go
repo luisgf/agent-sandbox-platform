@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
-	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
 
 // Fence credentials can power a node off: no node response may carry them.
@@ -19,7 +18,7 @@ func TestNodeResponsesNeverIncludeFenceCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	srv.CA = ca
 	mux := testMux(srv)

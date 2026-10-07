@@ -179,6 +179,9 @@ func (p *PostgresStore) EmitNodeEvent(ctx context.Context, nodeID, eventType, ac
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO node_events (node_id, event_type, actor, payload)
 		VALUES ($1,$2,$3,$4)`, nodeID, eventType, actor, mustJSON(payload))
+	if c, ok := pgViolation(err, pgForeignKeyViolation); ok && c == constraintNodeEventsNode {
+		return ErrNotFound
+	}
 	return err
 }
 

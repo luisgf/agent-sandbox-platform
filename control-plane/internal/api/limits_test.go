@@ -24,7 +24,7 @@ import (
 // newLimitsEnv is a server with every feature the body-reading routes need
 // configured (CA, OIDC, attestation) behind the API-key middleware, with a
 // platform key, so each route gets as far as reading its body.
-func newLimitsEnv(t *testing.T) (h http.Handler, mem *store.MemoryStore, sandboxID string) {
+func newLimitsEnv(t *testing.T) (h http.Handler, mem *backend, sandboxID string) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	t.Setenv("ASP_NODE_BOOTSTRAP_TOKEN", "boot-secret")
@@ -154,7 +154,7 @@ func TestSlowBodyTimesOut(t *testing.T) {
 	bodyReadTimeout = 200 * time.Millisecond
 	defer func() { bodyReadTimeout = old }()
 
-	srv := httptest.NewServer(testMux(NewServer(store.NewMemoryStore())))
+	srv := httptest.NewServer(testMux(NewServer(newBackend(t))))
 	defer srv.Close()
 	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
 	if err != nil {

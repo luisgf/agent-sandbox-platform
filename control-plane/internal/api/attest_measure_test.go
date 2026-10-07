@@ -28,7 +28,7 @@ type attestEnv struct {
 	att  *attest.SoftwareAttestor
 	srv  *Server
 	mux  http.Handler
-	mem  *store.MemoryStore
+	mem  *backend
 	sbID string
 }
 
@@ -39,7 +39,7 @@ func newAttestEnv(t *testing.T) *attestEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &attestEnv{t: t, att: attest.NewSoftwareAttestorFromKey(key), mem: store.NewMemoryStore()}
+	e := &attestEnv{t: t, att: attest.NewSoftwareAttestorFromKey(key), mem: newBackend(t)}
 	e.srv = NewServer(e.mem)
 	e.srv.Attestor = e.att
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)

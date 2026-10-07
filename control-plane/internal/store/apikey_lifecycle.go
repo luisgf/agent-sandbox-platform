@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const apiKeyColumns = `id, tenant_id, name, scope, key_prefix, secret_hash, last_used_at, expires_at, revoked_at, created_at`
@@ -18,11 +17,6 @@ func scanAPIKey(row pgx.Row) (ApiKey, error) {
 	err := row.Scan(&k.ID, &k.TenantID, &k.Name, &k.Scope, &k.KeyPrefix, &k.SecretHash,
 		&k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt, &k.CreatedAt)
 	return k, err
-}
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func checkNewAPIKey(tenantID, name, keyPrefix, secretHash string) error {
@@ -46,11 +40,14 @@ func (m *MemoryStore) CreateAPIKey(ctx context.Context, tenantID, name, scope, k
 	defer m.mu.Unlock()
 	for _, k := range m.apiKeys {
 		if k.TenantID == tenantID && k.Name == name {
-			return ApiKey{}, fmt.Errorf("%w: tenant %s already has an api key named %q", ErrConflict, tenantID, name)
+			return ApiKey{}, errKeyNameTaken(tenantID, name)
 		}
 		if k.KeyPrefix == keyPrefix {
-			return ApiKey{}, fmt.Errorf("%w: api key prefix %s is taken", ErrConflict, keyPrefix)
+			return ApiKey{}, errKeyPrefixTaken(keyPrefix)
 		}
+	}
+	if _, taken := m.apiKeys[secretHash]; taken {
+		return ApiKey{}, errKeySecretTaken()
 	}
 	k := ApiKey{
 		ID: newID(), TenantID: tenantID, Name: name, Scope: scope, KeyPrefix: keyPrefix,
@@ -114,7 +111,7 @@ func (m *MemoryStore) RotateAPIKey(ctx context.Context, id, keyPrefix, secretHas
 			continue
 		}
 		if k.KeyPrefix == keyPrefix {
-			return ApiKey{}, fmt.Errorf("%w: api key prefix %s is taken", ErrConflict, keyPrefix)
+			return ApiKey{}, errKeyPrefixTaken(keyPrefix)
 		}
 	}
 	if found.ID == "" {
@@ -122,6 +119,9 @@ func (m *MemoryStore) RotateAPIKey(ctx context.Context, id, keyPrefix, secretHas
 	}
 	if found.RevokedAt != nil {
 		return ApiKey{}, fmt.Errorf("%w: api key %s is revoked", ErrConflict, id)
+	}
+	if _, taken := m.apiKeys[secretHash]; taken && secretHash != oldHash {
+		return ApiKey{}, errKeySecretTaken()
 	}
 	delete(m.apiKeys, oldHash)
 	found.KeyPrefix, found.SecretHash = keyPrefix, secretHash
@@ -157,10 +157,7 @@ func (p *PostgresStore) CreateAPIKey(ctx context.Context, tenantID, name, scope,
 		RETURNING `+apiKeyColumns,
 		newID(), tenantID, name, scope, keyPrefix, secretHash, expiresAt, time.Now().UTC()))
 	if err != nil {
-		if isUniqueViolation(err) {
-			return ApiKey{}, fmt.Errorf("%w: tenant %s already has an api key named %q, or the prefix %s is taken", ErrConflict, tenantID, name, keyPrefix)
-		}
-		return ApiKey{}, err
+		return ApiKey{}, apiKeyWriteError(err, tenantID, name, keyPrefix)
 	}
 	return k, nil
 }
@@ -218,10 +215,7 @@ func (p *PostgresStore) RotateAPIKey(ctx context.Context, id, keyPrefix, secretH
 		return ApiKey{}, fmt.Errorf("%w: api key %s is revoked", ErrConflict, id)
 	}
 	if err != nil {
-		if isUniqueViolation(err) {
-			return ApiKey{}, fmt.Errorf("%w: api key prefix %s is taken", ErrConflict, keyPrefix)
-		}
-		return ApiKey{}, err
+		return ApiKey{}, apiKeyWriteError(err, "", "", keyPrefix)
 	}
 	return k, nil
 }

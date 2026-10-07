@@ -18,7 +18,7 @@ import (
 type enrollEnv struct {
 	t   *testing.T
 	h   http.Handler
-	mem *store.MemoryStore
+	mem *backend
 }
 
 func newEnrollEnv(t *testing.T) *enrollEnv {
@@ -28,7 +28,7 @@ func newEnrollEnv(t *testing.T) *enrollEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}

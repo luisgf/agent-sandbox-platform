@@ -15,7 +15,7 @@ import (
 func TestRBACViewerCannotCreate(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -194,7 +194,7 @@ func TestRBACListTenantWideForOperatorViewer(t *testing.T) {
 func TestRBACNoRoleForbidden(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -225,7 +225,7 @@ func TestRBACIdPOffNoEnforcement(t *testing.T) {
 
 func TestRBACEgressAdminOnly(t *testing.T) {
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -270,7 +270,7 @@ func TestRBACRoleMapFromEnv(t *testing.T) {
 
 func TestRBACNodeListAdminOrOperator(t *testing.T) {
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}

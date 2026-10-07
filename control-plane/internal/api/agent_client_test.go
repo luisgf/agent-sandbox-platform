@@ -68,7 +68,7 @@ func newFakeTLSAgent(t *testing.T, ca *pki.CA, certPEM, keyPEM []byte) *fakeTLSA
 type mtlsExecFixture struct {
 	t   *testing.T
 	ca  *pki.CA
-	mem *store.MemoryStore
+	mem *backend
 	srv *Server
 	mux http.Handler
 }
@@ -80,7 +80,7 @@ func newMTLSExecFixture(t *testing.T) *mtlsExecFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	srv.CA = ca
 	srv.Agents = NewAgentDialer(ca, false)

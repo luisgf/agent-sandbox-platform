@@ -170,8 +170,14 @@ func restartOrphanTarget(state SandboxState) (SandboxState, bool) {
 	return "", false
 }
 
-// EmitNodeEvent: the memory store keeps no node events.
-func (m *MemoryStore) EmitNodeEvent(_ context.Context, _, _, _ string, _ map[string]any) error {
+// EmitNodeEvent: the memory store keeps no node events, but an event of a node that
+// does not exist is refused, as Postgres's foreign key does.
+func (m *MemoryStore) EmitNodeEvent(_ context.Context, nodeID, _, _ string, _ map[string]any) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.nodes[nodeID]; !ok {
+		return ErrNotFound
+	}
 	return nil
 }
 

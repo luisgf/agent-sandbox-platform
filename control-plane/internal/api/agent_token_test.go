@@ -43,7 +43,7 @@ func newTokenAgent(t *testing.T, token string, seen *[]string) *httptest.Server 
 func runningSandboxOn(t *testing.T, agent *httptest.Server) (http.Handler, string) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAgentTokenIsNotSentOverHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvAgentTokenFile, tokenFile)
-	s := NewServer(store.NewMemoryStore())
+	s := NewServer(newBackend(t))
 	for url, want := range map[string]bool{"http://127.0.0.1:9100/x": true, "https://node.example:9443/x": false} {
 		req := httptest.NewRequest(http.MethodPost, url, nil)
 		s.authorizeAgentRequest(req)

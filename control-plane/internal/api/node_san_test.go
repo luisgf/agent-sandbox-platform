@@ -22,7 +22,7 @@ func newSANEnv(t *testing.T) (http.Handler, *Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops1", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
