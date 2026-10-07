@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -182,6 +184,27 @@ type Client struct {
 
 // New returns a Client with a sensible default timeout.
 // apiKey is used as Authorization Bearer when no IdP token is set via SetBearer.
+// TrustCAFile makes the client trust the certificates in a PEM file, besides the system's: how a
+// control plane with a certificate of its own (the self-signed one asp-server makes, or a private
+// CA's) is reached without turning verification off.
+func (c *Client) TrustCAFile(path string) error {
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("ASP_CA_FILE: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return fmt.Errorf("ASP_CA_FILE: %s has no PEM certificate", path)
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	c.HTTPClient.Transport = tr
+	return nil
+}
+
 func New(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),

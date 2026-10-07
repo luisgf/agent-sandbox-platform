@@ -35,6 +35,10 @@
 #   INSTALL_ASP_NODE_ID   this node's id (default: the host name)
 #   INSTALL_ASP_ENDPOINT  how the control plane reaches this node (default https://<id>:9443)
 #   INSTALL_ASP_CA        a PEM file with the CA of the control plane's TLS certificate
+#   INSTALL_ASP_CA_SHA256 instead of the file: the SHA-256 of the certificate the control plane shows
+#                         (asp node enroll-token prints it). The script reads that certificate from
+#                         INSTALL_ASP_SERVER, refuses it if the fingerprint differs, and trusts it.
+#                         For a certificate that is its own trust anchor (a self-signed one); needs openssl
 #   INSTALL_ASP_SKIP_IMAGE  1 = do not pull the guest kernel and image of the release
 set -eu
 
@@ -317,6 +321,20 @@ if has_role agent; then
 	say "==> node"
 	[ -n "${INSTALL_ASP_SERVER:-}" ] || die "INSTALL_ASP_ROLE=agent needs INSTALL_ASP_SERVER, the URL of the control plane"
 	[ -c /dev/kvm ] || warn "no /dev/kvm: this host cannot run sandboxes (virtualization off, or a VM without nested virtualization)"
+	# Before anything is installed: a certificate that is not the one expected stops the script here.
+	if [ -z "${INSTALL_ASP_CA:-}" ] && [ -n "${INSTALL_ASP_CA_SHA256:-}" ]; then
+		have openssl || die "INSTALL_ASP_CA_SHA256 needs openssl, to read the certificate of $INSTALL_ASP_SERVER"
+		hostport=${INSTALL_ASP_SERVER#*://}
+		hostport=${hostport%%/*}
+		case "$hostport" in *:*) ;; *) hostport="$hostport:443" ;; esac
+		openssl s_client -connect "$hostport" -servername "${hostport%:*}" </dev/null 2>/dev/null | openssl x509 -outform PEM >"$TMP/server-cert.pem" 2>/dev/null ||
+			die "cannot read the certificate of $hostport (is the control plane listening there?)"
+		got=$(openssl x509 -in "$TMP/server-cert.pem" -noout -fingerprint -sha256 | sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+		want=$(printf '%s' "$INSTALL_ASP_CA_SHA256" | tr '[:upper:]' '[:lower:]' | sed 's/^sha256[:=]//' | tr -d ': ')
+		[ -n "$got" ] && [ "$got" = "$want" ] || die "the certificate $hostport shows has the SHA-256 $got, not $want: not trusting it"
+		INSTALL_ASP_CA="$TMP/server-cert.pem"
+		say "    trusting the certificate of $hostport (SHA-256 $got)"
+	fi
 	install_component asp-node-agent
 	NODE_ID="${INSTALL_ASP_NODE_ID:-$(hostname -s 2>/dev/null || hostname)}"
 	ENDPOINT="${INSTALL_ASP_ENDPOINT:-https://$NODE_ID:9443}"

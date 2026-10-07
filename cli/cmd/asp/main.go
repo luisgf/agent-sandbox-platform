@@ -4,10 +4,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/auth"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/client"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/cmdline"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/wait"
 )
 
@@ -111,6 +113,9 @@ Global env:
   ASP_SESSION_DIR         named sessions dir (default ~/.cache/asp/sessions, mode 0700)
   ASP_SESSION_FILE        optional single-file override (ignores --name)
   ASP_API_KEY             Bearer API key (also --api-key) — lab without IdP
+  ASP_API_KEY_FILE        a file holding the key, used when ASP_API_KEY is not set (asp-server leaves one for root and a group)
+  ASP_CA_FILE             a PEM file with the certificate that signed the control plane's TLS certificate (a private CA, or
+                          the self-signed one of asp-server), trusted besides the system's
   ASP_ID_TOKEN            IdP access token (also --id-token); preferred Bearer
   ASP_REQUIRE_TOKEN       if true, fail when no IdP token can be had (auto-fetches one when it can)
   ASP_IDP_TOKEN_URL       OIDC token endpoint (or derive from ASP_IDP_ISSUER)
@@ -195,14 +200,43 @@ func isDefinedFlag(fs *flag.FlagSet, arg string) bool {
 	return name != "" && fs.Lookup(name) != nil
 }
 
+// apiKeyFromFile reads the key ASP_API_KEY_FILE names: asp-server leaves the admin key of its
+// host in a file readable by root and a group, so the key is not in an environment or a config
+// file that every user can read.
+func apiKeyFromFile(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		hint := ""
+		if errors.Is(err, fs.ErrPermission) {
+			hint = " (run as root, or as a member of the group that owns it)"
+		}
+		return "", fmt.Errorf("ASP_API_KEY_FILE: %w%s", err, hint)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
 func newClient(g globalFlags) (*client.Client, error) {
 	if g.apiKey == "" {
 		g.apiKey = os.Getenv("ASP_API_KEY")
+	}
+	if g.apiKey == "" {
+		if path := strings.TrimSpace(os.Getenv("ASP_API_KEY_FILE")); path != "" {
+			key, err := apiKeyFromFile(path)
+			if err != nil {
+				return nil, err
+			}
+			g.apiKey = key
+		}
 	}
 	if g.idToken == "" {
 		g.idToken = auth.EnvIDToken()
 	}
 	c := client.New(g.cpURL, g.apiKey)
+	if ca := strings.TrimSpace(os.Getenv("ASP_CA_FILE")); ca != "" {
+		if err := c.TrustCAFile(ca); err != nil {
+			return nil, err
+		}
+	}
 	res, err := auth.ResolveBearer(context.Background(), auth.ResolveInput{
 		ExplicitToken: g.idToken,
 		APIKey:        g.apiKey,

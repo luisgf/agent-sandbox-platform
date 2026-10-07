@@ -37,6 +37,7 @@ Léelo antes de ejecutarlo si quieres: es un único fichero de shell (`scripts/i
 | `INSTALL_ASP_NODE_ID` | el id del nodo (por defecto el nombre del host) |
 | `INSTALL_ASP_ENDPOINT` | cómo llega el plano de control al nodo (por defecto `https://<id>:9443`) |
 | `INSTALL_ASP_CA` | un PEM con la CA del certificado TLS del plano de control |
+| `INSTALL_ASP_CA_SHA256` | en vez del fichero: el SHA-256 del certificado que enseña el plano de control (lo imprime `asp node enroll-token`, y `asp-server` al arrancar). El script lee ese certificado de `INSTALL_ASP_SERVER`, lo rechaza si la huella no coincide y lo toma como confianza. Para un certificado que es su propia raíz (autofirmado); necesita `openssl` |
 | `INSTALL_ASP_SKIP_IMAGE` | `1` no baja el kernel y la imagen del guest de la release (`asp image pull`) |
 
 ## Qué deja en el host

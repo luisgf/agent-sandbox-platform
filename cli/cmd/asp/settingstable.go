@@ -18,6 +18,8 @@ var settingsTable = []setting{
 	{Env: "ASP_CP_URL", Help: "the old name of ASP_CONTROL_PLANE_URL", Legacy: true},
 	{Env: "ASP_TENANT", Help: "tenant for create, list and run; empty means the caller's own"},
 	{Env: "ASP_API_KEY", Help: "API key sent as a bearer token", Secret: true},
+	{Env: "ASP_API_KEY_FILE", Help: "a file holding the API key, used when ASP_API_KEY is not set"},
+	{Env: "ASP_CA_FILE", Help: "a PEM file with the certificate that signed the control plane's TLS certificate, trusted besides the system's"},
 	{Env: "ASP_ID_TOKEN", Help: "IdP access token sent as a bearer token (preferred over the key)", Secret: true},
 	{Env: "ASP_IDP_ACCESS_TOKEN", Help: "another name for ASP_ID_TOKEN", Secret: true},
 	{Env: "ASP_REQUIRE_TOKEN", Help: "1 fails when no IdP token can be had (it fetches one when it can)"},
