@@ -65,3 +65,31 @@ func TestWaitForStateTimeout(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+// A sandbox that is deleted, or being deleted, will never run: waiting for
+// running (a resume) ends at once instead of timing out.
+func TestWaitForStateDeletedIsTerminal(t *testing.T) {
+	for _, state := range []string{"deleting", "deleted", "stopped"} {
+		get := func(ctx context.Context, id string) (client.Sandbox, error) {
+			return client.Sandbox{ID: id, State: state}, nil
+		}
+		_, err := WaitForState(context.Background(), get, "sb1", "running", Options{Timeout: time.Second, Log: io.Discard})
+		if err == nil || !strings.Contains(err.Error(), "terminal state") {
+			t.Fatalf("%s: err=%v", state, err)
+		}
+	}
+	// ...but waiting for stopped through stopping works, and stopped is the goal.
+	states := []string{"stopping", "stopped"}
+	i := 0
+	get := func(ctx context.Context, id string) (client.Sandbox, error) {
+		s := states[i]
+		if i < len(states)-1 {
+			i++
+		}
+		return client.Sandbox{ID: id, State: s}, nil
+	}
+	sb, err := WaitForState(context.Background(), get, "sb1", "stopped", Options{Timeout: 2 * time.Second, Initial: time.Millisecond, Log: io.Discard})
+	if err != nil || sb.State != "stopped" {
+		t.Fatalf("wait for stopped: %+v %v", sb, err)
+	}
+}

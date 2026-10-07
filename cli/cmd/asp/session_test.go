@@ -16,7 +16,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/session"
 )
 
-func TestSessionStartExecStop(t *testing.T) {
+func TestSessionStartExecRemove(t *testing.T) {
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -161,15 +161,15 @@ func TestSessionStartExecStop(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = run([]string{
-		"session", "stop",
+		"session", "rm",
 		"--session-file", sessFile,
 		"--id-token", "jwt-session",
 	}, &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("stop exit=%d stderr=%q", code, stderr.String())
+		t.Fatalf("rm exit=%d stderr=%q", code, stderr.String())
 	}
 	if _, err := session.Load(sessFile); !errors.Is(err, session.ErrNoSession) {
-		t.Fatalf("after stop: %v", err)
+		t.Fatalf("after rm: %v", err)
 	}
 	if deletes.Load() != 1 || execs.Load() != 1 {
 		t.Fatalf("deletes=%d execs=%d", deletes.Load(), execs.Load())
@@ -268,7 +268,7 @@ func TestSessionStartRefusesExistingUnlessForce(t *testing.T) {
 	}
 }
 
-func TestSessionStopKeepsFileOnAPIError(t *testing.T) {
+func TestSessionRemoveKeepsFileOnAPIError(t *testing.T) {
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +282,7 @@ func TestSessionStopKeepsFileOnAPIError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr strings.Builder
-	code := run([]string{"session", "stop", "--session-file", sessFile}, &stdout, &stderr)
+	code := run([]string{"session", "rm", "--session-file", sessFile}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "boom") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
@@ -843,5 +843,304 @@ func TestSessionExecExplainsSandboxLostWithNode(t *testing.T) {
 		if code != 1 || !strings.Contains(stderr.String(), "on node node-b was lost") || !strings.Contains(stderr.String(), "--force") {
 			t.Fatalf("exec %v: exit=%d stderr=%q", mode, code, stderr.String())
 		}
+	}
+}
+
+// lifecycleServer is a control plane with one sandbox whose state the test sets.
+type lifecycleServer struct {
+	mu     sync.Mutex
+	state  string
+	detail string
+	boots  int
+	calls  []string
+	// next is the state a stop or a resume moves to on the next GET: the node's work.
+	stopTo, resumeTo string
+	refuse           int // status for POST /start; 0 = accept
+	srv              *httptest.Server
+}
+
+func newLifecycleServer(t *testing.T, initial string) *lifecycleServer {
+	t.Helper()
+	l := &lifecycleServer{state: initial, boots: 1, stopTo: "stopped", resumeTo: "running"}
+	mux := http.NewServeMux()
+	view := func() client.Sandbox {
+		node := "n1"
+		return client.Sandbox{ID: "sb-1", State: l.state, TenantID: "acme", NodeID: &node, BootCount: l.boots, StatusDetail: l.detail}
+	}
+	mux.HandleFunc("GET /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		l.calls = append(l.calls, "LIST "+r.URL.RawQuery)
+		l.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"sandboxes": []client.Sandbox{}})
+	})
+	mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		// The node acts between polls.
+		switch l.state {
+		case "stopping":
+			l.state = l.stopTo
+		case "requested", "starting":
+			l.state = l.resumeTo
+		}
+		_ = json.NewEncoder(w).Encode(view())
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.calls = append(l.calls, "STOP")
+		if l.state == "running" {
+			l.state = "stopping"
+		}
+		_ = json.NewEncoder(w).Encode(view())
+	})
+	mux.HandleFunc("POST /v1/sandboxes/{id}/start", func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.calls = append(l.calls, "START")
+		if l.refuse != 0 {
+			w.WriteHeader(l.refuse)
+			_, _ = w.Write([]byte(`{"error":"node n1 cannot fit 1000m/512MiB: insufficient memory"}`))
+			return
+		}
+		l.state = "requested"
+		l.boots++
+		_ = json.NewEncoder(w).Encode(view())
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.calls = append(l.calls, "DELETE")
+		l.state = "deleting"
+		_ = json.NewEncoder(w).Encode(view())
+	})
+	l.srv = httptest.NewServer(mux)
+	t.Cleanup(l.srv.Close)
+	return l
+}
+
+func (l *lifecycleServer) sawCalls() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.calls, ",")
+}
+
+func sessionFile(t *testing.T, l *lifecycleServer) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "session.json")
+	if err := session.Save(f, session.State{Name: "work", SandboxID: "sb-1", CPURL: l.srv.URL, TenantID: "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// stop keeps the session file, waits for the node to power the sandbox off, and
+// says its disk is kept; resume boots it again and waits for running.
+func TestSessionStopKeepsTheSessionAndResumeBootsIt(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "running")
+	f := sessionFile(t, l)
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"session", "stop", "--session-file", f, "--timeout", "5s"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("stop exit=%d stderr=%q", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "sb-1" || !strings.Contains(stderr.String(), "disk is kept") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if l.state != "stopped" {
+		t.Fatalf("state=%s: stop must wait for stopped", l.state)
+	}
+	if _, err := session.Load(f); err != nil {
+		t.Fatalf("a stop must keep the session file: %v", err)
+	}
+	if strings.Contains(l.sawCalls(), "DELETE") {
+		t.Fatalf("a stop must not delete: %s", l.sawCalls())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"session", "resume", "--session-file", f, "--timeout", "5s"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("resume exit=%d stderr=%q", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "sb-1" || !strings.Contains(stderr.String(), "boot=2") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if l.state != "running" {
+		t.Fatalf("state=%s after resume", l.state)
+	}
+	if got := l.sawCalls(); got != "STOP,START" {
+		t.Fatalf("calls=%s", got)
+	}
+}
+
+// --no-wait returns as soon as the stop is requested.
+func TestSessionStopNoWait(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "running")
+	f := sessionFile(t, l)
+	var stdout, stderr strings.Builder
+	if code := run([]string{"session", "stop", "--no-wait", "--session-file", f}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	if l.state != "stopping" {
+		t.Fatalf("state=%s: --no-wait must not poll", l.state)
+	}
+}
+
+// A resume that no node can take says so, and the session and the sandbox stay.
+func TestSessionResumeRefusals(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	for status, want := range map[int]string{
+		http.StatusServiceUnavailable: "no capacity on the node that holds the disk",
+		http.StatusConflict:           "session file kept",
+		http.StatusNotFound:           "asp session rm clears",
+	} {
+		l := newLifecycleServer(t, "stopped")
+		l.refuse = status
+		f := sessionFile(t, l)
+		var stdout, stderr strings.Builder
+		code := run([]string{"session", "resume", "--session-file", f}, &stdout, &stderr)
+		if code != 1 || !strings.Contains(stderr.String(), want) {
+			t.Fatalf("status %d: exit=%d stderr=%q, want %q", status, code, stderr.String(), want)
+		}
+		if _, err := session.Load(f); err != nil {
+			t.Fatalf("status %d: the session file must stay: %v", status, err)
+		}
+	}
+}
+
+// A resume whose start fails ends stopped again: the CLI says why, and that the
+// disk is kept.
+func TestSessionResumeThatGoesBackToStopped(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "stopped")
+	l.resumeTo = "stopped"
+	l.detail = "resume failed: vm.boot failed"
+	f := sessionFile(t, l)
+	var stdout, stderr strings.Builder
+	code := run([]string{"session", "resume", "--session-file", f, "--timeout", "5s"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "resume failed: vm.boot failed") || !strings.Contains(stderr.String(), "disk is kept") {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+}
+
+// rm deletes the sandbox and its disk and clears the file; --local only clears the file.
+func TestSessionRemoveDeletesAndClears(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "stopped")
+	f := sessionFile(t, l)
+	var stdout, stderr strings.Builder
+	if code := run([]string{"session", "rm", "--local", "--session-file", f}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rm --local exit=%d stderr=%q", code, stderr.String())
+	}
+	if l.sawCalls() != "" {
+		t.Fatalf("--local called the control plane: %s", l.sawCalls())
+	}
+	f = sessionFile(t, l)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"session", "rm", "--session-file", f}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rm exit=%d stderr=%q", code, stderr.String())
+	}
+	if l.sawCalls() != "DELETE" || !strings.Contains(stderr.String(), "deleted sandbox sb-1 state=deleting") {
+		t.Fatalf("calls=%s stderr=%q", l.sawCalls(), stderr.String())
+	}
+	if _, err := session.Load(f); !errors.Is(err, session.ErrNoSession) {
+		t.Fatalf("after rm: %v", err)
+	}
+}
+
+// stop on a sandbox that cannot be stopped explains, and keeps the file.
+func TestSessionStopOfAFailedOrGoneSandbox(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	for status, want := range map[int]string{
+		http.StatusConflict: "asp session rm clears",
+		http.StatusNotFound: "is gone",
+	} {
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /v1/sandboxes/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":"conflict: cannot stop from state failed"}`))
+		})
+		srv := httptest.NewServer(mux)
+		f := filepath.Join(t.TempDir(), "session.json")
+		if err := session.Save(f, session.State{SandboxID: "s1", CPURL: srv.URL}); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		code := run([]string{"session", "stop", "--session-file", f}, &stdout, &stderr)
+		srv.Close()
+		if code != 1 || !strings.Contains(stderr.String(), want) {
+			t.Fatalf("status %d: exit=%d stderr=%q, want %q", status, code, stderr.String(), want)
+		}
+		if _, err := session.Load(f); err != nil {
+			t.Fatalf("status %d: the file must stay: %v", status, err)
+		}
+	}
+}
+
+// exec and status on a stopped session say to resume it, not to start a new one.
+func TestSessionExecAndStatusOfAStoppedSandbox(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "stopped")
+	l.srv.Config.Handler.(*http.ServeMux).HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"sandbox is stopped; its disk is kept: resume it (asp session resume)"}`))
+	})
+	f := sessionFile(t, l)
+
+	var stdout, stderr strings.Builder
+	code := run([]string{"session", "exec", "--buffered", "--session-file", f, "--cmd", "true"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "its disk is kept on node n1") || !strings.Contains(stderr.String(), "asp session resume") {
+		t.Fatalf("exec exit=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"session", "status", "--session-file", f}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "state=stopped") || !strings.Contains(stderr.String(), "asp session resume") {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+// The idle-reaped text points at resume, not at a new sandbox.
+func TestIdleReapedTextSaysResume(t *testing.T) {
+	if got := idleReapedText("sb-1", "/f"); !strings.Contains(got, "asp session resume") || strings.Contains(got, "--force") {
+		t.Fatalf("text=%q", got)
+	}
+}
+
+// sandbox stop/start/list --all hit the matching routes.
+func TestSandboxStopStartAndListAll(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "running")
+	var stdout, stderr strings.Builder
+	for _, args := range [][]string{
+		{"sandbox", "stop", "sb-1", "--cp-url", l.srv.URL},
+		{"sandbox", "start", "sb-1", "--cp-url", l.srv.URL},
+		{"sandbox", "list", "--all", "--cp-url", l.srv.URL},
+		{"sandbox", "delete", "sb-1", "--cp-url", l.srv.URL},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		l.mu.Lock()
+		if args[1] == "start" {
+			l.state = "stopped"
+		}
+		l.mu.Unlock()
+		if code := run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("%v exit=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+	if got := l.sawCalls(); got != "STOP,START,LIST include_deleted=1,DELETE" {
+		t.Fatalf("calls=%s", got)
 	}
 }

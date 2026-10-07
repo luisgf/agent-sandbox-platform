@@ -22,7 +22,7 @@ import (
 
 func sessionCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "session subcommand required (start|exec|status|stop)")
+		fmt.Fprintln(stderr, "session subcommand required (start|exec|status|stop|resume|rm)")
 		return 2
 	}
 	switch args[0] {
@@ -32,8 +32,12 @@ func sessionCmd(args []string, stdout, stderr io.Writer) int {
 		return cmdSessionExec(args[1:], stdout, stderr)
 	case "status":
 		return cmdSessionStatus(args[1:], stdout, stderr)
-	case "stop", "destroy", "rm":
+	case "stop":
 		return cmdSessionStop(args[1:], stdout, stderr)
+	case "resume":
+		return cmdSessionResume(args[1:], stdout, stderr)
+	case "destroy", "rm":
+		return cmdSessionRemove(args[1:], stdout, stderr)
 	case "local-net":
 		return cmdSessionLocalNet(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -42,8 +46,14 @@ func sessionCmd(args []string, stdout, stderr io.Writer) int {
   asp session start [--name NAME] [--workspace /path] [--local-net] [flags]
   asp session exec  [--name NAME] (--cmd '…' | -- argv…)
   asp session status [--name NAME] [--json]
-  asp session stop  [--name NAME]
+  asp session stop   [--name NAME] [--no-wait]   power the sandbox off, keep its disk
+  asp session resume [--name NAME]               boot a stopped sandbox again on its disk
+  asp session rm     [--name NAME]               delete the sandbox and its disk, clear the file
   asp session local-net up|down [--name NAME]
+
+stop keeps what the guest wrote outside the workspace; the session file stays.
+Resume works on the node that holds the disk (it can answer 503 if that node is
+full). The control plane's idle reaper stops, it does not delete.
 
 Named sessions: ~/.cache/asp/sessions/<name>.json (default name "default").
 Override the directory with --session-dir / ASP_SESSION_DIR.
@@ -134,7 +144,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	node := fs.String("node-id", "", "pin to this node (default: the scheduler picks one with room)")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
 	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest image mounts tag workspace on /workspace; older images need mount -t virtiofs)")
-	force := fs.Bool("force", false, "destroy any sandbox recorded in the session file, then start a new one")
+	force := fs.Bool("force", false, "delete any sandbox recorded in the session file (with its disk), then start a new one")
 	localNet := fs.Bool("local-net", false, "send this session's default route through a tunnel the local agent opens (default off)")
 	localAllow := fs.String("local-net-allow", "", "rejected in v1 (no per-CIDR config)")
 	if err := fs.Parse(args); err != nil {
@@ -162,7 +172,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	existing, loadErr := session.Load(path)
 	if loadErr == nil {
 		if !*force {
-			fmt.Fprintf(stderr, "session start: active session %s in %s (asp session stop, or --force)\n", existing.SandboxID, path)
+			fmt.Fprintf(stderr, "session start: active session %s in %s (asp session resume if it is stopped, asp session rm to delete it, or --force)\n", existing.SandboxID, path)
 			return 1
 		}
 	} else if !errors.Is(loadErr, session.ErrNoSession) {
@@ -363,6 +373,9 @@ func explainExecError(c *client.Client, st session.State, path string, err error
 			case sb.LostWithNode():
 				fmt.Fprintf(stderr, "session exec: %s\n", lostWithNodeText(sb, path))
 				return
+			case sb.State == "stopped":
+				fmt.Fprintf(stderr, "session exec: %s\n", stoppedText(sb, path))
+				return
 			}
 		}
 	}
@@ -465,6 +478,8 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 	lost := sb.LostWithNode()
 	if lost {
 		fmt.Fprintf(stderr, "session status: %s\n", lostWithNodeText(sb, path))
+	} else if sb.State == "stopped" && !out.IdleReaped {
+		fmt.Fprintf(stderr, "session status: %s\n", stoppedText(sb, path))
 	}
 	if g.jsonOut {
 		code := writeJSON(stdout, out)
@@ -489,7 +504,16 @@ func cmdSessionStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func idleReapedText(id, path string) string {
-	return fmt.Sprintf("sandbox %s was stopped after idle timeout (reaped). Session file kept (%s). Run: asp session start --force", id, path)
+	return fmt.Sprintf("sandbox %s was stopped after idle timeout (reaped); its disk is kept. Session file kept (%s). Run: asp session resume", id, path)
+}
+
+// stoppedText is for a sandbox someone stopped: nothing is lost, resume it.
+func stoppedText(sb client.Sandbox, path string) string {
+	msg := fmt.Sprintf("sandbox %s is stopped; its disk is kept on node %s. Session file kept (%s). Run: asp session resume", sb.ID, nodeOf(sb), path)
+	if sb.StatusDetail != "" {
+		msg += fmt.Sprintf(" (the last resume failed: %s)", sb.StatusDetail)
+	}
+	return msg
 }
 
 func lostWithNodeText(sb client.Sandbox, path string) string {
@@ -508,6 +532,45 @@ func idleReapedErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "idle timeout")
 }
 
+// endLocalNet detaches a session's local-net tunnel and removes its device: a
+// stop or a delete withdraws it on the control plane anyway.
+func endLocalNet(c *client.Client, st session.State, path string, stderr io.Writer, verb string) {
+	if !st.LocalNet {
+		return
+	}
+	if _, derr := c.DetachLocalNet(context.Background(), st.SandboxID); derr != nil {
+		fmt.Fprintf(stderr, "session %s: local-net detach %s: %v (continuing)\n", verb, st.SandboxID, derr)
+	}
+	if terr := localnet.TearDown(stderr, localnet.Iface(st.SandboxID), path); terr != nil {
+		fmt.Fprintf(stderr, "session %s: local-net device %s: %v (continuing)\n", verb, localnet.Iface(st.SandboxID), terr)
+	}
+}
+
+// loadSessionFor reads the session file a stop, resume or rm acts on and
+// points the client at its control plane unless --cp-url was given.
+func loadSessionFor(fs *flag.FlagSet, g *globalFlags, loc sessionLoc, verb string, stderr io.Writer) (st session.State, path string, code int) {
+	path, err := resolveSessionPath(fs, loc)
+	if err != nil {
+		fmt.Fprintf(stderr, "session %s: %v\n", verb, err)
+		return st, path, 2
+	}
+	st, err = session.Load(path)
+	if err != nil {
+		if errors.Is(err, session.ErrNoSession) {
+			fmt.Fprintf(stderr, "session %s: no active session (%s)\n", verb, path)
+			return st, path, 1
+		}
+		fmt.Fprintf(stderr, "session %s: %v\n", verb, err)
+		return st, path, 1
+	}
+	if !cpURLWasSet(fs) {
+		g.cpURL = st.CPURL
+	}
+	return st, path, 0
+}
+
+// cmdSessionStop powers the sandbox off and keeps its disk (ADR-0012). The
+// session file stays: asp session resume boots it again.
 func cmdSessionStop(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("session stop", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -515,58 +578,151 @@ func cmdSessionStop(args []string, stdout, stderr io.Writer) int {
 	addGlobalFlags(fs, &g)
 	var loc sessionLoc
 	addSessionLocFlags(fs, &loc)
-	localOnly := fs.Bool("local", false, "clear the state file only; do not call DELETE (sandbox may keep running)")
+	noWait := fs.Bool("no-wait", false, "return once the stop is requested, without waiting for the sandbox to be stopped")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	path, err := resolveSessionPath(fs, loc)
-	if err != nil {
-		fmt.Fprintf(stderr, "session stop: %v\n", err)
-		return 2
-	}
-	st, err := session.Load(path)
-	if err != nil {
-		if errors.Is(err, session.ErrNoSession) {
-			fmt.Fprintf(stderr, "session stop: no active session (%s)\n", path)
-			return 1
-		}
-		fmt.Fprintf(stderr, "session stop: %v\n", err)
-		return 1
-	}
-	if *localOnly {
-		if err := session.Clear(path); err != nil {
-			fmt.Fprintf(stderr, "session stop: %v\n", err)
-			return 1
-		}
-		fmt.Fprintf(stderr, "asp: cleared session file %s (sandbox %s NOT destroyed)\n", path, st.SandboxID)
-		fmt.Fprintln(stdout, st.SandboxID)
-		return 0
-	}
-	if !cpURLWasSet(fs) {
-		g.cpURL = st.CPURL
+	st, path, code := loadSessionFor(fs, &g, loc, "stop", stderr)
+	if code != 0 {
+		return code
 	}
 	c, code := mustClient(g, stderr)
 	if c == nil {
 		return code
 	}
-	if st.LocalNet {
-		if _, derr := c.DetachLocalNet(context.Background(), st.SandboxID); derr != nil {
-			fmt.Fprintf(stderr, "session stop: local-net detach %s: %v (continuing destroy)\n", st.SandboxID, derr)
+	endLocalNet(c, st, path, stderr, "stop")
+	ctx := context.Background()
+	sb, err := c.StopSandbox(ctx, st.SandboxID)
+	if err != nil {
+		var he *client.HTTPError
+		switch {
+		case errors.As(err, &he) && he.StatusCode == http.StatusNotFound:
+			fmt.Fprintf(stderr, "session stop: sandbox %s is gone (session file kept: %s; asp session rm clears it)\n", st.SandboxID, path)
+		case errors.As(err, &he) && he.StatusCode == http.StatusConflict:
+			fmt.Fprintf(stderr, "session stop: %s (nothing to keep; asp session rm clears %s)\n", he.Message, path)
+		default:
+			fmt.Fprintf(stderr, "session stop: %v\n", err)
 		}
-		if terr := localnet.TearDown(stderr, localnet.Iface(st.SandboxID), path); terr != nil {
-			fmt.Fprintf(stderr, "session stop: local-net device %s: %v (continuing destroy)\n", localnet.Iface(st.SandboxID), terr)
+		return 1
+	}
+	fmt.Fprintf(stderr, "asp: stopping sandbox %s state=%s\n", sb.ID, sb.State)
+	if !*noWait && sb.State != "stopped" {
+		waitCtx, cancel := context.WithTimeout(ctx, g.timeout)
+		_, err = wait.WaitForState(waitCtx, c.GetSandbox, sb.ID, "stopped", wait.Options{Timeout: g.timeout, Log: stderr})
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "session stop: wait: %v (session file kept: %s)\n", err, path)
+			return 1
 		}
 	}
+	fmt.Fprintf(stderr, "asp: session stopped %s; its disk is kept (asp session resume, or asp session rm to delete it)\n", st.SandboxID)
+	fmt.Fprintln(stdout, st.SandboxID)
+	return 0
+}
+
+// cmdSessionResume boots a stopped sandbox again on the disk its stop kept.
+func cmdSessionResume(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("session resume", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	st, path, code := loadSessionFor(fs, &g, loc, "resume", stderr)
+	if code != 0 {
+		return code
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	ctx := context.Background()
+	sb, err := c.StartSandbox(ctx, st.SandboxID)
+	if err != nil {
+		fmt.Fprintf(stderr, "session resume: %s\n", explainResumeError(err, path))
+		return 1
+	}
+	fmt.Fprintf(stderr, "asp: resuming sandbox %s state=%s boot=%d\n", sb.ID, sb.State, sb.BootCount)
+	if sb.State != "running" {
+		waitCtx, cancel := context.WithTimeout(ctx, g.timeout)
+		sb, err = wait.WaitForState(waitCtx, c.GetSandbox, sb.ID, "running", wait.Options{Timeout: g.timeout, Log: stderr})
+		cancel()
+		if err != nil {
+			why := ""
+			if live, gerr := c.GetSandbox(ctx, st.SandboxID); gerr == nil && live.StatusDetail != "" {
+				why = fmt.Sprintf(" (%s)", live.StatusDetail)
+			}
+			fmt.Fprintf(stderr, "session resume: wait: %v%s. The disk is kept; try again, or asp session rm\n", err, why)
+			return 1
+		}
+	}
+	if st.LocalNet {
+		fmt.Fprintf(stderr, "asp: the stop withdrew the local-net tunnel; run: asp session local-net up\n")
+	}
+	fmt.Fprintf(stderr, "asp: session resumed %s file=%s\n", sb.ID, path)
+	fmt.Fprintln(stdout, sb.ID)
+	return 0
+}
+
+// explainResumeError says what a refused resume means. The sandbox stays stopped.
+func explainResumeError(err error, path string) string {
+	var he *client.HTTPError
+	if errors.As(err, &he) {
+		switch he.StatusCode {
+		case http.StatusServiceUnavailable:
+			return "no capacity on the node that holds the disk: " + he.Message + " (the sandbox stays stopped; retry later, or free room on that node)"
+		case http.StatusConflict:
+			return he.Message + " (session file kept: " + path + ")"
+		case http.StatusNotFound:
+			return "sandbox not found (it was deleted); asp session rm clears " + path
+		}
+	}
+	return err.Error()
+}
+
+// cmdSessionRemove deletes the sandbox and its disk and clears the session file.
+func cmdSessionRemove(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("session rm", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	var loc sessionLoc
+	addSessionLocFlags(fs, &loc)
+	localOnly := fs.Bool("local", false, "clear the state file only; do not call DELETE (the sandbox and its disk are kept)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	st, path, code := loadSessionFor(fs, &g, loc, "rm", stderr)
+	if code != 0 {
+		return code
+	}
+	if *localOnly {
+		if err := session.Clear(path); err != nil {
+			fmt.Fprintf(stderr, "session rm: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stderr, "asp: cleared session file %s (sandbox %s NOT deleted)\n", path, st.SandboxID)
+		fmt.Fprintln(stdout, st.SandboxID)
+		return 0
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	endLocalNet(c, st, path, stderr, "rm")
 	if err := destroyRecorded(context.Background(), c, st, stderr); err != nil {
-		fmt.Fprintf(stderr, "session stop: destroy %s: %v (state file kept: %s)\n", st.SandboxID, err, path)
+		fmt.Fprintf(stderr, "session rm: delete %s: %v (state file kept: %s)\n", st.SandboxID, err, path)
 		return 1
 	}
 	localnet.Remove(path)
 	if err := session.Clear(path); err != nil {
-		fmt.Fprintf(stderr, "session stop: clear %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "session rm: clear %s: %v\n", path, err)
 		return 1
 	}
-	fmt.Fprintf(stderr, "asp: session stopped %s\n", st.SandboxID)
+	fmt.Fprintf(stderr, "asp: session removed %s\n", st.SandboxID)
 	fmt.Fprintln(stdout, st.SandboxID)
 	return 0
 }
@@ -582,7 +738,7 @@ func destroyRecorded(ctx context.Context, c *client.Client, st session.State, st
 		}
 		return err
 	}
-	fmt.Fprintf(stderr, "asp: destroyed sandbox %s state=%s\n", sb.ID, sb.State)
+	fmt.Fprintf(stderr, "asp: deleted sandbox %s state=%s\n", sb.ID, sb.State)
 	return nil
 }
 
