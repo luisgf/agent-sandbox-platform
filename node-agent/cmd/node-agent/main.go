@@ -76,6 +76,7 @@ type config struct {
 	EgressDNSSink        string
 	EgressMITMCA         string
 	EgressAllowCIDRs     string // --egress-allow-cidr: private destinations the proxy may reach
+	AgentTokenFile       string // --agent-token-file: secret of the local API, shared with a same-host control plane
 	EgressMITM           bool
 	SSHAgentConfirm      bool
 	SSHGlobalApprovals   bool   // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
@@ -226,7 +227,12 @@ func main() {
 		DefaultAllowlist: defaultAL,
 		PolicyCache:      policyCache,
 	}
-	httpSrv, ln, err := execproxy.ListenAndServe(cfg.AgentListen, proxy.Handler())
+	agentToken, err := agentTokenFor(cfg)
+	if err != nil {
+		slog.Error("agent token", "error", err)
+		os.Exit(1)
+	}
+	httpSrv, ln, err := execproxy.ListenAndServe(cfg.AgentListen, execproxy.RequireToken(agentToken, proxy.Handler()))
 	if err != nil {
 		slog.Error("exec proxy listen", "error", err)
 		os.Exit(1)
@@ -673,6 +679,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.EgressProxyListen, "egress-proxy-listen", os.Getenv("ASP_EGRESS_PROXY_LISTEN"), "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
 	flag.StringVar(&cfg.EgressDNSSink, "egress-dns-sink", os.Getenv("ASP_EGRESS_DNS_SINK"), "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names")
 	flag.StringVar(&cfg.EgressAllowCIDRs, "egress-allow-cidr", os.Getenv("ASP_EGRESS_ALLOW_CIDRS"), "comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows")
+	flag.StringVar(&cfg.AgentTokenFile, "agent-token-file", getenv("ASP_AGENT_TOKEN_FILE", ""), "file holding the secret that guards the local API on --agent-listen (bearer token). Created, 0600, if missing. A control plane on this host reads the same file (ASP_AGENT_TOKEN_FILE) and must be able to read it. Default "+execproxy.DefaultTokenFile+", or a temporary file when that directory is not writable (dry-run labs)")
 	flag.StringVar(&cfg.EgressMITMCA, "egress-mitm-ca", os.Getenv("ASP_EGRESS_MITM_CA"), "optional path to MITM CA PEM (generate/load); used only with --egress-mitm / ASP_EGRESS_MITM=1")
 	flag.BoolVar(&cfg.EgressMITM, "egress-mitm", getenv("ASP_EGRESS_MITM", "") == "1", "ENABLE CONNECT TLS bump (corp caution; default off)")
 	flag.StringVar(&cfg.SSHAgentBridge, "ssh-agent-bridge", os.Getenv("ASP_SSH_AGENT_BRIDGE"), "unix socket path for SSH agent bridge (proxies SSH_AUTH_SOCK or FakeAgent)")
@@ -1062,4 +1069,31 @@ func egressGuard(cfg config) (*egress.DialGuard, error) {
 		g.Never = append(g.Never, p.Masked())
 	}
 	return g, nil
+}
+
+// agentTokenFor loads, or creates, the secret that guards the local API. With
+// no --agent-token-file it uses the default path; if that directory is not
+// writable (a lab run without root) it falls back to a file in the temporary
+// directory and says where, so the control plane can be pointed at it.
+func agentTokenFor(cfg config) (string, error) {
+	path := strings.TrimSpace(cfg.AgentTokenFile)
+	explicit := path != ""
+	if !explicit {
+		path = execproxy.DefaultTokenFile
+	}
+	tok, err := execproxy.LoadOrCreateToken(path)
+	if err != nil && !explicit {
+		alt := filepath.Join(os.TempDir(), "asp-agent.token")
+		var altErr error
+		if tok, altErr = execproxy.LoadOrCreateToken(alt); altErr == nil {
+			slog.Warn("agent token file is not writable here; using a temporary one: point the control plane at it with ASP_AGENT_TOKEN_FILE",
+				"wanted", path, "using", alt, "error", err)
+			return tok, nil
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	slog.Info("local API requires the agent token", "token_file", path)
+	return tok, nil
 }

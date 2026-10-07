@@ -387,7 +387,8 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--enroll` | `ASP_ENROLL=1` | + `--bootstrap-token` |
 | `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
 | `--mtls` | `ASP_MTLS=1` | client certs hacia CP |
-| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca salvo `--insecure-agent-listen` |
+| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local; pide un bearer token (`--agent-token-file`) salvo `/healthz`; fuera de loopback no arranca salvo `--insecure-agent-listen` |
+| `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | secreto de esa API; el nodo lo crea (0600) y el plano de control del mismo host lo lee con el mismo `ASP_AGENT_TOKEN_FILE`. Defecto `/var/lib/asp/agent.token` |
 | `--capacity-cpu` / `--capacity-mem-mib` | `ASP_CAPACITY_CPU` / `ASP_CAPACITY_MEM_MIB` | `-1` detecta del host, `0` no limita ([`ops-multi-node.md`](ops-multi-node.md)) |
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
 | `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
@@ -782,6 +783,7 @@ Multi-user (ADR-0007 fase 4): `ASP_SSH_AGENT_SOCK_TEMPLATE=/run/asp/ssh-agents/{
 node-agent ... --ssh-agent-confirm --host-vsock --reconcile
 # Antes de que el guest de sb-1 firme (por su {vsock}_26501):
 curl -fsS -X POST http://127.0.0.1:9100/v1/internal/ssh-agent/approve \
+  -H "Authorization: Bearer $(sudo cat /var/lib/asp/agent.token)" \
   -d '{"ttl_seconds":60,"sandbox_id":"sb-1"}'
 # Sin approve → SignRequest = SSH_AGENT_FAILURE
 ```

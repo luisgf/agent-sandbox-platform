@@ -12,6 +12,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-smoke-multi-$$"
 mkdir -p "$WORKDIR"
+# The node-agent creates this file; the control plane reads it to call the agent.
+export ASP_AGENT_TOKEN_FILE="$WORKDIR/agent.token"
 CP=http://127.0.0.1:18090
 NODE_A="smoke-a-$$"
 NODE_B="smoke-b-$$"
@@ -120,7 +122,7 @@ echo "==> 1b. tenant egress rules reach a running sandbox with the work poll, no
 agent_of() { [[ "$1" == "$NODE_A" ]] && echo 127.0.0.1:19110 || echo 127.0.0.1:19111; }
 proxy_allows() { # <sandbox> <host>
   curl -sf -X POST "http://$(agent_of "$(node_of "$1")")/v1/internal/egress-check" \
-    -H 'Content-Type: application/json' -d "{\"host\":\"$2\",\"sandbox_id\":\"$1\"}" | grep -q '"allowed":true'
+    -H "Authorization: Bearer $(cat "$ASP_AGENT_TOKEN_FILE")" -H 'Content-Type: application/json' -d "{\"host\":\"$2\",\"sandbox_id\":\"$1\"}" | grep -q '"allowed":true'
 }
 wait_proxy() { # <want: allow|deny> <sandbox> <host>
   for _ in $(seq 1 40); do
