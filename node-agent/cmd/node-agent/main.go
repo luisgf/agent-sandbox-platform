@@ -117,6 +117,8 @@ type config struct {
 	GuestKernel          string        // --guest-kernel: the kernel every VM boots
 	GuestRootFS          string        // --guest-rootfs: the base image every sandbox disk is copied from
 	VMConfine            string        // --vm-confine: auto | on | off
+	VMSurviveRestart     bool          // --vm-survive-restart: confined VMs keep running when the agent restarts
+	AdoptedSandboxes     []string      // the VMs of a previous agent process this one took over; sent on register
 	VMSlice              string        // --vm-slice
 	VMMemoryOverheadMiB  int           // --vm-memory-overhead-mib
 	VMCPUOverheadPercent int           // --vm-cpu-overhead-percent
@@ -555,14 +557,6 @@ func main() {
 	register := func(ctx context.Context) error {
 		return cp.Register(ctx, registerRequest(cfg))
 	}
-	if err := register(ctx); err != nil {
-		slog.Error("control-plane registration failed", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("registered with control plane", "node_id", cfg.NodeID, "agent_endpoint", agentEndpointURL(cfg),
-		"capacity_cpu", cfg.CapacityCPU, "capacity_mem_mib", cfg.CapacityMemMiB, "max_sandboxes", cfg.MaxSandboxes,
-		"accepts_work", cfg.Reconcile, "local_net_dial", cfg.LocalNetDial)
-
 	heartbeatInfo := func() cpclient.HeartbeatInfo {
 		var info cpclient.HeartbeatInfo
 		if !cfg.DryRun {
@@ -571,9 +565,6 @@ func main() {
 			}
 		}
 		return info
-	}
-	if err := cp.Heartbeat(ctx, cfg.NodeID, heartbeatInfo()); err != nil {
-		slog.Warn("initial heartbeat failed", "error", err)
 	}
 
 	if !cfg.DryRun && cfg.CHAPISocket != "" {
@@ -671,7 +662,11 @@ func main() {
 			slog.Info("reconciler will attach CH hybrid guest→host acceptors per sandbox",
 				"ssh_scoped", cfg.SSHAgentSockTemplate != "" || cfg.MultiUser)
 		}
-		go rec.Run(ctx)
+		rec.StateDir = vmStateDir(cfg, vmConfine)
+		// The VMs a previous agent process left running are taken over before the
+		// node registers, so the register body can say which: the control plane does
+		// not fail those as orphans of the restart.
+		cfg.AdoptedSandboxes = rec.Adopt(ctx)
 	} else if cfg.DryRun {
 		// Legacy smoke without reconciler: one-shot FakeVMM create/boot demo.
 		demo := vmm.MicroVMConfig{
@@ -695,6 +690,20 @@ func main() {
 		slog.Info("dry-run create/boot complete; serving exec proxy until signal")
 	} else {
 		slog.Info("node-agent idle; pass --reconcile to claim sandboxes")
+	}
+
+	if err := register(ctx); err != nil {
+		slog.Error("control-plane registration failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("registered with control plane", "node_id", cfg.NodeID, "agent_endpoint", agentEndpointURL(cfg),
+		"capacity_cpu", cfg.CapacityCPU, "capacity_mem_mib", cfg.CapacityMemMiB, "max_sandboxes", cfg.MaxSandboxes,
+		"accepts_work", cfg.Reconcile, "local_net_dial", cfg.LocalNetDial, "adopted_vms", len(cfg.AdoptedSandboxes))
+	if err := cp.Heartbeat(ctx, cfg.NodeID, heartbeatInfo()); err != nil {
+		slog.Warn("initial heartbeat failed", "error", err)
+	}
+	if rec != nil {
+		go rec.Run(ctx)
 	}
 
 	ticker := time.NewTicker(cfg.HeartbeatEvery)
@@ -760,6 +769,11 @@ func loadConfig() config {
 	flag.StringVar(&cfg.GuestKernel, "guest-kernel", getenv("ASP_GUEST_KERNEL", reconciler.DefaultKernelPath), "kernel (an uncompressed vmlinux) every VM boots")
 	flag.StringVar(&cfg.GuestRootFS, "guest-rootfs", getenv("ASP_GUEST_ROOTFS", reconciler.DefaultRootFSPath), "base rootfs image every sandbox's private disk is copied from; never booted itself")
 	flag.StringVar(&cfg.VMConfine, "vm-confine", getenv("ASP_VM_CONFINE", "auto"), "run each microVM and its virtiofsd in a transient systemd service with resource limits: auto (when this host can: root, systemd), on (refuse to start if it cannot) or off (children of this process, as before)")
+	surviveDefault := true
+	if v := envOptBool("ASP_VM_SURVIVE_RESTART"); v.set {
+		surviveDefault = v.value
+	}
+	flag.BoolVar(&cfg.VMSurviveRestart, "vm-survive-restart", surviveDefault, "a confined microVM keeps running when the agent stops or restarts, and the next agent process takes it over (default). =false binds each VM's service to the agent's, so systemd stops the VMs with it, as before")
 	flag.StringVar(&cfg.VMSlice, "vm-slice", getenv("ASP_VM_SLICE", vmm.DefaultSlice), "systemd slice of the microVM services")
 	flag.IntVar(&cfg.VMMemoryOverheadMiB, "vm-memory-overhead-mib", getenvInt("ASP_VM_MEMORY_OVERHEAD_MIB", vmm.DefaultMemoryOverheadMiB), "memory added to the guest's for the VMM's own use, in the unit's MemoryMax")
 	flag.IntVar(&cfg.VMCPUOverheadPercent, "vm-cpu-overhead-percent", getenvInt("ASP_VM_CPU_OVERHEAD_PERCENT", vmm.DefaultCPUOverheadPercent), "percent of one CPU added to the guest's vCPUs for the VMM's own threads, in the unit's CPUQuota")
@@ -914,24 +928,25 @@ func tapManager(cfg config) *tap.Manager {
 func registerRequest(cfg config) cpclient.RegisterRequest {
 	acceptsWork := cfg.Reconcile
 	return cpclient.RegisterRequest{
-		ID:              cfg.NodeID,
-		Name:            cfg.NodeID,
-		Endpoint:        cfg.Endpoint,
-		AgentEndpoint:   agentEndpointURL(cfg),
-		VMMProfiles:     []string{"cloud-hypervisor"},
-		CapacityCPU:     cfg.CapacityCPU,
-		CapacityMemMiB:  cfg.CapacityMemMiB,
-		MaxSandboxes:    cfg.MaxSandboxes,
-		AcceptsWork:     &acceptsWork,
-		LocalNetDial:    cfg.LocalNetDial,
-		AgentInstanceID: cfg.InstanceID,
-		EgressEnforced:  cfg.EgressEnforced,
+		ID:               cfg.NodeID,
+		Name:             cfg.NodeID,
+		Endpoint:         cfg.Endpoint,
+		AgentEndpoint:    agentEndpointURL(cfg),
+		VMMProfiles:      []string{"cloud-hypervisor"},
+		CapacityCPU:      cfg.CapacityCPU,
+		CapacityMemMiB:   cfg.CapacityMemMiB,
+		MaxSandboxes:     cfg.MaxSandboxes,
+		AcceptsWork:      &acceptsWork,
+		LocalNetDial:     cfg.LocalNetDial,
+		AgentInstanceID:  cfg.InstanceID,
+		EgressEnforced:   cfg.EgressEnforced,
+		AdoptedSandboxes: cfg.AdoptedSandboxes,
 	}
 }
 
-// newInstanceID identifies this process to the control plane. VMs are not adopted
-// across restarts, so a new id makes the control plane fail the running ones;
-// cleanHost has already stopped them.
+// newInstanceID identifies this process to the control plane. A new id tells it
+// that the agent restarted: it stops the sandboxes the new process did not adopt
+// (their VMs are gone), and keeps the ones it lists in the register body.
 func newInstanceID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

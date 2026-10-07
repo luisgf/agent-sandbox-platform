@@ -9,7 +9,8 @@
 #   # adjust --node-id, --disk-dir and ASP_ATTEST_KEY if they differ on your host
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now asp-node-agent.service
-# Replacing a running agent stops its VMs (KillMode=control-group): cordon and drain first.
+# Replacing a running agent does not stop its VMs (they run in asp-vm-<id>.service units and the
+# new agent adopts them, ADR-0014); `systemctl stop asp-vms.slice` stops them all.
 # Docs: docs/ops-idp-keycloak-lab.md, docs/bare-metal-ch.md section 5.6
 [Unit]
 Description=ASP node-agent (ncc1701d, Cloud Hypervisor sandboxes)
@@ -35,12 +36,14 @@ ExecStart=/usr/local/bin/node-agent \
 # Guests reach the network only through the proxy and DNS sink, forced with nftables (table
 # asp_egress, built into the binary): with the proxy set the redirect is on in enforce mode,
 # so a node that cannot apply the rules does not start. `asp node list` shows EGRESS enforced.
-# The VMs are children of the agent and a new agent does not adopt them: stop every
-# cloud-hypervisor and virtiofsd together with it (stop, restart, crash). Do not change.
+# Each VM runs in a unit of its own, not bound to the agent: a restart or a crash of the agent
+# leaves them running and the new one adopts them (--vm-survive-restart, ADR-0014). Whatever
+# is still a child of the agent dies with it, so keep control-group.
 KillMode=control-group
 TimeoutStopSec=30
-# Then remove what they held (TAPs, tunnels, sockets). Sandbox disks stay: a stopped
-# sandbox keeps its disk (ADR-0012) and the agent's disk GC decides about the rest.
+# Then remove what dead VMs held (TAPs, tunnels, sockets); VMs still alive and recorded are left
+# alone. Sandbox disks stay: a stopped sandbox keeps its disk (ADR-0012) and the agent's disk GC
+# decides about the rest.
 ExecStopPost=-/usr/local/bin/node-agent --reap-only --ch-socket-dir=/run/asp
 Restart=always
 RestartSec=5

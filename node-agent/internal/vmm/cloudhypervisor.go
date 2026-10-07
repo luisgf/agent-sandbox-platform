@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -683,6 +684,16 @@ func (c *CloudHypervisor) SocketPath(id string) string {
 	return ""
 }
 
+// apiSocketPath is where the Cloud Hypervisor of sandbox id serves its API, whether
+// or not this process tracks it.
+func (c *CloudHypervisor) apiSocketPath(id string) string {
+	dir := c.SocketDir
+	if dir == "" {
+		dir = defaultCHSocketDir
+	}
+	return filepath.Join(dir, APISocketName(id))
+}
+
 // InstanceCount returns how many per-sandbox CH processes are tracked (tests).
 func (c *CloudHypervisor) InstanceCount() int {
 	c.mu.Lock()
@@ -796,4 +807,70 @@ func (c *CloudHypervisor) watch(id string, inst *chInstance) {
 	if fn != nil {
 		fn(id, info)
 	}
+}
+
+// Adopter is implemented by VMMs that can take over a VM an earlier agent process
+// started and that kept running: its service is not bound to the agent's.
+type Adopter interface {
+	// Alive says, as an error, why the VM of sandbox id cannot be taken over: its
+	// service is not active, or its API does not answer, or the VM is not running.
+	Alive(ctx context.Context, id string) error
+	// Adopt takes the VM over: from now on it is supervised and reported as if
+	// this process had started it. bootedAt is when it was booted, serialSocket
+	// the socket its console is served on ("" for none).
+	Adopt(ctx context.Context, id string, bootedAt time.Time, serialSocket string) error
+}
+
+// Alive implements Adopter.
+func (c *CloudHypervisor) Alive(ctx context.Context, id string) error {
+	if c.sharedMode() {
+		return errors.New("a shared Cloud Hypervisor runs one VM and is not adopted")
+	}
+	if c.Confine == nil {
+		return errors.New("VMs that are children of the agent end with it: only confined VMs (their own systemd service) can be adopted")
+	}
+	if !c.Confine.Launcher.Active(UnitName(id)) {
+		return fmt.Errorf("its service %s.service is not active", UnitName(id))
+	}
+	state, err := c.vmState(ctx, unixHTTPClient(c.apiSocketPath(id)))
+	if err != nil {
+		return fmt.Errorf("its API does not answer: %w", err)
+	}
+	if state != "Running" && state != "Paused" {
+		return fmt.Errorf("the VM is %s", state)
+	}
+	return nil
+}
+
+// Adopt implements Adopter.
+func (c *CloudHypervisor) Adopt(ctx context.Context, id string, bootedAt time.Time, serialSocket string) error {
+	if err := c.Alive(ctx, id); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	if c.instances == nil {
+		c.instances = make(map[string]*chInstance)
+	}
+	if _, exists := c.instances[id]; exists {
+		c.mu.Unlock()
+		return fmt.Errorf("sandbox %s already has a CH instance", id)
+	}
+	c.mu.Unlock()
+
+	sock := c.apiSocketPath(id)
+	var console *Console
+	if serialSocket != "" {
+		// CH serves its serial port on this socket; a client that connects reads the
+		// guest's output from then on (what the earlier agent saw is gone).
+		console = NewConsole(ConsoleBytes)
+		console.Attach(serialSocket, 5*time.Second)
+	}
+	inst := &chInstance{socketPath: sock, proc: c.Confine.Launcher.Adopt(UnitName(id)), client: unixHTTPClient(sock),
+		console: console, serialSocket: serialSocket, done: make(chan struct{}), bootedAt: bootedAt}
+	c.mu.Lock()
+	c.instances[id] = inst
+	c.mu.Unlock()
+	go c.watch(id, inst)
+	c.logger().Info("CH adopted", "sandbox_id", id, "socket", sock, "pid", inst.proc.Pid(), "running_for", time.Since(bootedAt).Round(time.Second))
+	return nil
 }

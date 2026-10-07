@@ -570,7 +570,7 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 			node.AgentInstanceID = existing.AgentInstanceID
 		}
 		if agentRestarted(existing.AgentInstanceID, node.AgentInstanceID) {
-			orphaned = m.failRestartOrphansLocked(id, now)
+			orphaned = m.failRestartOrphansLocked(id, now, input.AdoptedSandboxes)
 		}
 		node.CreatedAt = existing.CreatedAt
 		node.CertFingerprint = existing.CertFingerprint
@@ -593,12 +593,17 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 	return cloneNode(node), nil
 }
 
-// failRestartOrphansLocked fails the sandboxes a restarted agent lost track of.
-// Caller holds m.mu; events are emitted after unlock.
-func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time) []lostSandbox {
+// failRestartOrphansLocked fails the sandboxes a restarted agent lost track of: not
+// those it says it adopted, whose VMs kept running. Caller holds m.mu; events are
+// emitted after unlock.
+func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time, adopted []string) []lostSandbox {
+	kept := map[string]bool{}
+	for _, id := range adopted {
+		kept[id] = true
+	}
 	var out []lostSandbox
 	for sid, sb := range m.sandboxes {
-		if sb.NodeID == nil || *sb.NodeID != nodeID {
+		if sb.NodeID == nil || *sb.NodeID != nodeID || kept[sid] {
 			continue
 		}
 		to, ok := restartOrphanTarget(sb.State)

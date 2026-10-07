@@ -50,17 +50,18 @@ Environment=ASP_EGRESS_PROXY_LISTEN=:8888
 Environment=ASP_EGRESS_DNS_SINK=:5353
 EnvironmentFile=/etc/asp/node-agent.env
 ExecStart=/usr/local/bin/node-agent
-# The VMs do not survive the agent: a new agent process does not adopt them and
-# the control plane fails them as node_agent_restarted. control-group stops every
-# cloud-hypervisor and virtiofsd that is a child of the agent together with it (on
-# stop, on restart and when the agent dies). With --vm-confine (the default on a
-# host with systemd) each VM runs in a unit of its own instead, bound to this
-# service with BindsTo=, so systemd stops it with the agent just the same: none is
-# left running for nobody. Do not change KillMode to process or none.
+# With --vm-confine (the default on a host with systemd) each VM runs in a unit of
+# its own (asp-vm-<id>.service in asp-vms.slice) that is NOT bound to this service:
+# restarting, upgrading or crashing the agent leaves the VMs running and the new
+# process adopts them (--vm-survive-restart, ADR-0014). `systemctl stop
+# asp-vms.slice` stops them all. Whatever is still a child of the agent (VMs of an
+# agent without confinement, the systemd-run processes that watch the units) dies
+# with it: control-group is what does that, do not change it to process or none.
 KillMode=control-group
 TimeoutStopSec=30
-# Then remove what those VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs
-# copies. The agent does the same when it starts (--reap-leftovers=on).
+# Then remove what the dead VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs
+# copies. The VMs that are still alive and have a state record are left alone. The
+# agent does the same when it starts (--reap-leftovers=on).
 ExecStopPost=-/usr/local/bin/node-agent --reap-only
 Restart=always
 RestartSec=5

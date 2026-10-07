@@ -231,6 +231,11 @@ type RegisterNodeInput struct {
 	// EgressEnforced is true when the node applies its egress proxy and nft
 	// rules in enforce mode. Absent (an older node) means false.
 	EgressEnforced bool `json:"egress_enforced,omitempty"`
+	// AdoptedSandboxes are the sandboxes whose VMs the previous process of this
+	// agent left running and this one took over: a new AgentInstanceID does not
+	// make the control plane stop them as orphans of the restart. Only sandboxes
+	// placed on this node count.
+	AdoptedSandboxes []string `json:"adopted_sandboxes,omitempty"`
 	// AgentInstanceID is random per node-agent process; a new one on register
 	// means the agent restarted and its running sandboxes are orphaned.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`

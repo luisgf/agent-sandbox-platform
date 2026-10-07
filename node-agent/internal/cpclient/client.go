@@ -71,6 +71,10 @@ type RegisterRequest struct {
 	// EgressEnforced says that the node forces its guests through the egress proxy
 	// (nft rules applied in enforce mode), so a policy for them means something.
 	EgressEnforced bool `json:"egress_enforced"`
+	// AdoptedSandboxes are the sandboxes whose VMs a previous process of this agent
+	// left running and this one took over: a new AgentInstanceID would otherwise
+	// make the control plane stop them as orphans of the restart.
+	AdoptedSandboxes []string `json:"adopted_sandboxes,omitempty"`
 }
 
 func New(baseURL string, httpClient *http.Client) *Client {

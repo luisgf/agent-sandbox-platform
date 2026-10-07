@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
@@ -50,6 +53,44 @@ func vmConfinement(cfg config, available error) (*vmm.Confinement, error) {
 		TasksMax:           cfg.VMTasksMax,
 		FSMemoryMiB:        vmm.DefaultFSMemoryMiB,
 		FSTasksMax:         vmm.DefaultFSTasksMax,
-		BindTo:             unit.SelfUnit(),
+		BindTo:             bindTo(cfg),
 	}, nil
+}
+
+// bindTo is the service the VM units are bound to: the agent's own when the VMs
+// must end with it (--vm-survive-restart=false), none when they outlive it.
+func bindTo(cfg config) string {
+	if cfg.VMSurviveRestart {
+		return ""
+	}
+	return unit.SelfUnit()
+}
+
+// vmStateDir is where the record of each running VM is kept, or "" when VMs are
+// not recorded: only a confined VM (a service of its own) can survive the agent,
+// and only when it is meant to.
+func vmStateDir(cfg config, confine *vmm.Confinement) string {
+	if cfg.DryRun || confine == nil || !cfg.VMSurviveRestart || cfg.CHAPISocket != "" {
+		return ""
+	}
+	return filepath.Join(cfg.CHSocketDir, "state")
+}
+
+// adoptableIDs are the sandboxes whose VM an earlier agent process left running
+// and this one can take over. The host cleanup spares what they hold.
+func adoptableIDs(ctx context.Context, cfg config) []string {
+	if cfg.DryRun || cfg.CHAPISocket != "" {
+		return nil
+	}
+	confine, err := vmConfinement(cfg, unit.Available())
+	if err != nil || confine == nil {
+		return nil
+	}
+	dir := vmStateDir(cfg, confine)
+	if dir == "" {
+		return nil
+	}
+	ch := vmm.NewSpawningCloudHypervisor(cfg.VMMBinary, cfg.CHSocketDir)
+	ch.Confine = confine
+	return reconciler.AdoptableIDs(ctx, dir, ch.Alive, slog.Default())
 }

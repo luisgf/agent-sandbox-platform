@@ -121,19 +121,19 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 - **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
 - **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: no aparecen en el conjunto `assigned` de su siguiente sondeo de `/work` y el agente para esas VMs.
 - **Borrar no libera el hueco hasta que el nodo confirma.** Una sandbox en `deleting` sigue ocupando su CPU y su memoria hasta `deleted` (el nodo apaga la VM tras su siguiente sondeo y el `--stop-grace`, unos segundos): un `create` inmediato en un nodo lleno recibe 503 hasta entonces. `asp session start --force` espera a que la anterior desaparezca antes de crear.
-- **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` pasan a `stopped` con `node_agent_restarted` (su disco se conserva: `asp session resume`) y las que estaban arrancando se arrancan de nuevo. Las VMs tampoco siguen corriendo: la unit las para con el agente (`KillMode=control-group`), y el agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior: VMs, TAPs, túneles y discos ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
+- **Si el node-agent se reinicia**, sus VMs siguen corriendo y el proceso nuevo las adopta ([ADR-0014](adr/0014-vms-outlive-the-agent.md)): se registra diciendo cuáles, y el plano de control las deja como están. Las sandboxes cuya VM murió mientras el agente estaba parado pasan a `stopped` con `node_agent_restarted` (su disco se conserva: `asp session resume`) y las que estaban arrancando se arrancan de nuevo. El agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior que no sea adoptable: VMs muertas, TAPs, túneles y sockets ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
 
 ## Mantenimiento
 
 - **Sacar un nodo del reparto:** `asp node cordon node2`. Las sandboxes que ya corren siguen ahí; no se colocan nuevas.
 - **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor. Las **paradas** no cuentan en `SANDBOXES` pero siguen fijadas a ese nodo (`STOPPED (DISKS)`): no se pueden reanudar mientras esté en cordon, y se borran solas al pasar `ASP_STOPPED_SANDBOX_TTL` (7 días); para vaciarlo antes, `asp session rm` / `asp sandbox delete`.
 - **Volver al reparto:** `asp node uncordon node2`.
-- **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Sus sandboxes quedan `stopped` con el disco intacto y se reanudan con `asp session resume`, pero lo que corría se interrumpe: haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
+- **Actualizar o reiniciar el node-agent no interrumpe las VMs** (confinadas, con `--vm-survive-restart`, el valor por defecto): siguen corriendo y el proceso nuevo las adopta. No hace falta drenar; durante los segundos de la actualización los `exec` a ese nodo fallan con 502 y la política de egress se reaplica en el primer sondeo. Sin confinamiento, o con `--vm-survive-restart=false`, el reinicio sí las detiene (sus sandboxes quedan `stopped` con el disco intacto): haz `cordon`, drena, y después `systemctl restart asp-node-agent`. **La primera actualización a una versión con esto también las detiene**: las VMs que arrancó el agente anterior están atadas a su servicio (`BindsTo=`) y no tienen registro que adoptar. Para parar de verdad todas las VMs de un nodo: `systemctl stop asp-vms.slice`.
 - **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`, con un admin del IdP o una API key de plataforma. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
 - **Certificados de nodo:** caducan al año y el node-agent los renueva solo, con un tercio de vida por delante, si habla mTLS con un control plane `https://` que tenga `ASP_CLIENT_CA`. La columna `CERT EXPIRES` de `asp node list` muestra cuánto queda; menos de 30 días significa que la renovación está fallando (mira el log del agente). Sin mTLS no hay renovación automática: usa `rotate-cert` o un token fijado al nodo antes de que caduque.
 - **Quién administra nodos:** listar, cordon, uncordon, revoke y rotate-cert piden un admin del IdP (operador basta para listar) o una API key de plataforma. Una API key de tenant recibe 403.
 
-**Orden de actualización:** primero los node-agents y después el plano de control. Un agente antiguo declara siempre 4 cores y 8 GiB, y el planificador nuevo aplica esos valores.
+**Orden de actualización:** primero los node-agents y después el plano de control. Un agente antiguo declara siempre 4 cores y 8 GiB, y el planificador nuevo aplica esos valores. Una excepción: para que un reinicio **conserve** las VMs (ADR-0014) el plano de control tiene que entender `adopted_sandboxes` antes de que se reinicie ningún agente; con uno anterior el reinicio acaba como siempre (las pasa a `stopped` y el agente las para), sin perder datos.
 
 ## Diagnóstico
 
@@ -147,14 +147,14 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 | `403 client certificate is for node …` | El agente usa un `--node-id` distinto del CN de su certificado. Quita `--node-id` o re-enrola. |
 | El agente no arranca: `node certificate cannot serve TLS` | Certificado anterior a ADR-0011. Re-enrola con `--enroll` o `rotate-cert`. |
 | `sandbox was lost with its node` | El nodo llevaba más de `ASP_NODE_FAILOVER_AFTER` sin señales (o fue revocado). Abre una sesión nueva. |
-| `stop_reason=node_agent_restarted` | El node-agent se reinició: no adopta VMs, y las suyas se pararon con él. La sandbox queda `stopped` con su disco: `asp session resume`. |
+| `stop_reason=node_agent_restarted` | El node-agent se reinició y su VM no estaba viva para adoptarla (murió mientras el agente estaba parado, o el nodo corre sin confinamiento). La sandbox queda `stopped` con su disco: `asp session resume`. |
 | El agente no arranca: `refusing to start … node-agent.lock is held by pid N` | Ya corre otro node-agent con ese `--ch-socket-dir` (p. ej. el servicio, si lo lanzaste a mano). |
 | `self-fencing` en el log del agente | El plano de control ya no le asigna esa sandbox (failover o destroy); el agente paró la VM. Esperado tras una partición. |
 
 ## Límites
 
 - No hay migración: si un servidor se pierde, sus sesiones se pierden con él.
-- Tampoco sobreviven a un reinicio del node-agent, ni a una actualización.
+- Una sandbox sobrevive a un reinicio del node-agent solo si su VM está confinada (su propio servicio systemd); un reinicio del servidor las pierde (pasan a `stopped`, con su disco).
 - Un node-agent por servidor: al arrancar borra todos los TAPs `asp-*` y túneles `wg-asp-*` del servidor, también los de otro agente.
 - Con varias réplicas del plano de control, cada una corre su monitor; es seguro, pero el fencing podría repetirse.
 - No se ha probado todavía en un lab con varios servidores KVM reales; el smoke usa dos agentes en dry-run.

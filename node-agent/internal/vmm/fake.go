@@ -114,6 +114,26 @@ func (f *FakeVMM) Crash(id string, err error, lived time.Duration) bool {
 	return ok
 }
 
+// Alive implements Adopter: a VM the test put in Running (a VM "an earlier agent
+// started") can be adopted.
+func (f *FakeVMM) Alive(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Running[id]; !ok {
+		return fmt.Errorf("FakeVMM: %s is not running", id)
+	}
+	return nil
+}
+
+// Adopt implements Adopter: it records the adoption of a VM that is Running.
+func (f *FakeVMM) Adopt(ctx context.Context, id string, _ time.Time, _ string) error {
+	if err := f.Alive(ctx, id); err != nil {
+		return err
+	}
+	f.record("adopt:" + id)
+	return nil
+}
+
 // RunningConfig returns the config passed to Start for id.
 func (f *FakeVMM) RunningConfig(id string) (MicroVMConfig, bool) {
 	f.mu.Lock()
@@ -131,3 +151,5 @@ func (f *FakeVMM) record(op string) {
 var _ MicroVM = (*FakeVMM)(nil)
 var _ VMM = (*FakeVMM)(nil)
 var _ ExitNotifier = (*FakeVMM)(nil)
+var _ Adopter = (*FakeVMM)(nil)
+var _ Adopter = (*CloudHypervisor)(nil)

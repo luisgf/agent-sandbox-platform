@@ -17,6 +17,7 @@ type Metrics struct {
 	exits        *metrics.Counter   // asp_agent_vm_exits_total{cause}
 	gcRemoved    *metrics.Counter   // asp_agent_disk_gc_removed_total
 	pollFailures *metrics.Counter   // asp_agent_poll_failures_total
+	adopted      *metrics.Counter   // asp_agent_vms_adopted_total{result}
 }
 
 // startBuckets: a VM boots in seconds; a slow disk copy or a guest that never
@@ -39,6 +40,8 @@ func NewMetrics(reg *metrics.Registry) *Metrics {
 			"VMM processes that ended without a stop asking them to, by cause: crash (killed or failed) or poweroff (the guest powered itself off).", "cause"),
 		gcRemoved:    reg.Counter("asp_agent_disk_gc_removed_total", "Disks removed because no sandbox owns them."),
 		pollFailures: reg.Counter("asp_agent_poll_failures_total", "Polls of the control plane that failed."),
+		adopted: reg.Counter("asp_agent_vms_adopted_total",
+			"VMs a previous agent process left running, by result: ok (taken over) or stale (gone or not adoptable, cleaned up).", "result"),
 	}
 }
 
@@ -106,6 +109,13 @@ func (m *Metrics) diskRemoved() {
 		return
 	}
 	m.gcRemoved.Inc()
+}
+
+func (m *Metrics) adopt(result string) {
+	if m == nil {
+		return
+	}
+	m.adopted.Inc(result)
 }
 
 func (m *Metrics) pollFailed() {

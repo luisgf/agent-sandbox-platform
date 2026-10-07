@@ -184,11 +184,14 @@ func (p *PostgresStore) EmitNodeEvent(ctx context.Context, nodeID, eventType, ac
 
 // failRestartOrphansTx fails, inside the register transaction, the sandboxes a
 // restarted agent lost track of (see restartOrphanTarget).
-func failRestartOrphansTx(ctx context.Context, tx pgx.Tx, nodeID string, now time.Time) error {
+func failRestartOrphansTx(ctx context.Context, tx pgx.Tx, nodeID string, now time.Time, adopted []string) error {
+	if adopted == nil {
+		adopted = []string{}
+	}
 	rows, err := tx.Query(ctx, `
 		WITH victims AS (
 		    SELECT id, state FROM sandboxes
-		    WHERE node_id=$1 AND state IN ('running','paused','stopping')
+		    WHERE node_id=$1 AND state IN ('running','paused','stopping') AND NOT (id = ANY($4))
 		    FOR UPDATE
 		)
 		UPDATE sandboxes s SET
@@ -197,7 +200,7 @@ func failRestartOrphansTx(ctx context.Context, tx pgx.Tx, nodeID string, now tim
 		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		FROM victims v WHERE s.id = v.id
-		RETURNING s.id, s.tenant_id, v.state, s.state`, nodeID, now, StopReasonAgentRestarted)
+		RETURNING s.id, s.tenant_id, v.state, s.state`, nodeID, now, StopReasonAgentRestarted, adopted)
 	if err != nil {
 		return err
 	}
