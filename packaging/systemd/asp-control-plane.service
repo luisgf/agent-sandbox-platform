@@ -1,0 +1,59 @@
+# ASP control plane, as the asp-control-plane package installs it.
+# Settings go in /etc/asp/control-plane.env (mode 0600, it can hold secrets); the
+# example the package leaves there lists the usual ones, control-plane/README.md all.
+# Start it with: sudo systemctl enable --now asp-control-plane
+#
+# This is the packaged unit. scripts/systemd/asp-control-plane.service is the lab
+# host's (a user, paths and an IdP of that machine).
+[Unit]
+Description=ASP control plane
+Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/control-plane/README.md
+After=network-online.target
+Wants=network-online.target
+# With ASP_DATABASE_URL pointing at a Postgres that may start later (a container, or
+# another host) the control plane exits until it answers: retry for ever instead of
+# hitting systemd's start limit (5 starts in 10 s).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# A user of its own, made for the service: no package script has to create one.
+DynamicUser=yes
+# What must survive a reboot: the CA, the OIDC key and the attestation key. In
+# production mode (a database, TLS or an IdP) the control plane refuses keys in /tmp;
+# the ones that are missing are created here.
+StateDirectory=asp-control-plane
+StateDirectoryMode=0700
+Environment=ASP_CA_CERT=/var/lib/asp-control-plane/ca.crt
+Environment=ASP_CA_KEY=/var/lib/asp-control-plane/ca.key
+Environment=ASP_OIDC_KEY=/var/lib/asp-control-plane/oidc-key.pem
+Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
+EnvironmentFile=-/etc/asp/control-plane.env
+ExecStart=/usr/bin/asp-control-plane
+Restart=on-failure
+RestartSec=5
+# It needs the network and nothing else of the host.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

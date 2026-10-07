@@ -26,6 +26,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/version"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
 
@@ -61,6 +62,10 @@ func main() {
 // requests (streamed execs included) get up to ASP_SHUTDOWN_TIMEOUT to finish,
 // the background loops stop with ctx, and the Postgres pool closes last.
 func run(ctx context.Context, args []string) error {
+	if wantsVersion(args) {
+		fmt.Printf("asp-control-plane %s\n", version.Get())
+		return nil
+	}
 	addr := listenAddr()
 	if addr == "" {
 		// Loopback unless the operator says otherwise: an API that can create
@@ -140,7 +145,7 @@ func run(ctx context.Context, args []string) error {
 
 	issuer := strings.TrimSpace(os.Getenv("ASP_OIDC_ISSUER"))
 	if issuer == "" {
-		issuer = "http://127.0.0.1" + addr
+		issuer = defaultIssuer(addr, os.Getenv("ASP_TLS_CERT") != "" && os.Getenv("ASP_TLS_KEY") != "")
 	}
 	oidcSigner, err := oidc.LoadOrCreate(issuer)
 	if err != nil {
@@ -161,6 +166,7 @@ func run(ctx context.Context, args []string) error {
 		slog.Warn(api.EnvInsecureAgentHTTP + "=1: plain HTTP agent endpoints on other hosts are allowed; exec traffic is unauthenticated (lab only)")
 	}
 	srv.OIDC = oidcSigner
+	srv.MetricsRegistry().AddCollector(buildInfoCollector())
 	if pg, ok := st.(*store.PostgresStore); ok {
 		srv.MetricsRegistry().AddCollector(poolCollector(pg.Pool()))
 	}
@@ -336,7 +342,7 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 
-	slog.Info("control-plane API listening", "addr", ln.Addr().String(), "tls", useTLS, "store", storeName,
+	slog.Info("control-plane API listening", "version", version.Short(), "addr", ln.Addr().String(), "tls", useTLS, "store", storeName,
 		"insecure_open", authCfg.InsecureOpen, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
 		"mtls_strict", mtlsStrict, "idle_timeout", idleTimeout.String(), "shutdown_timeout", shutdownTimeout.String())
 

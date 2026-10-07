@@ -1,0 +1,9 @@
+# The build context of the images is the repository root (control-plane/Dockerfile,
+# images/guest/Dockerfile). Nothing below is ever copied into one.
+.git
+.claude
+build
+dist
+**/target
+*.pptx
+*.tar.gz

@@ -18,8 +18,6 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/cli/internal/wait"
 )
 
-const version = "0.1.0"
-
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -35,8 +33,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
-		fmt.Fprintf(stdout, "asp %s\n", version)
-		return 0
+		return cmdVersion(args[1:], stdout, stderr)
 	}
 	switch args[0] {
 	case "sandbox":
@@ -82,7 +79,7 @@ Usage:
   asp apikey create --name N [--tenant T] [--scope tenant|platform] [--ttl 30d]
   asp apikey list [--tenant T] [--json]
   asp apikey revoke|rotate <id>
-  asp version
+  asp version [--json]
 
 Global env:
   ASP_CONTROL_PLANE_URL   control-plane base URL (also --control-plane-url; default http://127.0.0.1:8080)

@@ -68,6 +68,8 @@ type RegisterRequest struct {
 	// AgentInstanceID is random per process: a new one tells the control plane
 	// this agent restarted and lost track of its running VMs.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+	// AgentVersion is the build of this agent ("0.1.0", "dev+1a2b3c4d"), for asp node list.
+	AgentVersion string `json:"agent_version,omitempty"`
 	// EgressEnforced says that the node forces its guests through the egress proxy
 	// (nft rules applied in enforce mode), so a policy for them means something.
 	EgressEnforced bool `json:"egress_enforced"`

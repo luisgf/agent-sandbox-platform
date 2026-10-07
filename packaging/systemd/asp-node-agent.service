@@ -1,0 +1,63 @@
+# ASP node-agent, as the asp-node-agent package installs it. This is
+# scripts/systemd/asp-node-agent.service with the binary where the package puts it
+# (a test keeps the two the same).
+# Settings go in /etc/asp/node-agent.env (mode 0600, it can hold the enroll token);
+# the example the package leaves there lists the usual ones. First start:
+#   sudoedit /etc/asp/node-agent.env       # the control plane URL, the enroll token
+#   sudo systemctl enable --now asp-node-agent
+#   journalctl -u asp-node-agent -f        # until it says "enrolled"; then remove the token
+#
+# Runs as root: TAPs, nftables and WireGuard need CAP_NET_ADMIN, the VMs /dev/kvm.
+# One node-agent per host (it removes every asp-* TAP and wg-asp-* tunnel
+# another process left). Docs: docs/bare-metal-ch.md §5.6, docs/ops-multi-node.md
+[Unit]
+Description=ASP node-agent (Cloud Hypervisor sandboxes)
+Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/docs/bare-metal-ch.md
+After=network-online.target
+Wants=network-online.target
+# At boot the control plane may not answer yet (another host, or its Postgres is still
+# starting). The agent exits when it cannot register, so retry for ever: systemd's default
+# start limit (5 starts in 10 s) would leave the node down until somebody starts it by hand.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=ASP_CH_SOCKET_DIR=/run/asp
+Environment=ASP_DISK_DIR=/var/lib/asp/disks
+Environment=ASP_LOCAL_NET_KEY_DIR=/var/lib/asp/local-net
+Environment=ASP_CERT_DIR=/var/lib/asp/node-certs
+Environment=ASP_MTLS=1
+Environment=ASP_RECONCILE=1
+Environment=ASP_TAP_AUTO=1
+Environment=ASP_HOST_VSOCK=1
+Environment=ASP_EGRESS_ENFORCE=1
+# Guests reach the network only through the node's forward proxy and DNS sink, forced
+# with nftables (table asp_egress; the script is built into the binary). With the proxy
+# set the redirect is on and in enforce mode: a node that cannot apply the rules (no
+# root, no nft) does not start instead of running guests without egress control.
+# `asp node list` shows EGRESS enforced once it registered. Docs: docs/bare-metal-ch.md section 3.
+Environment=ASP_EGRESS_PROXY_LISTEN=:8888
+Environment=ASP_EGRESS_DNS_SINK=:5353
+EnvironmentFile=/etc/asp/node-agent.env
+ExecStart=/usr/bin/asp-node-agent
+# Each Cloud Hypervisor also runs as an unprivileged user of its own, without any
+# capability (--vm-unprivileged, ADR-0015): the kernel and the hypervisor binary must be
+# readable by everybody, and the agent says at start if the host cannot do it.
+# With --vm-confine (the default on a host with systemd) each VM runs in a unit of
+# its own (asp-vm-<id>.service in asp-vms.slice) that is NOT bound to this service:
+# restarting, upgrading or crashing the agent leaves the VMs running and the new
+# process adopts them (--vm-survive-restart, ADR-0014). `systemctl stop
+# asp-vms.slice` stops them all. Whatever is still a child of the agent (VMs of an
+# agent without confinement, the systemd-run processes that watch the units) dies
+# with it: control-group is what does that, do not change it to process or none.
+KillMode=control-group
+TimeoutStopSec=30
+# Then remove what the dead VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs
+# copies. The VMs that are still alive and have a state record are left alone. The
+# agent does the same when it starts (--reap-leftovers=on).
+ExecStopPost=-/usr/bin/asp-node-agent --reap-only
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

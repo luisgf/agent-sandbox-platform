@@ -121,6 +121,13 @@ for s in "$s1" "$s2"; do
   wait_fresh_attestation "$CP" "$s" || fail "no fresh boot attestation for $s"
 done
 
+echo "==> 1a. every node says which build of the agent it runs (asp node list shows it)"
+for n in "$NODE_A" "$NODE_B"; do
+  v=$(curl -sf "$CP/v1/nodes" | python3 -c 'import sys,json; print(next((x.get("agent_version","") for x in json.load(sys.stdin)["nodes"] if x["id"]==sys.argv[1]), ""))' "$n")
+  [[ -n "$v" ]] || fail "node $n registered without an agent_version"
+  echo "    $n runs $v"
+done
+
 echo "==> 1b. tenant egress rules reach a running sandbox with the work poll, no exec needed"
 agent_of() { [[ "$1" == "$NODE_A" ]] && echo 127.0.0.1:19110 || echo 127.0.0.1:19111; }
 proxy_allows() { # <sandbox> <host>

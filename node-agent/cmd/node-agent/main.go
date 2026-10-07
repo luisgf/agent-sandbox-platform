@@ -41,6 +41,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/version"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/workspace"
@@ -114,6 +115,7 @@ type config struct {
 	DiskMinFreeMiB       int           // --disk-min-free-mib: -1 twice the base image, 0 not checked
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
 	ReapOnly             bool          // --reap-only: clean up and exit, without registering
+	ShowVersion          bool          // --version: print which build this is and exit
 	PrintMeasurement     bool          // --print-measurement: print what this node would attest and exit
 	Doctor               bool          // --doctor: check this host and this configuration, print the report and exit
 	DoctorJSON           bool          // --doctor-json: the report as JSON
@@ -133,6 +135,10 @@ type config struct {
 
 func main() {
 	cfg := loadConfig()
+	if cfg.ShowVersion {
+		fmt.Printf("node-agent %s\n", version.Get())
+		return
+	}
 	if cfg.PrintMeasurement {
 		os.Exit(printMeasurement(cfg, cfg.GuestKernel, cfg.GuestRootFS, os.Stdout, os.Stderr))
 	}
@@ -149,6 +155,7 @@ func main() {
 		os.Exit(reapOnly(cfg))
 	}
 	slog.Info("node-agent starting",
+		"version", version.Short(),
 		"node_id", cfg.NodeID,
 		"control_plane_url", cfg.ControlPlaneURL,
 		"ch_api_socket", cfg.CHAPISocket,
@@ -436,6 +443,7 @@ func main() {
 		}
 		cfg.EgressEnforced = egressEnforced(cfg, applied)
 	}
+	obs.AddCollector(buildInfoCollector())
 	obs.AddCollector(func() []metrics.Sample {
 		v := 0.0
 		if cfg.EgressEnforced {
@@ -796,6 +804,7 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.String(&cfg.ReapLeftovers, "reap-leftovers", reapOn, "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing (not the rootfs copies in --disk-dir: the reconciler removes the ones no sandbox owns). on | report (log, remove nothing) | off; --dry-run only reports")
 	s.Bool(&cfg.Doctor, "doctor", false, "check this host and this configuration (KVM, hypervisor, virtiofsd, guest images, disk, nftables, TAPs, clock, the control plane) and print what is wrong and how to fix it; exit 1 when a check failed", settings.NoEnv())
 	s.Bool(&cfg.DoctorJSON, "doctor-json", false, "with --doctor, print the report as JSON", settings.NoEnv())
+	s.Bool(&cfg.ShowVersion, "version", false, "print which build this is and exit", settings.NoEnv())
 	s.Bool(&cfg.PrintMeasurement, "print-measurement", false, "print the digests of the kernel and base image and the hypervisor version this node attests, as an entry for the control plane's ASP_ATTEST_ALLOWED_IMAGES, and exit", settings.NoEnv())
 	s.Bool(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir", settings.NoEnv())
 	s.String(&cfg.Endpoint, "endpoint", "", "node callback endpoint advertised to control plane", settings.Legacy("NODE_ENDPOINT"))
@@ -947,6 +956,7 @@ func registerRequest(cfg config) cpclient.RegisterRequest {
 		AcceptsWork:      &acceptsWork,
 		LocalNetDial:     cfg.LocalNetDial,
 		AgentInstanceID:  cfg.InstanceID,
+		AgentVersion:     version.Short(),
 		EgressEnforced:   cfg.EgressEnforced,
 		AdoptedSandboxes: cfg.AdoptedSandboxes,
 	}

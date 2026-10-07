@@ -223,6 +223,7 @@ Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI
 make test        # Go + Rust unit tests
 make smoke       # enroll / identity / reconcile / two-node smoke scripts
 make asp         # builds ./build/asp
+make build       # every binary: build/asp, build/api (control plane), build/node-agent (and pod-daemon with cargo)
 make smoke-asp   # CLI end-to-end in dry-run
 ```
 
