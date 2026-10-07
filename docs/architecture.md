@@ -29,7 +29,7 @@ Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts
 | Secretos del operador (SSH keys, OIDC) | Exfiltración desde guest | Claves host-held; OIDC corto; guest no elige claims |
 | Aislamiento entre sandboxes / tenants | Escape / lateral movement | microVM + TAP por sandbox; deny-default egress |
 | Integridad del nodo | Node-agent o cert comprometido | mTLS enroll; rotate/revoke cert; identidad del cert atada a cada ruta de nodo (ADR-0011); attest software |
-| Canal CP → nodo | `exec` sin autenticar en la red | Loopback por defecto; en otro host, mTLS con `ServerName` = node id y solo el cert del CP (ADR-0011) |
+| Canal CP → nodo | `exec` sin autenticar en la red | Mismo host: loopback con bearer token en un fichero que solo root y el CP leen; en otro host, mTLS con `ServerName` = node id y solo el cert del CP (ADR-0011) |
 | Egress corporativo | Guest bypasea proxy | Forward proxy + DNS sink + nft `asp_egress` (enforce en bare-metal) |
 | Atribución de flujos a humano | Tras NAT no se sabe qué empleado dialó | Futuro: ADR-0008 (proxy + IP/mark → `owner_sub`); no implementado |
 | Split-brain multi-nodo | Dos nodos creen poseer el mismo sandbox | Solo el nodo asignado reclama; transiciones validadas; monitor de nodos + FenceProvider; el nodo para las VMs que ya no están en su conjunto `assigned` (≠ STONITH BMC real) ([ADR-0011](adr/0011-multi-node.md)) |
@@ -88,7 +88,7 @@ Proceso privilegiado por nodo (`node-agent/`). Prepara TAP, aplica nft (soft|enf
 
 | Puerto / socket | Rol |
 |---|---|
-| `--agent-listen` (default `127.0.0.1:9100`) | Exec proxy y rutas de operador (`/v1/internal/exec`, `approve`, `egress-check`). HTTP sin autenticar: solo loopback salvo `--insecure-agent-listen` |
+| `--agent-listen` (default `127.0.0.1:9100`) | Exec proxy y rutas de operador (`/v1/internal/exec`, `approve`, `egress-check`). HTTP en claro, solo loopback salvo `--insecure-agent-listen`, y con bearer token (`--agent-token-file`) salvo `/healthz`: loopback no es una credencial (cualquier usuario local, o un guest que haga abrir una conexión al proxy, llega a él) |
 | `--agent-tls-listen` (p. ej. `0.0.0.0:9443`) | `exec` para un plano de control en otro host. mTLS con el cert del nodo; solo acepta el cert del CP ([ADR-0011](adr/0011-multi-node.md)) |
 | host→guest **26500** | pod-daemon HTTP (hybrid vsock CONNECT) |
 | guest→host **26501** | SSH agent pump (CH: `{vsock}_{26501}` hybrid UDS) |

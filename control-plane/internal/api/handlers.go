@@ -51,6 +51,9 @@ type Server struct {
 	// was fenced for, so the monitor fences once per outage.
 	fenceMu      sync.Mutex
 	fencedOutage map[string]time.Time
+
+	// agentToken is the secret of a same-host node agent's local API.
+	agentToken agentTokenSource
 }
 
 func NewServer(s store.Store) *Server {
@@ -696,6 +699,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	if stream {
 		httpReq.Header.Set("Accept", "application/x-ndjson")
 	}
+	s.authorizeAgentRequest(httpReq)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
@@ -814,6 +818,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	s.authorizeAgentRequest(httpReq)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
@@ -846,6 +851,11 @@ func writeAgentError(w http.ResponseWriter, status int, body []byte) {
 			msg = ae.Error
 		}
 		writeError(w, http.StatusConflict, "sandbox is not running on its node: "+msg)
+		return
+	}
+	if status == http.StatusUnauthorized {
+		writeError(w, http.StatusBadGateway, "node-agent refused the control plane (401): its local API needs the agent token. "+
+			"Point "+EnvAgentTokenFile+" of the control plane at the node-agent's --agent-token-file and make it readable by the control plane's user")
 		return
 	}
 	writeError(w, http.StatusBadGateway, fmt.Sprintf("node-agent status %d: %s", status, msg))

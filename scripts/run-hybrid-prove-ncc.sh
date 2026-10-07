@@ -13,6 +13,7 @@ sleep 1
 
 rm -rf "$DEMO"
 mkdir -p "$DEMO/certs"
+export ASP_AGENT_TOKEN_FILE="$DEMO/agent.token"   # the agent creates it; curl below sends it
 cp ~/src/bots/build/node-agent ~/src/bots/build/api ~/src/bots/build/asp "$DEMO/"
 cp /tmp/asp-oidc-key.pem /tmp/asp-attest-key.pem "$DEMO/"
 
@@ -96,7 +97,7 @@ if [[ $ok -ne 1 ]]; then echo HYBRID_FAIL; ls -la /run/asp/; exit 1; fi
 ok=0
 for _ in $(seq 1 90); do
   resp=$(curl -sf -X POST "http://127.0.0.1:$NA_PORT/v1/internal/exec" \
-    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $(cat "$ASP_AGENT_TOKEN_FILE" 2>/dev/null)" -H 'Content-Type: application/json' \
     -d "{\"sandbox_id\":\"$SID\",\"cmd\":[\"/bin/true\"],\"timeout_secs\":5}" || true)
   if echo "$resp" | grep -q 'exit_code":0'; then ok=1; echo guest_true_ok; break; fi
   sleep 1
@@ -106,13 +107,13 @@ if [[ $ok -ne 1 ]]; then echo GUEST_NOT_READY; echo "$resp"; fi
 
 # Start proxy then REQUEST_IDENTITIES (guest has perl; python3 optional).
 curl -sS -X POST "http://127.0.0.1:$NA_PORT/v1/internal/exec" \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(cat "$ASP_AGENT_TOKEN_FILE")" -H 'Content-Type: application/json' \
   -d "{\"sandbox_id\":\"$SID\",\"cmd\":[\"sh\",\"-c\",\"mkdir -p /run/agent-sandbox; rm -f /run/agent-sandbox/ssh-agent.sock; vsock-ssh-agent-proxy -listen /run/agent-sandbox/ssh-agent.sock -cid 2 -port 26501 >/tmp/proxy.log 2>&1 & sleep 1; ls -l /run/agent-sandbox/ssh-agent.sock\"],\"timeout_secs\":15}"
 echo
 
 # Write perl probe into guest via a tiny argv (no nested python).
 curl -sS -X POST "http://127.0.0.1:$NA_PORT/v1/internal/exec" \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(cat "$ASP_AGENT_TOKEN_FILE")" -H 'Content-Type: application/json' \
   --data-binary @- <<JSON | tee "$DEMO/ssh-proof.json"
 {"sandbox_id":"$SID","timeout_secs":20,"cmd":["perl","-e","use IO::Socket::UNIX; my \$s=IO::Socket::UNIX->new(Type=>SOCK_STREAM,Peer=>\"/run/agent-sandbox/ssh-agent.sock\") or die \"dial: \$!\"; my \$p=pack(\"C\",11); print \$s pack(\"N\",length(\$p)),\$p; my \$h; read(\$s,\$h,4)==4 or die \"hdr\"; my \$n=unpack(\"N\",\$h); my \$b; read(\$s,\$b,\$n)==\$n or die \"body\"; my \$t=unpack(\"C\",substr(\$b,0,1)); print \"GUEST_SSH_AGENT_OK type=\$t\\n\"; exit(\$t==12?0:1);"]}
 JSON

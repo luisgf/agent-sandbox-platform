@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-smoke-id-$$"
 mkdir -p "$WORKDIR"
+# The node-agent creates this file; the control plane reads it to call the agent.
+export ASP_AGENT_TOKEN_FILE="$WORKDIR/agent.token"
 SOCK="$WORKDIR/pod-daemon.sock"
 CERT_DIR="$WORKDIR/certs"
 SSH_BRIDGE="$WORKDIR/ssh-agent.sock"
@@ -107,11 +109,12 @@ wait_node_schedulable http://127.0.0.1:18081 smoke-id-node
 
 echo "==> node egress-check (enforce → 403 on deny)"
 POLICY='{"tenant_id":"smoke","mode":"deny-default","rules":[{"host_pattern":"*.github.com","enabled":true}]}'
+AGENT_AUTH="Authorization: Bearer $(cat "$ASP_AGENT_TOKEN_FILE")"
 curl -sf -X POST http://127.0.0.1:19101/v1/internal/egress-check \
-  -H 'Content-Type: application/json' \
+  -H "$AGENT_AUTH" -H 'Content-Type: application/json' \
   -d "{\"host\":\"api.github.com\",\"egress_allowlist\":$POLICY}" | grep -q '"allowed":true'
 CODE=$(curl -s -o /tmp/asp-eg-deny.json -w '%{http_code}' -X POST http://127.0.0.1:19101/v1/internal/egress-check \
-  -H 'Content-Type: application/json' \
+  -H "$AGENT_AUTH" -H 'Content-Type: application/json' \
   -d "{\"host\":\"evil.example\",\"egress_allowlist\":$POLICY}")
 [[ "$CODE" == "403" ]] || { echo "want 403 got $CODE"; cat /tmp/asp-eg-deny.json; exit 1; }
 

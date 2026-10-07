@@ -52,6 +52,7 @@ El plano de control:
 
 - El plano de control rechaza (400 en register/enroll, 502 en `exec`) endpoints `http://` fuera de loopback, salvo `ASP_INSECURE_AGENT_HTTP=1`.
 - El node-agent no arranca con `--agent-listen` fuera de loopback, salvo `--insecure-agent-listen`.
+- **Amendado 2026-10 (#99):** loopback no es una credencial, así que el API local del agente pide además un bearer token (`--agent-token-file`, 32 bytes aleatorios que el agente crea con modo 0600) salvo `/healthz`. El plano de control del mismo host lee el mismo fichero (`ASP_AGENT_TOKEN_FILE`); el de otro host sigue por mTLS y no lo usa.
 
 Las dos salidas existen para laboratorios. Dejan el `exec` sin autenticar y se avisan en el log.
 

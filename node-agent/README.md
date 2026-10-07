@@ -22,7 +22,8 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--mtls` | `ASP_MTLS=1` | exigir client certs |
 | `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
 | `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
-| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca |
+| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local (exec, egress-check, approve). Pide `Authorization: Bearer <token>` salvo `GET /healthz`; fuera de loopback no arranca |
+| `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | Fichero con el secreto de esa API. Se crea (0600) si no existe, con 32 bytes aleatorios. El plano de control del mismo host lee el mismo fichero (`ASP_AGENT_TOKEN_FILE`) y debe poder leerlo: si no corre como root, crea el fichero antes (`install -m 0640 -o root -g <grupo> …`). Defecto `/var/lib/asp/agent.token`, o `$TMPDIR/asp-agent.token` si ese directorio no es escribible (labs sin root; avisa en el log) |
 | `--insecure-agent-listen` | `ASP_INSECURE_AGENT_LISTEN=1` | permite `--agent-listen` fuera de loopback (solo lab) |
 | `--capacity-cpu` | `ASP_CAPACITY_CPU` | `-1` = núcleos del host; `0` = no limita |
 | `--capacity-mem-mib` | `ASP_CAPACITY_MEM_MIB` | `-1` = `MemTotal − max(1 GiB, 10 %)`; `0` = no limita |

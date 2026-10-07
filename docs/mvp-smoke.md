@@ -235,6 +235,7 @@ curl -s -X POST http://127.0.0.1:8080/v1/tenants/tenant-demo/egress/check \
 
 # Node-agent check (with --egress-enforce → HTTP 403 when denied)
 curl -s -X POST http://127.0.0.1:9100/v1/internal/egress-check \
+  -H "Authorization: Bearer $(cat "$ASP_AGENT_TOKEN_FILE")" \
   -H 'Content-Type: application/json' \
   -d '{"host":"evil.example","egress_allowlist":{"mode":"deny-default","rules":[{"host_pattern":"*.github.com","enabled":true}]}}'
 ```
@@ -283,7 +284,7 @@ Clave de firma: `ASP_OIDC_KEY` (PEM path; auto-create) e issuer `ASP_OIDC_ISSUER
 # Guest productivo (Fase 2e): ssh-agent-vsock.service →
 #   SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock  (vsock CID 2:26501)
 # Lab sin KVM: ASP_SSH_AGENT_UPSTREAM=unix:/tmp/asp-hv/host-vsock-26501.sock
-# Confirm gate opcional: --ssh-agent-confirm + POST /v1/internal/ssh-agent/approve
+# Confirm gate opcional: --ssh-agent-confirm + POST /v1/internal/ssh-agent/approve (con el bearer token del agente)
 ```
 
 Con Postgres, todas las migraciones (`001`–`017`) se aplican al arrancar.
