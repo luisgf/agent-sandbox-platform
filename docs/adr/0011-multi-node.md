@@ -40,6 +40,7 @@ El node-agent gana un segundo listener, `--agent-tls-listen` (p. ej. `0.0.0.0:94
 
 - Sirve **solo** `exec`, `exec/stdin` y `healthz`. Las rutas de operador (`ssh-agent/approve`, `egress-check`) siguen únicamente en el listener de loopback.
 - Usa el certificado del nodo como certificado de servidor. Los certificados de nodo pasan a llevar los dos usos (cliente y servidor) y SAN = node id + hosts del `agent_endpoint`.
+  - **Amendado 2026-10 (#104):** el SAN es **solo el node id**. Los hosts del endpoint dejan de entrar: el plano de control marca `ServerName = node id` y no los necesita, y con ellos un nodo se emitía un certificado válido para el nombre del plano de control, que los agentes aceptan si confían en la CA de enrollment para él. Un node id no puede ser una dirección IP ni un nombre del certificado TLS del plano de control (se lee de `ASP_TLS_CERT` al arrancar, comodines incluidos). El agente avisa al arrancar si verifica un plano de control remoto contra la CA de enrollment, y la forma recomendada es `--control-plane-ca` con una CA que firme solo ese certificado ([`ops-multi-node.md`](../ops-multi-node.md#las-dos-raíces-de-confianza)).
 - Exige certificado cliente de la CA de enrollment y acepta **solo** la identidad del plano de control: CN `asp-control-plane`, OU `control-plane`. El certificado de otro nodo, de la misma CA, no entra.
 
 El plano de control:
@@ -125,7 +126,7 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 
 - **Cambio que rompe (seguridad):** quien hoy alcance un agente por `http://` desde otra máquina debe pasar a `--agent-tls-listen` o activar las salidas inseguras.
 - Los nodos enrolados antes de este cambio tienen certificados solo de cliente: para usar `--agent-tls-listen` hay que re-enrolar (`--enroll`) o `rotate-cert`. El agente lo dice al arrancar.
-- Los node id deben poder ser nombre de certificado: letras, dígitos, `.`, `-` y `_`, y no `asp-control-plane`. El enroll rechaza los demás con 400.
+- Los node id deben poder ser nombre de certificado: letras, dígitos, `.`, `-` y `_`, no `asp-control-plane`, no una dirección IP y no un nombre del certificado TLS del plano de control. El enroll rechaza los demás con 400.
 - Crear sin ningún nodo planificable da 503 en vez de dejar la sandbox en `requested`. Un pin a un nodo desconocido da 409.
 - Un agente anterior a este cambio declara siempre 4 cores y 8 GiB, y ahora se aplica: hay que actualizar los agentes antes que el plano de control.
 

@@ -103,7 +103,7 @@ func TestIssueNodeCertIsClientAndServerForTheNodeID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issued, err := ca.IssueNodeCert("node-abc", []string{"10.0.0.5", "node1.lab", "node-abc"}, time.Hour)
+	issued, err := ca.IssueNodeCert("node-abc", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,11 +114,8 @@ func TestIssueNodeCertIsClientAndServerForTheNodeID(t *testing.T) {
 	if cert.Subject.CommonName != "node-abc" || len(cert.Subject.OrganizationalUnit) != 1 || cert.Subject.OrganizationalUnit[0] != OUNodes {
 		t.Fatalf("subject=%v", cert.Subject)
 	}
-	if len(cert.DNSNames) != 2 || cert.DNSNames[0] != "node-abc" || cert.DNSNames[1] != "node1.lab" {
-		t.Fatalf("dns sans=%v", cert.DNSNames)
-	}
-	if len(cert.IPAddresses) != 1 || cert.IPAddresses[0].String() != "10.0.0.5" {
-		t.Fatalf("ip sans=%v", cert.IPAddresses)
+	if len(cert.DNSNames) != 1 || cert.DNSNames[0] != "node-abc" || len(cert.IPAddresses) != 0 {
+		t.Fatalf("the node id must be the only name: dns=%v ip=%v", cert.DNSNames, cert.IPAddresses)
 	}
 	for _, opts := range []x509.VerifyOptions{
 		{Roots: ca.CertPool(), DNSName: "node-abc", KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}},
@@ -155,7 +152,7 @@ func TestIssueControlPlaneClientIsClientOnly(t *testing.T) {
 }
 
 func TestValidNodeID(t *testing.T) {
-	for _, id := range []string{"dev-node", "node1.lab", "n_1", "10.0.0.5", "Node-A", "9b2c1f3e-1d2a-4c3b-8e7f-0a1b2c3d4e5f"} {
+	for _, id := range []string{"dev-node", "node1.lab", "n_1", "Node-A", "9b2c1f3e-1d2a-4c3b-8e7f-0a1b2c3d4e5f"} {
 		if err := ValidNodeID(id); err != nil {
 			t.Errorf("ValidNodeID(%q) = %v, want nil", id, err)
 		}
@@ -173,14 +170,46 @@ func TestValidNodeID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ca.IssueNodeCert("a b", nil, time.Hour); !errors.Is(err, ErrInvalidNodeID) {
+	if _, err := ca.IssueNodeCert("a b", time.Hour); !errors.Is(err, ErrInvalidNodeID) {
 		t.Fatalf("IssueNodeCert with invalid id: %v", err)
 	}
 }
 
-func TestEndpointHosts(t *testing.T) {
-	got := EndpointHosts("https://node1.lab:9443", "http://0.0.0.0:9100", "http://127.0.0.1:9100", "https://node1.lab:9443/x", "", "::not a url")
-	if len(got) != 2 || got[0] != "node1.lab" || got[1] != "127.0.0.1" {
-		t.Fatalf("EndpointHosts=%v", got)
+// An address cannot be a node id: it would make the certificate valid for it.
+func TestNodeIDCannotBeAnAddress(t *testing.T) {
+	for _, bad := range []string{"10.0.0.5", "127.0.0.1", "::1", "2001:db8::7", "203.0.113.9"} {
+		if err := ValidNodeID(bad); !errors.Is(err, ErrInvalidNodeID) {
+			t.Errorf("%q accepted as a node id: %v", bad, err)
+		}
+	}
+	for _, ok := range []string{"node-1", "node1.lab", "n_1", "a.b.c", "256.1.1.1x"} {
+		if err := ValidNodeID(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+}
+
+// Whatever a node asks for, its certificate is valid for its id and nothing else.
+func TestNodeCertIsValidForNoOtherName(t *testing.T) {
+	ca, err := GenerateCA("test-ca", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := ca.IssueNodeCert("node-abc", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := ParseCertPEM(issued.CertPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cp.example.com", "node-abc.example.com", "localhost", "10.0.0.5", "127.0.0.1"} {
+		_, err := cert.Verify(x509.VerifyOptions{Roots: ca.CertPool(), DNSName: name, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+		if err == nil {
+			t.Errorf("a node certificate verifies for %q", name)
+		}
+	}
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: ca.CertPool(), DNSName: "node-abc", KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+		t.Errorf("a node certificate does not verify for its own id: %v", err)
 	}
 }

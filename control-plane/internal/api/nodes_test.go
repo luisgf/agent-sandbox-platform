@@ -67,8 +67,9 @@ func TestEnrollIssuesServerCertificateForTheNode(t *testing.T) {
 	if _, err := cert.Verify(x509.VerifyOptions{Roots: ca.CertPool(), DNSName: "node-a", KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
 		t.Fatalf("node certificate is not a server certificate for node-a: %v", err)
 	}
-	if len(cert.IPAddresses) != 1 || cert.IPAddresses[0].String() != "10.0.0.7" {
-		t.Fatalf("endpoint host missing from SANs: %v", cert.IPAddresses)
+	// The endpoint the node names is not a name of its certificate (#104).
+	if len(cert.IPAddresses) != 0 || len(cert.DNSNames) != 1 {
+		t.Fatalf("a node certificate names more than the node: dns=%v ip=%v", cert.DNSNames, cert.IPAddresses)
 	}
 
 	if rr := enroll(`{"id":"bad id","agent_endpoint":"https://10.0.0.7:9443"}`); rr.Code != http.StatusBadRequest {

@@ -31,6 +31,25 @@ En el plano de control:
 
 Ejemplo: un servidor de 16 cores y 64 GiB, con los valores por defecto, ofrece 64 vCPU y 58 GiB. Caben 64 sandboxes de 1 vCPU y 512 MiB, porque la CPU se acaba antes que la memoria.
 
+## Las dos raíces de confianza
+
+Un nodo y el plano de control se verifican con dos CAs distintas. Mezclarlas es lo que dejaba a cualquiera que pudiera enrolar un nodo con un certificado que los agentes aceptaban para el plano de control.
+
+| Pregunta | Raíz | Qué firma |
+|---|---|---|
+| ¿Este nodo es quien dice? (el plano de control comprueba al nodo; el nodo comprueba al plano de control en el canal del agente) | **CA de enrollment** (`ASP_CA_CERT`/`ASP_CA_KEY`, la misma que `ASP_CLIENT_CA`) | Los certificados de los nodos y el certificado de cliente del propio plano de control |
+| ¿Este es el plano de control? (el nodo comprueba el certificado TLS del servidor) | **`--control-plane-ca`** en cada nodo | Solo el certificado de `ASP_TLS_CERT` |
+
+Lo recomendado: firma el certificado TLS del plano de control con una CA que no firme nada más (una CA privada tuya, la de tu empresa o una pública) y dásela a cada nodo con `--control-plane-ca`. Así la CA de enrollment nunca decide quién es el plano de control, y ningún certificado de nodo puede valer como tal.
+
+Sin `--control-plane-ca`, el agente verifica el plano de control contra la CA de enrollment (`<cert-dir>/ca.crt`) y avisa al arrancar si el plano de control no está en loopback. Eso solo es seguro porque:
+
+- **Un certificado de nodo vale para su node id y nada más.** El SAN es el id; los hosts que el nodo cite en `agent_endpoint` o `endpoint` no entran en el certificado. El plano de control llama al agente con `ServerName` = node id, así que no los necesita.
+- **Un node id no puede ser una dirección IP**, porque entraría como SAN y valdría para esa dirección.
+- **Un node id no puede llamarse como el plano de control.** Al arrancar con `ASP_TLS_CERT`, el plano de control lee los nombres de ese certificado (DNS, IP, CN y comodines de una etiqueta) y rechaza con 400 cualquier enroll o token fijado a uno de ellos.
+
+Con el TLS terminado en un proxy, el plano de control no conoce su nombre público y no puede reservarlo: pasa siempre `--control-plane-ca` (la CA del proxy) y no reutilices la CA de enrollment para ese certificado.
+
 ## Añadir un servidor
 
 Requisitos:

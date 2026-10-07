@@ -58,6 +58,10 @@ func (s *Server) CreateEnrollToken(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := s.checkNodeNameFree(nodeID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	ttl := defaultEnrollTokenTTL
 	if body.TTLSeconds > 0 {

@@ -54,6 +54,10 @@ type Server struct {
 
 	// agentToken is the secret of a same-host node agent's local API.
 	agentToken agentTokenSource
+
+	// ReservedNodeNames are the names of the control plane's own TLS
+	// certificate: no node may enroll under one of them (see checkNodeNameFree).
+	ReservedNodeNames []string
 }
 
 func NewServer(s store.Store) *Server {
@@ -398,6 +402,10 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := s.checkNodeNameFree(nodeID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Refuse before issuing a certificate. EnrollNode checks again atomically;
 	// if it refuses after all, the certificate is discarded and its private
 	// key never leaves this process.
@@ -405,7 +413,7 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		writeEnrollError(w, nodeID, err)
 		return
 	}
-	issued, err := s.CA.IssueNodeCert(nodeID, pki.EndpointHosts(input.AgentEndpoint, input.Endpoint), pki.DefaultNodeTTL)
+	issued, err := s.CA.IssueNodeCert(nodeID, pki.DefaultNodeTTL)
 	if err != nil {
 		if errors.Is(err, pki.ErrInvalidNodeID) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -460,8 +468,7 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
-	existing, err := s.Store.GetNode(id)
-	if err != nil {
+	if _, err := s.Store.GetNode(id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
 			return
@@ -469,7 +476,7 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	issued, err := s.CA.IssueNodeCert(id, pki.EndpointHosts(existing.AgentEndpoint, existing.Endpoint), pki.DefaultNodeTTL)
+	issued, err := s.CA.IssueNodeCert(id, pki.DefaultNodeTTL)
 	if err != nil {
 		if errors.Is(err, pki.ErrInvalidNodeID) {
 			writeError(w, http.StatusBadRequest, err.Error())

@@ -26,7 +26,7 @@ func TestNodeRotatesItsOwnCertificate(t *testing.T) {
 	}
 	certs := map[string]*x509.Certificate{}
 	for _, id := range []string{"node-a", "node-b"} {
-		issued, err := ca.IssueNodeCert(id, nil, pki.DefaultNodeTTL)
+		issued, err := ca.IssueNodeCert(id, pki.DefaultNodeTTL)
 		if err != nil {
 			t.Fatal(err)
 		}

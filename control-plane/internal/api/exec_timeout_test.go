@@ -41,7 +41,7 @@ func newExecTimeoutFixture(t *testing.T, mtls bool, h http.Handler) (cpURL, sand
 	f.srv.BufferedExecTimeout = testBufferedExecTimeout
 	var agent *httptest.Server
 	if mtls {
-		issued, err := f.ca.IssueNodeCert("n1", []string{"127.0.0.1"}, time.Hour)
+		issued, err := f.ca.IssueNodeCert("n1", time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}

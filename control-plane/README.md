@@ -69,7 +69,7 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `ASP_NODE_BOOTSTRAP_TOKEN` | unset | Token para `/v1/nodes/enroll` |
 | `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |
 | `ASP_ALLOW_TMP_KEYS` | — | `1`: arranca en modo producción aunque alguna clave esté en un directorio temporal (ver abajo) |
-| `ASP_TLS_CERT` / `ASP_TLS_KEY` | unset | TLS servidor |
+| `ASP_TLS_CERT` / `ASP_TLS_KEY` | unset | TLS servidor. Sus nombres (DNS, IP, CN, comodines) quedan reservados: ningún nodo puede enrolarse con uno de ellos como id ([dos raíces de confianza](../docs/ops-multi-node.md#las-dos-raíces-de-confianza)) |
 | `ASP_CLIENT_CA` | unset | Client CA (register/heartbeat/oidc mint); habilita check de revocación y ata el CN del cert a cada ruta de nodo (403 si es otro nodo) |
 | `ASP_SCHED_POLICY` | `spread` | `spread` o `binpack` ([`ops-multi-node.md`](../docs/ops-multi-node.md)) |
 | `ASP_SCHED_CPU_OVERCOMMIT` | `4` | vCPU por core físico; la memoria no se sobresuscribe |

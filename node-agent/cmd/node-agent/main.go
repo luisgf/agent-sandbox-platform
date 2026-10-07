@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -183,6 +184,9 @@ func main() {
 	}
 	if nodeCert != nil {
 		slog.Info("using mTLS client certs", "cert_dir", cfg.CertDir, "cert_not_after", nodeCert.Leaf().NotAfter)
+		if w := controlPlaneTrustWarning(cfg, fileExists(filepath.Join(cfg.CertDir, "ca.crt"))); w != "" {
+			slog.Warn(w)
+		}
 	}
 	cp := cpclient.New(cfg.ControlPlaneURL, httpClient)
 	nodeAPIKey, err := loadNodeAPIKey(cfg)
@@ -971,6 +975,31 @@ func attestSigners(cfg config, nodeCert *cpclient.NodeCert) []*attest.Signer {
 
 func isHTTPS(rawURL string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawURL)), "https://")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// controlPlaneTrustWarning is the warning for an agent that verifies a remote
+// control plane's TLS certificate against the enrollment CA (certDir/ca.crt,
+// the CA that signs every node certificate) because --control-plane-ca is not
+// set. Node certificates carry only their node id and the control plane reserves
+// the names of its own certificate, so a node cannot pass for the control plane
+// by name; pinning a CA that signs nothing but the control plane's certificate
+// removes the question. Empty when there is nothing to say: a loopback control
+// plane, plain HTTP, an explicit CA, or no enrollment CA in use.
+func controlPlaneTrustWarning(cfg config, haveEnrollmentCA bool) string {
+	if cfg.ControlPlaneCA != "" || !haveEnrollmentCA || !isHTTPS(cfg.ControlPlaneURL) {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(cfg.ControlPlaneURL))
+	if err != nil || isLoopbackHost(u.Hostname()) {
+		return ""
+	}
+	return "the control plane's TLS certificate is verified against the enrollment CA, which also signs every node certificate; " +
+		"pass --control-plane-ca (ASP_CONTROL_PLANE_CA) with the CA that signed the control plane's certificate alone"
 }
 
 // certNodeID returns the CN of the enrolled node certificate in certDir, or "".
