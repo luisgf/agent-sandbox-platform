@@ -266,6 +266,10 @@ Detalle (flujos, alternativas, verificación 401): [`../ops-idp-keycloak-lab.md`
 
 **Límite honesto residual ops:** lab ≠ Entra/Okta; sin `tenant_memberships`; este CP lab puede ir en MemoryStore; password grant solo para pruebas.
 
+## Enmiendas
+
+- **2026-10 (#101):** sin token del IdP, el dueño y el actor ya no los elige el cliente. Con una API key el actor es la key (`apikey:<prefijo>`), `owner_sub` / `owner_email` en el cuerpo dan 403 y la sandbox no tiene dueño, así que sus tokens de workload no llevan `user_sub`. La cabecera `X-ASP-Actor-Sub` y los campos del cuerpo solo valen en el lab abierto (sin IdP ni API keys).
+
 ## Referencias cruzadas
 
 - Identidad guest SSH/OIDC: [0003](0003-identity.md)

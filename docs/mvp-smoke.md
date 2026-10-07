@@ -90,7 +90,7 @@ curl -s "${AUTH[@]}" -X POST http://127.0.0.1:8080/v1/sandboxes \
 # → JSON con id, state="requested", node_id="dev-node" (y el reconciler la lleva a running)
 # Con ASP_AUTO_PROVISION=1 y sin nodos: state="running", node_id="local-dev"
 
-> **ADR-0007 fases 1–3 (opcional):** sin IdP, puedes enviar `"owner_sub"` / `"owner_email"` en el body y/o `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; **smokes existentes no cambian** (`ASP_IDP_REQUIRED` off). Con IdP: ver § «Lab JWT IdP (fase 2)» más abajo.
+> **ADR-0007 fases 1–3 (opcional):** en el lab abierto (sin IdP **ni API keys**) puedes enviar `"owner_sub"` / `"owner_email"` en el body y/o `X-ASP-Actor-Sub` en create/exec/destroy. Vacío = lab OK; **smokes existentes no cambian** (`ASP_IDP_REQUIRED` off). Con una API key el actor es la key (`apikey:<prefijo>`), la cabecera se ignora y un `owner_sub` en el body da 403. Con IdP: ver § «Lab JWT IdP (fase 2)» más abajo.
 
 
 # Fijar un nodo concreto (opcional; 409 si no existe o no admite sandboxes):

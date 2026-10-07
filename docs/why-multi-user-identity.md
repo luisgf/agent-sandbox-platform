@@ -96,7 +96,7 @@ Matriz breve:
 
 | Situación | Create/exec/destroy | Node enroll/heartbeat/work |
 |---|---|---|
-| IdP off (lab) | Body/`X-ASP-Actor-Sub` OK; API key opcional | Igual que antes (bootstrap / mTLS) |
+| IdP off (lab) | Body/`X-ASP-Actor-Sub` OK solo sin API keys; con una key, el actor es la key y `owner_sub` en el body da 403 | Igual que antes (bootstrap / mTLS) |
 | IdP on, token presente | `owner_sub`/`actor_sub` = token `sub`; email del claim si viene | Sin cambio (JWT humano no aplica) |
 | IdP on, token falso | **401** | Sin cambio |
 | `ASP_IDP_REQUIRED=1` sin token | **401** en rutas user-facing sandbox | Sigue sin exigir JWT humano |
