@@ -166,16 +166,20 @@ func (c Config) mapOne(v string) Role {
 		}
 	}
 	low := strings.ToLower(v)
-	// bare role names
-	if Role(low).Valid() {
-		return Role(low)
-	}
-	prefix := c.RolePrefix
-	if prefix != "" && strings.HasPrefix(low, strings.ToLower(prefix)) {
-		rest := strings.TrimPrefix(low, strings.ToLower(prefix))
-		if Role(rest).Valid() {
+	if prefix := strings.ToLower(c.RolePrefix); prefix != "" {
+		if rest, ok := strings.CutPrefix(low, prefix); ok && Role(rest).Valid() {
 			return Role(rest)
 		}
+		return RoleNone
+	}
+	if len(c.RoleMap) > 0 {
+		// A map is the whole vocabulary: a group it does not name grants nothing.
+		return RoleNone
+	}
+	// No map and no prefix (only a Config built by hand: the environment always
+	// supplies one of them): the groups are the role names themselves.
+	if Role(low).Valid() {
+		return Role(low)
 	}
 	return RoleNone
 }

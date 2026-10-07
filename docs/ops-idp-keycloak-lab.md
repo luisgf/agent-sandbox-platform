@@ -80,7 +80,7 @@ Un operator sin `sandbox:exec-any` recibe 403 al hacer exec en una sandbox ajena
 | Variable | Valor lab típico | Efecto en CP |
 |---|---|---|
 | `ASP_IDP_ISSUER` | `https://auth.luisgf.es/realms/asp` | Enciende validador JWT |
-| `ASP_IDP_AUDIENCE` | `asp-api` | Exige `aud` |
+| `ASP_IDP_AUDIENCE` | `asp-api` | Exige `aud`. Con `ASP_IDP_REQUIRED=1` es obligatoria: el CP no arranca sin ella (o sin `ASP_IDP_ALLOW_ANY_AUDIENCE=1`). El realm tiene que emitir ese `aud` (mapper de audiencia en el client) |
 | `ASP_IDP_JWKS_URL` | `…/protocol/openid-connect/certs` | Evita depender solo de discovery |
 | `ASP_IDP_REQUIRED` | `1` | User-facing sin JWT → **401** |
 | `ASP_IDP_ROLE_CLAIM` | `groups` | Lee grupos del token |
