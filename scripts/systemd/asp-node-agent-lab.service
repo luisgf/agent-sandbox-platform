@@ -1,0 +1,45 @@
+# ASP node-agent, lab layout (ncc1701d): the control plane runs on the same host, over plain
+# HTTP on loopback, with no mTLS and no enrollment. For a node of a real multi-host
+# deployment use asp-node-agent.service. This is the unit installed on ncc1701d on
+# 2026-10-07 in place of a transient systemd-run unit.
+# Install (on the node):
+#   sudo install -o root -g root -m 0755 build/node-agent /usr/local/bin/node-agent
+#       (root-owned and outside the build directory: the unit runs as root)
+#   sudo cp scripts/systemd/asp-node-agent-lab.service /etc/systemd/system/asp-node-agent.service
+#   # adjust --node-id, --disk-dir and ASP_ATTEST_KEY if they differ on your host
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now asp-node-agent.service
+# Replacing a running agent stops its VMs (KillMode=control-group): cordon and drain first.
+# Docs: docs/ops-idp-keycloak-lab.md, docs/bare-metal-ch.md section 5.6
+[Unit]
+Description=ASP node-agent (ncc1701d, Cloud Hypervisor sandboxes)
+Documentation=file:///home/ubuntu/src/bots/docs/ops-idp-keycloak-lab.md
+# After= orders the start at boot; there is no Wants= on the control plane on purpose: starting or
+# restarting the agent must not start a control plane somebody stopped.
+After=network-online.target asp-control-plane.service
+Wants=network-online.target
+# Never create /sandbox/disks on the root filesystem if the disk is not mounted yet.
+RequiresMountsFor=/sandbox
+# At boot the control plane (which waits for its Postgres container) may not answer for
+# a while: the agent exits when it cannot register, so retry for ever, not 5 times.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
+ExecStart=/usr/local/bin/node-agent \
+  --control-plane-url=http://127.0.0.1:18112 --node-id=ncc1701d \
+  --ch-binary=/usr/local/bin/cloud-hypervisor --ch-socket-dir=/run/asp --disk-dir=/sandbox/disks \
+  --agent-listen=127.0.0.1:9100 --reconcile --reconcile-interval=2s --tap-auto --host-vsock
+# The VMs are children of the agent and a new agent does not adopt them: stop every
+# cloud-hypervisor and virtiofsd together with it (stop, restart, crash). Do not change.
+KillMode=control-group
+TimeoutStopSec=30
+# Then remove what they held (TAPs, tunnels, sockets). Sandbox disks stay: a stopped
+# sandbox keeps its disk (ADR-0012) and the agent's disk GC decides about the rest.
+ExecStopPost=-/usr/local/bin/node-agent --reap-only --ch-socket-dir=/run/asp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

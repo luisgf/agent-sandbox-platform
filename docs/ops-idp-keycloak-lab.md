@@ -163,7 +163,10 @@ Plantilla en repo: [`scripts/systemd/asp-control-plane.service`](../scripts/syst
 | Unit | `asp-control-plane.service` |
 | Binary | `/home/ubuntu/src/bots/build/api` |
 | Listen | `127.0.0.1:18112` (`LISTEN_ADDR`) |
-| Env file | `/home/ubuntu/.secrets/asp-idp.env` |
+| Env file | `/home/ubuntu/.secrets/asp-idp.env` (con `DATABASE_URL`) |
+| Estado | Postgres: contenedor `asp-postgres` en `127.0.0.1:5433` ([bare-metal §4.1](bare-metal-ch.md#41-postgres-compose)) |
+| Drop-ins | `/etc/systemd/system/asp-control-plane.service.d/`: `keys.conf` (claves fuera de `/tmp`), `local-net-dial.conf`, `postgres.conf` (espera a Docker y reintenta sin límite) e `idle.conf` (`ASP_SANDBOX_IDLE_TIMEOUT=2h`) |
+| Node-agent | `asp-node-agent.service` (ver abajo), `/usr/local/bin/node-agent` |
 
 ### Instalar / reemplazar el runner ad-hoc
 
@@ -202,7 +205,24 @@ sudo systemctl daemon-reload && sudo systemctl restart asp-control-plane
 - **Claves:** copiarlas en vez de dejar que se creen mantiene válidos los certificados de nodo y el `kid` de los tokens.
 - **Tenant:** añade también `ASP_IDP_DEFAULT_TENANT=default` al env file (tabla de arriba). Sin esa línea, cada `POST /v1/sandboxes` con un token del realm responde 401 `idp token names no tenant`.
 - **Atestación:** el node-agent de este host firma con `ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem`.
-- **Estado:** el store es memoria. Reiniciar el servicio borra sandboxes y API keys, y el node-agent vuelve a registrarse solo.
+- **Estado:** desde 2026-10-07 el store es Postgres (`DATABASE_URL` en el env file): reiniciar el servicio **conserva** sandboxes, eventos y API keys, y el node-agent sigue registrado. Con el store en memoria (sin `DATABASE_URL`) reiniciar lo borraba todo y el nodo se registraba de nuevo.
+- **Reaper de inactividad:** `idle.conf` lo activa a 2 h. Para la sandbox, no la borra: su disco se conserva y `asp session resume` la trae de vuelta ([ADR-0012](adr/0012-retained-disks.md)).
+
+### systemd — `asp-node-agent.service`
+
+El node-agent de este host corre como unidad persistente (antes, una unidad transitoria de `systemd-run` que no sobrevivía a un reinicio). Plantilla en el repo: [`scripts/systemd/asp-node-agent-lab.service`](../scripts/systemd/asp-node-agent-lab.service): el plano de control está en el mismo host, por HTTP en loopback, sin mTLS ni enroll (la de [`asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) es para nodos de un despliegue de varios servidores).
+
+```bash
+sudo install -o root -g root -m 0755 build/node-agent /usr/local/bin/node-agent   # de root: la unidad corre como root
+sudo cp scripts/systemd/asp-node-agent-lab.service /etc/systemd/system/asp-node-agent.service
+sudo systemctl daemon-reload && sudo systemctl enable --now asp-node-agent.service
+journalctl -u asp-node-agent -f
+```
+
+- **Orden y reintentos.** `After=asp-control-plane.service`, sin `Wants=` a propósito: arrancar o reiniciar el agente no levanta un plano de control que alguien paró, y reiniciar el plano de control no toca al agente ni a sus VMs. Si el plano de control aún no responde (al arrancar el servidor espera a su contenedor de Postgres), el agente sale al no poder registrarse y systemd lo reintenta cada 5 s sin tope (`StartLimitIntervalSec=0`). `RequiresMountsFor=/sandbox` evita crear `/sandbox/disks` en el disco raíz si `/sandbox` no está montado.
+- **Actualizar el binario detiene todas las VMs** (`KillMode=control-group`): las sandboxes que corren pasan a `failed` (`node_agent_restarted`) y sus discos los recoge el GC; las paradas conservan el suyo. Haz `cordon`, drena, y entonces `sudo install -o root -g root -m 0755 <nuevo> /usr/local/bin/node-agent && sudo systemctl restart asp-node-agent`.
+- **Tras reiniciar el servidor** vuelven solos Docker, `asp-postgres`, el plano de control y el agente; las sesiones que corrían quedan `failed` (`node_agent_restarted`) y las paradas se pueden reanudar.
+- **Si el agente muere** (`kill -9`), systemd lo reinicia y la limpieza (`--reap-only`) corre antes; el plano de control ve un `agent_instance_id` nuevo.
 
 ### Alternativas y consecuencias
 

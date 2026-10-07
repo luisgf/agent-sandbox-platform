@@ -525,6 +525,8 @@ journalctl -u asp-node-agent -f
 
 Primer arranque: añade `ASP_ENROLL=1` y `ASP_NODE_BOOTSTRAP_TOKEN=…` al env file y quítalos cuando el journal diga `enrolled`; el token no debe quedarse en el nodo. Las líneas del env file mandan sobre las `Environment=` de la unit.
 
+Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`, cada 5 s): el agente sale si no puede registrarse, y con el límite por defecto de systemd (5 arranques en 10 s) un plano de control que tarde en responder al arrancar el servidor dejaría el nodo caído hasta arrancarlo a mano. Un nodo de laboratorio con el plano de control en el mismo host (HTTP por loopback, sin mTLS ni enroll) usa [`scripts/systemd/asp-node-agent-lab.service`](../scripts/systemd/asp-node-agent-lab.service), descrita en [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md#systemd--asp-node-agentservice).
+
 **2. Limpieza al arrancar** (`--reap-leftovers=on`, por defecto). Antes de abrir ningún socket y antes de registrarse, el agente busca lo que dejó un proceso anterior y lo borra. Cubre lo que la unit no evita: un agente lanzado a mano o una unit con `KillMode=process`. **Los discos no entran aquí**: una sandbox parada conserva el suyo ([ADR-0012](adr/0012-retained-disks.md)) y el reaper no sabría distinguirlo de un resto. Tras el primer sondeo de `/work`, el reconciler borra las copias de `--disk-dir` que no son de ninguna sandbox (ni asignada, ni retenida, ni en borrado).
 
 | Resto | Cómo lo reconoce |

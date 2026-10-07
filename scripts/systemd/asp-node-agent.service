@@ -25,6 +25,10 @@ Description=ASP node-agent (Cloud Hypervisor sandboxes)
 Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/docs/bare-metal-ch.md
 After=network-online.target
 Wants=network-online.target
+# At boot the control plane may not answer yet (another host, or its Postgres is still
+# starting). The agent exits when it cannot register, so retry for ever: systemd's default
+# start limit (5 starts in 10 s) would leave the node down until somebody starts it by hand.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -50,7 +54,7 @@ TimeoutStopSec=30
 # copies. The agent does the same when it starts (--reap-leftovers=on).
 ExecStopPost=-/usr/local/bin/node-agent --reap-only
 Restart=always
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
