@@ -16,6 +16,7 @@ import (
 func TestNodeListCordonUncordon(t *testing.T) {
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	var cordonCalls []string
 	mux := http.NewServeMux()
@@ -44,7 +45,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr strings.Builder
-	if code := run([]string{"node", "list", "--cp-url", srv.URL}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"node", "list", "--control-plane-url", srv.URL}, &stdout, &stderr); code != 0 {
 		t.Fatalf("list exit=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
@@ -75,18 +76,18 @@ func TestNodeListCordonUncordon(t *testing.T) {
 	}
 
 	stdout.Reset()
-	if code := run([]string{"node", "cordon", "--cp-url", srv.URL, "node-a"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "node node-a cordoned") || !strings.Contains(stdout.String(), "2 running stay") {
+	if code := run([]string{"node", "cordon", "--control-plane-url", srv.URL, "node-a"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "node node-a cordoned") || !strings.Contains(stdout.String(), "2 running stay") {
 		t.Fatalf("cordon exit=%d out=%s err=%s", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
-	if code := run([]string{"node", "uncordon", "--cp-url", srv.URL, "node-a"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "schedulable=true") {
+	if code := run([]string{"node", "uncordon", "--control-plane-url", srv.URL, "node-a"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "schedulable=true") {
 		t.Fatalf("uncordon exit=%d out=%s", code, stdout.String())
 	}
 	stderr.Reset()
-	if code := run([]string{"node", "cordon", "--cp-url", srv.URL, "ghost"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "node not found") {
+	if code := run([]string{"node", "cordon", "--control-plane-url", srv.URL, "ghost"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "node not found") {
 		t.Fatalf("cordon unknown exit=%d err=%s", code, stderr.String())
 	}
-	if code := run([]string{"node", "cordon", "--cp-url", srv.URL}, &stdout, &stderr); code != 2 {
+	if code := run([]string{"node", "cordon", "--control-plane-url", srv.URL}, &stdout, &stderr); code != 2 {
 		t.Fatalf("cordon without id must be a usage error, got %d", code)
 	}
 	if len(cordonCalls) != 3 {
@@ -115,6 +116,7 @@ func TestCreateExplainsNoCapacityAndRejectedPins(t *testing.T) {
 }
 
 func TestSessionStatusExplainsASandboxLostWithItsNode(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -145,6 +147,7 @@ func TestSessionStatusExplainsASandboxLostWithItsNode(t *testing.T) {
 func TestNodeEnrollToken(t *testing.T) {
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	var got map[string]any
 	mux := http.NewServeMux()
@@ -162,7 +165,7 @@ func TestNodeEnrollToken(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr strings.Builder
-	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "--node-id", "node-a", "--ttl", "2h"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"node", "enroll-token", "--control-plane-url", srv.URL, "--node-id", "node-a", "--ttl", "2h"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("enroll-token exit=%d stderr=%s", code, stderr.String())
 	}
 	if strings.TrimSpace(stdout.String()) != "asp_enroll_abc" {
@@ -177,14 +180,14 @@ func TestNodeEnrollToken(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL}, &stdout, &stderr); code != 0 || got["node_id"] != nil || got["ttl_seconds"] != float64(3600) {
+	if code := run([]string{"node", "enroll-token", "--control-plane-url", srv.URL}, &stdout, &stderr); code != 0 || got["node_id"] != nil || got["ttl_seconds"] != float64(3600) {
 		t.Fatalf("unpinned token: exit=%d body=%v err=%s", code, got, stderr.String())
 	}
 	stderr.Reset()
-	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "--node-id", "tenant"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "platform-scoped") {
+	if code := run([]string{"node", "enroll-token", "--control-plane-url", srv.URL, "--node-id", "tenant"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "platform-scoped") {
 		t.Fatalf("refused: exit=%d err=%s", code, stderr.String())
 	}
-	if code := run([]string{"node", "enroll-token", "--cp-url", srv.URL, "extra"}, &stdout, &stderr); code != 2 {
+	if code := run([]string{"node", "enroll-token", "--control-plane-url", srv.URL, "extra"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("extra argument must be a usage error, got %d", code)
 	}
 }

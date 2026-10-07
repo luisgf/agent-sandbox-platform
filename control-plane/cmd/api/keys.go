@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/api"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
@@ -23,12 +23,15 @@ type configError struct{ error }
 // prodMode reports whether the control plane is configured like a production
 // deployment, and which setting says so.
 func prodMode() (bool, string) {
-	for _, k := range []string{"ASP_CLIENT_CA", "ASP_TLS_CERT", "DATABASE_URL"} {
+	for _, k := range []string{"ASP_CLIENT_CA", "ASP_TLS_CERT"} {
 		if strings.TrimSpace(os.Getenv(k)) != "" {
 			return true, k + " is set"
 		}
 	}
-	if api.EnvTruthy("ASP_IDP_REQUIRED") {
+	if databaseURL() != "" {
+		return true, EnvDatabaseURL + " is set"
+	}
+	if envcfg.Truthy("ASP_IDP_REQUIRED") {
 		return true, "ASP_IDP_REQUIRED=1"
 	}
 	return false, ""
@@ -66,7 +69,7 @@ func checkKeyLocations() error {
 	case !prod:
 		slog.Warn("key material in a temporary directory: fine for a lab, lost on reboot", "keys", inTmp)
 		return nil
-	case api.EnvTruthy(EnvAllowTmpKeys):
+	case envcfg.Truthy(EnvAllowTmpKeys):
 		slog.Warn(EnvAllowTmpKeys+"=1: production mode with key material in a temporary directory, lost on reboot", "reason", why, "keys", inTmp)
 		return nil
 	}

@@ -1,10 +1,12 @@
 package store
 
+import "github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
+
 // AutoProvisionEnabled is true when ASP_AUTO_PROVISION=1/true.
 // Default is false: Create leaves sandboxes in requested for the node reconciler.
 // Set ASP_AUTO_PROVISION=1 to keep the sync stub provisioner (requested→running).
 func AutoProvisionEnabled() bool {
-	return envTruthy("ASP_AUTO_PROVISION")
+	return envcfg.Truthy("ASP_AUTO_PROVISION")
 }
 
 // ValidAgentStatus reports whether state is allowed on POST .../status.

@@ -59,8 +59,8 @@ curl() { ip netns exec "$NS" curl "$@"; }
 # asp runs the CLI against the control plane. Its stdin is /dev/null unless ASP_STDIN
 # names a file: a buffered exec reads stdin until EOF and hangs on an open terminal.
 asp() {
-  in_a env HOME="$WORK/home" ASP_CP_URL="$CP" ASP_SESSION_DIR="$WORK/sessions" \
-    ASP_IDP_REQUIRED= ASP_API_KEY= ASP_ID_TOKEN= "$BIN/asp" "$@" <"${ASP_STDIN:-/dev/null}"
+  in_a env HOME="$WORK/home" ASP_CONTROL_PLANE_URL="$CP" ASP_SESSION_DIR="$WORK/sessions" \
+    ASP_REQUIRE_TOKEN= ASP_IDP_REQUIRED= ASP_API_KEY= ASP_ID_TOKEN= "$BIN/asp" "$@" <"${ASP_STDIN:-/dev/null}"
 }
 
 stop_agent() {
@@ -141,10 +141,10 @@ pids+=($!)
 
 # --- the control plane
 export ASP_ATTEST_KEY="$WORK/keys/attest.pem"
-ip netns exec "$NS" env LISTEN_ADDR="127.0.0.1:$CP_PORT" ASP_INSECURE_OPEN_API=1 ASP_AUTO_PROVISION=0 \
+ip netns exec "$NS" env ASP_LISTEN_ADDR="127.0.0.1:$CP_PORT" ASP_INSECURE_OPEN_API=1 ASP_AUTO_PROVISION=0 \
   ASP_AGENT_TOKEN_FILE="$WORK/agent.token" ASP_WORKSPACE_ROOTS="$WORK/ws" \
   ASP_CA_CERT="$WORK/keys/ca.crt" ASP_CA_KEY="$WORK/keys/ca.key" ASP_OIDC_KEY="$WORK/keys/oidc.pem" \
-  ASP_EGRESS_DENY_DEFAULT=1 "$BIN/api" >"$WORK/cp.log" 2>&1 &
+  ASP_EGRESS_DEFAULT_ALLOW=0 "$BIN/api" >"$WORK/cp.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 50); do in_a curl -fsS "$CP/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
 in_a curl -fsS "$CP/healthz" >/dev/null || fail "the control plane did not start: $(tail -5 "$WORK/cp.log")"

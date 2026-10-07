@@ -46,8 +46,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # asp runs the CLI against the control plane. Its stdin is /dev/null unless ASP_STDIN
 # names a file: a buffered exec reads stdin until EOF and hangs on an open terminal.
 asp() {
-  env HOME="$WORK/home" ASP_CP_URL="$CP" ASP_SESSION_DIR="$WORK/sessions" \
-    ASP_IDP_REQUIRED= ASP_API_KEY= ASP_ID_TOKEN= "$BIN/asp" "$@" <"${ASP_STDIN:-/dev/null}"
+  env HOME="$WORK/home" ASP_CONTROL_PLANE_URL="$CP" ASP_SESSION_DIR="$WORK/sessions" \
+    ASP_REQUIRE_TOKEN= ASP_IDP_REQUIRED= ASP_API_KEY= ASP_ID_TOKEN= "$BIN/asp" "$@" <"${ASP_STDIN:-/dev/null}"
 }
 gx() { asp session exec --name "$1" --buffered --cmd "$2" 2>&1; } # run a command in a guest
 sid() { json_field sandbox_id <"$WORK/sessions/$1.json"; }
@@ -122,7 +122,7 @@ echo host-file >"$WORK/ws/default/proj/host.txt"
 
 # --- the control plane
 export ASP_ATTEST_KEY="$WORK/keys/attest.pem"
-env LISTEN_ADDR="127.0.0.1:$CP_PORT" ASP_INSECURE_OPEN_API=1 ASP_AUTO_PROVISION=0 \
+env ASP_LISTEN_ADDR="127.0.0.1:$CP_PORT" ASP_INSECURE_OPEN_API=1 ASP_AUTO_PROVISION=0 \
   ASP_AGENT_TOKEN_FILE="$WORK/agent.token" ASP_WORKSPACE_ROOTS="$WORK/ws" \
   ASP_CA_CERT="$WORK/keys/ca.crt" ASP_CA_KEY="$WORK/keys/ca.key" ASP_OIDC_KEY="$WORK/keys/oidc.pem" \
   "$BIN/api" >"$WORK/cp.log" 2>&1 &

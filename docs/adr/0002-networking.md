@@ -77,11 +77,11 @@ El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`).
 | Rate limit | `node-agent/internal/egress/ratelimit.go` |
 | TAP manager | `node-agent/internal/tap/` + `--tap-auto` / `ASP_TAP_AUTO=1` |
 | nft enforcer | `node-agent/internal/nftredirect/` + `scripts/nftables-egress-redirect.sh` |
-| Flags nft | `--nft-egress-redirect` (por defecto activo con `--egress-proxy-listen`), `--nft-egress-mode=soft\|enforce` (por defecto `enforce`; ADR-0006), `--nft-http-ports`, `--nft-dns-action`, `--guest-subnet` |
+| Flags nft | `--egress-nft-redirect` (por defecto activo con `--egress-proxy-listen`), `--nft-egress-mode=soft\|enforce` (por defecto `enforce`; ADR-0006), `--nft-http-ports`, `--nft-dns-action`, `--guest-subnet` |
 | Proxy listen | `--egress-proxy-listen`, `--egress-dns-sink`, `--egress-enforce` |
 | CP egress API | `PUT/GET /v1/tenants/{id}/egress`, `POST …/egress/check` |
 | Migración | `control-plane/migrations/003_tenant_egress.sql` |
-| Defaults CP | `ASP_EGRESS_DENY_DEFAULT=1` (prod); memory-dev puede auto-set `ASP_EGRESS_DEFAULT_ALLOW=1` |
+| Defaults CP | `ASP_EGRESS_DEFAULT_ALLOW=0` con Postgres; con el store en memoria (dev) `1` salvo que se diga otra cosa (antes `ASP_EGRESS_DENY_DEFAULT=1`) |
 | Smoke | `scripts/smoke-egress-proxy.sh`, `scripts/smoke-identity-egress.sh` |
 
 Subnet por defecto del sketch: **`10.200.0.0/16`** (con `--tap-auto`, una /30 por sandbox: TAP `.1`, guest `.2`).

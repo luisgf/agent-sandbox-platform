@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"net/http"
 	"os"
 	"strings"
@@ -17,7 +18,7 @@ type ResolveInput struct {
 	CachePath     string // empty → DefaultCachePath()
 	GrantType     string
 	ForceFetch    bool // ignore cache; always hit IdP when credentials exist
-	Required      bool // empty → ASP_IDP_REQUIRED truthy
+	Required      bool // empty → ASP_REQUIRE_TOKEN truthy
 	HTTPClient    *http.Client
 	Now           func() time.Time // tests; nil → time.Now
 }
@@ -29,15 +30,20 @@ type ResolveResult struct {
 	Token  Token  // set when Source is cache or fetch
 }
 
-// IDPRequired reports whether ASP_IDP_REQUIRED is set to a truthy value.
-func IDPRequired() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("ASP_IDP_REQUIRED")))
-	switch v {
-	case "1", "true", "yes", "on":
-		return true
-	default:
+// EnvRequireToken makes the CLI fail when no token can be had, instead of calling the
+// control plane without one. It was ASP_IDP_REQUIRED, a name the control plane uses
+// for something else (it requires a valid token on every user route) and the node-agent
+// for a third (the multi-user profile); the old name is still read, with a warning.
+const EnvRequireToken = "ASP_REQUIRE_TOKEN"
+
+// TokenRequired reports whether ASP_REQUIRE_TOKEN (or the old ASP_IDP_REQUIRED) is true.
+func TokenRequired() bool {
+	v, _, ok := envcfg.Get(nil, EnvRequireToken, "ASP_IDP_REQUIRED")
+	if !ok {
 		return false
 	}
+	b, _ := envcfg.ParseBool(v)
+	return b
 }
 
 // EnvIDToken returns ASP_ID_TOKEN or ASP_IDP_ACCESS_TOKEN.
@@ -57,7 +63,7 @@ func EnvIDToken() string {
 //  4. API key
 //  5. empty (unless Required → error)
 func ResolveBearer(ctx context.Context, in ResolveInput) (ResolveResult, error) {
-	required := in.Required || IDPRequired()
+	required := in.Required || TokenRequired()
 	explicit := strings.TrimSpace(in.ExplicitToken)
 	if explicit == "" {
 		explicit = EnvIDToken()
@@ -106,7 +112,7 @@ func ResolveBearer(ctx context.Context, in ResolveInput) (ResolveResult, error) 
 	}
 
 	if required {
-		msg := "ASP_IDP_REQUIRED set but no id-token/cache/credentials"
+		msg := EnvRequireToken + " is set but there is no id-token, cache or credentials"
 		if ferr != nil {
 			msg += ": " + ferr.Error()
 		}

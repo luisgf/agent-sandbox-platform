@@ -63,10 +63,10 @@ El node-agent habla con CH vía su HTTP API sobre Unix socket:
 |---|---|
 | Interfaz VMM | `node-agent/internal/vmm/vmm.go` (`MicroVMConfig`, `Start`/`Stop`/`Pause`) |
 | Cliente CH | `node-agent/internal/vmm/cloudhypervisor.go` — `vmm.ping`, `vm.create`, `vm.boot`, `vm.delete` |
-| Spawn por sandbox | `NewSpawningCloudHypervisor(bin, socketDir)` vía `--ch-socket-dir` / `CH_SOCKET_DIR` |
-| FakeVMM | `node-agent/internal/vmm/fake.go` + `--dry-run` / `DRY_RUN=1` |
-| Binario | `--ch-binary` / `CLOUD_HYPERVISOR_BIN` (default `cloud-hypervisor`) |
-| Shared socket | `--ch-api-socket` / `CH_API_SOCKET` (legacy) |
+| Spawn por sandbox | `NewSpawningCloudHypervisor(bin, socketDir)` vía `--ch-socket-dir` / `ASP_CH_SOCKET_DIR` |
+| FakeVMM | `node-agent/internal/vmm/fake.go` + `--dry-run` / `ASP_DRY_RUN=1` |
+| Binario | `--ch-binary` / `ASP_CH_BINARY` (default `cloud-hypervisor`) |
+| Shared socket | `--ch-api-socket` / `ASP_CH_API_SOCKET` (legacy) |
 | Reconciler | `node-agent/internal/reconciler/` — arma `MicroVMConfig` con `TapDevice`, `VsockCID`, kernel/rootfs |
 | Assets guest | `/opt/sandbox/vmlinux`, `/opt/sandbox/rootfs.img` (convención ops; ver bare-metal) |
 | Guía ops | [`../bare-metal-ch.md`](../bare-metal-ch.md) §2, §5 |

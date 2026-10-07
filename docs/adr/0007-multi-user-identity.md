@@ -164,7 +164,7 @@ El bridge global actual es **inseguro para multi-usuario real**. Tres opciones, 
 | Flag / env | `ASP_SSH_AGENT_SOCK_TEMPLATE=/run/asp/ssh-agents/{owner_sub}.sock` |
 | `hostvsock.AttachSandbox` | `sshagent.ServeConn` con HostSock del registry y el id de la sandbox (no env fallback; aprobaciones de esa sandbox) |
 | Symlink | `/run/asp/ssh-agent-{id}.sock` → path resuelto (virtiofs docs) |
-| Confirm | Default-on si `ASP_MULTI_USER=1` o `ASP_IDP_REQUIRED=1` o template set; `ASP_SSH_AGENT_CONFIRM=0` fuerza off |
+| Confirm | Default-on si `ASP_MULTI_USER=1` (entonces también `ASP_IDP_REQUIRED=1`) o template set; `ASP_SSH_AGENT_CONFIRM=0` fuerza off (y la bandera `--ssh-agent-confirm` manda sobre la variable) |
 | Approve | `POST …/ssh-agent/approve` exige `sandbox_id` (la aprobación solo desbloquea una firma de esa sandbox) y acepta `actor_sub` / `X-ASP-Actor-Sub` para el audit log |
 | Fallback | Path ausente o bind vacío → **FakeAgent** (sin claves) |
 

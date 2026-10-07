@@ -133,7 +133,7 @@ Matriz efectiva (IdP on + JWT presente):
 |---|---|---|
 | `ASP_SSH_AGENT_SOCK_TEMPLATE` / `--ssh-agent-sock-template` | unset | Si set → path por sandbox vía `{owner_sub}` / `{sandbox_id}` / `{id}`. Ausente → FakeAgent. Sin template → legacy `SSH_AUTH_SOCK` global. |
 | `ASP_MULTI_USER=1` | off | Perfil multi-user: confirm SSH default-on. |
-| `ASP_IDP_REQUIRED=1` | (CP) | En node-agent también enciende `--multi-user` heuristics → confirm default-on. |
+| `ASP_IDP_REQUIRED=1` | (CP) | Solo el plano de control. En el node-agent encendía `--multi-user`: ahora es `ASP_MULTI_USER` y `ASP_IDP_REQUIRED` avisa. |
 | `ASP_SSH_AGENT_CONFIRM` | unset | `1` fuerza on; `0` fuerza off; unset → on si multi-user/template. |
 
 Flujo:

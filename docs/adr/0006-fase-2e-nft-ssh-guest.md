@@ -28,7 +28,7 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
   - DNS: `--dns-action redirect` (hacia DNS sink) **o** `drop`.
   - Acciones CLI: `dry-run` / `apply` / `flush` idempotentes; dry-run **sin root**.
 - Modos explícitos: **`soft`** (SoftFail: warn + exit 0) vs **`enforce`** (falla sin root/`nft`).
-- Integración node-agent: `--nft-egress-redirect` (alias `--egress-nft-redirect`), `--nft-egress-mode`, `--nft-http-ports`, `--nft-dns-action`, `--guest-subnet`.
+- Integración node-agent: `--egress-nft-redirect` (el alias `--nft-egress-redirect` se retiró), `--nft-egress-mode`, `--nft-http-ports`, `--nft-dns-action`, `--guest-subnet`.
 - Paquete Go: `node-agent/internal/nftredirect` (`Apply`/`Flush`/`DryRun`, `ModeSoft`/`ModeEnforce`).
 
 ### 2) SSH agent auto vía vsock proxy en guest
@@ -41,7 +41,7 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 - Unidad **`ssh-agent-vsock.service`** (+ ejemplo OpenRC) en `images/guest/`, habilitada al build del rootfs.
 - Preferencia **vsock** sobre virtiofs (menos superficie CH, mismo mapa de puertos).
 - Lab sin KVM: `ASP_SSH_AGENT_UPSTREAM=unix:/path/to/host-vsock-26501.sock`.
-- Flag node-agent **`--guest-ssh-agent-auto`**: default on cuando hay `--host-vsock` o `--ssh-agent-bridge`; se puede forzar off con `ASP_GUEST_SSH_AGENT_AUTO=0`.
+- Flag node-agent **`--guest-ssh-agent-auto`** (retirado, #126): solo escribía una línea en el log; que la imagen monte el agente lo decide la imagen.
 - Con Cloud Hypervisor, el path productivo guest→host es **`AttachSandbox`** → `{vsock}_{26501}` (no basta AF_VSOCK Listen); ver why hybrid.
 - El confirm gate de 2d (`--ssh-agent-confirm`) **sigue aplicando** a firmas que llegan por host-vsock/bridge.
 
@@ -82,12 +82,12 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 |---|---|
 | Script nft | `scripts/nftables-egress-redirect.sh` |
 | Enforcer | `node-agent/internal/nftredirect/enforcer.go` |
-| Flags | `--nft-egress-redirect`, `--nft-egress-mode=soft\|enforce`, `--nft-http-ports=80,443`, `--nft-dns-action=redirect\|drop`, `--guest-subnet=10.200.0.0/16` |
+| Flags | `--egress-nft-redirect`, `--nft-egress-mode=soft\|enforce`, `--nft-http-ports=80,443`, `--nft-dns-action=redirect\|drop`, `--guest-subnet=10.200.0.0/16` |
 | Guest proxy | `images/guest/cmd/vsock-ssh-agent-proxy/` |
 | Systemd unit | `images/guest/systemd/ssh-agent-vsock.service` (y OpenRC bajo `images/guest/openrc/`) |
 | Rootfs build | `scripts/build-guest-rootfs.sh` |
 | Guest README | `images/guest/README.md` |
-| Flag auto | `--guest-ssh-agent-auto` / `ASP_GUEST_SSH_AGENT_AUTO` |
+| Flag auto | retirado (#126): `--guest-ssh-agent-auto` / `ASP_GUEST_SSH_AGENT_AUTO` se aceptan, avisan y no hacen nada |
 | Why | [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md) |
 | Tests | `nftredirect/enforcer_test.go`, `vsock-ssh-agent-proxy/proxy_test.go`, `sshagent/guest_mount_test.go` |
 
@@ -96,9 +96,9 @@ Ejemplo bare-metal (enforce):
 ```bash
 node-agent ... \
   --egress-enforce --egress-proxy-listen=0.0.0.0:8888 --egress-dns-sink=0.0.0.0:5353 \
-  --nft-egress-redirect --nft-egress-mode=enforce \
+  --egress-nft-redirect --nft-egress-mode=enforce \
   --nft-http-ports=80,443,8080 --nft-dns-action=redirect \
-  --host-vsock --guest-ssh-agent-auto
+  --host-vsock
 ```
 
 **Actualizado 2026-10 (#123):** el redirect pasa a estar **activado por defecto** cuando el nodo tiene `--egress-proxy-listen` y no es `--dry-run`, y su modo por defecto es `enforce`: «deny by default» ya no depende de que el operador ponga dos flags más. `soft` queda para `--dry-run` y para quien lo pida (con aviso: el nodo arranca sin forzar el egress). El script ya no se instala en el host: va embebido en el binario (`ASP_NFT_SCRIPT` nombra uno propio). El nodo informa `egress_enforced` al registrarse (migración 021) y `asp node list` lo muestra. Esto cambia el comportamiento de un nodo con proxy y sin los flags nft: antes arrancaba sin reglas, ahora las aplica o no arranca; quien no quiera el redirect pone `--egress-nft-redirect=false`.
@@ -107,7 +107,7 @@ Ejemplo CI/lab (soft):
 
 ```bash
 node-agent ... --dry-run --egress-proxy-listen=:8888 \
-  --nft-egress-redirect --nft-egress-mode=soft
+  --egress-nft-redirect --nft-egress-mode=soft
 # Apply SoftFail sin root; DryRun del script sigue siendo testeable
 ```
 

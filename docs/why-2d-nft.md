@@ -28,4 +28,4 @@ Confiar solo en la buena fe del guest contradice el threat model (guest = untrus
 - Sin puertos HTTP configurables.
 - SoftFail implícito vs modo **enforce** explícito.
 
-Usa 2e en despliegues nuevos: `--nft-egress-redirect --nft-egress-mode=enforce` (bare-metal) o `soft` (lab).
+Usa 2e en despliegues nuevos: `--egress-nft-redirect --nft-egress-mode=enforce` (bare-metal) o `soft` (lab).

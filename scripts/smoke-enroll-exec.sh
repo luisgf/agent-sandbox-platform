@@ -46,7 +46,7 @@ done
 [[ -S "$SOCK" ]] || { echo "pod-daemon sock missing"; cat "$PD_LOG"; exit 1; }
 
 echo "==> start control-plane (memory, auto_provision=0)"
-LISTEN_ADDR=127.0.0.1:18080 ASP_AUTO_PROVISION=0 "$WORKDIR/api" >"$CP_LOG" 2>&1 &
+ASP_LISTEN_ADDR=127.0.0.1:18080 ASP_AUTO_PROVISION=0 "$WORKDIR/api" >"$CP_LOG" 2>&1 &
 CP_PID=$!
 for i in $(seq 1 50); do
   curl -sf http://127.0.0.1:18080/healthz >/dev/null && break

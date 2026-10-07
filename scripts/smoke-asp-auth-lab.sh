@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ASP_BIN="${ASP_BIN:-$ROOT/build/asp}"
-CP_URL="${ASP_CP_URL:-http://127.0.0.1:18112}"
+CP_URL="${ASP_CONTROL_PLANE_URL:-http://127.0.0.1:18112}"
 SECRETS="${ASP_IDP_SECRETS_FILE:-$HOME/.secrets/asp-keycloak-lab.txt}"
 CACHE="${ASP_IDP_TOKEN_CACHE:-$(mktemp -t asp-auth-cache.XXXXXX.json)}"
 cleanup() { rm -f "$CACHE" 2>/dev/null || true; }
@@ -28,8 +28,8 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' "$CP_URL/v1/sandboxes?tenant_id=d
 [[ "$code" == "401" ]] || { echo "expected 401 got $code"; exit 1; }
 
 echo "==> asp auth login"
-export ASP_CP_URL="$CP_URL"
-export ASP_IDP_REQUIRED=1
+export ASP_CONTROL_PLANE_URL="$CP_URL"
+export ASP_REQUIRE_TOKEN=1
 export ASP_IDP_SECRETS_FILE="$SECRETS"
 export ASP_IDP_TOKEN_CACHE="$CACHE"
 "$ASP_BIN" auth login >/dev/null

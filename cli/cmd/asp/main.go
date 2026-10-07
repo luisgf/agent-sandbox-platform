@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"io"
 	"os"
 	"strings"
@@ -24,6 +25,8 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// A name that was renamed still works and says so on this command's stderr.
+	envcfg.Warn = func(msg string) { fmt.Fprintf(stderr, "asp: warning: %s\n", msg) }
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		printRootUsage(stderr)
 		if len(args) == 0 {
@@ -78,19 +81,19 @@ Usage:
   asp version
 
 Global env:
-  ASP_CP_URL              control-plane base URL (default http://127.0.0.1:8080)
+  ASP_CONTROL_PLANE_URL   control-plane base URL (also --control-plane-url; default http://127.0.0.1:8080)
   ASP_TENANT              tenant for create/list/run (also --tenant); empty: your token's or key's tenant
   ASP_SESSION_DIR         named sessions dir (default ~/.cache/asp/sessions, mode 0700)
   ASP_SESSION_FILE        optional single-file override (ignores --name)
   ASP_API_KEY             Bearer API key (also --api-key) — lab without IdP
   ASP_ID_TOKEN            IdP access token (also --id-token); preferred Bearer
-  ASP_IDP_REQUIRED        if 1/true, require IdP token (auto-fetch when possible)
+  ASP_REQUIRE_TOKEN       if true, fail when no IdP token can be had (auto-fetches one when it can)
   ASP_IDP_TOKEN_URL       OIDC token endpoint (or derive from ASP_IDP_ISSUER)
   ASP_IDP_SECRETS_FILE    KEY=VALUE secrets (default ~/.secrets/asp-keycloak-lab.txt)
   ASP_IDP_CLIENT_ID/_SECRET / ASP_IDP_USERNAME/_PASSWORD / ASP_IDP_GRANT_TYPE
 
 Agent one-liner (lab IdP on ncc1701d — see docs/ops-asp-agent-runner.md):
-  export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
+  export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
   asp sandbox run --tenant=default --cmd 'echo hello'
 
 Reusable shell session (OpenCode bash tool — see docs/ops-asp-session.md):
@@ -115,8 +118,12 @@ type globalFlags struct {
 }
 
 func addGlobalFlags(fs *flag.FlagSet, g *globalFlags) {
-	defURL := envOr("ASP_CP_URL", "http://127.0.0.1:8080")
-	fs.StringVar(&g.cpURL, "cp-url", defURL, "control-plane base URL")
+	defURL := "http://127.0.0.1:8080"
+	if v, _, ok := envcfg.Get(nil, EnvControlPlaneURL, "ASP_CP_URL"); ok {
+		defURL = strings.TrimSpace(v)
+	}
+	fs.StringVar(&g.cpURL, "control-plane-url", defURL, "control-plane base URL (env "+EnvControlPlaneURL+")")
+	fs.Var(cpURLAlias{&g.cpURL}, "cp-url", "deprecated: use --control-plane-url")
 	// The credentials have no default: the flag package prints a default in the
 	// usage text, which for a secret taken from the environment would put it in
 	// the log of whatever ran `asp -h` or mistyped a flag. newClient reads the
@@ -674,7 +681,7 @@ func cmdAuthStatus(args []string, stdout, stderr io.Writer) int {
 		HasEnvToken: auth.EnvIDToken() != "",
 		CachePath:   *cache,
 		CanFetch:    auth.CanAutoFetch(),
-		IDPRequired: auth.IDPRequired(),
+		IDPRequired: auth.TokenRequired(),
 	}
 	if tok, err := auth.LoadCache(*cache); err == nil {
 		out.CacheValid = tok.Valid(auth.DefaultSkew())
@@ -698,11 +705,24 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-func envOr(key, def string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
+// EnvControlPlaneURL is where the CLI finds the control plane, the name the node-agent
+// and the control plane use for it. ASP_CP_URL and --cp-url are the old names.
+const EnvControlPlaneURL = "ASP_CONTROL_PLANE_URL"
+
+// cpURLAlias is --cp-url, the old name of --control-plane-url.
+type cpURLAlias struct{ p *string }
+
+func (a cpURLAlias) String() string {
+	if a.p == nil {
+		return ""
 	}
-	return def
+	return *a.p
+}
+
+func (a cpURLAlias) Set(v string) error {
+	envcfg.Warn("--cp-url is deprecated: use --control-plane-url")
+	*a.p = v
+	return nil
 }
 
 // execSeconds is a --exec-timeout in whole seconds, rounded up; 0 (unset) stays 0.

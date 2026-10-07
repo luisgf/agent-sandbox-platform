@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strconv"
 	"strings"
 
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/envcfg"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/metrics"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
 )
@@ -24,9 +24,9 @@ func (b *optBool) String() string {
 }
 
 func (b *optBool) Set(v string) error {
-	parsed, err := strconv.ParseBool(strings.TrimSpace(v))
-	if err != nil {
-		return err
+	parsed, ok := envcfg.ParseBool(v)
+	if !ok {
+		return fmt.Errorf("%q is not a boolean (1, true, yes, on, 0, false, no, off)", v)
 	}
 	b.set, b.value = true, parsed
 	return nil
@@ -34,20 +34,6 @@ func (b *optBool) Set(v string) error {
 
 // IsBoolFlag lets the flag be given bare: --egress-nft-redirect means true.
 func (b *optBool) IsBoolFlag() bool { return true }
-
-// envOptBool reads the first of keys that is set. 1/true/yes/on and 0/false/no/off
-// are understood; anything else counts as not set.
-func envOptBool(keys ...string) optBool {
-	for _, k := range keys {
-		switch strings.ToLower(strings.TrimSpace(os.Getenv(k))) {
-		case "1", "true", "yes", "on":
-			return optBool{set: true, value: true}
-		case "0", "false", "no", "off":
-			return optBool{set: true, value: false}
-		}
-	}
-	return optBool{}
-}
 
 const (
 	nftModeEnforce = "enforce"

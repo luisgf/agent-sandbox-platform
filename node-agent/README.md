@@ -2,16 +2,38 @@
 
 Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía HTTP sobre Unix socket, se enrolla/registra en el control plane (mTLS opcional), expone proxy localhost de exec/egress-check hacia `pod-daemon`, identity proxy OIDC, bridge de SSH agent, **host-vsock** guest→host y **TAP auto**.
 
+## Cómo se lee la configuración
+
+Cada ajuste es una bandera y una variable de entorno con la misma regla (`internal/settings`, y el test `TestEverySettingHasOneNameWithThePrefix` la comprueba):
+
+- **la bandera manda sobre la variable, y la variable sobre el valor por defecto.** El entorno se lee después de las banderas, así que `-h` nunca muestra un valor (un token) que venga de él;
+- la variable es `ASP_` + el nombre de la bandera en mayúsculas con guiones bajos (`--control-plane-url` → `ASP_CONTROL_PLANE_URL`). Las pocas que no siguen la regla ya estaban en uso y están listadas con su motivo en el test (`ASP_WORKSPACE_ROOTS` es la misma lista que lee el plano de control);
+- los booleanos se escriben igual en la bandera y en la variable: `1`, `true`, `yes`, `on` / `0`, `false`, `no`, `off`. Cualquier otra cosa es un error que nombra la variable, no un ajuste que no hace nada;
+- `--reap-only` y `--print-measurement` son acciones, no ajustes: solo tienen bandera.
+
+Nombres que cambiaron. Los antiguos siguen valiendo, con un aviso en el log, hasta que se quiten:
+
+| Antes | Ahora |
+|---|---|
+| `CONTROL_PLANE_URL`, `NODE_ID`, `NODE_ENDPOINT` | `ASP_CONTROL_PLANE_URL`, `ASP_NODE_ID`, `ASP_ENDPOINT` |
+| `CH_SOCKET_DIR`, `CH_API_SOCKET`, `CLOUD_HYPERVISOR_BIN` | `ASP_CH_SOCKET_DIR`, `ASP_CH_API_SOCKET`, `ASP_CH_BINARY` |
+| `VIRTIOFSD_BIN`, `DRY_RUN` | `ASP_VIRTIOFSD_BIN`, `ASP_DRY_RUN` |
+| `--nft-egress-redirect`, `ASP_NFT_EGRESS_REDIRECT` | `--egress-nft-redirect`, `ASP_EGRESS_NFT_REDIRECT` |
+| `ASP_IDP_REQUIRED` en un nodo (significaba «perfil multi-user») | `ASP_MULTI_USER` |
+| `--guest-ssh-agent-auto`, `ASP_GUEST_SSH_AGENT_AUTO` | no hacen nada: solo escribían una línea en el log |
+
+Además: `ASP_SSH_AGENT_CONFIRM=0` ya no pisa un `--ssh-agent-confirm` explícito (la bandera manda), y `ASP_TAP_AUTO=true` y compañía ya cuentan (antes solo valía `1`).
+
 ## Flags
 
 | Flag | Env | Default |
 |---|---|---|
-| `--control-plane-url` | `CONTROL_PLANE_URL` | `http://127.0.0.1:8080` |
-| `--node-id` | `NODE_ID` | CN del cert enrolado en `--cert-dir`; si no hay, hostname |
-| `--ch-socket-dir` | `CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{id}.sock` (default per-sandbox spawn) |
-| `--ch-api-socket` | `CH_API_SOCKET` | vacío — shared/legacy override (sin spawn) |
-| `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` |
-| `--dry-run` | `DRY_RUN=1` | false — usa `FakeVMM` |
+| `--control-plane-url` | `ASP_CONTROL_PLANE_URL` | `http://127.0.0.1:8080` |
+| `--node-id` | `ASP_NODE_ID` | CN del cert enrolado en `--cert-dir`; si no hay, hostname |
+| `--ch-socket-dir` | `ASP_CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{id}.sock` (default per-sandbox spawn) |
+| `--ch-api-socket` | `ASP_CH_API_SOCKET` | vacío — shared/legacy override (sin spawn) |
+| `--ch-binary` | `ASP_CH_BINARY` | `cloud-hypervisor` |
+| `--dry-run` | `ASP_DRY_RUN` | false — usa `FakeVMM` |
 | `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, antes de registrarse, para y borra lo que dejó un node-agent anterior: `cloud-hypervisor`/`virtiofsd` de `--ch-socket-dir`, sus sockets, TAPs `asp-*`, túneles `wg-asp-*`. No toca las copias de `--disk-dir`: las borra el GC del reconciler (ver `--disk-dir`). `report` solo lo lista; `off`. Con `--dry-run` solo informa ([bare-metal §5.6](../docs/bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)) |
 | `--reap-only` | | hace solo esa limpieza y sale; se niega si corre un agente con ese `--ch-socket-dir` (lock `node-agent.lock`) |
 | `--print-measurement` | | imprime el SHA-256 del kernel y de la imagen base y la versión del hipervisor como entrada de `ASP_ATTEST_ALLOWED_IMAGES` del control plane, y sale |
@@ -44,7 +66,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
 | `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | `host[:puerto]` que marca el portátil para local-net en este nodo |
 | `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — `exec` con mTLS para un CP en otro host (p.ej. `0.0.0.0:9443`); solo acepta el cert del CP |
-| `--endpoint` | `NODE_ENDPOINT` | anunciado al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen`, si no `http://<agent-listen>` |
+| `--endpoint` | `ASP_ENDPOINT` | anunciado al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen`, si no `http://<agent-listen>` |
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix sock de pod-daemon (dry-run / fallback) |
 | `--pod-daemon-port` | | `26500` — puerto guest vsock/TCP para HTTP |
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check denegado |
@@ -70,15 +92,15 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--ssh-agent-confirm` | `ASP_SSH_AGENT_CONFIRM` | exige approve one-shot con el `sandbox_id` que va a firmar; default on si multi-user/template (`=0` fuerza off) |
 | `--insecure-ssh-agent-global-approvals` | `ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS=1` | con confirm, acepta approves sin `sandbox_id`; solo los usan `--ssh-agent-bridge` y el host-vsock global, para el primer guest que firme (solo lab) |
 | `--ssh-agent-sock-template` | `ASP_SSH_AGENT_SOCK_TEMPLATE` | path template por sandbox (`{owner_sub}`/`{sandbox_id}`); missing → FakeAgent |
-| `--multi-user` | `ASP_MULTI_USER=1` (o `ASP_IDP_REQUIRED=1`) | perfil multi-user: confirm default-on |
+| `--multi-user` | `ASP_MULTI_USER` (antes también `ASP_IDP_REQUIRED`, que sigue valiendo con un aviso) | perfil multi-user: confirm default-on |
 | `--metrics-listen` | `ASP_METRICS_LISTEN` | `host:puerto` donde servir `GET /metrics` (Prometheus), p. ej. `127.0.0.1:9102`. Sin autenticación: solo loopback salvo `--insecure-obs-listen`. Apagado por defecto. Catálogo en [`docs/how-to/monitoring.md`](../docs/how-to/monitoring.md) |
 | `--pprof-listen` | `ASP_PPROF_LISTEN` | Igual para `/debug/pprof/` |
-| `--insecure-obs-listen` | `ASP_INSECURE_OBS_LISTEN=1` | Permite las dos anteriores fuera de loopback (sin autenticación; pon delante un proxy que autentique) |
-| `--egress-nft-redirect` / `--nft-egress-redirect` | `ASP_EGRESS_NFT_REDIRECT` / `ASP_NFT_EGRESS_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect. **Default: activo** con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga (el proxy es voluntario y el agente lo avisa). Con redirect y `--nft-dns-action=redirect` el DNS sink arranca en `:5353` si no lo nombras. El script va dentro del binario (`ASP_NFT_SCRIPT` nombra uno propio) |
+| `--insecure-obs-listen` | `ASP_INSECURE_OBS_LISTEN` | Permite las dos anteriores fuera de loopback (sin autenticación; pon delante un proxy que autentique) |
+| `--egress-nft-redirect` | `ASP_EGRESS_NFT_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect. **Default: activo** con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga (el proxy es voluntario y el agente lo avisa). Con redirect y `--nft-dns-action=redirect` el DNS sink arranca en `:5353` si no lo nombras. El script va dentro del binario (`ASP_NFT_SCRIPT` nombra uno propio) |
 | `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `enforce` (default: un nodo que no puede aplicar las reglas no arranca) \| `soft` (arranca sin forzar el egress, con aviso; default con `--dry-run`). El nodo informa `egress_enforced=true` al registrarse solo con el proxy escuchando y las reglas puestas en `enforce` |
 | `--nft-http-ports` | `ASP_NFT_HTTP_PORTS` | default `80,443` |
 | `--nft-dns-action` | `ASP_NFT_DNS_ACTION` | `redirect` (default) \| `drop` |
-| `--guest-ssh-agent-auto` | `ASP_GUEST_SSH_AGENT_AUTO` | default on with `--host-vsock` / bridge |
+| `--guest-ssh-agent-auto` | `ASP_GUEST_SSH_AGENT_AUTO` | **obsoleto, sin efecto**: solo escribía una línea en el log. Se acepta, avisa y se quitará |
 | `--guest-subnet` | `ASP_GUEST_SUBNET` | `10.200.0.0/16` — pool de /30 por sandbox (TAP `.1`, guest `.2`) y match de las reglas nft |
 
 ```bash

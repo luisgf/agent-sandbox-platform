@@ -18,7 +18,7 @@ añadir un protocolo nuevo.
 - Binario **`asp`** (`cli/cmd/asp`): `sandbox create|get|list|exec|delete|run`.
 - **`asp sandbox run --cmd '…'`**: create → poll Get hasta `running` → Exec →
   destroy (salvo `--keep`). Exit code = `exit_code` del guest cuando es posible.
-- Flags/env alineados con el CP: `--cp-url` / `ASP_CP_URL`, `--api-key` /
+- Flags/env alineados con el CP: `--control-plane-url` / `ASP_CONTROL_PLANE_URL`, `--api-key` /
   `ASP_API_KEY`, `--tenant`, `--timeout`, `--node-id`.
 - **IdP transparente:** `asp auth login` + auto `Authorization: Bearer` vía
   `ASP_ID_TOKEN` / cache / password|client_credentials (`ASP_IDP_*`,

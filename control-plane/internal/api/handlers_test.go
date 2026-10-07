@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -673,10 +674,10 @@ func TestAuthConfigStrictEnv(t *testing.T) {
 	if !cfg.RequireNodeClientCert || !cfg.RejectRevokedCerts {
 		t.Fatalf("cfg=%+v", cfg)
 	}
-	if !EnvTruthy("ASP_MTLS_STRICT") {
+	if !envcfg.Truthy("ASP_MTLS_STRICT") {
 		t.Setenv("ASP_MTLS_STRICT", "1")
-		if !EnvTruthy("ASP_MTLS_STRICT") {
-			t.Fatal("EnvTruthy")
+		if !envcfg.Truthy("ASP_MTLS_STRICT") {
+			t.Fatal("Truthy")
 		}
 	}
 }

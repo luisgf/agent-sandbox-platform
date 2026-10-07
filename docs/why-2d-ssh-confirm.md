@@ -36,4 +36,4 @@ El mount automático en guest (`vsock-ssh-agent-proxy`, ADR-0006) **no** desacti
 
 ## Multi-user (ADR-0007 fase 4)
 
-Con `ASP_MULTI_USER=1`, `ASP_IDP_REQUIRED=1` o `ASP_SSH_AGENT_SOCK_TEMPLATE`, el confirm gate queda **default-on**. El approve exige `sandbox_id` y acepta `actor_sub` / `X-ASP-Actor-Sub` para audit. El scoping de claves es por template de UDS (no por este gate solo): ver [`why-multi-user-identity.md`](why-multi-user-identity.md).
+Con `ASP_MULTI_USER=1` (antes también `ASP_IDP_REQUIRED=1`, que avisa) o `ASP_SSH_AGENT_SOCK_TEMPLATE`, el confirm gate queda **default-on**. El approve exige `sandbox_id` y acepta `actor_sub` / `X-ASP-Actor-Sub` para audit. El scoping de claves es por template de UDS (no por este gate solo): ver [`why-multi-user-identity.md`](why-multi-user-identity.md).

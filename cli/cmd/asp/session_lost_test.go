@@ -18,6 +18,7 @@ import (
 // keeps its disk: exec and status tell the user to resume it, and never to start
 // a new one with --force, which would delete that disk.
 func TestStoppedByANodeEventIsResumableAndSaysSo(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	for reason, cause := range map[string]string{
@@ -64,6 +65,7 @@ func TestStoppedByANodeEventIsResumableAndSaysSo(t *testing.T) {
 // --force deletes whatever the session file names. For a stopped sandbox whose
 // disk is kept that is the one thing that cannot be undone, so it takes --yes.
 func TestSessionStartForceRefusesAStoppedSandboxUnlessYes(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	state := "stopped"
@@ -84,7 +86,7 @@ func TestSessionStartForceRefusesAStoppedSandboxUnlessYes(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	t.Setenv("ASP_CP_URL", srv.URL) // where the new sandbox goes
+	t.Setenv("ASP_CONTROL_PLANE_URL", srv.URL) // where the new sandbox goes
 	sessFile := filepath.Join(t.TempDir(), "session.json")
 	save := func() {
 		if err := session.Save(sessFile, session.State{SandboxID: "old-1", CPURL: srv.URL}); err != nil {
@@ -124,6 +126,7 @@ func TestSessionStartForceRefusesAStoppedSandboxUnlessYes(t *testing.T) {
 // names. --force deletes it there even when ASP_CP_URL points elsewhere now; the
 // new sandbox goes where the environment says.
 func TestSessionStartForceDeletesOnTheSessionsControlPlane(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	var oldDeletes, oldCreates, newDeletes, newCreates atomic.Int32
@@ -150,7 +153,7 @@ func TestSessionStartForceDeletesOnTheSessionsControlPlane(t *testing.T) {
 	oldSrv, newSrv := httptest.NewServer(oldCP), httptest.NewServer(newCP)
 	defer oldSrv.Close()
 	defer newSrv.Close()
-	t.Setenv("ASP_CP_URL", newSrv.URL)
+	t.Setenv("ASP_CONTROL_PLANE_URL", newSrv.URL)
 	sessFile := filepath.Join(t.TempDir(), "session.json")
 	if err := session.Save(sessFile, session.State{SandboxID: "old-1", CPURL: oldSrv.URL}); err != nil {
 		t.Fatal(err)
@@ -191,6 +194,7 @@ func TestStoppedTextSaysTheVMEndedOnItsOwn(t *testing.T) {
 // --force waits for that before it creates the new sandbox: otherwise the create
 // could be refused for the room the old one is about to free.
 func TestSessionStartForceWaitsForTheOldSandboxToBeGone(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	var mu sync.Mutex
@@ -226,7 +230,7 @@ func TestSessionStartForceWaitsForTheOldSandboxToBeGone(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	t.Setenv("ASP_CP_URL", srv.URL)
+	t.Setenv("ASP_CONTROL_PLANE_URL", srv.URL)
 	sessFile := filepath.Join(t.TempDir(), "session.json")
 	if err := session.Save(sessFile, session.State{SandboxID: "old-1", CPURL: srv.URL}); err != nil {
 		t.Fatal(err)

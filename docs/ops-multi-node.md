@@ -54,7 +54,7 @@ Con el TLS terminado en un proxy, el plano de control no conoce su nombre públi
 
 Requisitos:
 
-- **Postgres** en el plano de control (`DATABASE_URL`). Con el store en memoria todo se pierde al reiniciar; los agentes se vuelven a registrar solos, pero las sandboxes no.
+- **Postgres** en el plano de control (`ASP_DATABASE_URL`). Con el store en memoria todo se pierde al reiniciar; los agentes se vuelven a registrar solos, pero las sandboxes no.
 - **TLS** en el plano de control (`ASP_TLS_CERT`/`ASP_TLS_KEY`) y **`ASP_CLIENT_CA`** apuntando a la CA de enrollment: así cada ruta de nodo exige el certificado de ese nodo.
 - La misma CA de enrollment para todos los nodos (`ASP_CA_CERT`/`ASP_CA_KEY`, fuera de `/tmp`).
 

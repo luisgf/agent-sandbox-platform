@@ -45,12 +45,14 @@ func TestCredentialsFromEnvironmentStillWork(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
+
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_IDP_ACCESS_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "key-from-env")
 	var stdout, stderr strings.Builder
-	if code := run([]string{"sandbox", "list", "--cp-url", srv.URL, "--tenant", "default"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"sandbox", "list", "--control-plane-url", srv.URL, "--tenant", "default"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 	if gotAuth != "Bearer key-from-env" {
@@ -58,7 +60,7 @@ func TestCredentialsFromEnvironmentStillWork(t *testing.T) {
 	}
 
 	t.Setenv("ASP_ID_TOKEN", "jwt-from-env")
-	if code := run([]string{"sandbox", "list", "--cp-url", srv.URL, "--tenant", "default"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"sandbox", "list", "--control-plane-url", srv.URL, "--tenant", "default"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 	if gotAuth != "Bearer jwt-from-env" {

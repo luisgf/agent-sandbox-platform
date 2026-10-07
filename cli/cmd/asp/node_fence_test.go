@@ -10,6 +10,7 @@ import (
 )
 
 func TestNodeFenceSetAndClear(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -36,7 +37,7 @@ func TestNodeFenceSetAndClear(t *testing.T) {
 
 	run1 := func(args ...string) (int, string, string) {
 		var stdout, stderr strings.Builder
-		code := run(append([]string{"node", "fence"}, append(args, "--cp-url", srv.URL)...), &stdout, &stderr)
+		code := run(append([]string{"node", "fence"}, append(args, "--control-plane-url", srv.URL)...), &stdout, &stderr)
 		return code, stdout.String(), stderr.String()
 	}
 
@@ -79,6 +80,7 @@ func TestNodeFenceSetAndClear(t *testing.T) {
 }
 
 func TestNodeFenceShowsRefusals(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -90,7 +92,7 @@ func TestNodeFenceShowsRefusals(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	var stdout, stderr strings.Builder
-	code := run([]string{"node", "fence", "set", "n1", "--endpoint", "https://bmc.example", "--cp-url", srv.URL}, &stdout, &stderr)
+	code := run([]string{"node", "fence", "set", "n1", "--endpoint", "https://bmc.example", "--control-plane-url", srv.URL}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "platform-scoped") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}

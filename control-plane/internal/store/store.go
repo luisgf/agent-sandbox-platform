@@ -22,7 +22,7 @@ func errNodeRevoked(id string) error {
 }
 
 // Store is the persistence boundary for the control plane.
-// MemoryStore is the default; PostgresStore is used when DATABASE_URL is set.
+// MemoryStore is the default; PostgresStore is used when ASP_DATABASE_URL is set.
 type Store interface {
 	CreateSandbox(ctx context.Context, input CreateSandboxInput) (Sandbox, error)
 	GetSandbox(ctx context.Context, id string) (Sandbox, error)

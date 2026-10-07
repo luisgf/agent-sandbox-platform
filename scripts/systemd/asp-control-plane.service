@@ -12,7 +12,7 @@ Description=ASP control-plane (Keycloak lab IdP)
 Documentation=file:///home/ubuntu/src/bots/docs/ops-idp-keycloak-lab.md
 After=network-online.target
 Wants=network-online.target
-# With DATABASE_URL pointing at a Postgres that may start later (a container, or another
+# With ASP_DATABASE_URL pointing at a Postgres that may start later (a container, or another
 # host) the control plane exits until it answers: retry for ever instead of hitting
 # systemd's start limit (5 starts in 10 s). For a Postgres container on this host also add
 # After=docker.service and Wants=docker.service (docs/bare-metal-ch.md section 4.1).
@@ -25,7 +25,7 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/src/bots
 # Non-secret ASP_IDP_* live here (mode 600). Missing file = unit fail (lab expects IdP on).
 EnvironmentFile=/home/ubuntu/.secrets/asp-idp.env
-Environment=LISTEN_ADDR=127.0.0.1:18112
+Environment=ASP_LISTEN_ADDR=127.0.0.1:18112
 Environment=ASP_OIDC_ISSUER=http://127.0.0.1:18112
 # Authentication is always on. The first key comes from ASP_BOOTSTRAP_API_KEY (in the env file) and
 # the node-agent sends it (ASP_NODE_API_KEY_FILE) because there is no client certificate over plain HTTP.
@@ -50,7 +50,7 @@ Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
 ExecStart=/home/ubuntu/src/bots/build/api
 Restart=on-failure
 RestartSec=5
-# Bind is loopback-only via LISTEN_ADDR; do not expose 18112 on 0.0.0.0 without TLS+authz.
+# Bind is loopback-only via ASP_LISTEN_ADDR; do not expose 18112 on 0.0.0.0 without TLS+authz.
 
 [Install]
 WantedBy=multi-user.target

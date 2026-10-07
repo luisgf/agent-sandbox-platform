@@ -1,6 +1,6 @@
 # Control plane
 
-Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o PostgreSQL (`DATABASE_URL`), journal de eventos, API keys, enrollment PKI, egress allowlist, OIDC (JWKS/mint) y proxy de exec hacia node-agents.
+Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o PostgreSQL (`ASP_DATABASE_URL`), journal de eventos, API keys, enrollment PKI, egress allowlist, OIDC (JWKS/mint) y proxy de exec hacia node-agents.
 
 ## Endpoints
 
@@ -44,16 +44,18 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 
 ## Variables de entorno
 
+Todas llevan el prefijo `ASP_`. Los booleanos se escriben `1`/`true`/`yes`/`on` y `0`/`false`/`no`/`off`; cualquier otra cosa en una variable booleana que se valida al arrancar (`ASP_EGRESS_DEFAULT_ALLOW`) es un error de configuración. Nombres que cambiaron (los antiguos siguen valiendo, con un aviso, hasta que se quiten): `LISTEN_ADDR` → `ASP_LISTEN_ADDR`, `DATABASE_URL` → `ASP_DATABASE_URL` (los tests de Postgres siguen leyendo `DATABASE_URL`), `ASP_EGRESS_DENY_DEFAULT` → `ASP_EGRESS_DEFAULT_ALLOW` con el sentido contrario. `ASP_IDP_REQUIRED` es solo del plano de control: en un nodo se llamaba así lo que ahora es `ASP_MULTI_USER`, y en el CLI lo que ahora es `ASP_REQUIRE_TOKEN`.
+
 | Variable | Default | Descripción |
 |---|---|---|
-| `LISTEN_ADDR` | `:8080` | Bind address |
+| `ASP_LISTEN_ADDR` | `:8080` | Bind address |
 | `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
 | `ASP_BUFFERED_EXEC_TIMEOUT` | `10m` | Cuánto puede tardar un `exec` sin `?stream=1` (`asp sandbox exec/run`, `session exec --buffered`), también en el guest. Una petición puede pedir menos con `timeout_seconds`. `0`/`off` sin límite. Pasado el límite, 504. Un stream no tiene límite |
-| `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
+| `ASP_DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
 | `ASP_METRICS_LISTEN` | (unset) | `host:puerto` de un listener aparte con `GET /metrics` (Prometheus). Sin autenticación: solo loopback salvo `ASP_INSECURE_OBS_LISTEN=1`. Además, `GET /metrics` en el puerto del API sirve lo mismo a una clave de plataforma o a un admin/operator del IdP. Catálogo: [`docs/how-to/monitoring.md`](../docs/how-to/monitoring.md) |
 | `ASP_PPROF_LISTEN` | (unset) | Igual para los perfiles de Go (`/debug/pprof/`) |
 | `ASP_INSECURE_OBS_LISTEN` | (unset) | `1` deja que `ASP_METRICS_LISTEN` / `ASP_PPROF_LISTEN` escuchen fuera de loopback (sin autenticación) |
-| `ASP_DB_STATEMENT_TIMEOUT` | `30s` | `statement_timeout` de cada conexión del pool: una sentencia que tarda más se cancela en el servidor (`57014`). Una migración lo desactiva para sí misma. `0`/`off` lo quita. Un `?statement_timeout=…` en `DATABASE_URL` manda sobre este valor. |
+| `ASP_DB_STATEMENT_TIMEOUT` | `30s` | `statement_timeout` de cada conexión del pool: una sentencia que tarda más se cancela en el servidor (`57014`). Una migración lo desactiva para sí misma. `0`/`off` lo quita. Un `?statement_timeout=…` en `ASP_DATABASE_URL` manda sobre este valor. |
 | `ASP_DB_LOCK_TIMEOUT` | `10s` | `lock_timeout`: cuánto espera una sentencia a un bloqueo (incluido el advisory lock de la colocación) antes de fallar con `55P03`. |
 | `ASP_DB_IDLE_TX_TIMEOUT` | `60s` | `idle_in_transaction_session_timeout`: una transacción abierta que nadie usa (un handler que murió a medias) se cierra y libera su conexión y sus bloqueos. |
 | `ASP_INSECURE_OPEN_API` | unset | `1` acepta peticiones sin credencial (solo labs y smokes dry-run; avisa al arrancar). Una credencial incorrecta se rechaza igual. `ASP_REQUIRE_API_KEY` ya no hace nada: la autenticación está siempre activa |
@@ -91,7 +93,7 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `ASP_ENROLL_LISTEN` | `127.0.0.1:8081` | Plaintext enroll-only cuando `ASP_MTLS_STRICT=1` |
 | `ASP_OIDC_KEY` | `/tmp/asp-oidc-key.pem` | PEM RSA de firma actual (auto-create; mint) |
 | `ASP_OIDC_KEY_PREV` | unset | PEM RSA previa (solo JWKS durante rotación) |
-| `ASP_OIDC_ISSUER` | `http://127.0.0.1$LISTEN_ADDR` | Issuer OIDC |
+| `ASP_OIDC_ISSUER` | `http://127.0.0.1$ASP_LISTEN_ADDR` | Issuer OIDC |
 | `ASP_ATTEST_KEY` | `$TMPDIR/asp-attest-key.pem` | PEM ECDSA P-256 de atestación; su clave pública es de confianza (lab de un host: el node-agent usa el mismo fichero) |
 | `ASP_ATTEST_PUB` | — | PEM de clave pública que sustituye a la de `ASP_ATTEST_KEY` para verificar |
 | `ASP_ATTEST_TRUSTED_PUBS` | — | Bundle PEM (`PUBLIC KEY` y/o `CERTIFICATE`) de más claves de confianza. La clave que trae la evidencia (`public_key_pem`) nunca vale; por mTLS vale además la del certificado del nodo que llama |
@@ -100,8 +102,7 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `ASP_FENCE_PROVIDER` | `noop` | `noop`\|`http_webhook`\|`redfish`\|`ipmi` |
 | `ASP_FENCE_USER` | | Usuario Redfish/IPMI |
 | `ASP_FENCE_PASS` | | Contraseña IPMI/Redfish por defecto si el nodo no tiene token. Un `ipmitool` la recibe por `IPMI_PASSWORD` |
-| `ASP_EGRESS_DEFAULT_ALLOW` | `1` en memory-dev | Vacío = allow-all |
-| `ASP_EGRESS_DENY_DEFAULT` | unset | Vacío = deny (harden; desactiva allow memory) |
+| `ASP_EGRESS_DEFAULT_ALLOW` | `1` con el store en memoria, `0` con Postgres | Qué puede alcanzar una sandbox cuyo tenant no tiene reglas: `1` todo, `0` nada. `ASP_EGRESS_DENY_DEFAULT` era este mismo ajuste con el sentido contrario; sigue valiendo si este no está, con un aviso |
 | `ASP_AUTO_PROVISION` | unset/false | `1` = stub sync Create→running; default deja `requested` |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | unset = **off** | Parada por inactividad. Duración Go (`2h`, `1h`, `90m`). `0` / `off` / `false` / `disabled` desactiva. El valor recomendado de lab/producción es **2h** (también vale `1h`); no es el default del proceso, para que los smokes cortos no tumben sandboxes. Flag equivalente: `-idle-timeout` / `--idle-timeout` (pisa el env). |
 | `ASP_STOPPED_SANDBOX_TTL` | `7d` | Una sandbox parada más de este tiempo se borra con su disco (`stop_reason=retention_expired`), contado desde `stopped_at`. `7d` o una duración Go (`48h`); `0`/`off` las conserva hasta que se borren ([ADR-0012](../docs/adr/0012-retained-disks.md)) |
@@ -116,7 +117,7 @@ ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
 ```
 
 
-**Claves en directorios temporales.** Las rutas por defecto de la CA, la clave OIDC y la de atestación están en `/tmp` o `$TMPDIR`: un reinicio las borra, los certificados de nodo dejan de verificar y los tokens cambian de `kid`. En modo producción (`DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1`) el control plane no arranca (código 2) si `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` o `ASP_ATTEST_KEY` apuntan a `/tmp`, `/var/tmp`, `/dev/shm` o `$TMPDIR`, y el error nombra cada variable. Apúntalas a almacenamiento persistente (las que falten se crean ahí) o usa `ASP_ALLOW_TMP_KEYS=1`. En lab solo deja un aviso con las rutas.
+**Claves en directorios temporales.** Las rutas por defecto de la CA, la clave OIDC y la de atestación están en `/tmp` o `$TMPDIR`: un reinicio las borra, los certificados de nodo dejan de verificar y los tokens cambian de `kid`. En modo producción (`ASP_DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1`) el control plane no arranca (código 2) si `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` o `ASP_ATTEST_KEY` apuntan a `/tmp`, `/var/tmp`, `/dev/shm` o `$TMPDIR`, y el error nombra cada variable. Apúntalas a almacenamiento persistente (las que falten se crean ahí) o usa `ASP_ALLOW_TMP_KEYS=1`. En lab solo deja un aviso con las rutas.
 ## Logs y coste por petición
 
 Cada petición deja una línea `request` con método, ruta, estado, bytes, duración y origen. Los sondeos de los nodos (`/work`, heartbeats, claim, status…) y `/healthz` van a nivel Debug: con varios nodos sondeando cada 2 s taparían el resto. El middleware de API keys cuenta las claves como mucho cada 10 s y escribe `last_used_at` como mucho una vez por minuto y clave, en vez de un `count(*)` y un `UPDATE` por petición.

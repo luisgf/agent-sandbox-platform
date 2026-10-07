@@ -215,7 +215,7 @@ flowchart TB
 
 Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI. **It provides no isolation.** For real microVMs see [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
 
-**Requirements:** Go 1.22+, Rust/Cargo. Docker only for Postgres or for building the guest rootfs.
+**Requirements:** Go 1.25+, Rust/Cargo. Docker only for Postgres or for building the guest rootfs.
 
 ### 1. Build and test
 
@@ -258,7 +258,7 @@ export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 
 The control plane places the session on a node with room; with the single dry-run node that is `dev-node`. `--node-id` pins a node instead.
 
-**Persistence (optional):** `docker compose up -d postgres` and start the control plane with `DATABASE_URL=postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable`. Without it, state is lost when the control plane exits.
+**Persistence (optional):** `docker compose up -d postgres` and start the control plane with `ASP_DATABASE_URL=postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable`. Without it, state is lost when the control plane exits.
 
 Step-by-step walkthrough and troubleshooting: [`docs/mvp-smoke.md`](docs/mvp-smoke.md).
 
@@ -301,7 +301,7 @@ The bash-only setup was tested end to end with OpenCode 1.18.34: from a laptop a
 ```bash
 make asp && install -m 0755 build/asp ~/.local/bin/asp   # any directory on PATH
 
-export ASP_CP_URL=https://asp.example.internal          # your control plane
+export ASP_CONTROL_PLANE_URL=https://asp.example.internal          # your control plane
 asp auth login                                          # IdP setups
 # or, in a lab without an IdP:  export ASP_API_KEY=…
 ```
@@ -359,7 +359,7 @@ In scripts, give `opencode run` an empty stdin: `opencode run "…" < /dev/null`
 
 ```bash
 export ASP_SSH=ubuntu@node1
-export ASP_REMOTE_EXEC='env ASP_CP_URL=http://127.0.0.1:18112 /home/ubuntu/.local/bin/asp-opencode-shell --remote-exec'
+export ASP_REMOTE_EXEC='env ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 /home/ubuntu/.local/bin/asp-opencode-shell --remote-exec'
 ```
 
 Over ssh, session names and guest directories may only use `A-Z a-z 0-9 _ . / -`, and there is no interactive terminal.
@@ -415,17 +415,18 @@ Only the most common settings. Full lists live in each component's README.
 
 | Variable | Used by | Purpose |
 |---|---|---|
-| `ASP_CP_URL` | CLI | Control-plane URL (default `http://127.0.0.1:8080`). |
+| `ASP_CONTROL_PLANE_URL` | CLI | Control-plane URL (default `http://127.0.0.1:8080`). |
 | `ASP_ID_TOKEN` / `ASP_API_KEY` | CLI | Bearer credential (IdP token preferred; API key for labs without an IdP). |
 | `ASP_TENANT` | CLI | Tenant for create/list/run; empty uses the caller's tenant (token claim or key). |
 | `ASP_IDP_TENANT_CLAIM` / `ASP_IDP_DEFAULT_TENANT` | CP | Where a user's tenant comes from (claim `tenant_id` by default); every request is confined to it. |
-| `ASP_IDP_REQUIRED` | CLI, CP | Require an IdP token. |
+| `ASP_IDP_REQUIRED` | CP | Require a valid IdP token on every user route. (On a node it meant `ASP_MULTI_USER`, and in the CLI `ASP_REQUIRE_TOKEN`: both still work, with a warning.) |
+| `ASP_REQUIRE_TOKEN` | CLI | Fail when no IdP token can be had, instead of calling without one. |
 | `ASP_SESSION_DIR` | CLI | Where session files live (default `~/.cache/asp/sessions`, mode `0700`). |
-| `LISTEN_ADDR` | CP | API listen address (default `127.0.0.1:8080`). |
+| `ASP_LISTEN_ADDR` | CP | API listen address (default `127.0.0.1:8080`). |
 | `ASP_BOOTSTRAP_API_KEY` | CP | Creates the first API key (platform scope). Without a key or an IdP the control plane refuses to start. |
 | `ASP_INSECURE_OPEN_API` | CP | `1` accepts requests with no credential (labs and dry-run only; logged at start). |
 | `ASP_NODE_API_KEY` / `ASP_NODE_API_KEY_FILE` | node-agent | The platform key a node sends to a control plane reached over plain HTTP. |
-| `DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
+| `ASP_DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
 | `ASP_METRICS_LISTEN`, `ASP_PPROF_LISTEN` (`--metrics-listen`, `--pprof-listen` on the node-agent) | CP, node-agent | Prometheus metrics and Go profiles on a listener of their own; loopback only unless `ASP_INSECURE_OBS_LISTEN=1`. The control plane also serves `GET /metrics` on its API port to a platform key. Names and alerts: [`docs/how-to/monitoring.md`](docs/how-to/monitoring.md). |
 | `ASP_DB_STATEMENT_TIMEOUT`, `ASP_DB_LOCK_TIMEOUT`, `ASP_DB_IDLE_TX_TIMEOUT` | CP | Server-side limits on every Postgres connection (defaults `30s`, `10s`, `60s`; `0` disables). Every store call also carries its request's context, so a client that disconnects ends its queries. |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. A stop keeps the disk. |

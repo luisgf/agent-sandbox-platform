@@ -86,7 +86,7 @@ sudo mv /tmp/cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
 cloud-hypervisor --version
 ```
 
-El flag `--ch-binary` / env `CLOUD_HYPERVISOR_BIN` apunta al binario que el node-agent **spawnea por sandbox** en el modo por defecto (`--ch-socket-dir`, sockets `/run/asp/ch-{sandboxID}.sock`). El override legacy `--ch-api-socket` sigue permitiendo un CH pre-arrancado (shared/debug) sin spawn. Ver §5.
+El flag `--ch-binary` / env `ASP_CH_BINARY` apunta al binario que el node-agent **spawnea por sandbox** en el modo por defecto (`--ch-socket-dir`, sockets `/run/asp/ch-{sandboxID}.sock`). El override legacy `--ch-api-socket` sigue permitiendo un CH pre-arrancado (shared/debug) sin spawn. Ver §5.
 
 ### 2.2 Kernel + rootfs (virtio, vsock)
 
@@ -276,7 +276,7 @@ Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomend
 Camino mínimo recomendado hoy:
 
 1. NAT (§3.3) para que el guest tenga ruta al proxy (no hace falta full Internet).
-2. Allowlist del tenant + `ASP_EGRESS_DENY_DEFAULT=1`.
+2. Allowlist del tenant + `ASP_EGRESS_DEFAULT_ALLOW=0`.
 3. Node-agent `--egress-enforce --egress-proxy-listen=…` (+ DNS sink opcional).
 4. Guest: `HTTP_PROXY`/`HTTPS_PROXY` → IP TAP host:8888.
 5. (Endurecimiento) nft bloquear forward directo guest→WAN excepto hacia el proxy.
@@ -291,10 +291,10 @@ Desde la raíz del repo:
 
 ```bash
 docker compose up -d postgres
-export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
+export ASP_DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 ```
 
-Migraciones `001`–`020` se aplican al arrancar el API si `DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo, discos retenidos al parar — `deleting`/`deleted`, `boot_count`, `stopped_at`, `status_detail` —, espacio libre de disco del nodo, `booted_at`).
+Migraciones `001`–`020` se aplican al arrancar el API si `ASP_DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo, discos retenidos al parar — `deleting`/`deleted`, `boot_count`, `stopped_at`, `status_detail` —, espacio libre de disco del nodo, `booted_at`).
 
 **Postgres es requisito para que parar conserve el disco** ([ADR-0012](adr/0012-retained-disks.md)). Con el store en memoria, reiniciar el plano de control olvida las sandboxes y cada nodo borra sus discos; el plano de control lo avisa al arrancar. En un servidor que ya corre otras cosas (ncc1701d comparte Docker con otra aplicación):
 
@@ -310,7 +310,7 @@ Migraciones `001`–`020` se aplican al arrancar el API si `DATABASE_URL` está 
    ```
 
    Solo en loopback, con política `unless-stopped` y los datos en un bind mount (un `docker volume prune` no los toca). La imagen `postgres:18` ya estaba en el servidor; CI usa la 16. Con `docker compose up -d postgres` en una máquina sin otra base de datos es más corto, pero cambia la contraseña `asp` por una generada.
-2. **`DATABASE_URL` en el fichero de secretos** que ya carga la unit del plano de control (`~/.secrets/asp-idp.env`, modo `0600`), nunca en la unit ni en el repo: `DATABASE_URL=postgres://asp:<contraseña>@127.0.0.1:5433/asp?sslmode=disable`. Las claves ya viven en `/var/lib/asp-control-plane`, que es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`). Como Postgres es un contenedor y al arrancar el servidor puede tardar más que el plano de control, un drop-in (`/etc/systemd/system/asp-control-plane.service.d/postgres.conf`) lo hace esperar a Docker y reintentar sin tope: sin `StartLimitIntervalSec=0`, systemd se rinde tras 5 arranques fallidos en 10 s.
+2. **`ASP_DATABASE_URL` en el fichero de secretos** que ya carga la unit del plano de control (`~/.secrets/asp-idp.env`, modo `0600`), nunca en la unit ni en el repo: `ASP_DATABASE_URL=postgres://asp:<contraseña>@127.0.0.1:5433/asp?sslmode=disable`. Las claves ya viven en `/var/lib/asp-control-plane`, que es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`). Como Postgres es un contenedor y al arrancar el servidor puede tardar más que el plano de control, un drop-in (`/etc/systemd/system/asp-control-plane.service.d/postgres.conf`) lo hace esperar a Docker y reintentar sin tope: sin `StartLimitIntervalSec=0`, systemd se rinde tras 5 arranques fallidos en 10 s.
 
    ```ini
    [Unit]
@@ -343,10 +343,10 @@ export ASP_CLIENT_CA=/var/lib/asp/certs/ca.crt
 export ASP_BOOTSTRAP_API_KEY='…secreto-tenant…'     # Bearer API
 export ASP_NODE_BOOTSTRAP_TOKEN='…secreto-nodo…'    # enroll
 # (la autenticación está siempre activa: no hay variable que "forzarla")
-export ASP_EGRESS_DENY_DEFAULT=1
+export ASP_EGRESS_DEFAULT_ALLOW=0
 export ASP_AUTO_PROVISION=0                         # obligatorio en bare-metal real
 export ASP_OIDC_ISSUER='https://cp.ejemplo.corp:8443'
-export LISTEN_ADDR=:8443
+export ASP_LISTEN_ADDR=:8443
 
 (cd control-plane && go run ./cmd/api)
 # o binario empaquetado + systemd
@@ -380,7 +380,7 @@ curl -fsS https://127.0.0.1:8443/healthz --cacert /var/lib/asp/certs/ca.crt
   `cloud-hypervisor --api-socket /run/asp/ch-{sandboxID}.sock` (`--ch-socket-dir`, default `/run/asp`),
   espera a que el socket acepte `vmm.ping`, luego `vm.create` + `vm.boot`.
   `Stop(id)` hace `vm.delete`, mata el proceso y borra el socket.
-- **Modo shared/legacy:** si `--ch-api-socket` / `CH_API_SOCKET` está set, no spawnea;
+- **Modo shared/legacy:** si `--ch-api-socket` / `ASP_CH_API_SOCKET` está set, no spawnea;
   habla con un CH ya arrancado en ese socket (un VM a la vez; útil para debug).
 - Rutas: `GET /api/v1/vmm.ping`, `PUT /api/v1/vm.create`, `PUT /api/v1/vm.boot`, `PUT /api/v1/vm.delete`, `PUT /api/v1/vm.pause`.
 - `--dry-run` sigue usando `FakeVMM` (sin CH).
@@ -389,10 +389,10 @@ Flags relevantes (`cmd/node-agent/main.go`):
 
 | Flag | Env | Default / notas |
 |---|---|---|
-| `--ch-socket-dir` | `CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{sandboxID}.sock`; **default** cuando no dry-run. El agente lo crea con modo `0700` y aprieta uno existente que no sea de sistema (`/run`, `/tmp`…): los sockets de dentro dan autoridad sobre cada sandbox (exec como root en el guest, tokens de identidad, vhost-user de virtiofsd) |
-| `--ch-api-socket` | `CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
-| `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` — binario spawneado por sandbox |
-| `--dry-run` | `DRY_RUN=1` | **omitir** en bare-metal real |
+| `--ch-socket-dir` | `ASP_CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{sandboxID}.sock`; **default** cuando no dry-run. El agente lo crea con modo `0700` y aprieta uno existente que no sea de sistema (`/run`, `/tmp`…): los sockets de dentro dan autoridad sobre cada sandbox (exec como root en el guest, tokens de identidad, vhost-user de virtiofsd) |
+| `--ch-api-socket` | `ASP_CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
+| `--ch-binary` | `ASP_CH_BINARY` | `cloud-hypervisor` — binario spawneado por sandbox |
+| `--dry-run` | `ASP_DRY_RUN=1` | **omitir** en bare-metal real |
 | `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — `rootfs-{sandboxID}.img` por sandbox. Parar la conserva si el plano de control manda `retained` ([ADR-0012](adr/0012-retained-disks.md)); borrar la sandbox la borra. Un GC del nodo borra las copias que ninguna sandbox reclama |
 | `--stop-grace` | `ASP_STOP_GRACE` | `15s` — al parar conservando el disco, espera a que el guest se apague solo antes de la parada brusca |
 | `--disk-min-free-mib` | `ASP_DISK_MIN_FREE_MIB` | `-1` (el doble de la imagen base): espacio libre mínimo en `--disk-dir` para clonar o reanudar; `0` no comprueba |
@@ -420,7 +420,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
 | `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
 | `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — p.ej. `0.0.0.0:9443`: `exec` con mTLS para un CP en otro host (ver 5.5) |
-| `--endpoint` | `NODE_ENDPOINT` | lo que se anuncia al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen` |
+| `--endpoint` | `ASP_ENDPOINT` | lo que se anuncia al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen` |
 | `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt`, la misma CA que firma los certificados de nodo: avisa si el CP es remoto. Pasa una CA que firme solo el cert del CP ([`ops-multi-node.md`](ops-multi-node.md#las-dos-raíces-de-confianza)) |
 | `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix del pod-daemon (**host**, dry-run / fallback) |
@@ -467,20 +467,20 @@ curl --unix-socket /run/cloud-hypervisor/api.sock \
 ### 5.3 Enroll + reconciler (bare-metal)
 
 ```bash
-export CONTROL_PLANE_URL='https://cp.ejemplo.corp:8443'
+export ASP_CONTROL_PLANE_URL='https://cp.ejemplo.corp:8443'
 export ASP_NODE_BOOTSTRAP_TOKEN='…'
 export ASP_CERT_DIR=/var/lib/asp/node-certs
 export ASP_MTLS=1
 export ASP_RECONCILE=1
 export ASP_EGRESS_ENFORCE=1
-export CH_SOCKET_DIR=/run/asp
+export ASP_CH_SOCKET_DIR=/run/asp
 # Bare-metal: no hace falta ASP_POD_DAEMON_SOCK (hybrid vsock). Dry-run sí.
 # export ASP_POD_DAEMON_SOCK=/tmp/pod-daemon.sock
 
 (cd node-agent && go run ./cmd/node-agent \
-  --control-plane-url="$CONTROL_PLANE_URL" \
+  --control-plane-url="$ASP_CONTROL_PLANE_URL" \
   --node-id="$(hostname -s)" \
-  --ch-socket-dir="$CH_SOCKET_DIR" \
+  --ch-socket-dir="$ASP_CH_SOCKET_DIR" \
   --ch-binary=/usr/local/bin/cloud-hypervisor \
   --enroll --bootstrap-token="$ASP_NODE_BOOTSTRAP_TOKEN" \
   --cert-dir="$ASP_CERT_DIR" --mtls \
@@ -574,7 +574,7 @@ journalctl -u asp-vm-<id>                       # la salida de cloud-hypervisor,
 sudo install -m 0755 build/node-agent /usr/local/bin/node-agent
 sudo install -d -m 0750 /etc/asp
 sudo install -m 0600 /dev/null /etc/asp/node-agent.env
-sudoedit /etc/asp/node-agent.env   # CONTROL_PLANE_URL, ASP_CONTROL_PLANE_CA, NODE_ENDPOINT… (ejemplo en la unit)
+sudoedit /etc/asp/node-agent.env   # ASP_CONTROL_PLANE_URL, ASP_CONTROL_PLANE_CA, ASP_ENDPOINT… (ejemplo en la unit)
 sudo cp scripts/systemd/asp-node-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now asp-node-agent.service
@@ -708,7 +708,7 @@ En CH el VMM conecta esas llamadas a `{vsock}_26501` / `{vsock}_26502` de la san
 
 También: unix `--ssh-agent-bridge` / `--identity-listen` (este sin binding de sandbox: solo lab, con `--insecure-identity-sandbox-header`); reconciler crea `/run/asp/ssh-agent-{id}.sock` → bridge.
 
-**Fase 2e — SSH auto en guest:** habilita `ssh-agent-vsock.service` en la imagen (vsock CID2:26501 → `/run/agent-sandbox/ssh-agent.sock`). Flag host `--guest-ssh-agent-auto` (default con `--host-vsock`). Virtiofs = alternativa ops manual. Ver [`guest-vsock-notes.md`](../scripts/guest-vsock-notes.md), [`why-2e-ssh-guest-mount.md`](why-2e-ssh-guest-mount.md).
+**Fase 2e — SSH auto en guest:** habilita `ssh-agent-vsock.service` en la imagen (vsock CID2:26501 → `/run/agent-sandbox/ssh-agent.sock`). El nodo solo necesita `--host-vsock` (la antigua `--guest-ssh-agent-auto` ya no hace nada). Virtiofs = alternativa ops manual. Ver [`guest-vsock-notes.md`](../scripts/guest-vsock-notes.md), [`why-2e-ssh-guest-mount.md`](why-2e-ssh-guest-mount.md).
 
 Kernel guest: `CONFIG_VIRTIO_VSOCKETS`. Host hybrid exec: CH muxer UDS (sin `/dev/vsock`). Host `--host-vsock`: necesita `/dev/vsock` o `--host-vsock-dir`.
 
@@ -765,7 +765,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 | mTLS nodos | `ASP_TLS_*` + `ASP_CLIENT_CA` + node `--mtls`; bootstrap token solo en enroll bootstrap |
 | API keys | siempre exigidas (sin ellas ni IdP el CP no arranca); `ASP_BOOTSTRAP_API_KEY` en secret manager, no en git, solo para crear las demás con `asp apikey create` y rotarla o revocarla después (`asp apikey rotate|revoke`). `ASP_INSECURE_OPEN_API=1` solo en labs |
 | Auto-provision | **`ASP_AUTO_PROVISION=0`** (nunca stub sync en prod) |
-| Egress | `ASP_EGRESS_DENY_DEFAULT=1`; allowlist por tenant; `--egress-enforce`; NAT deny-forward default (§3) |
+| Egress | `ASP_EGRESS_DEFAULT_ALLOW=0`; allowlist por tenant; `--egress-enforce`; NAT deny-forward default (§3) |
 | Secretos | CA/keys en `/var/lib/asp/certs` mode `0600`; rotación = fase 2 |
 | Superficie CH | Dir de sockets `/run/asp` root:kvm `0750`; un socket por sandbox |
 | Guest | Imagen mínima, sin claves, sin `NET_ADMIN`; pod-daemon usuario no root |
@@ -931,8 +931,7 @@ node-agent ... --egress-proxy-listen=:8888 --egress-nft-redirect=false
 
 ```bash
 # Host
-node-agent ... --host-vsock --ssh-agent-bridge=/run/asp/ssh-agent.sock --guest-ssh-agent-auto
-# (guest-ssh-agent-auto ya default on con --host-vsock)
+node-agent ... --host-vsock --ssh-agent-bridge=/run/asp/ssh-agent.sock
 
 # Guest (imagen con ssh-agent-vsock.service):
 #   SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
@@ -946,7 +945,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 | Síntoma | Causa probable | Qué mirar |
 |---|---|---|
 | `kvm-ok` FAIL / no `/dev/kvm` | VT-x/AMD-V off o nested no habilitado | BIOS; `lsmod kvm`; permisos grupo `kvm` |
-| `CH ping failed` | Solo modo shared: CH no corre o path distinto | `ps aux \| grep cloud-hypervisor`; `CH_API_SOCKET` vs `--api-socket` |
+| `CH ping failed` | Solo modo shared: CH no corre o path distinto | `ps aux \| grep cloud-hypervisor`; `ASP_CH_API_SOCKET` vs `--api-socket` |
 | `wait for CH API` / spawn fail | Binario ausente, `/run/asp` no writable, KVM | `--ch-binary`; `ls -ld /run/asp`; `/dev/kvm` |
 | `vm.create` error TAP | TAP inexistente o sin permiso | `--tap-auto` o script §3.2; `netdev` / CAP_NET_ADMIN |
 | `vm.create` kernel/rootfs | Rutas `/opt/sandbox/*` rotas | Symlinks §2.2; cmdline `root=/dev/vda` |
@@ -976,7 +975,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 ## 10. Procedimiento end-to-end (checklist ops)
 
 1. Instalar CH pinneado + assets (`vmlinux`, `rootfs.img` vía `build-guest-rootfs.sh`) → symlinks `/opt/sandbox/*`.
-2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens. Claves fuera de `/tmp`: `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` y `ASP_ATTEST_KEY` en almacenamiento persistente (p. ej. `/var/lib/asp`; las que falten se crean ahí). Con `DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1` el control plane no arranca (código 2) si alguna está en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`.
+2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens. Claves fuera de `/tmp`: `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` y `ASP_ATTEST_KEY` en almacenamiento persistente (p. ej. `/var/lib/asp`; las que falten se crean ahí). Con `ASP_DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1` el control plane no arranca (código 2) si alguna está en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`.
 3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`), con `--cert-dir` (y `ASP_ATTEST_KEY` o `--egress-mitm-ca` si los usas) fuera de `/tmp`: un nodo de producción no arranca con ellos en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`. Como servicio: [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) (§5.6).
 4. `POST /v1/sandboxes` → reconciler claim → TAP `asp-*` → CH spawn → `running`.
 5. `POST /v1/sandboxes/{id}/exec` → hybrid CONNECT 26500 → guest pod-daemon.
@@ -988,7 +987,7 @@ Smokes dry-run (sin KVM): `make smoke`.
 
 ## Workspace del host (virtiofs)
 
-`asp session start --workspace /ruta` persiste `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` (binario Rust, `--virtiofsd-bin` / `VIRTIOFSD_BIN`) con un socket por sandbox y `vm.create` incluye `fs` tag `workspace`. Sin el binario el sandbox pasa a `failed`. Sin workspace no hay `fs`.
+`asp session start --workspace /ruta` persiste `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` (binario Rust, `--virtiofsd-bin` / `ASP_VIRTIOFSD_BIN`) con un socket por sandbox y `vm.create` incluye `fs` tag `workspace`. Sin el binario el sandbox pasa a `failed`. Sin workspace no hay `fs`.
 
 La imagen guest de este corte monta sola: `workspace-virtiofs.service` hace `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`, y sale 0 si el tag no está (el boot no se para). Hay que **reconstruir** el rootfs (`./scripts/build-guest-rootfs.sh`) para que una imagen ya desplegada lo lleve. Hasta entonces, dentro de la VM:
 

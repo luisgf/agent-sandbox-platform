@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"net/http"
 	"os"
 	"slices"
@@ -52,7 +53,7 @@ type AuthConfig struct {
 func AuthConfigFromEnv() AuthConfig {
 	clientCA := strings.TrimSpace(os.Getenv("ASP_CLIENT_CA"))
 	return AuthConfig{
-		InsecureOpen:          EnvTruthy(EnvInsecureOpenAPI),
+		InsecureOpen:          envcfg.Truthy(EnvInsecureOpenAPI),
 		RequireNodeClientCert: clientCA != "",
 		RejectRevokedCerts:    clientCA != "",
 		IdPRequired:           idp.ConfigFromEnv().Required,
@@ -367,10 +368,4 @@ func BootstrapAPIKey(ctx context.Context, s store.Store, secret string) (store.A
 		store.KeyPrefix(secret),
 		store.HashAPIKeySecret(secret),
 	)
-}
-
-// EnvTruthy reports ASP-style truthy env values.
-func EnvTruthy(key string) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 }

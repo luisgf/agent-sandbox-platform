@@ -3,6 +3,7 @@ package localnet
 import (
 	"bytes"
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"io"
 	"net"
 	"os"
@@ -174,7 +175,7 @@ func CanApply() bool {
 	if _, err := exec.LookPath("ip"); err != nil {
 		return false
 	}
-	if os.Getenv("ASP_LOCAL_NET_APPLY") == "1" {
+	if envcfg.Truthy("ASP_LOCAL_NET_APPLY") {
 		return true
 	}
 	return hasNetAdmin()

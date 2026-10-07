@@ -2,6 +2,7 @@ package localnet
 
 import (
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"hash/fnv"
 	"io"
 	"net"
@@ -116,7 +117,7 @@ func canApplyDarwin() bool {
 	if _, err := exec.LookPath("wireguard-go"); err != nil {
 		return false
 	}
-	if os.Getenv("ASP_LOCAL_NET_APPLY") == "1" {
+	if envcfg.Truthy("ASP_LOCAL_NET_APPLY") {
 		return true
 	}
 	if os.Geteuid() == 0 {

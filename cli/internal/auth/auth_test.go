@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,6 +113,7 @@ func TestCacheRoundTrip(t *testing.T) {
 func TestResolveBearerPriority(t *testing.T) {
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_IDP_ACCESS_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_IDP_GRANT_TYPE", "")
 	t.Setenv("ASP_IDP_CLIENT_ID", "")
@@ -155,13 +157,40 @@ func TestResolveBearerPriority(t *testing.T) {
 	}
 
 	// required without creds
-	t.Setenv("ASP_IDP_REQUIRED", "1")
+	t.Setenv("ASP_REQUIRE_TOKEN", "1")
 	_, err = ResolveBearer(context.Background(), ResolveInput{
 		SecretsPath: filepath.Join(t.TempDir(), "nope"),
 		CachePath:   filepath.Join(t.TempDir(), "empty.json"),
 	})
-	if err == nil {
-		t.Fatal("expected error when required")
+	if err == nil || !strings.Contains(err.Error(), "ASP_REQUIRE_TOKEN") {
+		t.Fatalf("expected an error that names ASP_REQUIRE_TOKEN when required: %v", err)
+	}
+}
+
+// ASP_IDP_REQUIRED meant this in the CLI before it was split from the control plane's
+// and the node's: it still does, with a warning, and the new name wins.
+func TestRequireTokenKeepsItsOldName(t *testing.T) {
+	var warned []string
+	old := envcfg.Warn
+	envcfg.Warn = func(m string) { warned = append(warned, m) }
+	envcfg.ResetWarnings()
+	t.Cleanup(func() { envcfg.Warn = old })
+
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	if TokenRequired() {
+		t.Fatal("required with nothing set")
+	}
+	t.Setenv("ASP_IDP_REQUIRED", "yes")
+	if !TokenRequired() {
+		t.Fatal("the old name is not honoured")
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "ASP_IDP_REQUIRED is deprecated: use ASP_REQUIRE_TOKEN") {
+		t.Fatalf("warnings: %v", warned)
+	}
+	t.Setenv("ASP_REQUIRE_TOKEN", "off")
+	if TokenRequired() {
+		t.Fatal("the old name beat the new one")
 	}
 }
 

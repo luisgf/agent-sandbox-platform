@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"os"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"sort"
 	"strings"
 )
@@ -16,8 +16,9 @@ const (
 
 // EffectiveEgress builds the policy for a tenant.
 // Rules with ≥1 enabled entry → deny-default + those rules.
-// Empty enabled rules: allow-all only when ASP_EGRESS_DEFAULT_ALLOW=1;
-// otherwise deny-default (ASP_EGRESS_DENY_DEFAULT=1 or fail-closed default).
+// Empty enabled rules: allow-all only when ASP_EGRESS_DEFAULT_ALLOW is true;
+// otherwise deny-default (the cmd/api start-up sets it for a development control
+// plane and leaves it unset, which denies, for one with Postgres).
 func EffectiveEgress(tenantID string, rules []EgressRule) EgressPolicy {
 	enabled := make([]EgressRule, 0)
 	for _, r := range rules {
@@ -32,22 +33,13 @@ func EffectiveEgress(tenantID string, rules []EgressRule) EgressPolicy {
 		pol.Mode = EgressModeDenyDefault
 		return pol
 	}
-	if envTruthy("ASP_EGRESS_DEFAULT_ALLOW") {
+	if envcfg.Truthy("ASP_EGRESS_DEFAULT_ALLOW") {
 		pol.Mode = EgressModeAllowAll
 		return pol
 	}
-	// Harden / fail-closed (ASP_EGRESS_DENY_DEFAULT=1 or unset allow).
+	// Fail closed: ASP_EGRESS_DEFAULT_ALLOW false or unset.
 	pol.Mode = EgressModeDenyDefault
 	return pol
-}
-
-func EnvTruthy(key string) bool {
-	return envTruthy(key)
-}
-
-func envTruthy(key string) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // Version identifies what the policy allows: a hash of its mode and enabled

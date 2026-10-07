@@ -28,7 +28,7 @@ Sin este cableado, “IdP listo en código” sigue siendo teórico: el binary n
 |---|---|
 | No es Entra/Okta | Keycloak lab; el mapeo de grupos corporativos (`ASP_IDP_ROLE_MAP`) aún no está cableado a AD. |
 | Sin `tenant_memberships` | El rol sale del JWT; no hay tabla SQL de membership por tenant. |
-| Store memory en este lab CP | El unit actual no fuerza `DATABASE_URL`; audit/owner no persisten entre reinicios salvo que ops añada Postgres. |
+| Store memory en este lab CP | El unit actual no fuerza `ASP_DATABASE_URL`; audit/owner no persisten entre reinicios salvo que ops añada Postgres. |
 | Puerto 18112 solo loopback | No hay TLS ni reverse-proxy delante del CP lab; acceso remoto = SSH tunnel / bastion. |
 | Admin Keycloak en edge | Históricamente ADR infra pedía tunnel-only; **hoy** nginx de `auth.luisgf.es` hace `proxy_pass` de `location /` (incluye `/admin`) a `127.0.0.1:8081`. Postura segura recomendada: administrar por tunnel y **re-bloquear** `/admin` en edge cuando se pueda. |
 | Password grant | Útil para lab/CI scripts; OAuth corporativo real suele ser auth code / device / client credentials — no depender de ROPC en prod. |
@@ -175,8 +175,8 @@ Plantilla en repo: [`scripts/systemd/asp-control-plane.service`](../scripts/syst
 |---|---|
 | Unit | `asp-control-plane.service` |
 | Binary | `/home/ubuntu/src/bots/build/api` |
-| Listen | `127.0.0.1:18112` (`LISTEN_ADDR`) |
-| Env file | `/home/ubuntu/.secrets/asp-idp.env` (con `DATABASE_URL`) |
+| Listen | `127.0.0.1:18112` (`ASP_LISTEN_ADDR`; la unit instalada hoy dice `LISTEN_ADDR`, el nombre anterior, que sigue valiendo con un aviso) |
+| Env file | `/home/ubuntu/.secrets/asp-idp.env` (con `DATABASE_URL`, hoy `ASP_DATABASE_URL`: el nombre anterior sigue valiendo con un aviso) |
 | Estado | Postgres: contenedor `asp-postgres` en `127.0.0.1:5433` ([bare-metal §4.1](bare-metal-ch.md#41-postgres-compose)) |
 | Drop-ins | `/etc/systemd/system/asp-control-plane.service.d/`: `keys.conf` (claves fuera de `/tmp`), `local-net-dial.conf`, `postgres.conf` (espera a Docker y reintenta sin límite) e `idle.conf` (`ASP_SANDBOX_IDLE_TIMEOUT=2h`) |
 | Node-agent | `asp-node-agent.service` (ver abajo), `/usr/local/bin/node-agent` |
@@ -218,7 +218,7 @@ sudo systemctl daemon-reload && sudo systemctl restart asp-control-plane
 - **Claves:** copiarlas en vez de dejar que se creen mantiene válidos los certificados de nodo y el `kid` de los tokens.
 - **Tenant:** añade también `ASP_IDP_DEFAULT_TENANT=default` al env file (tabla de arriba). Sin esa línea, cada `POST /v1/sandboxes` con un token del realm responde 401 `idp token names no tenant`.
 - **Atestación:** el node-agent de este host firma con `ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem`.
-- **Estado:** desde 2026-10-07 el store es Postgres (`DATABASE_URL` en el env file): reiniciar el servicio **conserva** sandboxes, eventos y API keys, y el node-agent sigue registrado. Con el store en memoria (sin `DATABASE_URL`) reiniciar lo borraba todo y el nodo se registraba de nuevo.
+- **Estado:** desde 2026-10-07 el store es Postgres (`DATABASE_URL` en el env file; con el binario nuevo se llama `ASP_DATABASE_URL`): reiniciar el servicio **conserva** sandboxes, eventos y API keys, y el node-agent sigue registrado. Con el store en memoria (sin `ASP_DATABASE_URL`) reiniciar lo borraba todo y el nodo se registraba de nuevo.
 - **Reaper de inactividad:** `idle.conf` lo activa a 2 h. Para la sandbox, no la borra: su disco se conserva y `asp session resume` la trae de vuelta ([ADR-0012](adr/0012-retained-disks.md)).
 
 ### systemd — `asp-node-agent.service`
