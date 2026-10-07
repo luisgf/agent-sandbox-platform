@@ -211,6 +211,10 @@ flowchart TB
 
 ---
 
+## Install a release
+
+Once a [release](CHANGELOG.md) exists, no compiling is needed: `curl -fsSL https://github.com/luisgf/agent-sandbox-platform/releases/latest/download/install.sh | sudo sh` installs the CLI, and `INSTALL_ASP_ROLE=server` or `agent` a control plane or a node, after checking every download against the release's `SHA256SUMS`. [`docs/how-to/install.md`](docs/how-to/install.md) has the variables and the two-host walkthrough.
+
 ## Quickstart (dry-run, no KVM)
 
 Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI. **It provides no isolation.** For real microVMs see [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).

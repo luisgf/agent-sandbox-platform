@@ -1,4 +1,4 @@
-.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
+.PHONY: test test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
@@ -30,6 +30,14 @@ lint:
 	  cd $(ROOT)$$m && { out=$$(gofmt -l .); [ -z "$$out" ] || { echo "gofmt needed: $$out"; exit 1; }; } && \
 	    go vet ./... && go run $(STATICCHECK) ./... || exit 1; \
 	done
+	$(MAKE) lint-sh
+
+# The installer and the scripts it installs are POSIX sh (they run on a fresh host, before bash is
+# a given): checked as such, with shellcheck when it is installed.
+SH_SCRIPTS := scripts/install.sh scripts/uninstall.sh scripts/killall.sh images/guest/pack-rootfs.sh packaging/scripts/postinstall.sh packaging/scripts/preremove.sh
+lint-sh:
+	@for f in $(SH_SCRIPTS); do sh -n $(ROOT)$$f || exit 1; done
+	@if command -v shellcheck >/dev/null 2>&1; then cd $(ROOT) && shellcheck -s sh -S style $(SH_SCRIPTS); else echo "shellcheck not installed: syntax only"; fi
 
 test-rust:
 	cd $(ROOT)pod-daemon && cargo test

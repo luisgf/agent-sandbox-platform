@@ -17,8 +17,11 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# A user of its own, made for the service: no package script has to create one.
-DynamicUser=yes
+# A system user of its own (the package creates it): not a dynamic one, because the key of
+# its TLS certificate and the files it is given live in /etc/asp, owned by a name that has to
+# stay the same between runs.
+User=asp-control-plane
+Group=asp-control-plane
 # What must survive a reboot: the CA, the OIDC key and the attestation key. In
 # production mode (a database, TLS or an IdP) the control plane refuses keys in /tmp;
 # the ones that are missing are created here.

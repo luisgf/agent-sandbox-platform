@@ -40,6 +40,10 @@ The first release will be 0.1.0. Until then this is what `main` has.
   release's kernel and image and refuses anything that does not match its checksums; the node-agent
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
+- **An installer**: `curl -fsSL …/releases/latest/download/install.sh | sudo sh` (roles `cli`, `server`,
+  `agent`) installs a release's packages after checking them against `SHA256SUMS`, writes `/etc/asp/*.env`
+  from `INSTALL_ASP_*` variables, pulls the guest image and starts the service; `asp-killall.sh` and
+  `asp-uninstall.sh` take ASP away again.
 - A Postgres run of the API tests, and a parity script that holds the memory and Postgres stores to
   one contract.
 
