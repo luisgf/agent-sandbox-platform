@@ -10,7 +10,7 @@ import (
 )
 
 func TestDaemonArgsRustCLI(t *testing.T) {
-	args := DaemonArgs("/run/asp/virtiofs-sb.sock", "/data/proj")
+	args := DaemonArgs("/run/asp/virtiofs-sb.sock", "/data/proj", "")
 	got := strings.Join(args, " ")
 	for _, want := range []string{
 		"--socket-path /run/asp/virtiofs-sb.sock",
@@ -25,7 +25,7 @@ func TestDaemonArgsRustCLI(t *testing.T) {
 }
 
 func TestSocketPathOfDaemonArgs(t *testing.T) {
-	argv := append([]string{"/usr/libexec/virtiofsd"}, DaemonArgs("/run/asp/virtiofs-sb.sock", "/data/proj")...)
+	argv := append([]string{"/usr/libexec/virtiofsd"}, DaemonArgs("/run/asp/virtiofs-sb.sock", "/data/proj", "chroot")...)
 	if got, ok := SocketPathOf(argv); !ok || got != "/run/asp/virtiofs-sb.sock" {
 		t.Fatalf("SocketPathOf(%q) = %q %v", argv, got, ok)
 	}
@@ -94,5 +94,26 @@ func TestStartRemovesPIDFileOfADaemonThatExits(t *testing.T) {
 	}
 	if _, err := os.Stat(sock + PIDFileSuffix); !os.IsNotExist(err) {
 		t.Fatalf("pid file of an exited virtiofsd is still there (%v)", err)
+	}
+}
+
+func TestDaemonArgsSandboxModes(t *testing.T) {
+	for mode, want := range map[string]string{"": "--sandbox none", "none": "--sandbox none", "chroot": "--sandbox chroot", "namespace": "--sandbox namespace"} {
+		got := strings.Join(DaemonArgs("/run/asp/v.sock", "/data/proj", mode), " ")
+		if !strings.Contains(got, want) || strings.Count(got, "--sandbox") != 1 {
+			t.Errorf("mode %q: %q, want it to contain %q once", mode, got, want)
+		}
+	}
+	for _, ok := range []string{"", "none", "chroot", "namespace"} {
+		if !ValidSandbox(ok) {
+			t.Errorf("%q rejected", ok)
+		}
+	}
+	if ValidSandbox("pivot") {
+		t.Error("an unknown mode was accepted")
+	}
+	_, err := Start(context.Background(), Config{Binary: "true", SocketPath: t.TempDir() + "/v.sock", SharedDir: t.TempDir(), Sandbox: "pivot"})
+	if err == nil || !strings.Contains(err.Error(), "unknown sandbox mode") {
+		t.Fatalf("Start with an unknown mode: %v", err)
 	}
 }

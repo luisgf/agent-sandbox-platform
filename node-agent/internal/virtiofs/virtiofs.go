@@ -26,6 +26,26 @@ type Config struct {
 	SocketPath string
 	// SharedDir is the host directory exported under the virtiofs tag.
 	SharedDir string
+	// Sandbox is virtiofsd's --sandbox mode: "chroot" confines the daemon to
+	// SharedDir, so a link inside it cannot lead out; "namespace" does the same
+	// with namespaces; "none" (the default here) does not.
+	Sandbox string
+}
+
+// Sandbox modes of virtiofsd.
+const (
+	SandboxNone      = "none"
+	SandboxChroot    = "chroot"
+	SandboxNamespace = "namespace"
+)
+
+// ValidSandbox reports whether mode is one virtiofsd takes ("" means none).
+func ValidSandbox(mode string) bool {
+	switch mode {
+	case "", SandboxNone, SandboxChroot, SandboxNamespace:
+		return true
+	}
+	return false
 }
 
 // PIDFileSuffix is appended to the socket path for the pid file virtiofsd
@@ -33,16 +53,19 @@ type Config struct {
 // not remove it when it exits.
 const PIDFileSuffix = ".pid"
 
-// DaemonArgs is the argv virtiofsd gets after the binary name.
-// --sandbox none avoids needing a user namespace inside the node-agent
-// process; the share is still only SharedDir. --cache never keeps the guest
-// view coherent with host writes without a DAX window.
-func DaemonArgs(socketPath, sharedDir string) []string {
+// DaemonArgs is the argv virtiofsd gets after the binary name. sandbox is its
+// --sandbox mode ("" means none: it needs nothing from the node-agent's
+// process, and the share is still only sharedDir). --cache never keeps the
+// guest view coherent with host writes without a DAX window.
+func DaemonArgs(socketPath, sharedDir, sandbox string) []string {
+	if sandbox == "" {
+		sandbox = SandboxNone
+	}
 	return []string{
 		"--socket-path", socketPath,
 		"--shared-dir", sharedDir,
 		"--cache", "never",
-		"--sandbox", "none",
+		"--sandbox", sandbox,
 	}
 }
 
@@ -81,7 +104,10 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 	if err := os.Remove(cfg.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("virtiofs: remove stale socket: %w", err)
 	}
-	cmd := exec.Command(path, DaemonArgs(cfg.SocketPath, cfg.SharedDir)...)
+	if !ValidSandbox(cfg.Sandbox) {
+		return nil, fmt.Errorf("virtiofs: unknown sandbox mode %q (none, chroot or namespace)", cfg.Sandbox)
+	}
+	cmd := exec.Command(path, DaemonArgs(cfg.SocketPath, cfg.SharedDir, cfg.Sandbox)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
