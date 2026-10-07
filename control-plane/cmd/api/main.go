@@ -150,6 +150,16 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("attestor: %w", err)
 	}
 	srv.Attestor = attestor
+	if path := strings.TrimSpace(os.Getenv(attest.EnvAllowedImages)); path != "" {
+		allow, err := attest.LoadAllowlist(path)
+		if err != nil {
+			return configError{fmt.Errorf("%s: %w", attest.EnvAllowedImages, err)}
+		}
+		srv.AttestAllow = allow
+		slog.Info("boot evidence is accepted only for allowlisted images", "path", path)
+	} else {
+		slog.Info("no image allowlist: boot evidence is accepted for any kernel and base image the node reports; set " + attest.EnvAllowedImages + " to restrict it")
+	}
 	srv.Fence = fence.FromEnv()
 	slog.Info("attestor ready", "name", attestor.Name(), "kid", attestor.KID(), "fence", srv.Fence.Name())
 	authCfg := api.AuthConfigFromEnv()

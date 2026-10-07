@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/measure"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
@@ -83,23 +85,71 @@ func (r *Reconciler) shutdownGuest(ctx context.Context, id string) {
 // copy of the base image; a resume (boot_count above 1) reuses the disk its
 // stop kept, and never makes a new one in its place: a missing disk is
 // errDiskLost. resumed says which of the two it was.
-func (r *Reconciler) rootFSFor(sb cpclient.Sandbox) (path string, resumed bool, err error) {
+//
+// baseDigest is the digest of the base image the disk was copied from: measured
+// for a first boot, read from the record next to the disk for a resume ("" for
+// a disk that has none).
+func (r *Reconciler) rootFSFor(sb cpclient.Sandbox) (path, baseDigest string, resumed bool, err error) {
 	if r.DiskDir == "" {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	resumed = sb.BootCount > 1
 	if err := r.checkDiskSpace(); err != nil {
-		return "", resumed, err
+		return "", "", resumed, err
 	}
 	if resumed {
 		dst := filepath.Join(r.DiskDir, rootfsName(sb.ID))
 		if fi, statErr := os.Stat(dst); statErr != nil || !fi.Mode().IsRegular() {
-			return "", true, fmt.Errorf("%w (%s)", errDiskLost, dst)
+			return "", "", true, fmt.Errorf("%w (%s)", errDiskLost, dst)
 		}
-		return dst, true, nil
+		return dst, readBaseDigest(dst), true, nil
 	}
-	path, err = r.cloneRootFS(sb.ID)
-	return path, false, err
+	path, baseDigest, err = r.cloneRootFS(sb.ID)
+	return path, baseDigest, false, err
+}
+
+// baseDigestPath is where the digest of the base image a disk was copied from is
+// kept: next to the disk, so it lives and dies with it.
+func baseDigestPath(disk string) string { return strings.TrimSuffix(disk, ".img") + baseDigestSuffix }
+
+const baseDigestSuffix = ".base-sha256"
+
+// writeBaseDigest records digest next to disk.
+func writeBaseDigest(disk, digest string) error {
+	path := baseDigestPath(disk)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(digest+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// readBaseDigest returns the digest recorded for disk, or "" when there is none
+// or it is not a digest.
+func readBaseDigest(disk string) string {
+	b, err := os.ReadFile(baseDigestPath(disk))
+	if err != nil {
+		return ""
+	}
+	d := strings.TrimSpace(string(b))
+	if !measure.Valid(d) {
+		return ""
+	}
+	return d
+}
+
+func removeBaseDigest(disk string) {
+	_ = os.Remove(baseDigestPath(disk))
+}
+
+// removeDiskFiles removes a disk and the record kept next to it.
+func removeDiskFiles(disk string) {
+	_ = os.Remove(disk)
+	removeBaseDigest(disk)
 }
 
 // startFailure is what a start that could not finish reports. A first boot
@@ -223,6 +273,26 @@ func (r *Reconciler) gcDisks(work cpclient.Work) {
 		r.Logger.Info("removing a disk no sandbox owns", "path", p)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			r.Logger.Warn("disk GC: remove", "path", p, "error", err)
+		}
+		removeBaseDigest(p)
+	}
+	removeOrphanBaseDigests(r.DiskDir)
+}
+
+// removeOrphanBaseDigests removes digest records whose disk is gone (a crash
+// between the two removals, or a disk deleted by hand).
+func removeOrphanBaseDigests(diskDir string) {
+	entries, err := os.ReadDir(diskDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		id, ok := between(e.Name(), rootfsPrefix, baseDigestSuffix)
+		if !ok || !isSandboxID(id) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(diskDir, rootfsName(id))); os.IsNotExist(err) {
+			_ = os.Remove(filepath.Join(diskDir, e.Name()))
 		}
 	}
 }

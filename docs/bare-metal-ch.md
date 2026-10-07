@@ -383,6 +383,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--disk-min-free-mib` | `ASP_DISK_MIN_FREE_MIB` | `-1` (el doble de la imagen base): espacio libre mínimo en `--disk-dir` para clonar o reanudar; `0` no comprueba |
 | `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, borra lo que dejó un node-agent anterior (§5.6); `report` solo lo lista; `off` |
 | `--reap-only` | | hace solo esa limpieza y sale (`ExecStopPost` de la unit) |
+| `--print-measurement` | | imprime el SHA-256 del kernel y de la imagen base y la versión del hipervisor como entrada de `ASP_ATTEST_ALLOWED_IMAGES` del control plane, y sale |
 | `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop |
 | `--enroll` | `ASP_ENROLL=1` | + `--bootstrap-token` |
 | `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
@@ -710,9 +711,12 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 ### Remote attestation (MVP software)
 
 1. El control plane solo acepta claves que conoce; la que trae el bundle (`public_key_pem`) no vale. Con mTLS (`ASP_CLIENT_CA` y `https://`) el node-agent firma con la clave de su certificado de nodo y no hace falta nada más. Sin mTLS, comparte `ASP_ATTEST_KEY` (PEM ECDSA P-256) entre node-agent y control-plane, o da de alta la clave pública de cada nodo en `ASP_ATTEST_TRUSTED_PUBS`.
-2. Tras `running`, el reconciler firma `BootStatement` y hace `POST /v1/sandboxes/{id}/attest`.
+2. Tras `running`, el reconciler firma `BootStatement` y hace `POST /v1/sandboxes/{id}/attest`. El statement lleva el SHA-256 del kernel (`kernel_digest`), el de la imagen base de la que se copió el disco (`image_digest`), la versión del hipervisor y si es un arranque nuevo o un `resume`; los calcula el nodo ([ADR-0003](adr/0003-identity.md)).
+   - **Lista de imágenes permitidas:** `node-agent --print-measurement` (en el nodo, con el kernel y la imagen que usa) imprime una entrada `{name, kernel, rootfs, vmm}`; ponla en un fichero `{"images":[…]}` y apunta `ASP_ATTEST_ALLOWED_IMAGES` a él en el control plane. El fichero se relee al cambiar. Con lista, una evidencia de una imagen que no esté se rechaza (400, evento `sandbox.attestation_refused`) y no hay claim; sin lista se guardan los digests que declare el nodo, sin comprobarlos.
+   - **Al reconstruir la imagen** cambia el digest: añade la entrada nueva antes de actualizar los nodos, y quita la vieja cuando no queden sandboxes de ella.
+   - **Orden de actualización:** el control plane primero; un nodo nuevo firma campos que uno anterior no conoce y su firma no cuadra.
 3. Consulta: `GET /v1/sandboxes/{id}/attestation`; verificación sin store: `POST /v1/attestation/verify`.
-4. Mint OIDC incluye `x_asp_attestation` si la evidencia está dentro de `ASP_ATTEST_MAX_AGE` (default 10m).
+4. Mint OIDC incluye `x_asp_attestation` si la evidencia está dentro de `ASP_ATTEST_MAX_AGE` (default 10m): `measured`, `allowlisted`, `image_name`, `image_digest`, `kernel_digest`, `vmm_version` y `boot`, además del nodo y la clave que firmó. Con lista, sin entrada vigente no hay claim.
 5. Hardware TPM/SEV: implementar la interfaz `Attestor` (plug-in futuro); el MVP es `SoftwareAttestor`.
 
 ### STONITH / FenceProvider

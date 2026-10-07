@@ -35,7 +35,12 @@ type Server struct {
 	CA       *pki.CA
 	OIDC     *oidc.Signer
 	Attestor *attest.SoftwareAttestor
-	Fence    fence.FenceProvider
+	// AttestAllow, when set, is the list of images a boot may be attested as: a
+	// statement whose kernel and base image are not on it is refused, and no
+	// claim is minted for it. Nil accepts any measurement (the digests are still
+	// recorded and shown).
+	AttestAllow *attest.Allowlist
+	Fence       fence.FenceProvider
 	// Client calls same-host agents over plain HTTP; Agents builds mTLS clients for
 	// https:// agent endpoints (nil: https endpoints are refused). Neither has an
 	// overall timeout, so a streamed exec is not cut (see agent_client.go).
