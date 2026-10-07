@@ -6,6 +6,8 @@
 # running sandboxes stop as node_agent_restarted and can be resumed). Liveness thresholds are seconds here.
 # Each node offers 2 sandbox slots. Honours ASP_DATABASE_URL, or DATABASE_URL (node ids are unique
 # per run so leftover rows do not count as usage).
+# The control plane and node B are configured from YAML files and drop-ins (docs/how-to/config-file.md),
+# node A from flags and the environment: a setting the file layer lost would break a step below.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=smoke-lib.sh
@@ -35,7 +37,7 @@ export ASP_ALLOW_TMP_KEYS=1
 # Empty tenant rules deny (the memory store would allow all): step 1b checks
 # that rules reach a running sandbox in both directions.
 export ASP_EGRESS_DEFAULT_ALLOW=0
-export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTERVAL=1s
+# The liveness thresholds are seconds here, and they come from the control plane's file.
 
 cleanup() {
   for pid in "${NA_A:-}" "${NA_B:-}" "${CP_PID:-}"; do
@@ -57,8 +59,15 @@ echo "==> build"
 (cd "$ROOT/control-plane" && go build -o "$WORKDIR/api" ./cmd/api)
 (cd "$ROOT/node-agent" && go build -o "$WORKDIR/node-agent" ./cmd/node-agent)
 
-echo "==> start control-plane (auto_provision=0, policy spread)"
-ASP_LISTEN_ADDR=127.0.0.1:18090 "$WORKDIR/api" >"$WORKDIR/cp.log" 2>&1 &
+echo "==> start control-plane from server.yaml + a drop-in (auto_provision=0, policy spread)"
+cat >"$WORKDIR/server.yaml" <<YAML
+listen_addr: 127.0.0.1:18090
+node_stale_after: 3s
+node_monitor_interval: 1s
+YAML
+mkdir -p "$WORKDIR/server.yaml.d"
+echo "node_failover_after: 4s" >"$WORKDIR/server.yaml.d/10-failover.yaml"
+"$WORKDIR/api" --config "$WORKDIR/server.yaml" >"$WORKDIR/cp.log" 2>&1 &
 CP_PID=$!
 for _ in $(seq 1 50); do curl -sf "$CP/healthz" >/dev/null && break; sleep 0.1; done
 curl -sf "$CP/healthz" | grep -q ok || fail "control plane did not start"
@@ -78,10 +87,34 @@ start_node() { # <node-id> <agent-port> <log>
     >"$3" 2>&1 &
 }
 
-echo "==> start two dry-run nodes ($NODE_A, $NODE_B), 2 slots each"
+# Node B takes its settings from a file and a drop-in. The file says max_sandboxes: 9 and the flag
+# says 2, which is what the steps below depend on: a flag beats the file.
+start_node_from_file() { # <node-id> <agent-port> <log>
+  cat >"$WORKDIR/agent-$1.yaml" <<YAML
+control_plane_url: $CP
+node_id: $1
+dry_run: true
+reconcile: true
+reconcile_interval: 300ms
+heartbeat_interval: 1s
+agent_listen: 127.0.0.1:$2
+cert_dir: $WORKDIR/certs-$1
+ch_socket_dir: $WORKDIR/ch-$1
+local_net_key_dir: $WORKDIR/ln-$1
+capacity_cpu: 4
+max_sandboxes: 9
+YAML
+  mkdir -p "$WORKDIR/agent-$1.yaml.d"
+  echo "capacity_mem_mib: 8192" >"$WORKDIR/agent-$1.yaml.d/10-memory.yaml"
+  "$WORKDIR/node-agent" --config "$WORKDIR/agent-$1.yaml" \
+    --enroll --bootstrap-token="$TOKEN" --max-sandboxes=2 \
+    >"$3" 2>&1 &
+}
+
+echo "==> start two dry-run nodes ($NODE_A from flags, $NODE_B from a file), 2 slots each"
 start_node "$NODE_A" 19110 "$WORKDIR/na-a.log"
 NA_A=$!
-start_node "$NODE_B" 19111 "$WORKDIR/na-b.log"
+start_node_from_file "$NODE_B" 19111 "$WORKDIR/na-b.log"
 NA_B=$!
 wait_node_schedulable "$CP" "$NODE_A" || fail "node A not schedulable"
 wait_node_schedulable "$CP" "$NODE_B" || fail "node B not schedulable"
