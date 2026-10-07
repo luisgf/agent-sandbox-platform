@@ -124,6 +124,9 @@ type ExecRequest struct {
 	Stdin string `json:"stdin,omitempty"`
 	// StdinStream keeps a pipe open when PTY is false so piped stdin can EOF.
 	StdinStream bool `json:"stdin_stream,omitempty"`
+	// AsRoot runs the command as root in the guest. Without it the guest's
+	// pod-daemon runs it as the owner of the workspace, or as its default user.
+	AsRoot bool `json:"as_root,omitempty"`
 }
 
 // ExecResult is the exec response from the control plane.

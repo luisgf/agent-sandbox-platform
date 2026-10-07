@@ -14,7 +14,7 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | GET | `/v1/sandboxes?tenant_id=` | List, de la más reciente a la más antigua. Oculta las `deleted`; `?include_deleted=1` las incluye |
 | GET | `/v1/sandboxes/{id}` | Get |
 | GET | `/v1/sandboxes/{id}/events` | Audit trail |
-| POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`) |
+| POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`). `"as_root": true` pide root en el guest; sin él, el pod-daemon ejecuta como el dueño del workspace o como `sandboxd` ([pod-daemon](../pod-daemon/README.md#quién-ejecuta-un-comando-y-con-qué-límites)). El evento `sandbox.exec` lleva `as_root` |
 | POST | `/v1/sandboxes/{id}/stop` | Para la sandbox y **conserva su disco** ([ADR-0012](../docs/adr/0012-retained-disks.md)): `stopping` → `stopped`. Dueño, admin u operador con `destroy-any` |
 | POST | `/v1/sandboxes/{id}/start` | Reanuda una `stopped` en el nodo que tiene su disco: `requested`, `boot_count` + 1. 503 si ese nodo no tiene hueco, 409 si no puede tomar sandboxes o la sandbox no está parada. Pide además el derecho de crear |
 | DELETE | `/v1/sandboxes/{id}` | Borra la VM y el disco: `deleting` → `deleted` (directo si ningún nodo tiene nada). La fila se queda |

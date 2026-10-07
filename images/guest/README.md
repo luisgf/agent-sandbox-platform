@@ -19,6 +19,7 @@ El `Dockerfile`:
 - Binario **`vsock-ssh-agent-proxy`**: unix `/run/agent-sandbox/ssh-agent.sock` ← vsock CID 2:26501.
 - **CMD por defecto:** `--listen vsock --vsock-port 26500` (path productivo CH).
 - Usuario `sandboxd` (uid 10001); `ASP_HOST_CID=2`; `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock`.
+- **Quién ejecuta los comandos:** con la unit de systemd, `pod-daemon` corre como root, pero cada comando corre como el dueño de `/workspace` (o como `sandboxd`) salvo que la petición pida `as_root`, con límites y en el cgroup `/sys/fs/cgroup/asp-exec`, y el daemon solo contesta al host. Detalle en [`pod-daemon/README.md`](../../pod-daemon/README.md#quién-ejecuta-un-comando-y-con-qué-límites). El socket del agente SSH es `0666` en `/run/agent-sandbox` (`0755`): los comandos ya no corren como `sandboxd` y lo necesitan; quién puede firmar con qué clave lo decide el node-agent.
 
 ## Rootfs.img
 

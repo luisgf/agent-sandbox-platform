@@ -67,7 +67,7 @@ func (r *Reconciler) shutdownGuest(ctx context.Context, id string) {
 	start := time.Now()
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	// The guest may go down before pod-daemon answers: either outcome is fine.
-	_, execErr := c.Exec(callCtx, poddaemon.ExecRequest{Cmd: poweroffCmd})
+	_, execErr := c.Exec(callCtx, poddaemon.ExecRequest{Cmd: poweroffCmd, AsRoot: true})
 	cancel()
 	w, ok := r.Engine.(vmm.Shutdowner)
 	if !ok {

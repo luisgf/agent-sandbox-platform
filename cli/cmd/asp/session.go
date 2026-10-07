@@ -274,6 +274,7 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	addSessionLocFlags(fs, &loc)
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
+	asRoot := fs.Bool("root", false, "run as root in the guest (default: as the owner of the workspace, or the guest's default user)")
 	buffered := fs.Bool("buffered", false, "wait for the full JSON exec body instead of streaming NDJSON")
 	noPTY := fs.Bool("no-pty", false, "stream without a guest PTY (piped stdin gets a real EOF instead of Ctrl-D)")
 	if err := fs.Parse(before); err != nil {
@@ -309,7 +310,7 @@ func cmdSessionExec(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
-	req := client.ExecRequest{Cmd: argv, Cwd: *cwd}
+	req := client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot}
 	stdinR, raw := sessionStdin(stdout)
 	// --json and --buffered keep the accumulated JSON path (smokes, one blob).
 	// Default prints stdout/stderr as NDJSON chunks arrive and asks the guest

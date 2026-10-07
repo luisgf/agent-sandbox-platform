@@ -9,6 +9,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 
+use crate::runas::Prepared;
+
 pub fn open_pty(rows: u16, cols: u16) -> io::Result<(File, RawFd)> {
     let master_fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
     if master_fd < 0 {
@@ -66,33 +68,32 @@ pub fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> io::Result<()> {
 
 pub struct PtyCommand {
     pub cmd: Vec<String>,
-    pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
     pub rows: u16,
     pub cols: u16,
 }
 
 /// Spawn `cmd` attached to a new PTY. The returned file is the master.
-pub fn spawn(spec: PtyCommand) -> io::Result<(Child, File)> {
+/// `prepared` says who the command runs as and under which limits; its working
+/// directory is changed in the child, after the user switch.
+pub fn spawn(spec: PtyCommand, prepared: Prepared) -> io::Result<(Child, File)> {
     if spec.cmd.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "cmd required"));
     }
     let (master, slave_fd) = open_pty(spec.rows, spec.cols)?;
+    // The slave belongs to whoever the command runs as, so it can open its own
+    // terminal again (/dev/tty, ssh, sudo). The command's already open copy works
+    // either way.
+    if let Some((uid, gid)) = prepared.ids() {
+        unsafe { libc::fchown(slave_fd, uid, gid) };
+    }
     let mut command = Command::new(&spec.cmd[0]);
     command.args(&spec.cmd[1..]);
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    if let Some(cwd) = spec.cwd.as_ref() {
-        if !cwd.is_empty() {
-            command.current_dir(cwd);
-        }
-    }
-    if let Some(env) = spec.env.as_ref() {
-        for (k, v) in env {
-            command.env(k, v);
-        }
-    }
     // slave_fd is Copy (i32). pre_exec runs in the child; the parent closes
-    // its copy after spawn so the master is the only side we keep.
+    // its copy after spawn so the master is the only side we keep. This hook is
+    // registered before the identity and limits one `apply` adds, so it runs
+    // first, while the child still has the daemon's privileges.
     unsafe {
         command.pre_exec(move || {
             if libc::setsid() < 0 {
@@ -111,6 +112,13 @@ pub fn spawn(spec: PtyCommand) -> io::Result<(Child, File)> {
             }
             Ok(())
         });
+    }
+    prepared.apply(&mut command);
+    // The request's environment goes on last, so it can override HOME and USER.
+    if let Some(env) = spec.env.as_ref() {
+        for (k, v) in env {
+            command.env(k, v);
+        }
     }
     match command.spawn() {
         Ok(child) => {
@@ -145,13 +153,23 @@ mod tests {
             }
             unsafe { libc::close(slave_fd) };
             drop(master);
-            let (mut child, master) = spawn(PtyCommand {
-                cmd: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
-                cwd: None,
-                env: None,
-                rows: 24,
-                cols: 80,
-            })
+            let prepared = crate::runas::prepare(
+                &crate::runas::ExecPolicy::no_switch(),
+                &crate::runas::SystemAccounts,
+                crate::runas::euid(),
+                false,
+                None,
+            )
+            .expect("prepare");
+            let (mut child, master) = spawn(
+                PtyCommand {
+                    cmd: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+                    env: None,
+                    rows: 24,
+                    cols: 80,
+                },
+                prepared,
+            )
             .expect("spawn on the pty");
             let status = child.wait().expect("wait for the pty child");
             drop(master);

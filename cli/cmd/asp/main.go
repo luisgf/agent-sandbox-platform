@@ -60,11 +60,11 @@ Usage:
   asp sandbox create [flags]
   asp sandbox get <id>
   asp sandbox list [--tenant] [--all]
-  asp sandbox exec <id> (--cmd '…' | -- argv…)
+  asp sandbox exec <id> (--cmd '…' | -- argv…) [--cwd DIR] [--root]
   asp sandbox stop <id>        power off, keep the disk
   asp sandbox start <id>       resume a stopped sandbox on its disk
   asp sandbox delete <id>      delete the sandbox and its disk
-  asp sandbox run (--cmd '…' | -- argv…) [flags]
+  asp sandbox run (--cmd '…' | -- argv…) [--root] [flags]
   asp session start|exec|status|stop|resume|rm|local-net [--name] [--local-net] [flags]
   asp auth login|logout|status [flags]
   asp node list [--json]
@@ -96,6 +96,7 @@ Agent one-liner (lab IdP on ncc1701d — see docs/ops-asp-agent-runner.md):
 Reusable shell session (OpenCode bash tool — see docs/ops-asp-session.md):
   asp session start --tenant=default
   asp session exec --cmd 'echo hello'
+  asp session exec --root --cmd 'id'        # root in the guest; the default is the workspace owner
   asp session stop      # keeps the disk; asp session resume boots it again
   asp session rm        # deletes the sandbox and its disk
 
@@ -407,6 +408,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	addGlobalFlags(fs, &g)
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
+	asRoot := fs.Bool("root", false, "run as root in the guest (default: as the owner of the workspace, or the guest's default user)")
 	pos, err := parseInterspersed(fs, before)
 	if err != nil {
 		return 2
@@ -430,7 +432,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
-	res, err := c.Exec(context.Background(), id, client.ExecRequest{Cmd: argv, Cwd: *cwd})
+	res, err := c.Exec(context.Background(), id, client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot})
 	if err != nil {
 		fmt.Fprintf(stderr, "exec: %v\n", err)
 		return 1
@@ -446,6 +448,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	addGlobalFlags(fs, &g)
 	cmdFlag := fs.String("cmd", "", "command string (quoted words)")
 	cwd := fs.String("cwd", "", "working directory in guest")
+	asRoot := fs.Bool("root", false, "run as root in the guest (default: as the owner of the workspace, or the guest's default user)")
 	keep := fs.Bool("keep", false, "do not destroy sandbox on exit")
 	image := fs.String("image", "debian:bookworm-slim", "image_ref")
 	cpu := fs.Int("cpu-millis", 1000, "cpu_millis")
@@ -512,7 +515,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	res, err := c.Exec(ctx, sb.ID, client.ExecRequest{Cmd: argv, Cwd: *cwd})
+	res, err := c.Exec(ctx, sb.ID, client.ExecRequest{Cmd: argv, Cwd: *cwd, AsRoot: *asRoot})
 	if err != nil {
 		fmt.Fprintf(stderr, "run exec: %v\n", err)
 		return 1

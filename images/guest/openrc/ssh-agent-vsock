@@ -13,7 +13,7 @@ depend() {
 }
 
 start_pre() {
-    checkpath -d -m 0750 -o sandboxd:sandboxd /run/agent-sandbox
+    checkpath -d -m 0755 -o sandboxd:sandboxd /run/agent-sandbox
     export ASP_HOST_CID="${ASP_HOST_CID:-2}"
     export SSH_AUTH_SOCK="/run/agent-sandbox/ssh-agent.sock"
 }

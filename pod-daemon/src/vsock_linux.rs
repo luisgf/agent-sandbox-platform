@@ -75,7 +75,8 @@ impl VsockListener {
         self.port
     }
 
-    pub fn accept(&self) -> io::Result<VsockStream> {
+    /// Accepts a connection. The second value is the CID it comes from.
+    pub fn accept(&self) -> io::Result<(VsockStream, u32)> {
         let mut addr = SockaddrVM {
             svm_family: 0,
             svm_reserved1: 0,
@@ -94,11 +95,13 @@ impl VsockListener {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(VsockStream {
-            fd: unsafe { OwnedFd::from_raw_fd(fd) },
-        })
+        Ok((
+            VsockStream {
+                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+            },
+            addr.svm_cid,
+        ))
     }
-
 }
 
 impl VsockStream {
@@ -173,12 +176,18 @@ impl Write for VsockStream {
     }
 }
 
-pub fn serve(port: u32, limits: crate::http_serve::ExecLimits) -> io::Result<()> {
+/// Serves on vsock, answering only `host_cid` (the hypervisor): a process inside
+/// the guest that dials the daemon comes from another CID and is dropped.
+pub fn serve(port: u32, limits: crate::http_serve::ExecLimits, host_cid: u32) -> io::Result<()> {
     let listener = VsockListener::bind(port)?;
-    println!("listening on vsock://*:{port} (HTTP JSON, AF_VSOCK)");
+    println!("listening on vsock://*:{port} (HTTP JSON, AF_VSOCK, peer CID {host_cid} only)");
     loop {
         match listener.accept() {
-            Ok(stream) => {
+            Ok((stream, peer_cid)) => {
+                if !crate::peer::vsock_peer_allowed(peer_cid, host_cid) {
+                    eprintln!("rejected a vsock connection from CID {peer_cid}");
+                    continue; // the stream drops and closes
+                }
                 thread::spawn(move || {
                     if let Err(err) = crate::http_serve::handle_connection(stream, limits) {
                         eprintln!("connection error: {err}");

@@ -28,6 +28,10 @@ type ExecRequest struct {
 	// StdinStream keeps a pipe open on the non-PTY stream path so the client
 	// can POST stdin and then close it (real EOF). PTY sessions do not need it.
 	StdinStream bool `json:"stdin_stream,omitempty"`
+	// AsRoot runs the command as root in the guest. Without it pod-daemon runs it
+	// as the owner of the workspace, or as its default exec user. A pod-daemon
+	// that predates this ignores the field and runs everything as root.
+	AsRoot bool `json:"as_root,omitempty"`
 }
 
 // StdinMessage is POST /v1/exec/stdin. Data is a JSON string (not an opaque

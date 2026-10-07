@@ -43,7 +43,12 @@ func main() {
 		_ = ln.Close()
 		_ = os.Remove(*listen)
 	}()
-	_ = os.Chmod(*listen, 0o660)
+	// Any process in the guest may connect. pod-daemon starts commands as the
+	// owner of the workspace, not as this proxy's account, and they need the agent.
+	// What a connection can do is decided on the host (the node-agent lists and
+	// signs only what the policy and the confirm gate allow), not by a file mode in
+	// a VM that belongs to one session.
+	_ = os.Chmod(*listen, 0o666)
 
 	log.Printf("vsock-ssh-agent-proxy listening on %s → %s", *listen, describeUpstream(*upstream, uint32(*cid), uint32(*port)))
 

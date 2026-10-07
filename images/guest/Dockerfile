@@ -24,7 +24,7 @@ RUN apt-get update \
     && install -d -o root -g root -m 0755 /var/lib/sandboxd \
     && useradd --system --uid 10001 --home-dir /var/lib/sandboxd --shell /usr/sbin/nologin sandboxd \
     && chown sandboxd:sandboxd /var/lib/sandboxd \
-    && install -d -o sandboxd -g sandboxd -m 0750 /run/agent-sandbox \
+    && install -d -o sandboxd -g sandboxd -m 0755 /run/agent-sandbox \
     && install -d -m 0755 /etc/systemd/system \
     && test -x /lib/systemd/systemd \
     && test -e /sbin/init
