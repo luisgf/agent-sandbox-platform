@@ -1,6 +1,6 @@
 # Control plane
 
-Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o PostgreSQL (`ASP_DATABASE_URL`), journal de eventos, API keys, enrollment PKI, egress allowlist, OIDC (JWKS/mint) y proxy de exec hacia node-agents.
+Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default), un fichero SQLite (`ASP_DATABASE_URL=sqlite:///…`, un solo host) o PostgreSQL (`ASP_DATABASE_URL`), journal de eventos, API keys, enrollment PKI, egress allowlist, OIDC (JWKS/mint) y proxy de exec hacia node-agents.
 
 ## Endpoints
 
@@ -52,7 +52,7 @@ Todas llevan el prefijo `ASP_`. Un fichero YAML puede darles valor (`/etc/asp/se
 | `ASP_LISTEN_ADDR` | `:8080` | Bind address |
 | `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
 | `ASP_BUFFERED_EXEC_TIMEOUT` | `10m` | Cuánto puede tardar un `exec` sin `?stream=1` (`asp sandbox exec/run`, `session exec --buffered`), también en el guest. Una petición puede pedir menos con `timeout_seconds`. `0`/`off` sin límite. Pasado el límite, 504. Un stream no tiene límite |
-| `ASP_DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
+| `ASP_DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas. `sqlite:///var/lib/asp/server/asp.db` (o `sqlite:ruta.db`) guarda el estado en un fichero de este host: sin servidor de base de datos, para un único plano de control. El fichero se crea con modo 0600 (guarda hashes de claves y tokens de fence) en un directorio 0700; para copiarlo en caliente, `sqlite3 asp.db ".backup copia.db"` |
 | `ASP_METRICS_LISTEN` | (unset) | `host:puerto` de un listener aparte con `GET /metrics` (Prometheus). Sin autenticación: solo loopback salvo `ASP_INSECURE_OBS_LISTEN=1`. Además, `GET /metrics` en el puerto del API sirve lo mismo a una clave de plataforma o a un admin/operator del IdP. Catálogo: [`docs/how-to/monitoring.md`](../docs/how-to/monitoring.md) |
 | `ASP_PPROF_LISTEN` | (unset) | Igual para los perfiles de Go (`/debug/pprof/`) |
 | `ASP_INSECURE_OBS_LISTEN` | (unset) | `1` deja que `ASP_METRICS_LISTEN` / `ASP_PPROF_LISTEN` escuchen fuera de loopback (sin autenticación) |
@@ -126,12 +126,13 @@ docker run -d --name asp-cp -p 8080:8080 -v asp-cp-state:/var/lib/asp \
 
 Los nodos no van en contenedores (necesitan KVM): esto es solo el plano de control, para Kubernetes o para quien prefiera no instalarlo en el host ([ADR-0004](../docs/adr/0004-k8s-scope.md)). Con TLS delante o con `ASP_TLS_CERT`/`ASP_TLS_KEY`, antes de que lo usen nodos de otros hosts.
 
-**Tests contra Postgres.** Sin `DATABASE_URL` los tests corren con el store en memoria. Con ella (un servidor Postgres; el rol necesita `CREATEDB`) cada paquete crea una base propia, la borra al terminar y no pisa a los demás, y se añade:
+**Tests contra los tres stores.** Memoria y SQLite corren siempre (SQLite es un fichero del directorio del test: no necesita nada). Con `DATABASE_URL` (un servidor Postgres; el rol necesita `CREATEDB`) cada paquete crea una base propia, la borra al terminar y no pisa a los demás, y se añade Postgres:
 
-- la suite de `internal/api` corre una segunda vez sobre Postgres (`ASP_TEST_STORE=postgres` o `=memory` deja solo una de las dos pasadas). Un test que falla dice sobre qué store corría;
-- `TestPostgresParityWithMemory` (`internal/store`) juega un mismo guion contra `MemoryStore` y `PostgresStore`, con todos los métodos de `Store`, y exige el mismo resultado y la misma clase de error en cada paso. Un método nuevo de `Store` sin paso en el guion hace fallar `TestParityScriptCoversStore`.
+- la suite de `internal/api` corre una vez por store (`ASP_TEST_STORE=memory`, `=sqlite` o `=postgres` deja solo una pasada). Un test que falla dice sobre qué store corría;
+- `TestPostgresParityWithMemory` y `TestSQLiteParityWithMemory` (`internal/store`) juegan un mismo guion contra `MemoryStore` y el otro store, con todos los métodos de `Store`, y exigen el mismo resultado y la misma clase de error en cada paso. Un método nuevo de `Store` sin paso en el guion hace fallar `TestParityScriptCoversStore`;
+- los tests de `internal/store` que solo usan la interfaz (colocación, retención, liveness, claves, enroll…) son funciones compartidas con una variante por store.
 
-Los dos stores son dos implementaciones de un contrato, y nada más los mantiene de acuerdo: lo que un test da por bueno en memoria puede no serlo en Postgres.
+Los tres stores son tres implementaciones de un contrato, y nada más los mantiene de acuerdo: lo que un test da por bueno en memoria puede no serlo en Postgres. Una migración de Postgres necesita su gemela en `migrations/sqlite/` (el mismo número; `TestSQLiteMigrationsMatchPostgres`). SQLite guarda los tiempos como texto de un ancho fijo, `2006-01-02T15:04:05.000000Z` en UTC, porque comparar el texto es comparar el instante: un test comprueba cada columna.
 
 
 **Claves en directorios temporales.** Las rutas por defecto de la CA, la clave OIDC y la de atestación están en `/tmp` o `$TMPDIR`: un reinicio las borra, los certificados de nodo dejan de verificar y los tokens cambian de `kid`. En modo producción (`ASP_DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1`) el control plane no arranca (código 2) si `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` o `ASP_ATTEST_KEY` apuntan a `/tmp`, `/var/tmp`, `/dev/shm` o `$TMPDIR`, y el error nombra cada variable. Apúntalas a almacenamiento persistente (las que falten se crean ahí) o usa `ASP_ALLOW_TMP_KEYS=1`. En lab solo deja un aviso con las rutas.
@@ -164,7 +165,7 @@ Parar una sandbox (`POST …/stop`, `asp session stop`, el reaper de inactividad
 - **TTL** (`ASP_STOPPED_SANDBOX_TTL`, por defecto 7 días): lo parado hace más que eso se borra (`deleting` para que el nodo quite el disco, `deleted` si ningún nodo tiene nada). Evento `sandbox.deleted` con `reason` y el TTL.
 - **Tope por tenant** (`ASP_MAX_STOPPED_PER_TENANT`): se borran las más antiguas de cada tenant que pasen del tope, con `reason=tenant_cap` y un aviso en el log: el disco de un usuario se va para hacer sitio.
 
-**Postgres es requisito.** Con el store en memoria, reiniciar el plano de control olvida las sandboxes paradas y el GC de cada nodo borra sus discos; el plano de control lo avisa al arrancar si hay retención activa. `asp node list` muestra, por nodo, cuántas paradas guardan un disco (`STOPPED (DISKS)`) y el espacio libre que el nodo informa en su heartbeat (`DISK FREE`, de `--disk-dir`).
+**Un store que guarde el estado es requisito** (Postgres, o SQLite en un host). Con el store en memoria, reiniciar el plano de control olvida las sandboxes paradas y el GC de cada nodo borra sus discos; el plano de control lo avisa al arrancar si hay retención activa. `asp node list` muestra, por nodo, cuántas paradas guardan un disco (`STOPPED (DISKS)`) y el espacio libre que el nodo informa en su heartbeat (`DISK FREE`, de `--disk-dir`).
 
 ## Timeouts hacia el node-agent
 
