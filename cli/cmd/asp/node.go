@@ -69,13 +69,13 @@ func cmdNodeList(args []string, stdout, stderr io.Writer) int {
 // writeNodeTable prints used/offered per node; "-" means not enforced.
 func writeNodeTable(w io.Writer, nodes []client.Node, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tEGRESS\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tSTOPPED (DISKS)\tDISK FREE\tLAST SEEN\tVERSION\tCERT EXPIRES")
+	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tEGRESS\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tSTOPPED (DISKS)\tDISK FREE\tLAST SEEN\tVERSION\tGUEST IMAGE\tCERT EXPIRES")
 	for _, n := range nodes {
 		sched := "yes"
 		if !n.Schedulable {
 			sched = "no: " + n.UnschedulableReason
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			n.ID, n.State, sched, egressText(n.EgressEnforced),
 			usedOf(float64(n.Allocated.CPUMillis)/1000, float64(n.Allocatable.CPUMillis)/1000, "%.1f"),
 			usedOf(float64(n.Allocated.MemoryMiB), float64(n.Allocatable.MemoryMiB), "%.0f"),
@@ -84,9 +84,23 @@ func writeNodeTable(w io.Writer, nodes []client.Node, now time.Time) {
 			diskText(n.DiskFreeMiB),
 			sinceText(n.LastSeenAt, now),
 			versionText(n.AgentVersion),
+			digestText(n.GuestImageDigest),
 			expiryText(n.CertNotAfter, now))
 	}
 	_ = tw.Flush()
+}
+
+// digestText is the start of a digest, enough to tell two images apart; "-" for a node that
+// has not said (it predates the field, or has not hashed its image yet).
+func digestText(d string) string {
+	d = strings.TrimPrefix(d, "sha256:")
+	if d == "" {
+		return "-"
+	}
+	if len(d) > 12 {
+		d = d[:12]
+	}
+	return d
 }
 
 // versionText is the node-agent's build, or "-" for an agent that does not say.

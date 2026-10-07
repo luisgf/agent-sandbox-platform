@@ -56,14 +56,18 @@ type Node struct {
 	AcceptsWork    bool `json:"accepts_work"`
 	// AgentVersion is the build of the node-agent, as it said on its last register;
 	// empty for an agent that predates the field.
-	AgentVersion   string     `json:"agent_version,omitempty"`
-	CapacityCPU    int        `json:"capacity_cpu"`
-	CapacityMemMiB int        `json:"capacity_mem_mib"`
-	MaxSandboxes   int        `json:"max_sandboxes"`
-	LastSeenAt     *time.Time `json:"last_seen_at"`
-	CertNotAfter   *time.Time `json:"cert_not_after,omitempty"`
-	Allocated      NodeUsage  `json:"allocated"`
-	Allocatable    NodeUsage  `json:"allocatable"` // 0 = not enforced
+	AgentVersion string `json:"agent_version,omitempty"`
+	// GuestKernelDigest and GuestImageDigest are the digests of the guest kernel and base
+	// image the node boots sandboxes from, as it said on its last register.
+	GuestKernelDigest string     `json:"guest_kernel_digest,omitempty"`
+	GuestImageDigest  string     `json:"guest_image_digest,omitempty"`
+	CapacityCPU       int        `json:"capacity_cpu"`
+	CapacityMemMiB    int        `json:"capacity_mem_mib"`
+	MaxSandboxes      int        `json:"max_sandboxes"`
+	LastSeenAt        *time.Time `json:"last_seen_at"`
+	CertNotAfter      *time.Time `json:"cert_not_after,omitempty"`
+	Allocated         NodeUsage  `json:"allocated"`
+	Allocatable       NodeUsage  `json:"allocatable"` // 0 = not enforced
 	// StoppedSandboxes counts the stopped sandboxes on the node: each keeps a
 	// disk there and holds no CPU or memory.
 	StoppedSandboxes int64 `json:"stopped_sandboxes"`

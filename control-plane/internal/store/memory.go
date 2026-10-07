@@ -527,23 +527,25 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		agentEndpoint = input.Endpoint
 	}
 	node := Node{
-		ID:              id,
-		Name:            name,
-		Endpoint:        input.Endpoint,
-		AgentEndpoint:   agentEndpoint,
-		State:           "ready",
-		VMMProfiles:     append([]string(nil), profiles...),
-		CapacityCPU:     input.CapacityCPU,
-		CapacityMemMiB:  input.CapacityMemMiB,
-		MaxSandboxes:    input.MaxSandboxes,
-		AcceptsWork:     input.acceptsWork(),
-		LocalNetDial:    strings.TrimSpace(input.LocalNetDial),
-		EgressEnforced:  input.EgressEnforced,
-		AgentInstanceID: strings.TrimSpace(input.AgentInstanceID),
-		AgentVersion:    strings.TrimSpace(input.AgentVersion),
-		LastSeenAt:      &seen,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                id,
+		Name:              name,
+		Endpoint:          input.Endpoint,
+		AgentEndpoint:     agentEndpoint,
+		State:             "ready",
+		VMMProfiles:       append([]string(nil), profiles...),
+		CapacityCPU:       input.CapacityCPU,
+		CapacityMemMiB:    input.CapacityMemMiB,
+		MaxSandboxes:      input.MaxSandboxes,
+		AcceptsWork:       input.acceptsWork(),
+		LocalNetDial:      strings.TrimSpace(input.LocalNetDial),
+		EgressEnforced:    input.EgressEnforced,
+		AgentInstanceID:   strings.TrimSpace(input.AgentInstanceID),
+		AgentVersion:      strings.TrimSpace(input.AgentVersion),
+		GuestKernelDigest: strings.TrimSpace(input.GuestKernelDigest),
+		GuestImageDigest:  strings.TrimSpace(input.GuestImageDigest),
+		LastSeenAt:        &seen,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 
 	m.mu.Lock()
@@ -766,6 +768,8 @@ func (m *MemoryStore) EnrollNode(ctx context.Context, input EnrollNodeInput, cer
 		node.EgressEnforced = existing.EgressEnforced
 		node.AgentInstanceID = existing.AgentInstanceID
 		node.AgentVersion = existing.AgentVersion
+		node.GuestKernelDigest = existing.GuestKernelDigest
+		node.GuestImageDigest = existing.GuestImageDigest
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {
 			m.revokedCerts[existing.CertFingerprint] = id

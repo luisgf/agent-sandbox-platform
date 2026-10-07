@@ -26,6 +26,8 @@ type Config struct {
 
 	GuestKernel string
 	GuestRootFS string
+	// GuestVerify is --guest-verify: auto, on or off.
+	GuestVerify string
 
 	DiskDir string
 	// DiskMinFreeMiB is --disk-min-free-mib, resolved; 0 does not check.
@@ -165,13 +167,17 @@ func checkImage(h Host, c Config, what, path string, alwaysHash bool) Result {
 	fi, err := h.Stat(path)
 	if err != nil {
 		return Result{Status: Fail, Detail: fmt.Sprintf("the guest %s %s is missing", what, path),
-			Fix: "build or download the guest image (images/guest, scripts/build-guest-rootfs.sh) and point --guest-kernel / --guest-rootfs at it"}
+			Fix: "build or download the guest image (asp image pull, or scripts/build-guest-image.sh) and point --guest-kernel / --guest-rootfs at it"}
 	}
 	if !fi.Mode().IsRegular() || fi.Size() == 0 {
 		return Result{Status: Fail, Detail: fmt.Sprintf("the guest %s %s is not a non-empty file", what, path)}
 	}
 	want, listed := expectedDigest(h, path)
 	size := fmt.Sprintf("%d MiB", fi.Size()>>20)
+	if !listed && c.GuestVerify == "on" {
+		return Result{Status: Fail, Detail: fmt.Sprintf("%s is not listed in a SHA256SUMS next to it, and --guest-verify=on refuses to boot from a file that is not", path),
+			Fix: "install a release with asp image pull (it brings the SHA256SUMS), or put --guest-verify=auto"}
+	}
 	if !listed && !alwaysHash {
 		return Result{Status: OK, Detail: fmt.Sprintf("%s, %s (no SHA256SUMS next to it to compare with)", path, size)}
 	}
@@ -180,27 +186,40 @@ func checkImage(h Host, c Config, what, path string, alwaysHash bool) Result {
 		return Result{Status: Warn, Detail: fmt.Sprintf("%s: cannot read it to hash it: %v", path, err)}
 	}
 	switch {
+	case listed && got != want && c.GuestVerify == "off":
+		return Result{Status: Warn, Detail: fmt.Sprintf("%s is %s, SHA256SUMS says %s (--guest-verify=off: the node boots from it anyway)", path, got, want),
+			Fix: "the file is not the one that was released: asp image pull installs a good one"}
 	case listed && got != want:
-		return Result{Status: Fail, Detail: fmt.Sprintf("%s is %s, SHA256SUMS says %s", path, got, want),
-			Fix: "the file is not the one that was released: download it again"}
+		return Result{Status: Fail, Detail: fmt.Sprintf("%s is %s, SHA256SUMS says %s: the node refuses to boot from it", path, got, want),
+			Fix: "the file is not the one that was released: asp image pull installs a good one"}
 	case listed:
 		return Result{Status: OK, Detail: fmt.Sprintf("%s, %s, matches SHA256SUMS", path, size)}
 	}
 	return Result{Status: OK, Detail: fmt.Sprintf("%s, %s, %s", path, size, got)}
 }
 
-// expectedDigest reads the digest a SHA256SUMS in the file's directory gives it.
+// expectedDigest reads the digest a SHA256SUMS next to the file gives it: beside the path as
+// named and, when it is a link, beside the file it leads to (the sums of a release installed
+// by asp image pull sit with the files in the version's directory).
 func expectedDigest(h Host, path string) (digest string, listed bool) {
-	b, err := h.ReadFile(filepath.Join(filepath.Dir(path), "SHA256SUMS"))
-	if err != nil {
-		return "", false
+	candidates := []string{path}
+	if h.EvalSymlinks != nil {
+		if real, err := h.EvalSymlinks(path); err == nil && real != path {
+			candidates = append(candidates, real)
+		}
 	}
-	sc := bufio.NewScanner(strings.NewReader(string(b)))
-	name := filepath.Base(path)
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) == 2 && strings.TrimPrefix(f[1], "*") == name {
-			return "sha256:" + strings.ToLower(f[0]), true
+	for _, c := range candidates {
+		b, err := h.ReadFile(filepath.Join(filepath.Dir(c), "SHA256SUMS"))
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(strings.NewReader(string(b)))
+		name := filepath.Base(c)
+		for sc.Scan() {
+			f := strings.Fields(sc.Text())
+			if len(f) == 2 && strings.TrimPrefix(f[1], "*") == name {
+				return "sha256:" + strings.ToLower(f[0]), true
+			}
 		}
 	}
 	return "", false
