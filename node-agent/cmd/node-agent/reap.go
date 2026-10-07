@@ -127,8 +127,8 @@ func reapConfig(cfg config, report bool) reconciler.ReapConfig {
 
 // localNetKeyDir holds the per-sandbox WireGuard node keys.
 func localNetKeyDir(cfg config) string {
-	if dir := os.Getenv("ASP_LOCAL_NET_KEY_DIR"); dir != "" {
-		return dir
+	if cfg.LocalNetKeyDir != "" {
+		return cfg.LocalNetKeyDir
 	}
 	if cfg.DryRun {
 		return filepath.Join(os.TempDir(), "asp-local-net-keys")

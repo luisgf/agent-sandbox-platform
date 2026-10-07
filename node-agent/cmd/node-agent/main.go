@@ -111,6 +111,7 @@ type config struct {
 	VirtiofsdSandbox     string // --virtiofsd-sandbox: none | chroot | namespace; "" = chroot as root, none otherwise
 	WorkspaceRoots       string // --workspace-root: where sandboxes' workspaces may live
 	DiskDir              string
+	LocalNetKeyDir       string        // --local-net-key-dir: the per-sandbox WireGuard node keys ("" = /var/lib/asp/local-net)
 	StopGrace            time.Duration // --stop-grace
 	DiskMinFreeMiB       int           // --disk-min-free-mib: -1 twice the base image, 0 not checked
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
@@ -817,6 +818,7 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.Int(&cfg.VMTasksMax, "vm-tasks-max", vmm.DefaultTasksMax, "most processes and threads of one microVM service")
 	s.String(&cfg.VirtiofsdSandbox, "virtiofsd-sandbox", "", "virtiofsd --sandbox mode: chroot (confine the daemon to the workspace), namespace or none. Default chroot when running as root, none otherwise")
 	s.String(&cfg.VirtiofsdBin, "virtiofsd-bin", "virtiofsd", "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set", settings.Legacy("VIRTIOFSD_BIN"))
+	s.String(&cfg.LocalNetKeyDir, "local-net-key-dir", "", "where the per-sandbox WireGuard node keys of on-demand local-net are kept (default /var/lib/asp/local-net; under the temp dir with --dry-run)")
 	s.String(&cfg.DiskDir, "disk-dir", "/var/lib/asp/disks", "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")
 	s.Duration(&cfg.StopGrace, "stop-grace", 15*time.Second, "a stop asks the guest to power off and waits up to this long for the VM to exit before stopping it hard (0: stop hard at once; ignored with --dry-run)")
 	s.Int(&cfg.DiskMinFreeMiB, "disk-min-free-mib", -1, "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")

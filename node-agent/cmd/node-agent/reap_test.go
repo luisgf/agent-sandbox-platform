@@ -15,8 +15,7 @@ import (
 // /sys/class/net and /proc of the machine running them.
 
 func TestRealAgentHoldsTheSocketDirLock(t *testing.T) {
-	t.Setenv("ASP_LOCAL_NET_KEY_DIR", t.TempDir())
-	cfg := config{CHSocketDir: t.TempDir(), ReapLeftovers: reapOff}
+	cfg := config{CHSocketDir: t.TempDir(), ReapLeftovers: reapOff, LocalNetKeyDir: t.TempDir()}
 	lock, err := cleanHost(context.Background(), cfg)
 	if err != nil || lock == nil {
 		t.Fatalf("lock=%v err=%v", lock, err)
@@ -26,7 +25,7 @@ func TestRealAgentHoldsTheSocketDirLock(t *testing.T) {
 	if _, err := cleanHost(context.Background(), cfg); !errors.Is(err, reconciler.ErrSocketDirLocked) {
 		t.Fatalf("second agent: %v, want ErrSocketDirLocked", err)
 	}
-	only := config{DryRun: true, CHSocketDir: cfg.CHSocketDir, ReapLeftovers: reapOn}
+	only := config{DryRun: true, CHSocketDir: cfg.CHSocketDir, ReapLeftovers: reapOn, LocalNetKeyDir: cfg.LocalNetKeyDir}
 	if code := reapOnly(only); code != 1 {
 		t.Fatalf("--reap-only next to a running agent exited %d, want 1", code)
 	}
@@ -41,8 +40,7 @@ func TestRealAgentHoldsTheSocketDirLock(t *testing.T) {
 
 // A dry-run agent only reports, and never keeps a real agent from starting.
 func TestDryRunNeverKeepsTheLock(t *testing.T) {
-	t.Setenv("ASP_LOCAL_NET_KEY_DIR", t.TempDir())
-	cfg := config{DryRun: true, CHSocketDir: t.TempDir(), ReapLeftovers: reapOn}
+	cfg := config{DryRun: true, CHSocketDir: t.TempDir(), ReapLeftovers: reapOn, LocalNetKeyDir: t.TempDir()}
 	if lock, err := cleanHost(context.Background(), cfg); err != nil || lock != nil {
 		t.Fatalf("dry-run kept lock=%v err=%v", lock, err)
 	}
@@ -57,8 +55,7 @@ func TestDryRunNeverKeepsTheLock(t *testing.T) {
 }
 
 func TestReapConfigDryRunStaysOffTheHost(t *testing.T) {
-	t.Setenv("ASP_LOCAL_NET_KEY_DIR", "/keys")
-	real := reapConfig(config{CHSocketDir: "/run/asp", DiskDir: "/var/lib/asp/disks", CHAPISocket: "/run/ch.sock", GuestRootFS: "/srv/asp/base.img"}, false)
+	real := reapConfig(config{CHSocketDir: "/run/asp", DiskDir: "/var/lib/asp/disks", CHAPISocket: "/run/ch.sock", GuestRootFS: "/srv/asp/base.img", LocalNetKeyDir: "/keys"}, false)
 	if real.DiskDir != "" || real.SysClassNet != "/sys/class/net" || real.Report {
 		t.Fatalf("real agent: %+v", real)
 	}
