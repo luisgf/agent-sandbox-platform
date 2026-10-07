@@ -150,9 +150,10 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 | Hecho | ¿Mueve `last_activity_at`? |
 |---|---|
 | `session start` (create, y el paso a `running`) | Sí. Es el reloj inicial. No es un heartbeat nuevo: el create y la transición a `running` ya lo escribían. |
-| Exec que el CP proxyó bien (JSON acumulado, o stream NDJSON copiado hasta el final), aunque el guest salga ≠ 0 | Sí. **Esto es lo único que refresca el reloj después del start.** |
+| Exec en curso: al empezar y, mientras la llamada al node-agent sigue abierta (un stream largo, un PTY abierto, un acumulado esperando), cada `min(1 min, timeout/3)` | Sí. «Inactiva» es «ningún exec en marcha y ninguno terminado hace N»: un comando que dura más que el timeout no pierde su sandbox. Un PTY que alguien deja abierto la mantiene viva mientras siga abierto (`--stream-idle-timeout-secs` del pod-daemon lo cierra si se queda mudo). |
+| Exec que el CP proxyó bien (JSON acumulado, o stream NDJSON copiado hasta el final), aunque el guest salga ≠ 0 | Sí, al terminar: el reloj vuelve a contar desde ese momento. |
 | `session status`, `GET`, heartbeat del nodo, sondeo de `/work` | No. Si contaran, el reconciler impediría el idle para siempre. |
-| Exec que falla antes del guest (red, 502, stream cortado a medias) | No. |
+| Fin de un exec que falla antes del guest (red, 502, stream cortado a medias) | No: lo que movió fue su inicio, y mientras estuvo abierto. |
 
 **Qué hace el reaper.** **Para** el sandbox: `stopping` (el node-agent apaga el guest y conserva el disco) o `stopped` si ningún nodo la había reclamado todavía. No borra nada: `asp session resume` la trae de vuelta. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.
 
@@ -200,7 +201,7 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 | `was stopped when the node agent restarted` / `…when its node stopped responding` | Es una sandbox `stopped` (`node_agent_restarted`, o `node_lost` si se estaba parando): su VM murió pero **el disco se conserva** en el nodo. `asp session resume` (cuando el nodo vuelva, si es `node_lost`). `start --force` la borraría: pide `--yes` a propósito. |
 | exec 401 | Token caducado o `ASP_IDP_REQUIRED` sin secretos. `asp auth status`. |
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
-| `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. La actividad **no** se refresca. |
+| `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. El fin del stream no refresca la actividad (su tiempo abierto sí la refrescó). |
 | `state file kept` | `DELETE` falló (no 404). El JSON sigue para reintentar `rm`. |
 | El guest no ve `/workspace` | Imagen nueva: `systemctl status workspace-virtiofs` en el guest. Si el tag no estaba, la unidad sale 0 y no hay mount (sandbox sin workspace, o `virtiofsd` no arrancó). Imagen vieja, sin esa unidad: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `VIRTIOFSD_BIN`). |
 | Salida de golpe al final | `--buffered`, `--json`, o un pod-daemon que no habla `?stream=1` (el node-agent emite un burst). |

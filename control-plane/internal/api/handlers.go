@@ -51,6 +51,9 @@ type Server struct {
 	BufferedExecTimeout time.Duration
 	// Sched mirrors the store's placement config, for the node view.
 	Sched sched.Config
+	// IdleTimeout is the idle reaper's timeout (0: reaper off). A running exec
+	// keeps its sandbox active at an interval inside it (keepActive).
+	IdleTimeout time.Duration
 
 	// fencedOutage remembers, per node, the last sign of life of the outage it
 	// was fenced for, so the monitor fences once per outage.
@@ -689,6 +692,10 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	// A command that runs longer than the idle timeout is activity the whole time
+	// it runs, not only once it ends: the sandbox is touched now and while the call
+	// to the agent is open (a stream, or a buffered call waiting for its answer).
+	defer s.keepActive(sb.ID)()
 	egressPol := s.effectiveEgress(sb.TenantID)
 	payload, _ := json.Marshal(map[string]any{
 		"sandbox_id":       sb.ID,
