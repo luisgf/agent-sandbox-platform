@@ -389,6 +389,8 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--mtls` | `ASP_MTLS=1` | client certs hacia CP |
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local; pide un bearer token (`--agent-token-file`) salvo `/healthz`; fuera de loopback no arranca salvo `--insecure-agent-listen` |
 | `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | secreto de esa API; el nodo lo crea (0600) y el plano de control del mismo host lo lee con el mismo `ASP_AGENT_TOKEN_FILE`. Defecto `/var/lib/asp/agent.token` |
+| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — HTTP sin autenticar; fuera de loopback no arranca salvo `--insecure-agent-listen` |
+| `--workspace-root` | `ASP_WORKSPACE_ROOTS` | donde puede vivir el workspace de una sandbox: dentro de `<raíz>/<tenant>/` (enlaces resueltos). Defecto `/srv/asp/workspaces` (créalo: `install -d /srv/asp/workspaces/<tenant>`); sin raíz que exista no hay workspaces. `virtiofsd` corre con `--sandbox chroot` si el agente es root (`--virtiofsd-sandbox`) |
 | `--capacity-cpu` / `--capacity-mem-mib` | `ASP_CAPACITY_CPU` / `ASP_CAPACITY_MEM_MIB` | `-1` detecta del host, `0` no limita ([`ops-multi-node.md`](ops-multi-node.md)) |
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
 | `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
