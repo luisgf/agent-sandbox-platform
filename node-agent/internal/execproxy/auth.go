@@ -49,25 +49,34 @@ func LoadOrCreateToken(path string) (string, error) {
 		return "", err
 	}
 	tok := hex.EncodeToString(raw[:])
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("agent token file: %w", err)
 	}
-	// O_EXCL: two agents starting together do not each write their own.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// Write the secret to a temporary file and link it into place: the file
+	// then appears whole or not at all, so an agent starting at the same moment
+	// never reads it half written, and the first to link wins.
+	tmp, err := os.CreateTemp(dir, ".agent-token-*")
 	if err != nil {
+		return "", fmt.Errorf("agent token file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if _, err := tmp.WriteString(tok + "\n"); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return LoadOrCreateToken(path)
 		}
 		return "", fmt.Errorf("agent token file: %w", err)
-	}
-	if _, err := f.WriteString(tok + "\n"); err != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", err
 	}
 	return tok, nil
 }

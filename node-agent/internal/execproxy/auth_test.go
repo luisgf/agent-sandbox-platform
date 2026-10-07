@@ -56,22 +56,34 @@ func TestLoadOrCreateTokenRefusesAWeakFile(t *testing.T) {
 	}
 }
 
-// Agents starting together on one file must end up with the same secret.
+// Agents starting together on one file must end up with the same secret, and
+// none may read the file before it is complete.
 func TestLoadOrCreateTokenConcurrentStartsAgree(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent.token")
-	var wg sync.WaitGroup
-	got := make([]string, 8)
-	for i := range got {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			got[i], _ = LoadOrCreateToken(path)
-		}()
-	}
-	wg.Wait()
-	for i, g := range got {
-		if g == "" || g != got[0] {
-			t.Fatalf("agent %d got %q, agent 0 got %q", i, g, got[0])
+	for round := 0; round < 50; round++ {
+		path := filepath.Join(t.TempDir(), "agent.token")
+		var wg sync.WaitGroup
+		got := make([]string, 16)
+		errs := make([]error, len(got))
+		start := make(chan struct{})
+		for i := range got {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				got[i], errs[i] = LoadOrCreateToken(path)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for i, g := range got {
+			if errs[i] != nil || g == "" || g != got[0] {
+				t.Fatalf("round %d: agent %d got %q (%v), agent 0 got %q", round, i, g, errs[i], got[0])
+			}
+		}
+		// No temporary file is left next to it.
+		entries, _ := os.ReadDir(filepath.Dir(path))
+		if len(entries) != 1 {
+			t.Fatalf("round %d: %d files left in the directory", round, len(entries))
 		}
 	}
 }
