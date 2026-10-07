@@ -502,6 +502,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0009](docs/adr/0009-agent-sessions.md) | Sessions as the primary use of isolation |
 | [0010](docs/adr/0010-on-demand-local-net.md) | On-demand local network: full tunnel, opt-in |
 | [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes, capacity placement |
+| [0012](docs/adr/0012-retained-disks.md) | Stop is not delete: a sandbox's disk survives a stop (proposed) |
 
 Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 
