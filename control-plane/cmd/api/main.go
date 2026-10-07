@@ -225,6 +225,13 @@ func run(ctx context.Context, args []string) error {
 	clientCAPath := strings.TrimSpace(os.Getenv("ASP_CLIENT_CA"))
 	mtlsStrict := api.EnvTruthy("ASP_MTLS_STRICT")
 	useTLS := tlsCert != "" && tlsKey != ""
+	if useTLS {
+		names, err := tlsCertNames(tlsCert)
+		if err != nil {
+			return fmt.Errorf("read ASP_TLS_CERT: %w", err)
+		}
+		srv.ReservedNodeNames = names
+	}
 
 	var tlsCfg *tls.Config
 	if useTLS {

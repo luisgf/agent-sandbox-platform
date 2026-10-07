@@ -66,7 +66,7 @@ func TestAttestWithTheNodeCertificateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issued, err := ca.IssueNodeCert("node-a", nil, pki.DefaultNodeTTL)
+	issued, err := ca.IssueNodeCert("node-a", pki.DefaultNodeTTL)
 	if err != nil {
 		t.Fatal(err)
 	}

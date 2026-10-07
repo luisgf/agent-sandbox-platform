@@ -395,7 +395,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
 | `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — p.ej. `0.0.0.0:9443`: `exec` con mTLS para un CP en otro host (ver 5.5) |
 | `--endpoint` | `NODE_ENDPOINT` | lo que se anuncia al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen` |
-| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
+| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt`, la misma CA que firma los certificados de nodo: avisa si el CP es remoto. Pasa una CA que firme solo el cert del CP ([`ops-multi-node.md`](ops-multi-node.md#las-dos-raíces-de-confianza)) |
 | `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
 | `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix del pod-daemon (**host**, dry-run / fallback) |
 | `--pod-daemon-port` | | `26500` — puerto guest vsock para CONNECT |
@@ -512,6 +512,7 @@ node-agent \
 - **Nodos enrolados antes de este cambio:** su cert es solo de cliente. Con `--agent-tls-listen` el agente no arranca y pide re-enrolar (`--enroll`) o `POST /v1/nodes/{id}/rotate-cert`.
 - **`http://` desde otro host** se rechaza en register (400) y en `exec` (502). Solo para laboratorio: `ASP_INSECURE_AGENT_HTTP=1` en el plano de control y `--insecure-agent-listen` en el nodo.
 - **Identidad:** con `ASP_CLIENT_CA`, cada ruta de nodo compara el CN del cert con el nodo para el que actúa (403 si no coincide). Sin `--node-id`, el agente usa el CN de su cert.
+- **Dos raíces de confianza:** la CA de enrollment firma los certificados de nodo; el certificado TLS del plano de control debería venir de otra CA y el nodo la fija con `--control-plane-ca`. El certificado de un nodo vale solo para su id (no para el endpoint que cite ni para el nombre del plano de control) y un id no puede ser una IP ni un nombre del certificado del plano de control ([`ops-multi-node.md`](ops-multi-node.md#las-dos-raíces-de-confianza)).
 
 ### 5.6 Servicio systemd y reinicios del agente
 

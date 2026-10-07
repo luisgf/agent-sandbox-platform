@@ -109,7 +109,7 @@ func (f *mtlsExecFixture) exec(sandboxID string) *httptest.ResponseRecorder {
 
 func TestExecReachesTheAssignedNodeOverMutualTLS(t *testing.T) {
 	f := newMTLSExecFixture(t)
-	issued, err := f.ca.IssueNodeCert("n1", []string{"127.0.0.1"}, time.Hour)
+	issued, err := f.ca.IssueNodeCert("n1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestExecReachesTheAssignedNodeOverMutualTLS(t *testing.T) {
 // A node whose endpoint points at another node's agent must not get its traffic.
 func TestExecRefusesAnAgentWithAnotherNodesCertificate(t *testing.T) {
 	f := newMTLSExecFixture(t)
-	issued, err := f.ca.IssueNodeCert("n1", []string{"127.0.0.1"}, time.Hour)
+	issued, err := f.ca.IssueNodeCert("n1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

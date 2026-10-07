@@ -20,7 +20,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--cert-dir` | `ASP_CERT_DIR` | dir de client certs (`/var/lib/asp/node-certs`; si no se puede escribir, uno temporal) |
 | | `ASP_ALLOW_TMP_KEYS` | `1`: un nodo de producción arranca aunque `--cert-dir`, `ASP_ATTEST_KEY` o `--egress-mitm-ca` estén en un directorio temporal |
 | `--mtls` | `ASP_MTLS=1` | exigir client certs |
-| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt` |
+| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt`, la misma CA que firma los certificados de nodo: avisa si el CP es remoto. Pasa una CA que firme solo el cert del CP ([`ops-multi-node.md`](../docs/ops-multi-node.md#las-dos-raíces-de-confianza)) |
 | `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local (exec, egress-check, approve). Pide `Authorization: Bearer <token>` salvo `GET /healthz`; fuera de loopback no arranca |
 | `--api-key-file` | `ASP_NODE_API_KEY_FILE` | Fichero con la API key (ámbito `platform`) que el nodo manda al CP en cada llamada salvo enroll; también `ASP_NODE_API_KEY`. Hace falta con un CP por HTTP plano, donde no hay certificado de cliente: el CP rechaza toda llamada de nodo sin credencial. Con mTLS (`https://` + `ASP_CLIENT_CA`) el certificado basta |
