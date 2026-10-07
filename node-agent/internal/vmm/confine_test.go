@@ -244,10 +244,39 @@ func TestUnprivilegedSpecRestrictsTheUnit(t *testing.T) {
 	if plain := testConfinement().FSSpec("abc").Properties; !slices.Equal(plain, []string{"TimeoutStopSec=15"}) {
 		t.Errorf("virtiofsd's unit without Unprivileged: %v", plain)
 	}
+	// The VMM has a private /tmp, unless something it needs is in /tmp or /var/tmp: the private
+	// one would hide it (ReadWritePaths does not bring it back), and the VM would not start.
+	if props := c.Spec("abc", MicroVMConfig{RunDir: "/run/asp-vm/abc", RootFSPath: "/var/lib/asp/disks/rootfs-abc.img", KernelPath: "/opt/sandbox/vmlinux"}).Properties; !slices.Contains(props, "PrivateTmp=yes") {
+		t.Errorf("a VMM with nothing in /tmp has no private /tmp: %v", props)
+	}
+	for _, cfg := range []MicroVMConfig{
+		{RunDir: "/var/tmp/asp/run/abc"},
+		{RunDir: "/run/asp-vm/abc", RootFSPath: "/tmp/disks/rootfs-abc.img"},
+		{RunDir: "/run/asp-vm/abc", KernelPath: "/var/tmp/vmlinux"},
+	} {
+		if props := c.Spec("abc", cfg).Properties; slices.Contains(props, "PrivateTmp=yes") {
+			t.Errorf("%+v: the VMM got a PrivateTmp that hides its own files: %v", cfg, props)
+		}
+	}
+	// And the same for virtiofsd's workspace: a project under /tmp must exist for it.
+	if slices.Contains(fsProps, "PrivateTmp=yes") {
+		t.Errorf("virtiofsd got a PrivateTmp that hides a workspace under /tmp: %v", fsProps)
+	}
 	// A confinement without it keeps the units as before.
 	plain := testConfinement().Spec("abc", MicroVMConfig{RunDir: "/x"})
 	if !slices.Equal(plain.Properties, []string{"TimeoutStopSec=15"}) {
 		t.Fatalf("plain confinement: %v", plain.Properties)
+	}
+}
+
+func TestUnderTmp(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/tmp": true, "/tmp/x": true, "/var/tmp": true, "/var/tmp/a/b": true, "/var/tmp/../lib": false,
+		"/tmpfoo": false, "/var/tmpx/y": false, "/run/asp-vm": false, "/var/lib/asp/disks": false, "": false, "/home/u/tmp": false,
+	} {
+		if got := underTmp(path); got != want {
+			t.Errorf("underTmp(%q) = %v, want %v", path, got, want)
+		}
 	}
 }
 
