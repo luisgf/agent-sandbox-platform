@@ -154,6 +154,9 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("idp config: %w", err)
 	}
+	if err := checkIdPAudience(idpCfg); err != nil {
+		return err
+	}
 	authCfg.IdP = idpVal
 	authCfg.IdPRequired = idpCfg.Required
 	if idpVal != nil {

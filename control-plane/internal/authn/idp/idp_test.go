@@ -217,3 +217,57 @@ func TestRoleConfigFromEnv(t *testing.T) {
 		t.Fatalf("destroy=%q", cfg.DestroyAnyGroup)
 	}
 }
+
+// A group called "admin" or "operator" in some unrelated context must not
+// grant that role once the operator configured how groups map to roles.
+func TestBareRoleNamesNeedNoMapAndNoPrefix(t *testing.T) {
+	prefixed := Config{RoleClaim: "groups", RolePrefix: "asp-"}
+	for _, group := range []string{"admin", "operator", "user", "viewer", "ADMIN"} {
+		if g := prefixed.MapGrants([]string{group}); g.Role != RoleNone {
+			t.Errorf("prefix asp-: group %q granted %q", group, g.Role)
+		}
+	}
+	if g := prefixed.MapGrants([]string{"ASP-Admin"}); g.Role != RoleAdmin {
+		t.Errorf("the prefix match is case-insensitive: got %q", g.Role)
+	}
+
+	mapped := Config{RoleClaim: "groups", RoleMap: map[string]Role{"corp-ops": RoleOperator}}
+	for _, group := range []string{"admin", "operator", "corp-admins", "asp-admin"} {
+		if g := mapped.MapGrants([]string{group}); g.Role != RoleNone {
+			t.Errorf("role map: unmapped group %q granted %q", group, g.Role)
+		}
+	}
+	if g := mapped.MapGrants([]string{"corp-ops", "admin"}); g.Role != RoleOperator {
+		t.Errorf("mapped group lost next to an unmapped one: %q", g.Role)
+	}
+
+	// Map and prefix together: the map first, then the prefix, nothing else.
+	both := Config{RoleClaim: "groups", RolePrefix: "asp-", RoleMap: map[string]Role{"corp-ops": RoleOperator}}
+	if g := both.MapGrants([]string{"asp-viewer"}); g.Role != RoleViewer {
+		t.Errorf("prefix beside a map: %q", g.Role)
+	}
+	if g := both.MapGrants([]string{"viewer"}); g.Role != RoleNone {
+		t.Errorf("bare name beside a map and a prefix: %q", g.Role)
+	}
+
+	// Neither configured (a hand-built Config): the groups are the role names.
+	bare := Config{RoleClaim: "groups"}
+	if g := bare.MapGrants([]string{"operator"}); g.Role != RoleOperator {
+		t.Errorf("bare names with nothing configured: %q", g.Role)
+	}
+}
+
+// The environment never produces a Config with neither: no prefix and no map
+// means the default prefix, so bare names stay off.
+func TestEnvironmentAlwaysConfiguresAPrefixOrAMap(t *testing.T) {
+	t.Setenv("ASP_IDP_ROLE_PREFIX", "")
+	t.Setenv("ASP_IDP_ROLE_MAP", "")
+	var cfg Config
+	RoleConfigFromEnv(&cfg)
+	if cfg.RolePrefix == "" && len(cfg.RoleMap) == 0 {
+		t.Fatal("no prefix and no map: bare group names would grant roles")
+	}
+	if g := cfg.MapGrants([]string{"admin"}); g.Role != RoleNone {
+		t.Fatalf("default config grants %q to a group named admin", g.Role)
+	}
+}
