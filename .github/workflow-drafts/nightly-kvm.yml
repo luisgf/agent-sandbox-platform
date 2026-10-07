@@ -1,0 +1,76 @@
+# The real end to end, on a host with KVM: every night, on demand, and for a pull request that a
+# maintainer labels needs-kvm. Nothing else in CI boots a VM: the other jobs run the units and the
+# smokes with FakeVMM nodes (--dry-run), and the bugs of the data plane (a `/` at 0700, a stop that
+# loses what the guest had not synced, a retained disk deleted by a self-fence) were found by hand.
+#
+# Needs a self-hosted runner with the labels self-hosted, linux and kvm, on a host with /dev/kvm,
+# systemd, cloud-hypervisor, virtiofsd, nftables and docker (to build the guest image), where the
+# runner's user has passwordless sudo: the scripts start VMs, TAPs and systemd units as root. Give
+# it a machine of its own (the scripts use their own directories, ports and subnets, and stop only
+# the units they start, but they do run as root), and never run it for a pull request from a fork:
+# the `if` below refuses those.
+#
+# Repository variables (Settings → Secrets and variables → Actions → Variables):
+#   ASP_E2E_KERNEL   the guest kernel on the runner (default /opt/sandbox/vmlinux)
+#   ASP_E2E_MODULES  its lib/modules/<release> directory, when the kernel has its drivers as modules
+#                    (a distribution kernel); empty for a kernel that has them built in
+name: Nightly KVM
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+# One at a time: they share the host.
+concurrency:
+  group: nightly-kvm
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: end to end on KVM
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'needs-kvm') &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, kvm]
+    timeout-minutes: 90
+    env:
+      KERNEL: ${{ vars.ASP_E2E_KERNEL || '/opt/sandbox/vmlinux' }}
+      MODULES: ${{ vars.ASP_E2E_MODULES }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: |
+            control-plane/go.*
+            node-agent/go.*
+            cli/go.*
+      - name: Build the binaries
+        run: make build
+      - name: Build the guest image (twice, from scratch, and compare)
+        env:
+          ASP_GUEST_KERNEL_FILE: ${{ env.KERNEL }}
+          ASP_GUEST_MODULES: ${{ env.MODULES }}
+        run: scripts/build-guest-image.sh --verify build/guest
+      - name: The life of a sandbox
+        run: |
+          sudo env ASP_E2E_ROOTFS="$PWD/build/guest/rootfs.img" ASP_E2E_KERNEL="$KERNEL" \
+            ASP_E2E_BIN="$PWD/build" scripts/e2e-kvm.sh
+      - name: The VMM of each sandbox runs as a user of its own
+        run: |
+          sudo env ASP_SMOKE_ROOTFS="$PWD/build/guest/rootfs.img" ASP_SMOKE_KERNEL="$KERNEL" \
+            ASP_SMOKE_BIN="$PWD/build" scripts/smoke-vmm-user-kvm.sh
+      - name: Egress, with the proxy and nftables in enforce mode
+        run: |
+          sudo env ASP_SMOKE_ROOTFS="$PWD/build/guest/rootfs.img" ASP_SMOKE_KERNEL="$KERNEL" \
+            ASP_SMOKE_BIN="$PWD/build" scripts/smoke-egress-kvm.sh

@@ -44,6 +44,9 @@ The first release will be 0.1.0. Until then this is what `main` has.
   `agent`) installs a release's packages after checking them against `SHA256SUMS`, writes `/etc/asp/*.env`
   from `INSTALL_ASP_*` variables, pulls the guest image and starts the service; `asp-killall.sh` and
   `asp-uninstall.sh` take ASP away again.
+- **`scripts/e2e-kvm.sh`**: the life of a sandbox on a real KVM host (a workspace, a command as its owner
+  and as root, data nobody syncs, stop, a clean disk, resume, delete, a clean node), on a throwaway stack or
+  against a deployment through its API; the nightly workflow runs it with the other KVM smokes.
 - A Postgres run of the API tests, and a parity script that holds the memory and Postgres stores to
   one contract.
 
