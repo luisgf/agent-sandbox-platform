@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
@@ -61,7 +62,7 @@ func execBlock(sb store.Sandbox) string {
 		case sb.State == store.SandboxStopped:
 			msg := "sandbox is stopped; its disk is kept: resume it (asp session resume)"
 			if sb.StatusDetail != "" {
-				msg += " (the last resume failed: " + sb.StatusDetail + ")"
+				msg += " (the last resume failed: " + strings.TrimPrefix(sb.StatusDetail, "resume failed: ") + ")"
 			}
 			return msg
 		}

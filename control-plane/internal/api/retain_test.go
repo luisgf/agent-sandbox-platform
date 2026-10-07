@@ -299,3 +299,11 @@ func TestRBACStopResumeDelete(t *testing.T) {
 		t.Fatalf("alice deletes her own: %d %s", code, body)
 	}
 }
+
+// A failed resume's detail starts with "resume failed:"; exec's message must not repeat it.
+func TestExecMessageDoesNotRepeatResumeFailed(t *testing.T) {
+	msg := execBlock(store.Sandbox{State: store.SandboxStopped, StatusDetail: "resume failed: the guest did not answer within 1m0s"})
+	if strings.Contains(msg, "resume failed: resume failed") || !strings.Contains(msg, "the last resume failed: the guest did not answer within 1m0s") {
+		t.Fatalf("message=%q", msg)
+	}
+}
