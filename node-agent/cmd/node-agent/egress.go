@@ -7,6 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/metrics"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
 )
 
 // optBool is a bool flag that remembers whether anyone set it, so that "not set"
@@ -150,4 +153,20 @@ func guestDNS(cfg config) bool {
 // not apply is not enforcement.
 func egressEnforced(cfg config, rulesApplied bool) bool {
 	return cfg.EgressProxyListen != "" && rulesApplied && cfg.NFTEgressMode == nftModeEnforce
+}
+
+// diskCollector reports the free space of the directory sandbox disks live in.
+// Stopped sandboxes keep their disks there, so it is what runs out first.
+func diskCollector(dir string) metrics.Collector {
+	return func() []metrics.Sample {
+		if dir == "" {
+			return nil
+		}
+		mib, ok := reconciler.DiskFreeMiB(dir)
+		if !ok {
+			return nil
+		}
+		return []metrics.Sample{{Name: "asp_agent_disk_free_bytes", Type: "gauge",
+			Help: "Free space of the directory the sandbox disks live in.", Value: float64(mib) * 1024 * 1024}}
+	}
 }

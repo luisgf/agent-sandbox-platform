@@ -426,6 +426,7 @@ Only the most common settings. Full lists live in each component's README.
 | `ASP_INSECURE_OPEN_API` | CP | `1` accepts requests with no credential (labs and dry-run only; logged at start). |
 | `ASP_NODE_API_KEY` / `ASP_NODE_API_KEY_FILE` | node-agent | The platform key a node sends to a control plane reached over plain HTTP. |
 | `DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
+| `ASP_METRICS_LISTEN`, `ASP_PPROF_LISTEN` (`--metrics-listen`, `--pprof-listen` on the node-agent) | CP, node-agent | Prometheus metrics and Go profiles on a listener of their own; loopback only unless `ASP_INSECURE_OBS_LISTEN=1`. The control plane also serves `GET /metrics` on its API port to a platform key. Names and alerts: [`docs/how-to/monitoring.md`](docs/how-to/monitoring.md). |
 | `ASP_DB_STATEMENT_TIMEOUT`, `ASP_DB_LOCK_TIMEOUT`, `ASP_DB_IDLE_TX_TIMEOUT` | CP | Server-side limits on every Postgres connection (defaults `30s`, `10s`, `60s`; `0` disables). Every store call also carries its request's context, so a client that disconnects ends its queries. |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. A stop keeps the disk. |
 | `ASP_STOPPED_SANDBOX_TTL` | CP | Delete a sandbox (and its disk) stopped for this long. Default `7d`; `0`/`off` keeps it until deleted. Needs Postgres to mean anything. |

@@ -44,6 +44,7 @@ func (s *Server) sweepIdle(ctx context.Context, timeout time.Duration) {
 		slog.Error("sandbox idle reaper", "error", err)
 		return
 	}
+	s.mx().reaped.Add(float64(len(stopped)), "idle_timeout")
 	for _, sb := range stopped {
 		slog.Info("sandbox idle-stopped", "id", sb.ID, "state", sb.State, "stop_reason", sb.StopReason, "idle_timeout", timeout.String())
 	}

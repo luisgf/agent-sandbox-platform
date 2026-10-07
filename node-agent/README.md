@@ -67,6 +67,9 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--insecure-ssh-agent-global-approvals` | `ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS=1` | con confirm, acepta approves sin `sandbox_id`; solo los usan `--ssh-agent-bridge` y el host-vsock global, para el primer guest que firme (solo lab) |
 | `--ssh-agent-sock-template` | `ASP_SSH_AGENT_SOCK_TEMPLATE` | path template por sandbox (`{owner_sub}`/`{sandbox_id}`); missing → FakeAgent |
 | `--multi-user` | `ASP_MULTI_USER=1` (o `ASP_IDP_REQUIRED=1`) | perfil multi-user: confirm default-on |
+| `--metrics-listen` | `ASP_METRICS_LISTEN` | `host:puerto` donde servir `GET /metrics` (Prometheus), p. ej. `127.0.0.1:9102`. Sin autenticación: solo loopback salvo `--insecure-obs-listen`. Apagado por defecto. Catálogo en [`docs/how-to/monitoring.md`](../docs/how-to/monitoring.md) |
+| `--pprof-listen` | `ASP_PPROF_LISTEN` | Igual para `/debug/pprof/` |
+| `--insecure-obs-listen` | `ASP_INSECURE_OBS_LISTEN=1` | Permite las dos anteriores fuera de loopback (sin autenticación; pon delante un proxy que autentique) |
 | `--egress-nft-redirect` / `--nft-egress-redirect` | `ASP_EGRESS_NFT_REDIRECT` / `ASP_NFT_EGRESS_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect. **Default: activo** con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga (el proxy es voluntario y el agente lo avisa). Con redirect y `--nft-dns-action=redirect` el DNS sink arranca en `:5353` si no lo nombras. El script va dentro del binario (`ASP_NFT_SCRIPT` nombra uno propio) |
 | `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `enforce` (default: un nodo que no puede aplicar las reglas no arranca) \| `soft` (arranca sin forzar el egress, con aviso; default con `--dry-run`). El nodo informa `egress_enforced=true` al registrarse solo con el proxy escuchando y las reglas puestas en `enforce` |
 | `--nft-http-ports` | `ASP_NFT_HTTP_PORTS` | default `80,443` |

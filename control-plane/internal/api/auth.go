@@ -152,7 +152,7 @@ func isNodeAgentPath(path string) bool {
 // isUserFacingPath is the IdP JWT surface: sandbox create/list/get/exec/destroy/events,
 // the node inventory and node administration. Node claim/status/attest/renew-lease stay on mTLS / internal auth.
 func isUserFacingPath(path string) bool {
-	if path == "/v1/sandboxes" || path == "/v1/nodes" || isNodeAdminPath(path) {
+	if path == "/v1/sandboxes" || path == "/v1/nodes" || path == "/metrics" || isNodeAdminPath(path) {
 		return true
 	}
 	// API key management is for IdP admins when the IdP is required.

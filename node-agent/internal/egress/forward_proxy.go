@@ -63,6 +63,8 @@ type ForwardProxy struct {
 	// Guard limits which addresses the proxy connects to. Nil: the default,
 	// which refuses loopback, link-local, private and the node's own addresses.
 	Guard *DialGuard
+	// Metrics counts the proxy's decisions and the bytes it carries. Nil: none.
+	Metrics *Metrics
 
 	guardOnce sync.Once
 	defGuard  *DialGuard
@@ -260,10 +262,29 @@ func (p *ForwardProxy) mitmEnabled() bool {
 	return p.MITM != nil && (os.Getenv("ASP_EGRESS_MITM") == "1" || os.Getenv("ASP_EGRESS_MITM") == "true")
 }
 
+// count turns an audit event into a decision for the metrics.
+func (p *ForwardProxy) count(event string, fields map[string]any) {
+	if p.Metrics == nil {
+		return
+	}
+	sandbox, _ := fields["sandbox_id"].(string)
+	tenant := tenantLabel(p.Cache, sandbox)
+	switch event {
+	case "deny":
+		reason, _ := fields["reason"].(string)
+		p.Metrics.request("deny", reason, tenant)
+	case "rate_limited":
+		p.Metrics.request("deny", "rate_limited", tenant)
+	case "http", "connect":
+		p.Metrics.request("allow", event, tenant)
+	}
+}
+
 func (p *ForwardProxy) audit(event string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
 	}
+	p.count(event, fields)
 	fields["event"] = event
 	fields["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
 	b, _ := json.Marshal(fields)
@@ -324,8 +345,8 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request, al 
 	_, _ = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	_ = bufrw.Flush()
 	p.audit("connect", map[string]any{"host": host, "port": port, "sandbox_id": sandbox, "mitm": false})
-	go tunnel(serverConn, clientConn)
-	go tunnel(clientConn, serverConn)
+	go tunnel(serverConn, &countingReader{clientConn, p.Metrics, "to_upstream"}, clientConn)
+	go tunnel(clientConn, &countingReader{serverConn, p.Metrics, "from_upstream"}, serverConn)
 }
 
 func (p *ForwardProxy) handleCONNECTMITM(w http.ResponseWriter, r *http.Request, host string, port int, sandbox string) {
@@ -373,8 +394,8 @@ func (p *ForwardProxy) handleCONNECTMITM(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	p.audit("connect", map[string]any{"host": host, "port": port, "sandbox_id": sandbox, "mitm": true})
-	go tunnel(tlsUp, tlsClient)
-	go tunnel(tlsClient, tlsUp)
+	go tunnel(tlsUp, &countingReader{tlsClient, p.Metrics, "to_upstream"}, tlsClient)
+	go tunnel(tlsClient, &countingReader{tlsUp, p.Metrics, "from_upstream"}, tlsUp)
 }
 
 func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request, al *Allowlist) {
@@ -470,13 +491,19 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request, al *Al
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	if r.ContentLength > 0 {
+		p.Metrics.add("to_upstream", r.ContentLength)
+	}
+	n, _ := io.Copy(w, resp.Body)
+	p.Metrics.add("from_upstream", n)
 }
 
-func tunnel(dst, src net.Conn) {
+// tunnel copies from src to dst until either ends, then closes both. from is
+// src itself, or a reader over it (one that counts what passes).
+func tunnel(dst net.Conn, from io.Reader, src net.Conn) {
 	defer dst.Close()
 	defer src.Close()
-	_, _ = io.Copy(dst, src)
+	_, _ = io.Copy(dst, from)
 }
 
 func itoa(n int) string {

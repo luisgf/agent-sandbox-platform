@@ -39,6 +39,8 @@ type teardownOpts struct {
 	// graceful asks the guest to power off before the VMM is stopped, so the
 	// disk is left clean.
 	graceful bool
+	// how says why the VM is released, for the metrics (asp_agent_vm_stops_total).
+	how string
 }
 
 // retainsDisks reports whether the control plane that answered the last poll
@@ -222,7 +224,7 @@ func (r *Reconciler) removeRootFSByID(id string) {
 // ensureDeleted ends a sandbox the control plane is deleting: its VM, if it
 // has one, and its disk, whether it was running or kept by a stop.
 func (r *Reconciler) ensureDeleted(ctx context.Context, sb cpclient.Sandbox) error {
-	r.teardownLocal(ctx, sb.ID, teardownOpts{})
+	r.teardownLocal(ctx, sb.ID, teardownOpts{how: "delete"})
 	r.removeRootFSByID(sb.ID)
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "deleted", "vmm and disk removed"); err != nil {
 		return fmt.Errorf("report deleted: %w", err)
@@ -278,6 +280,8 @@ func (r *Reconciler) gcDisks(work cpclient.Work) {
 		r.Logger.Info("removing a disk no sandbox owns", "path", p)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			r.Logger.Warn("disk GC: remove", "path", p, "error", err)
+		} else {
+			r.Metrics.diskRemoved()
 		}
 		removeBaseDigest(p)
 	}

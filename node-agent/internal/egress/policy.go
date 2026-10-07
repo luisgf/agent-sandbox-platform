@@ -15,6 +15,7 @@ type PolicyCache struct {
 	mu       sync.RWMutex
 	prefixes map[string]netip.Prefix // sandbox ID → guest prefix
 	policies map[string]*Allowlist   // sandbox ID → allowlist
+	tenants  map[string]string       // sandbox ID → tenant, for the metrics
 }
 
 // Bind records that traffic from prefix belongs to sandboxID.
@@ -43,7 +44,31 @@ func (c *PolicyCache) Set(sandboxID string, al *Allowlist) {
 	c.policies[sandboxID] = al
 }
 
-// Forget drops the prefix and the policy of sandboxID.
+// SetTenant records the tenant of sandboxID. It decides nothing: the proxy and the
+// sink use it to say whose traffic they counted.
+func (c *PolicyCache) SetTenant(sandboxID, tenant string) {
+	if c == nil || sandboxID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tenants == nil {
+		c.tenants = make(map[string]string)
+	}
+	c.tenants[sandboxID] = tenant
+}
+
+// TenantOf is the tenant recorded for sandboxID, or "".
+func (c *PolicyCache) TenantOf(sandboxID string) string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tenants[sandboxID]
+}
+
+// Forget drops the prefix, the policy and the tenant of sandboxID.
 func (c *PolicyCache) Forget(sandboxID string) {
 	if c == nil {
 		return
@@ -52,6 +77,7 @@ func (c *PolicyCache) Forget(sandboxID string) {
 	defer c.mu.Unlock()
 	delete(c.prefixes, sandboxID)
 	delete(c.policies, sandboxID)
+	delete(c.tenants, sandboxID)
 }
 
 // Get returns the allowlist stored for sandboxID, or nil.

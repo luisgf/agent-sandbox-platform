@@ -86,6 +86,9 @@ type Store interface {
 	// SetNodeDiskFree records the free space of the node's --disk-dir, as it
 	// reported it on a heartbeat. ErrNotFound for an unknown node.
 	SetNodeDiskFree(ctx context.Context, id string, freeMiB int64) error
+	// CountSandboxes counts the sandboxes of each tenant by state, deleted ones
+	// included, for the metrics: one grouped query, not a listing.
+	CountSandboxes(ctx context.Context) ([]SandboxCount, error)
 	// CountStoppedByNode counts the stopped sandboxes (the disks a stop keeps) on each node.
 	CountStoppedByNode(ctx context.Context) (map[string]int64, error)
 	// TouchNodePoll records that the node polled for work: it is alive. Writes are
