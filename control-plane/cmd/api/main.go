@@ -173,6 +173,24 @@ func run(ctx context.Context, args []string) error {
 		slog.Info("sandbox idle reaper disabled",
 			"hint", "set ASP_SANDBOX_IDLE_TIMEOUT=2h (or 1h) or -idle-timeout 2h; 0/off disables")
 	}
+	retCfg, err := api.RetentionConfigFromEnv()
+	if err != nil {
+		return fmt.Errorf("retention config: %w", err)
+	}
+	if retCfg.Enabled() {
+		go srv.RunRetentionReaper(ctx, retCfg)
+		slog.Info("stopped sandbox retention enabled", "ttl", retCfg.TTL.String(),
+			"max_stopped_per_tenant", retCfg.MaxStoppedPerTenant, "sweep", retCfg.Interval.String(),
+			"note", "a stopped sandbox keeps its disk on its node until it is deleted or this expires")
+		if store.IsMemory(st) {
+			slog.Warn("stopped sandboxes are kept in memory: restarting the control plane forgets them, "+
+				"and each node then removes their disks. Set DATABASE_URL (Postgres) to keep them across restarts",
+				"store", storeName)
+		}
+	} else {
+		slog.Info("stopped sandbox retention disabled: stopped sandboxes keep their disks until deleted",
+			"hint", "ASP_STOPPED_SANDBOX_TTL defaults to 7d; 0/off keeps them for ever")
+	}
 	monCfg, err := api.NodeMonitorConfigFromEnv(schedCfg.StaleAfter)
 	if err != nil {
 		return fmt.Errorf("node monitor config: %w", err)
