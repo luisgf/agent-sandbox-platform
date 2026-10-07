@@ -26,6 +26,7 @@ const (
 	chPathVMBoot   = "/api/v1/vm.boot"
 	chPathVMDelete = "/api/v1/vm.delete"
 	chPathVMPause  = "/api/v1/vm.pause"
+	chPathVMInfo   = "/api/v1/vm.info"
 
 	defaultCHSocketDir    = "/run/asp"
 	defaultCHReadyTimeout = 30 * time.Second
@@ -61,6 +62,9 @@ type chInstance struct {
 	socketPath string
 	proc       Process
 	client     *http.Client
+	// exited is set once WaitShutdown saw the API go away: the process ended on
+	// its own after the guest powered off, so Stop has no VM left to delete.
+	exited bool
 }
 
 // NewCloudHypervisor constructs a shared-socket client (legacy / --ch-api-socket).
@@ -476,8 +480,10 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 	}
 
 	var errs []error
-	if err := c.deleteWith(ctx, inst.client); err != nil {
-		errs = append(errs, fmt.Errorf("vm.delete: %w", err))
+	if !inst.exited {
+		if err := c.deleteWith(ctx, inst.client); err != nil {
+			errs = append(errs, fmt.Errorf("vm.delete: %w", err))
+		}
 	}
 	if inst.proc != nil {
 		if err := inst.proc.Kill(); err != nil {
@@ -504,6 +510,68 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 		return fmt.Errorf("stop %s: %v", id, errs)
 	}
 	return nil
+}
+
+// WaitShutdown implements Shutdowner for per-sandbox mode: it polls vm.info
+// until the VM is in state Shutdown or the API is unreachable, which is how a
+// Cloud Hypervisor whose guest powered off looks once its process has exited.
+func (c *CloudHypervisor) WaitShutdown(ctx context.Context, id string, grace time.Duration) bool {
+	client := c.client()
+	var inst *chInstance
+	if !c.sharedMode() {
+		c.mu.Lock()
+		inst = c.instances[id]
+		c.mu.Unlock()
+		if inst == nil {
+			return true // nothing tracked: nothing running
+		}
+		client = inst.client
+	}
+	deadline := time.Now().Add(grace)
+	for {
+		callCtx, cancel := context.WithTimeout(ctx, time.Second)
+		state, err := c.vmState(callCtx, client)
+		cancel()
+		if err != nil {
+			if inst != nil {
+				c.mu.Lock()
+				inst.exited = true
+				c.mu.Unlock()
+			}
+			return true
+		}
+		if state == "Shutdown" {
+			return true
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// vmState is the "state" of vm.info: Created, Running, Shutdown, Paused.
+func (c *CloudHypervisor) vmState(ctx context.Context, client *http.Client) (string, error) {
+	resp, err := c.do(ctx, client, http.MethodGet, chPathVMInfo, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("vm.info: status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+	}
+	var info struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return "", fmt.Errorf("vm.info: %w", err)
+	}
+	return info.State, nil
 }
 
 func (c *CloudHypervisor) Pause(ctx context.Context, id string) error {
@@ -583,3 +651,4 @@ func (c *CloudHypervisor) do(ctx context.Context, client *http.Client, method, p
 
 var _ MicroVM = (*CloudHypervisor)(nil)
 var _ VMM = (*CloudHypervisor)(nil)
+var _ Shutdowner = (*CloudHypervisor)(nil)

@@ -128,6 +128,15 @@ type Reconciler struct {
 	// timeout, a multi-GB rootfs copy) no longer delays every other item.
 	Workers int
 
+	// StopGrace is how long a stop waits for the guest to power itself off
+	// before the VMM is stopped hard (ADR-0012). Zero stops hard at once.
+	StopGrace time.Duration
+	// MinFreeDiskMiB is the free space --disk-dir must have to clone or resume a
+	// disk. Zero does not check.
+	MinFreeDiskMiB int64
+	// FreeDisk reports free bytes (tests). Nil uses statfs.
+	FreeDisk func(dir string) (uint64, error)
+
 	// GuestReadyTimeout is how long a start waits for pod-daemon in the new VM
 	// to answer before it reports running (waitGuest). Zero reports running
 	// as soon as the VMM is up, as dry-run does: FakeVMM boots no guest.
@@ -142,8 +151,12 @@ type Reconciler struct {
 
 	mu      sync.Mutex
 	handles map[string]Handle
-	nextCID uint32 // next guest CID to assign (starts at 3)
-	freeCID []uint32
+	// retains: the last poll carried the retained list, so stopping keeps a
+	// sandbox's disk (mu). lastDiskGC is the last disk sweep (mu).
+	retains    bool
+	lastDiskGC time.Time
+	nextCID    uint32 // next guest CID to assign (starts at 3)
+	freeCID    []uint32
 	// nextSlot / freeSlot allocate guest /30s like CIDs.
 	nextSlot int
 	freeSlot []int
@@ -279,6 +292,9 @@ func (r *Reconciler) poll(ctx context.Context) {
 		r.Logger.Warn("list work failed", "error", err)
 		return
 	}
+	r.mu.Lock()
+	r.retains = work.Retains()
+	r.mu.Unlock()
 	for _, sb := range work.Sandboxes {
 		sb := sb
 		switch sb.State {
@@ -297,10 +313,17 @@ func (r *Reconciler) poll(ctx context.Context) {
 					r.Logger.Warn("ensure stopped failed", "sandbox_id", sb.ID, "error", err)
 				}
 			})
+		case "deleting":
+			r.dispatch(sb.ID, func() {
+				if err := r.ensureDeleted(ctx, sb); err != nil {
+					r.Logger.Warn("ensure deleted failed", "sandbox_id", sb.ID, "error", err)
+				}
+			})
 		}
 	}
 	r.fenceUnassigned(ctx, work.Assigned)
 	r.applyEgress(work.Egress)
+	r.gcDisks(work)
 }
 
 // applyEgress gives every assigned sandbox its tenant's egress policy, before
@@ -423,7 +446,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		n, gnet, err := r.allocSlot()
 		if err != nil {
 			r.releaseCID(cfg.VsockCID)
-			_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "guest net: "+err.Error())
+			r.failStart(ctx, sb, fmt.Errorf("guest net: %w", err))
 			return fmt.Errorf("guest net: %w", err)
 		}
 		slot = n
@@ -431,7 +454,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		if err := r.tapMgr().CreateWithCIDR(cfg.TapDevice, gnet.HostCIDR()); err != nil {
 			r.releaseSlot(slot)
 			r.releaseCID(cfg.VsockCID)
-			_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "tap: "+err.Error())
+			r.failStart(ctx, sb, fmt.Errorf("tap: %w", err))
 			return fmt.Errorf("tap create: %w", err)
 		}
 		r.Egress.Bind(sb.ID, gnet.Prefix)
@@ -465,7 +488,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		r.releaseCID(cfg.VsockCID)
 		releaseNet()
-		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "guest-host: "+err.Error())
+		r.failStart(ctx, sb, fmt.Errorf("guest-host: %w", err))
 		return fmt.Errorf("guest-host attach: %w", err)
 	}
 
@@ -480,7 +503,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		r.releaseCID(cfg.VsockCID)
 		releaseNet()
-		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", err.Error())
+		r.failStart(ctx, sb, err)
 		return fmt.Errorf("workspace: %w", err)
 	}
 	cfg.WorkspaceFSSocket = fsSock
@@ -495,11 +518,11 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		r.releaseCID(cfg.VsockCID)
 		releaseNet()
-		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", "local-net: "+err.Error())
+		r.failStart(ctx, sb, fmt.Errorf("local-net: %w", err))
 		return fmt.Errorf("local-net: %w", err)
 	}
 
-	rootfs, err := r.cloneRootFS(sb.ID)
+	rootfs, resumed, err := r.rootFSFor(sb)
 	if err != nil {
 		err = fmt.Errorf("rootfs: %w", err)
 	} else {
@@ -509,7 +532,9 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		err = r.Engine.Start(ctx, cfg)
 	}
 	if err != nil {
-		r.removeRootFS(rootfs)
+		if !resumed {
+			r.removeRootFS(rootfs) // a retained disk survives a failed resume
+		}
 		_ = r.localApplier().Clear(sb.ID)
 		r.mu.Lock()
 		delete(r.localNetDone, sb.ID)
@@ -523,7 +548,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		}
 		r.releaseCID(cfg.VsockCID)
 		releaseNet()
-		_, _ = r.CP.ReportStatus(ctx, sb.ID, "failed", err.Error())
+		r.failStart(ctx, sb, err)
 		return fmt.Errorf("vmm start: %w", err)
 	}
 
@@ -535,7 +560,17 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	r.mu.Unlock()
 
 	r.registerEndpoint(sb.ID, h)
-	r.waitGuest(ctx, sb.ID)
+	if !r.waitGuest(ctx, sb.ID) {
+		if resumed {
+			// A resumed guest that never answers (a kernel that no longer matches the
+			// disk's modules, say) is no use: stop it again, keeping the disk.
+			err := fmt.Errorf("the guest did not answer within %s", r.GuestReadyTimeout)
+			r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: true})
+			r.failStart(ctx, sb, err)
+			return fmt.Errorf("resume: %w", err)
+		}
+		r.Logger.Warn("reporting running anyway", "sandbox_id", sb.ID)
+	}
 
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "vmm started"); err != nil {
 		if cpclient.IsConflict(err) {
@@ -588,12 +623,20 @@ func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h
 	}
 }
 
+// ensureStopped stops a VM the control plane is stopping. When the control
+// plane keeps stopped sandboxes' disks (ADR-0012) the guest powers off first
+// and the disk stays; otherwise it is the old stop, which removes the disk.
 func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) error {
-	r.teardownLocal(ctx, sb.ID)
-	if _, err := r.CP.ReportStatus(ctx, sb.ID, "stopped", "vmm deleted"); err != nil {
+	keep := r.retainsDisks()
+	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: keep, graceful: keep})
+	detail := "vmm deleted"
+	if keep {
+		detail = "vmm stopped, disk kept"
+	}
+	if _, err := r.CP.ReportStatus(ctx, sb.ID, "stopped", detail); err != nil {
 		return fmt.Errorf("report stopped: %w", err)
 	}
-	r.Logger.Info("sandbox stopped", "sandbox_id", sb.ID)
+	r.Logger.Info("sandbox stopped", "sandbox_id", sb.ID, "disk_kept", keep)
 	return nil
 }
 
@@ -603,11 +646,12 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 func (r *Reconciler) selfFence(ctx context.Context, id, why string) {
 	r.Logger.Warn("self-fencing: stopping a sandbox the control plane no longer assigns here",
 		"sandbox_id", id, "node_id", r.NodeID, "reason", why)
-	r.teardownLocal(ctx, id)
+	r.teardownLocal(ctx, id, teardownOpts{})
 }
 
-// teardownLocal stops the VM and releases everything it held on this host.
-func (r *Reconciler) teardownLocal(ctx context.Context, id string) {
+// teardownLocal stops the VM and releases everything it held on this host,
+// the disk included unless opts keep it.
+func (r *Reconciler) teardownLocal(ctx context.Context, id string, opts teardownOpts) {
 	r.mu.Lock()
 	h, had := r.handles[id]
 	if had {
@@ -615,6 +659,9 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string) {
 	}
 	r.mu.Unlock()
 
+	if had && opts.graceful {
+		r.shutdownGuest(ctx, id)
+	}
 	if err := r.Engine.Stop(ctx, id); err != nil {
 		r.Logger.Warn("vmm stop", "sandbox_id", id, "error", err)
 	}
@@ -634,7 +681,9 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string) {
 		if h.stopFS != nil {
 			h.stopFS()
 		}
-		r.removeRootFS(h.RootFS)
+		if !opts.keepDisk {
+			r.removeRootFS(h.RootFS)
+		}
 		if r.TapAuto && h.TapName != "" {
 			if err := r.tapMgr().Delete(h.TapName); err != nil {
 				r.Logger.Warn("tap delete", "tap", h.TapName, "error", err)
@@ -830,19 +879,19 @@ const guestPoll = 200 * time.Millisecond
 // that "running" means an exec reaches the guest. Cloud Hypervisor is up in
 // well under a second, but the guest needs a few more to boot (about 3s on a
 // KVM host), and "asp sandbox run" execs as soon as it sees running: it got
-// "hybrid vsock ACK: EOF". Only hybrid vsock endpoints (real VMs) wait. After
-// GuestReadyTimeout the start reports running anyway, as it did before, and
-// says so in the log.
-func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) {
+// "hybrid vsock ACK: EOF". Only hybrid vsock endpoints (real VMs) wait. It
+// returns false when it waited and the guest never answered: a first start
+// then reports running anyway, as it did before, and a resume stops again.
+func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) bool {
 	if r.GuestReadyTimeout <= 0 || r.Registry == nil {
-		return
+		return true
 	}
 	if ep, ok := r.Registry.Lookup(sandboxID); !ok || ep.Mode != poddaemon.ModeHybrid {
-		return
+		return true
 	}
 	c, err := r.Registry.ClientFor(sandboxID)
 	if err != nil {
-		return
+		return true
 	}
 	start := time.Now()
 	deadline := start.Add(r.GuestReadyTimeout)
@@ -852,7 +901,7 @@ func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) {
 		cancel()
 		if err == nil {
 			r.Logger.Info("guest answering", "sandbox_id", sandboxID, "after", time.Since(start).Round(time.Millisecond))
-			return
+			return true
 		}
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
 			break
@@ -862,8 +911,9 @@ func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) {
 		case <-time.After(guestPoll):
 		}
 	}
-	r.Logger.Warn("guest did not answer; reporting running anyway", "sandbox_id", sandboxID,
+	r.Logger.Warn("guest did not answer", "sandbox_id", sandboxID,
 		"waited", time.Since(start).Round(time.Millisecond), "error", err)
+	return false
 }
 
 func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {

@@ -26,7 +26,8 @@ const (
 // cleanHost runs before this agent binds a socket or registers. VMs are not
 // adopted across restarts: registering with a new instance id makes the
 // control plane fail the previous process's sandboxes, so whatever that
-// process left on this host (VMs, TAPs, tunnels, disks) belongs to nobody.
+// process left on this host (VMs, TAPs, tunnels) belongs to nobody. Disks are not
+// in that list: see reapConfig.
 //
 // A real agent keeps the socket-dir lock for its whole life, whatever
 // --reap-leftovers says, so that a second agent or --reap-only never takes its
@@ -102,10 +103,12 @@ func reapConfig(cfg config, report bool) reconciler.ReapConfig {
 		Logger:   slog.Default(),
 	}
 	if !cfg.DryRun {
-		// A dry-run agent has no disks, and the host-wide TAP and WireGuard
-		// devices of a real agent next to it are not its leftovers.
-		rc.DiskDir = cfg.DiskDir
+		// The host-wide TAP and WireGuard devices of a real agent next to a
+		// dry-run one are not its leftovers.
 		rc.SysClassNet = "/sys/class/net"
+		// No rc.DiskDir: a stopped sandbox's disk is kept (ADR-0012), and the
+		// reaper cannot tell it from a leftover. The reconciler removes the disks
+		// the control plane does not list, after its first poll.
 	}
 	if runtime.GOOS == "linux" {
 		rc.Procs = hostproc.ProcFS{}

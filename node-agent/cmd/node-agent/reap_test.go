@@ -59,7 +59,7 @@ func TestDryRunNeverKeepsTheLock(t *testing.T) {
 func TestReapConfigDryRunStaysOffTheHost(t *testing.T) {
 	t.Setenv("ASP_LOCAL_NET_KEY_DIR", "/keys")
 	real := reapConfig(config{CHSocketDir: "/run/asp", DiskDir: "/var/lib/asp/disks", CHAPISocket: "/run/ch.sock"}, false)
-	if real.DiskDir != "/var/lib/asp/disks" || real.SysClassNet != "/sys/class/net" || real.Report {
+	if real.DiskDir != "" || real.SysClassNet != "/sys/class/net" || real.Report {
 		t.Fatalf("real agent: %+v", real)
 	}
 	if !slices.Contains(real.Keep, reconciler.DefaultRootFSPath) || !slices.Contains(real.Keep, "/run/ch.sock") {

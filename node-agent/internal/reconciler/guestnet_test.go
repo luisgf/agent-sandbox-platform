@@ -90,6 +90,9 @@ type fakeCP struct {
 	// legacy omits the assigned set from /work, like a control plane that
 	// predates it.
 	legacy bool
+	// retains sends the retained list (the ids of stopped sandboxes) with the
+	// work poll, as a control plane that keeps stopped sandboxes' disks does.
+	retains bool
 	// requests counts calls by "METHOD path".
 	requests map[string]int
 	// egress, when set, is sent as each tenant's policy with the work poll.
@@ -102,6 +105,8 @@ type fakeSandbox struct {
 	Node   *string `json:"node_id"`
 	State  string  `json:"state"`
 	Detail string  `json:"-"`
+	// BootCount is sent when set: 2 and up is a resume.
+	BootCount int `json:"boot_count,omitempty"`
 }
 
 func newFakeCP(t *testing.T, ids ...string) *fakeCP {
@@ -138,6 +143,7 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes/n1/work":
 		list := []any{}
 		assigned := []string{}
+		retained := []string{}
 		for _, b := range f.boxes {
 			switch b.State {
 			case "requested", "starting", "stopping":
@@ -145,11 +151,18 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 				assigned = append(assigned, b.ID)
 			case "running", "paused":
 				assigned = append(assigned, b.ID)
+			case "deleting":
+				list = append(list, b) // needs the node, holds no capacity
+			case "stopped":
+				retained = append(retained, b.ID)
 			}
 		}
 		resp := map[string]any{"sandboxes": list}
 		if !f.legacy {
 			resp["assigned"] = assigned
+		}
+		if f.retains {
+			resp["retained"] = retained
 		}
 		if f.egress != nil {
 			tenants := map[string]string{}

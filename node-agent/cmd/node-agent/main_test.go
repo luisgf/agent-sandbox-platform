@@ -165,3 +165,25 @@ func TestTapManagerSoftFailsOnlyInDryRun(t *testing.T) {
 		t.Fatal("a real agent must not boot a VM whose TAP failed")
 	}
 }
+
+// --disk-min-free-mib: a value is used as given; -1 is twice the base image.
+func TestDiskMinFreeMiB(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "rootfs.img")
+	if err := os.WriteFile(base, make([]byte, 3<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		flag  int
+		image string
+		want  int64
+	}{
+		{500, base, 500},
+		{0, base, 0},
+		{-1, base, 6},
+		{-1, filepath.Join(t.TempDir(), "missing.img"), 0},
+	} {
+		if got := diskMinFreeMiB(tc.flag, tc.image); got != tc.want {
+			t.Errorf("diskMinFreeMiB(%d, %s)=%d, want %d", tc.flag, filepath.Base(tc.image), got, tc.want)
+		}
+	}
+}

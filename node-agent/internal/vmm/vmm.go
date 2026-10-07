@@ -3,6 +3,7 @@ package vmm
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // Workspace share constants. The guest does not auto-mount: when the device
@@ -46,6 +47,15 @@ type MicroVM interface {
 	Start(ctx context.Context, config MicroVMConfig) error
 	Stop(ctx context.Context, id string) error
 	Pause(ctx context.Context, id string) error
+}
+
+// Shutdowner is implemented by VMMs that can tell when a guest has powered
+// itself off. The reconciler asks the guest to power off, then waits here
+// before Stop, so the disk is left clean.
+type Shutdowner interface {
+	// WaitShutdown blocks until the VM for id reports Shutdown or its process is
+	// gone, or grace passes, or ctx ends. It returns true when the VM is down.
+	WaitShutdown(ctx context.Context, id string, grace time.Duration) bool
 }
 
 // VMM is a lower-level Cloud Hypervisor-oriented interface for create/boot/delete.
