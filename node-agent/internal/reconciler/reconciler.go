@@ -86,6 +86,13 @@ type Reconciler struct {
 	// GuestSubnet is the pool each TAP's /30 is carved from (default
 	// tap.DefaultGuestSubnet). Must match the nft --guest-subnet.
 	GuestSubnet netip.Prefix
+	// GuestDNS hands each guest its gateway as the resolver: the node's DNS sink
+	// answers there (the nft redirect sends port 53 to it). Off when nothing would
+	// answer, so a lookup fails at once instead of timing out.
+	GuestDNS bool
+	// GuestProxyPort, when above 0, sets HTTP_PROXY, HTTPS_PROXY and NO_PROXY in
+	// the guest to the gateway on that port, where the node's egress proxy listens.
+	GuestProxyPort int
 	// Egress, when set, learns each sandbox's /30 and its tenant's policy (from
 	// every work poll) so the forward proxy and
 	// the DNS sink apply that sandbox's policy to its traffic.
@@ -508,7 +515,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 			return fmt.Errorf("guest net: %w", err)
 		}
 		slot = n
-		cfg.Cmdline += " " + gnet.KernelIPArg()
+		cfg.Cmdline += " " + guestNetArgs(sb.ID, gnet, r.GuestDNS, r.GuestProxyPort)
 		if err := r.tapMgr().CreateWithCIDR(cfg.TapDevice, gnet.HostCIDR()); err != nil {
 			r.releaseSlot(slot)
 			r.releaseCID(cfg.VsockCID)

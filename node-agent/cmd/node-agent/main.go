@@ -361,21 +361,12 @@ func main() {
 
 	if cfg.EgressNFTRedirect {
 		proxyPort := 8888
-		if cfg.EgressProxyListen != "" {
-			// best-effort parse :PORT from listen addr
-			if i := strings.LastIndex(cfg.EgressProxyListen, ":"); i >= 0 {
-				if p, err := strconv.Atoi(cfg.EgressProxyListen[i+1:]); err == nil && p > 0 {
-					proxyPort = p
-				}
-			}
+		if p := listenPort(cfg.EgressProxyListen); p > 0 {
+			proxyPort = p
 		}
 		dnsSinkPort := 5353
-		if cfg.EgressDNSSink != "" {
-			if i := strings.LastIndex(cfg.EgressDNSSink, ":"); i >= 0 {
-				if p, err := strconv.Atoi(cfg.EgressDNSSink[i+1:]); err == nil && p > 0 {
-					dnsSinkPort = p
-				}
-			}
+		if p := listenPort(cfg.EgressDNSSink); p > 0 {
+			dnsSinkPort = p
 		}
 		mode := nftredirect.ModeSoft
 		if cfg.NFTEgressMode == nftModeEnforce {
@@ -600,6 +591,8 @@ func main() {
 				os.Exit(2)
 			}
 			rec.GuestSubnet = subnet
+			rec.GuestDNS = guestDNS(cfg)
+			rec.GuestProxyPort = guestProxyPort(cfg)
 		}
 		rec.Egress = policyCache
 		rec.SSHAgentShared = cfg.SSHAgentBridge

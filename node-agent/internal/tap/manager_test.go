@@ -103,8 +103,15 @@ func TestSlot(t *testing.T) {
 	if n65.Prefix.String() != "10.200.1.4/30" || n65.HostCIDR() != "10.200.1.5/30" {
 		t.Fatalf("slot 65 = %s host %s", n65.Prefix, n65.HostCIDR())
 	}
-	if n65.KernelIPArg() != "ip=10.200.1.6::10.200.1.5:255.255.255.252::eth0:off" {
-		t.Fatalf("ip arg = %s", n65.KernelIPArg())
+	if n65.KernelIPArg("", "") != "ip=10.200.1.6::10.200.1.5:255.255.255.252::eth0:off" {
+		t.Fatalf("ip arg = %s", n65.KernelIPArg("", ""))
+	}
+	// A name and a resolver are the 5th and 8th fields.
+	if got := n65.KernelIPArg("asp-1234abcd", "10.200.1.5"); got != "ip=10.200.1.6::10.200.1.5:255.255.255.252:asp-1234abcd:eth0:off:10.200.1.5" {
+		t.Fatalf("ip arg with name and dns = %s", got)
+	}
+	if got := n65.KernelIPArg("asp-1234abcd", ""); got != "ip=10.200.1.6::10.200.1.5:255.255.255.252:asp-1234abcd:eth0:off" {
+		t.Fatalf("ip arg with a name only = %s", got)
 	}
 	if n0.Prefix.Overlaps(n65.Prefix) {
 		t.Fatal("slots overlap")

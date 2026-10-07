@@ -176,7 +176,8 @@ HOST_CIDR="${2:-10.200.0.1/30}"   # --tap-auto: una /30 distinta por sandbox
 sudo ip tuntap add dev "$TAP" mode tap user "$(id -un)"
 sudo ip link set "$TAP" up
 sudo ip addr add "$HOST_CIDR" dev "$TAP" 2>/dev/null || true
-# --tap-auto pasa ip=<guest>::<host>:255.255.255.252::eth0:off en la cmdline.
+# --tap-auto pasa en la cmdline ip=<guest>::<host>:255.255.255.252:<hostname>:eth0:off[:<dns>]
+# (y, con proxy, systemd.setenv=HTTP_PROXY=… y compañía; ver §3.4).
 ```
 
 Con `--tap-auto` el node-agent ejecuta el equivalente (usuario del proceso; suele necesitar capabilities o root).
@@ -220,9 +221,23 @@ Esto da **conectividad IP mínima**. No sustituye el proxy deny-default.
 | NAT + nftables host | **Ops manual** (esta sección) |
 | nft redirect HTTP+DNS (`asp_egress`) | **Fase 2e**; por defecto con `--egress-proxy-listen`, en modo `enforce` (§3.1) |
 
+#### Qué sabe el guest de su red (hostname, DNS, proxy, hora)
+
+El node-agent escribe todo esto en la línea de comandos del kernel y la imagen del guest lo aplica al arrancar; no hay nada que configurar a mano:
+
+| Qué | Cómo llega | Dónde se ve |
+|---|---|---|
+| Dirección y gateway | `ip=<guest>::<gw>:255.255.255.252:…` (`cmdline-ip.service`; el kernel del lab no tiene `IP_PNP`) | `ip route` |
+| Hostname `asp-<shortid>` (el nombre de su TAP) | 5.º campo de `ip=` → `/etc/hostname`, `/etc/hosts`, hostname del kernel | `hostname` |
+| Resolver = su gateway, si el nodo tiene DNS sink alcanzable (redirect nft de `:53` o sink en `:53`) | 8.º campo de `ip=` → `/etc/resolv.conf` (`options timeout:2 attempts:2`) | `cat /etc/resolv.conf` |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (y en minúsculas) apuntando al gateway:`--egress-proxy-listen`, si el nodo tiene proxy | `systemd.setenv=…` → entorno de todos los servicios, pod-daemon y por tanto de los comandos que ejecuta | `env \| grep -i proxy` |
+| Hora del host | `chrony` con `refclock PHC /dev/ptp0` (`ptp_kvm`, que carga `modules-load.d`); sin servidores de red | `chronyc tracking` |
+
+Un nodo sin sink alcanzable **no** da resolver (una consulta falla al instante en vez de agotar el tiempo contra algo que no contesta); sin proxy, no hay variables. Una imagen anterior a esto ignora `systemd.setenv=` y los campos nuevos de `ip=`: sigue arrancando, pero sin nombre, sin DNS y sin variables; hay que reconstruirla (`scripts/build-guest-rootfs.sh`). Para un proceso que no sea hijo de pod-daemon (un servicio propio del guest) las variables solo están si lo arrancó systemd.
+
 #### Guest → host TAP proxy
 
-El forward proxy escucha en el host (`:8888`). En el guest, apunta al gateway de su /30 (la `.1`; para el primer sandbox `10.200.0.1`):
+El forward proxy escucha en el host (`:8888`). El guest lo ve ya configurado (tabla de arriba); a mano sería apuntar al gateway de su /30 (la `.1`; para el primer sandbox `10.200.0.1`):
 
 ```bash
 # Sustituye 10.200.0.1 por el gateway del guest (ip route | grep default)
@@ -249,7 +264,7 @@ Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomend
 
 **Opción A (recomendada con proxy HTTP):** usar solo el proxy para HTTP(S); bloquear UDP/53 saliente del guest hacia resolvers públicos con nftables (ops) para que el guest no bypassée por DNS directo a IPs.
 
-**Opción B:** `--egress-dns-sink=:5353` — stub UDP que resuelve (LookupIP) solo hostnames allowlisted y responde **NXDOMAIN** al resto. Apunta `resolv.conf` del guest a la IP TAP del host (puerto 5353 vía DNAT, o escucha en `:53` si tienes CAP_NET_BIND_SERVICE).
+**Opción B:** `--egress-dns-sink=:5353` — stub UDP que resuelve (LookupIP) solo hostnames allowlisted y responde **NXDOMAIN** al resto. El guest ya recibe `resolv.conf` apuntando a la IP TAP del host (el redirect nft lleva `:53` al puerto 5353; o escucha en `:53` si tienes CAP_NET_BIND_SERVICE).
 
 ```bash
 # node-agent (ejemplo)

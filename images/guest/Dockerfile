@@ -19,11 +19,14 @@ FROM debian:bookworm-slim
 # systemd-sysv is the package that links /sbin/init -> /lib/systemd/systemd.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-         ca-certificates iproute2 kmod systemd systemd-sysv \
+         ca-certificates chrony iproute2 kmod systemd systemd-sysv \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o root -g root -m 0755 /var/lib/sandboxd \
     && useradd --system --uid 10001 --home-dir /var/lib/sandboxd --shell /usr/sbin/nologin sandboxd \
     && chown sandboxd:sandboxd /var/lib/sandboxd \
+    # uid 1000 is the usual owner of a workspace: give it a name and a home, so its \
+    # files and its shell do not show a bare number ("I have no name!"). \
+    && useradd --uid 1000 --create-home --shell /bin/bash sandbox \
     && install -d -o sandboxd -g sandboxd -m 0755 /run/agent-sandbox \
     && install -d -m 0755 /etc/systemd/system \
     && test -x /lib/systemd/systemd \
@@ -35,6 +38,8 @@ COPY images/guest/systemd/ssh-agent-vsock.service /etc/systemd/system/ssh-agent-
 COPY images/guest/systemd/workspace-virtiofs.service /etc/systemd/system/workspace-virtiofs.service
 COPY images/guest/systemd/cmdline-ip.service /etc/systemd/system/cmdline-ip.service
 COPY images/guest/modules-load.d/vsock.conf /etc/modules-load.d/vsock.conf
+COPY images/guest/modules-load.d/ptp_kvm.conf /etc/modules-load.d/ptp_kvm.conf
+COPY images/guest/chrony/chrony.conf /etc/chrony/chrony.conf
 COPY images/guest/openrc/pod-daemon /etc/init.d/pod-daemon.openrc-example
 COPY images/guest/openrc/ssh-agent-vsock /etc/init.d/ssh-agent-vsock.openrc-example
 COPY images/guest/openrc/workspace-virtiofs /etc/init.d/workspace-virtiofs.openrc-example
@@ -47,6 +52,10 @@ RUN chmod 0755 /usr/local/share/asp/mount-virtiofs-workspace.sh /usr/local/share
     && ln -sfn /etc/systemd/system/ssh-agent-vsock.service /etc/systemd/system/multi-user.target.wants/ssh-agent-vsock.service \
     && ln -sfn /etc/systemd/system/workspace-virtiofs.service /etc/systemd/system/multi-user.target.wants/workspace-virtiofs.service \
     && ln -sfn /etc/systemd/system/cmdline-ip.service /etc/systemd/system/multi-user.target.wants/cmdline-ip.service
+# Network identity comes from the kernel command line the node writes: cmdline-ip.service
+# applies ip= (address, gateway, hostname, resolver) and systemd.setenv= gives every
+# service, pod-daemon and the commands it runs HTTP_PROXY and friends. Time: chrony
+# follows the host through /dev/ptp0 (ptp_kvm).
 # Default productive listen: AF_VSOCK port 26500 (host dials via CH hybrid CONNECT).
 # SSH agent: ssh-agent-vsock.service (vsock CID2:26501 → /run/agent-sandbox/ssh-agent.sock).
 # Workspace: workspace-virtiofs.service mounts tag workspace on /workspace (exit 0 if absent).

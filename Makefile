@@ -29,6 +29,7 @@ test-rust:
 
 test-guest-helper:
 	cd $(ROOT)images/guest/cmd/vsock-ssh-agent-proxy && go test ./...
+	sh $(ROOT)images/guest/helpers/cmdline-ip_test.sh
 
 smoke:
 	$(ROOT)scripts/smoke-enroll-exec.sh
