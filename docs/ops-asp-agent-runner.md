@@ -163,7 +163,7 @@ make smoke-asp
 | | `asp session` | `asp sandbox run` |
 |---|---|---|
 | Rol | **superficie del agente** ([ADR-0009](adr/0009-agent-sessions.md)) | primitiva interna: CI, un comando |
-| Ciclo de vida | `start` deja el sandbox; `exec` lo reutiliza horas; `stop` o idle reap | create → exec → destroy en un proceso |
+| Ciclo de vida | `start` deja el sandbox; `exec` lo reutiliza horas; `stop` o idle reap lo paran **sin borrar el disco** (`resume` lo arranca otra vez); `rm` lo borra | create → exec → destroy en un proceso |
 | Estado en disco | `~/.cache/asp/sessions/<nombre>.json` (0600), sin secretos | ninguno |
 | Workspace del host | `virtiofsd` + tag `workspace` si el path no está vacío; la imagen nueva monta `/workspace` al boot (la vieja, a mano) | el one-shot no pasa `--workspace` |
 
