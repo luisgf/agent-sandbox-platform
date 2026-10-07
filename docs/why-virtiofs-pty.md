@@ -31,9 +31,9 @@ El dispositivo lo pone el nodo. El `mount` lo pone el guest, y solo si la imagen
 2. `mount -t virtiofs workspace /workspace` (unos reintentos cortos, por si el driver aparece un poco después de `local-fs`)
 3. Sale **0** si el tag no está o el `mount` falla. Un sandbox sin workspace tiene que arrancar igual. La unidad no es `RequiredBy` de ningún target: no bloquea el boot. `TimeoutStartSec=15`.
 
-`scripts/build-guest-rootfs.sh` copia la unidad y el helper y la habilita en `multi-user.target.wants`. El `Dockerfile` de `images/guest` hace lo mismo. Ejemplo OpenRC: `images/guest/openrc/workspace-virtiofs`.
+El `Dockerfile` de `images/guest` copia la unidad y el helper y la habilita en `multi-user.target.wants`. Ejemplo OpenRC: `images/guest/openrc/workspace-virtiofs`.
 
-**Imágenes viejas.** Un rootfs ya arrancado (el de ncc1701d u otro construido antes de esta unidad) no la tiene. Hasta reconstruirlo con `./scripts/build-guest-rootfs.sh` y apuntar `/opt/sandbox/rootfs.img` al nuevo fichero, dentro del guest sigue haciendo falta:
+**Imágenes viejas.** Un rootfs ya arrancado (el de ncc1701d u otro construido antes de esta unidad) no la tiene. Hasta reconstruirlo con `./scripts/build-guest-image.sh` (o instalar una versión con `asp image pull`) y apuntar `/opt/sandbox/rootfs.img` al nuevo fichero, dentro del guest sigue haciendo falta:
 
 ```sh
 mkdir -p /workspace
@@ -43,7 +43,7 @@ mount -t virtiofs workspace /workspace
 ## Qué no ganamos
 
 - Sin tag (no hubo `--workspace`, o `virtiofsd` no está y el start ni siquiera llegó a `running`) `/workspace` es un directorio vacío del disco del guest. El helper no falla el boot por eso.
-- El rootfs que **ya** está arrancado no se reescribe. Hasta `build-guest-rootfs.sh` y un symlink nuevo, el comando manual sigue siendo el camino.
+- El rootfs que **ya** está arrancado no se reescribe. Hasta una imagen nueva (`build-guest-image.sh`, `asp image pull`) y un symlink nuevo, el comando manual sigue siendo el camino.
 - `virtiofsd` va con `--sandbox none` y `--cache never`. No hay user namespace. El binario esperado es el Rust (`--socket-path` / `--shared-dir`), no el helper C.
 - El PTY no es un terminal de producto: stderr mezclado, sin SIGWINCH desde el CLI, sin bytes opacos, y la sesión dura lo que el proceso: sin timeout total (solo el opcional `--stream-idle-timeout-secs` del pod-daemon); si el cliente se va, el guest mata el proceso.
 - El reaper no entiende «hay un PTY abierto» salvo por los POST de stdin que sí refrescan actividad, y por el final del stream.

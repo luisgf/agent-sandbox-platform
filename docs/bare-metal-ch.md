@@ -109,7 +109,11 @@ sudo install -d -m 0755 \
   /run/asp \
   /run/cloud-hypervisor
 
-# Ejemplo: copiar kernel/rootfs validados
+# Una versión publicada (descarga, comprueba contra su SHA256SUMS y enlaza en /opt/sandbox)
+sudo asp image pull --version 0.1.0
+asp image verify /opt/sandbox
+
+# O los tuyos: copiar kernel/rootfs validados
 sudo cp /path/to/vmlinux /var/lib/asp/kernels/vmlinux
 sudo cp /path/to/rootfs.img /var/lib/asp/images/rootfs.img
 sudo ln -sfn /var/lib/asp/kernels/vmlinux /opt/sandbox/vmlinux
@@ -118,8 +122,11 @@ sudo ln -sfn /var/lib/asp/images/rootfs.img /opt/sandbox/rootfs.img
 
 Fuentes típicas de kernel/rootfs:
 
-- Kernel branch Cloud Hypervisor (`ch_*` defconfig) → `vmlinux`.
-- Rootfs: exportar la imagen OCI de [`images/guest`](../images/guest/) a ext4 (pipeline futuro), o una cloud image mínima convertida a raw (`qemu-img convert`) e inyectar `pod-daemon`.
+- **Una versión publicada** (`asp image pull`): el `rootfs.img` y el `vmlinux` de la release, con su `SHA256SUMS` y su `image.json` (la lista de paquetes con su versión).
+- Construirlos tú: `scripts/build-guest-image.sh` hace de [`images/guest`](../images/guest/) un `rootfs.img` ext4 idéntico en cada build, sin root ni montar nada ([`images/guest/README.md`](../images/guest/README.md#reproducible-el-mismo-rootfsimg-en-cada-build)). Un kernel Linux con virtio y vsock: la rama de Cloud Hypervisor (`ch_*` defconfig) o el de tu distribución (con vsock como módulo hace falta `ASP_GUEST_MODULES`).
+- Una cloud image mínima convertida a raw (`qemu-img convert`) con `pod-daemon` inyectado.
+
+**El nodo comprueba lo que arranca.** Si junto al kernel o a la imagen hay un `SHA256SUMS` que los lista (`asp image pull` lo deja), el node-agent compara su digest con el de la lista antes de arrancar una VM o clonar un disco (`--guest-verify`, por defecto `auto`) y, si no coincide, la sandbox falla con el motivo. `on` exige además que estén listados; `off` no comprueba. `sudo asp doctor` lo dice antes de arrancar.
 
 **Cmdline** que envía el reconciler hoy:
 
@@ -406,6 +413,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local; pide un bearer token (`--agent-token-file`) salvo `/healthz`; fuera de loopback no arranca salvo `--insecure-agent-listen` |
 | `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | secreto de esa API; el nodo lo crea (0600) y el plano de control del mismo host lo lee con el mismo `ASP_AGENT_TOKEN_FILE`. Defecto `/var/lib/asp/agent.token` |
 | `--guest-kernel` / `--guest-rootfs` | `ASP_GUEST_KERNEL` / `ASP_GUEST_ROOTFS` | `/opt/sandbox/vmlinux` y `/opt/sandbox/rootfs.img`. El kernel (un `vmlinux` sin comprimir) que arranca toda VM y la imagen base de la que se copia el disco de cada sandbox (nunca se arranca ella misma). Una prueba con otra imagen (un guest nuevo, un kernel distinto) no necesita tocar `/opt/sandbox`; la lista de imágenes permitidas de la atestación (`--print-measurement`) mide estos mismos ficheros |
+| `--guest-verify` | `ASP_GUEST_VERIFY` | `auto`. Comprueba el kernel y la imagen base contra el `SHA256SUMS` que tengan al lado (`asp image pull` lo instala): `auto` se niega a arrancar desde un fichero que la lista da con otro digest, `on` también desde uno que ninguna lista nombra, `off` no comprueba. La sandbox falla con el motivo; el digest se cachea mientras el fichero no cambia |
 | `--workspace-root` | `ASP_WORKSPACE_ROOTS` | donde puede vivir el workspace de una sandbox: dentro de `<raíz>/<tenant>/` (enlaces resueltos). Defecto `/srv/asp/workspaces` (créalo: `install -d /srv/asp/workspaces/<tenant>`); sin raíz que exista no hay workspaces. `virtiofsd` corre con `--sandbox chroot` si el agente es root (`--virtiofsd-sandbox`) |
 | `--vm-survive-restart` | `ASP_VM_SURVIVE_RESTART` | `true` por defecto: una VM confinada sigue corriendo cuando el agente para o se reinicia, y el proceso siguiente la adopta (§5.6). `=false` ata el servicio de cada VM al del agente, como antes |
 | `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
@@ -650,8 +658,8 @@ sudo ls -ln /run/asp-vm /run/asp-vm/<id>                       # /run/asp-vm: 07
 El [`Dockerfile`](../images/guest/Dockerfile) construye Debian bookworm-slim + `pod-daemon` (usuario `sandboxd`), unidad systemd, CMD vsock **26500**:
 
 ```bash
-docker build -t agent-sandbox-guest -f images/guest/Dockerfile .
-./scripts/build-guest-rootfs.sh /var/lib/asp/images/rootfs.img
+./scripts/build-guest-image.sh                                  # build/guest/rootfs.img, siempre los mismos bytes
+sudo cp build/guest/rootfs.img /var/lib/asp/images/rootfs.img   # o: sudo asp image pull --version X
 sudo ln -sfn /var/lib/asp/images/rootfs.img /opt/sandbox/rootfs.img
 ```
 
@@ -974,7 +982,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 ## 10. Procedimiento end-to-end (checklist ops)
 
-1. Instalar CH pinneado + assets (`vmlinux`, `rootfs.img` vía `build-guest-rootfs.sh`) → symlinks `/opt/sandbox/*`.
+1. Instalar CH pinneado + assets (`vmlinux`, `rootfs.img` vía `asp image pull` o `build-guest-image.sh`) → symlinks `/opt/sandbox/*`.
 2. Postgres + control-plane con `ASP_AUTO_PROVISION=0`, TLS/mTLS, bootstrap tokens. Claves fuera de `/tmp`: `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` y `ASP_ATTEST_KEY` en almacenamiento persistente (p. ej. `/var/lib/asp`; las que falten se crean ahí). Con `ASP_DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1` el control plane no arranca (código 2) si alguna está en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`.
 3. Node-agent: `--enroll --mtls --reconcile --tap-auto --host-vsock --ssh-agent-bridge=… --egress-enforce` (sin `--dry-run`), con `--cert-dir` (y `ASP_ATTEST_KEY` o `--egress-mitm-ca` si los usas) fuera de `/tmp`: un nodo de producción no arranca con ellos en un directorio temporal, salvo `ASP_ALLOW_TMP_KEYS=1`. Como servicio: [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) (§5.6).
 4. `POST /v1/sandboxes` → reconciler claim → TAP `asp-*` → CH spawn → `running`.
