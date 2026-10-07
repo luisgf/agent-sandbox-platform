@@ -20,9 +20,14 @@ type (
 	NodeUnavailableError = sched.NodeUnavailableError
 )
 
-// occupyingStates hold capacity on their node: from placement until the VM is gone.
+// occupyingStates hold capacity on their node: from placement until the node says
+// the VM is gone. That includes deleting: DELETE only asks the node to remove the
+// VM, and the node does it after its next poll and the stop grace; the capacity
+// is released when it reports deleted, not before, or a create racing the delete
+// could overcommit the node. (Deleting a stopped sandbox, which has no VM, also
+// holds its size for the second the node takes to remove the disk.)
 var occupyingStates = []SandboxState{
-	SandboxRequested, SandboxScheduled, SandboxStarting, SandboxRunning, SandboxPaused, SandboxStopping,
+	SandboxRequested, SandboxScheduled, SandboxStarting, SandboxRunning, SandboxPaused, SandboxStopping, SandboxDeleting,
 }
 
 // OccupiesNode reports whether a sandbox in state counts against its node's capacity.
@@ -142,8 +147,6 @@ func (w *NodeWork) add(sb Sandbox) {
 		if NeedsNodeAction(sb) {
 			w.Sandboxes = append(w.Sandboxes, sb)
 		}
-	case sb.State == SandboxDeleting: // holds no capacity, still needs the node
-		w.Sandboxes = append(w.Sandboxes, sb)
 	case sb.State == SandboxStopped:
 		w.Retained = append(w.Retained, sb.ID)
 	}

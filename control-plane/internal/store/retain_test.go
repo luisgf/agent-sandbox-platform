@@ -308,12 +308,14 @@ func testDeleteEndsAtDeleted(t *testing.T, s Store) {
 	if err != nil || out.State != SandboxDeleting {
 		t.Fatalf("delete of a running sandbox: %+v %v", out, err)
 	}
+	// The node still has a VM to remove: the work is its, the sandbox is still
+	// assigned to it, and it holds its capacity until the node reports deleted.
 	w := workOf(t, s, "node-a")
-	if !inWork(w, running.ID) || contains(w.Assigned, running.ID) || contains(w.Retained, running.ID) {
-		t.Fatalf("deleting is the node's to do and holds no capacity: %+v", w)
+	if !inWork(w, running.ID) || !contains(w.Assigned, running.ID) || contains(w.Retained, running.ID) {
+		t.Fatalf("deleting is the node's to do and still holds its capacity: %+v", w)
 	}
-	if usage, _ := s.ListNodeUsage(); usage["node-a"].Sandboxes != 0 {
-		t.Fatalf("a deleting sandbox still holds node capacity: %+v", usage)
+	if usage, _ := s.ListNodeUsage(); usage["node-a"].Sandboxes != 1 {
+		t.Fatalf("a deleting sandbox does not hold node capacity: %+v", usage)
 	}
 	if again, err := s.DeleteSandbox(running.ID, ""); err != nil || again.State != SandboxDeleting {
 		t.Fatalf("deleting twice: %+v %v", again, err)
@@ -327,6 +329,9 @@ func testDeleteEndsAtDeleted(t *testing.T, s Store) {
 	done := report(t, s, running.ID, SandboxDeleted, "vmm and disk removed")
 	if done.State != SandboxDeleted {
 		t.Fatalf("deleted: %+v", done)
+	}
+	if usage, _ := s.ListNodeUsage(); usage["node-a"].Sandboxes != 0 {
+		t.Fatalf("the capacity of a deleted sandbox is not released: %+v", usage)
 	}
 	w = workOf(t, s, "node-a")
 	if inWork(w, running.ID) || contains(w.Assigned, running.ID) || contains(w.Retained, running.ID) {
@@ -552,4 +557,30 @@ func TestMemoryListSandboxesNewestFirst(t *testing.T) {
 			t.Fatalf("position %d: %s, want %s", i, sb.ID, ids[i])
 		}
 	}
+}
+
+// A node with one slot: deleting the sandbox in it does not free the slot until
+// the node reports it deleted, so a create racing the delete cannot overcommit
+// the node while the VM is still being torn down (#116).
+func testDeletingHoldsItsSlotUntilDeleted(t *testing.T, s Store) {
+	lifecycleStore(t, s, 1, "node-a")
+	sb := runningOn(t, s, "node-a")
+	if _, err := s.DeleteSandbox(sb.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("create while the VM is still being removed: %v, want no capacity", err)
+	}
+	report(t, s, sb.ID, SandboxDeleted, "vmm and disk removed")
+	if _, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"}); err != nil {
+		t.Fatalf("create after the node reported deleted: %v", err)
+	}
+}
+
+func TestMemoryDeletingHoldsItsSlotUntilDeleted(t *testing.T) {
+	testDeletingHoldsItsSlotUntilDeleted(t, NewMemoryStore())
+}
+func TestPostgresDeletingHoldsItsSlotUntilDeleted(t *testing.T) {
+	testDeletingHoldsItsSlotUntilDeleted(t, newPostgresTestStore(t))
 }
