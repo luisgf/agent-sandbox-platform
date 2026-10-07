@@ -479,3 +479,64 @@ func TestDiskFreeMiB(t *testing.T) {
 		t.Fatal("a missing directory has no free space to report")
 	}
 }
+
+// A stop sent while the VM is still booting makes the running report fail with a
+// conflict, and the node tears the VM down. With a control plane that keeps
+// disks the disk stays, so the stopped sandbox can be resumed; the disk GC
+// removes it later if the sandbox turns out not to be anyone's.
+func TestStopWhileBootingKeepsTheDisk(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	cp.conflict[idA] = true // the sandbox is stopping by the time the node reports running
+	fake := vmm.NewFakeVMM(nil)
+	rec, disks := retainRec(t, cp, fake)
+	rec.tick(context.Background())
+
+	if _, ok := rec.HandleOf(idA); ok || len(fake.Running) != 0 {
+		t.Fatal("the VM kept running after its running report was refused")
+	}
+	if !exists(diskOf(disks, idA)) {
+		t.Fatal("the self-fence removed a disk the control plane keeps")
+	}
+
+	// With an older control plane nothing keeps it, so it goes as it always did.
+	cp2 := newFakeCP(t, idB)
+	cp2.conflict[idB] = true
+	rec2, disks2 := retainRec(t, cp2, vmm.NewFakeVMM(nil))
+	cp2.retains = false
+	rec2.tick(context.Background())
+	if exists(diskOf(disks2, idB)) {
+		t.Fatal("an older control plane's self-fence must remove the disk")
+	}
+}
+
+// The same boot, then the CP's own stop: the node ends the stop and the disk is
+// there for the resume.
+func TestStopWhileBootingCanBeResumed(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	fake := vmm.NewFakeVMM(nil)
+	rec, disks := retainRec(t, cp, fake)
+	cp.mu.Lock()
+	cp.conflict[idA] = true
+	cp.mu.Unlock()
+	rec.tick(context.Background()) // boots, the report is refused, the VM is torn down
+
+	cp.mu.Lock()
+	cp.conflict[idA] = false
+	cp.mu.Unlock()
+	cp.setState(idA, "stopping")
+	rec.tick(context.Background()) // the stop completes
+	if got, _ := cp.state(idA); got != "stopped" || !exists(diskOf(disks, idA)) {
+		t.Fatalf("state=%s, disk exists=%v; want stopped with its disk", got, exists(diskOf(disks, idA)))
+	}
+
+	cp.mu.Lock()
+	cp.boxes[idA].State, cp.boxes[idA].BootCount = "requested", 2
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+	if got, _ := cp.state(idA); got != "running" {
+		t.Fatalf("the resume ended %s", got)
+	}
+	if cfg, ok := fake.RunningConfig(idA); !ok || cfg.RootFSPath != diskOf(disks, idA) {
+		t.Fatalf("resumed on %q, want the kept disk", cfg.RootFSPath)
+	}
+}

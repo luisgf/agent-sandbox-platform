@@ -54,7 +54,7 @@ Una sandbox parada ocupa **disco, no CPU ni memoria**. Está fijada a su nodo: l
 
 ### 5. Quién borra discos: un GC en el nodo, no el reaper de arranque
 
-El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de sandboxes `stopped` en ese nodo, cuyos discos deben quedarse). El nodo borra `rootfs-<id>.img` solo si el id no está ni en `assigned` ni en `retained`, ni lo está arrancando un worker, **solo tras un sondeo correcto** y como mucho una vez por minuto. El reaper de arranque y `--reap-only` dejan de tocar discos (siguen limpiando procesos, sockets, TAPs y túneles). Con un plano de control antiguo (sin `retained`) el nodo conserva el comportamiento anterior: parar borra el disco.
+El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de sandboxes `stopped` en ese nodo, cuyos discos deben quedarse). El nodo borra `rootfs-<id>.img` solo si el id no está ni en `assigned` ni en `retained`, ni lo está arrancando un worker, **solo tras un sondeo correcto** y como mucho una vez por minuto. El reaper de arranque y `--reap-only` dejan de tocar discos (siguen limpiando procesos, sockets, TAPs y túneles). Un autoaislamiento del nodo (la VM que el plano de control ya no le asigna, o un informe `running` rechazado porque la sandbox se paró mientras arrancaba) tampoco borra el disco si el plano de control conserva discos: solo lo borran `deleting`, el GC y un primer arranque fallido. Con un plano de control antiguo (sin `retained`) el nodo conserva el comportamiento anterior: parar borra el disco.
 
 ### 6. Parada ordenada
 
