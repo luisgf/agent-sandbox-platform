@@ -782,7 +782,7 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
 	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
 	flag.IntVar(&cfg.ReconcileWorkers, "reconcile-workers", getenvInt("ASP_RECONCILE_WORKERS", reconciler.DefaultWorkers), "sandboxes the reconciler starts or stops at once (1 with --ch-api-socket)")
-	flag.DurationVar(&cfg.GuestReadyTimeout, "guest-ready-timeout", getenvDuration("ASP_GUEST_READY_TIMEOUT", 60*time.Second), "wait up to this long for pod-daemon in a new VM to answer before reporting running (0: report as soon as the VMM is up; ignored with --dry-run)")
+	flag.DurationVar(&cfg.GuestReadyTimeout, "guest-ready-timeout", getenvDuration("ASP_GUEST_READY_TIMEOUT", 120*time.Second), "wait up to this long for pod-daemon in a new VM to answer before reporting running; a guest that never does fails the start (0: report running as soon as the VMM is up; ignored with --dry-run)")
 	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")
 	flag.Parse()
 	cfg.HeartbeatEvery = *hb

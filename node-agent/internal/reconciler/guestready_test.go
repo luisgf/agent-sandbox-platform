@@ -87,6 +87,9 @@ type bootingEngine struct {
 	*vmm.FakeVMM
 	t      *testing.T
 	refuse int
+	// console is what the guest printed; ConsoleTail serves it. Empty: the engine
+	// has no console to read.
+	console string
 
 	mu    sync.Mutex
 	guest *fakeGuest
@@ -108,6 +111,7 @@ func (e *bootingEngine) Start(ctx context.Context, cfg vmm.MicroVMConfig) error 
 type runningCP struct {
 	mu        sync.Mutex
 	state     string
+	detail    string
 	runningAt time.Time
 }
 
@@ -141,10 +145,11 @@ func newRunningCP(t *testing.T, id string) (*runningCP, *httptest.Server) {
 			_ = json.NewEncoder(w).Encode(s)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status"):
 			var body struct {
-				State string `json:"state"`
+				State  string `json:"state"`
+				Detail string `json:"detail"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			cp.state = body.State
+			cp.state, cp.detail = body.State, body.Detail
 			if body.State == "running" && cp.runningAt.IsZero() {
 				cp.runningAt = time.Now()
 			}
@@ -201,19 +206,102 @@ func TestStartReportsRunningOnceTheGuestAnswers(t *testing.T) {
 	}
 }
 
-// A guest that never answers still ends in running once GuestReadyTimeout has
-// passed, as it did before the wait.
-func TestStartReportsRunningWhenTheGuestStaysSilent(t *testing.T) {
+// A first boot whose guest never answers is not running: a broken image or a
+// kernel that cannot find its disk looks like a healthy sandbox to everything
+// but exec. After GuestReadyTimeout the VM is torn down and the start is
+// reported failed with guest_not_ready, and the console line that says why.
+func TestStartFailsWhenTheGuestStaysSilent(t *testing.T) {
 	cp, srv := newRunningCP(t, "guest-silent-01")
-	eng := &bootingEngine{FakeVMM: vmm.NewFakeVMM(nil), t: t, refuse: 1 << 30}
+	eng := &bootingEngine{FakeVMM: vmm.NewFakeVMM(nil), t: t, refuse: 1 << 30,
+		console: "[    0.5] VFS: Cannot open root device \"vda\"\r\n\x1b[31mKernel panic - not syncing: VFS: Unable to mount root fs\x1b[0m\r\n"}
 	rec := newGuestReadyReconciler(t, srv, eng, 500*time.Millisecond)
 	start := time.Now()
 	rec.tick(context.Background())
 
-	if state, _ := cp.running(); state != "running" {
-		t.Fatalf("state=%s, want running", state)
+	state, _ := cp.running()
+	cp.mu.Lock()
+	detail := cp.detail
+	cp.mu.Unlock()
+	if state != "failed" || !strings.Contains(detail, "guest_not_ready") || !strings.Contains(detail, "500ms") ||
+		!strings.Contains(detail, "console: Kernel panic - not syncing: VFS: Unable to mount root fs)") {
+		t.Fatalf("state=%s detail=%q", state, detail)
 	}
 	if waited := time.Since(start); waited < 500*time.Millisecond {
-		t.Fatalf("reported running after %v, before the %v timeout", waited, 500*time.Millisecond)
+		t.Fatalf("gave up after %v, before the %v timeout", waited, 500*time.Millisecond)
+	}
+	if len(rec.Handles()) != 0 || len(eng.Running) != 0 {
+		t.Fatalf("the VM of a failed start is still there: handles=%v running=%v", rec.Handles(), eng.Running)
+	}
+}
+
+// A guest that cannot be asked about its console still fails cleanly.
+func TestSilentGuestWithoutAConsole(t *testing.T) {
+	cp, srv := newRunningCP(t, "guest-silent-02")
+	eng := &bootingEngine{FakeVMM: vmm.NewFakeVMM(nil), t: t, refuse: 1 << 30}
+	rec := newGuestReadyReconciler(t, srv, eng, 300*time.Millisecond)
+	rec.tick(context.Background())
+	state, _ := cp.running()
+	cp.mu.Lock()
+	detail := cp.detail
+	cp.mu.Unlock()
+	if state != "failed" || strings.Contains(detail, "console") || !strings.Contains(detail, "guest_not_ready") {
+		t.Fatalf("state=%s detail=%q", state, detail)
+	}
+}
+
+func TestLastConsoleLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                       "",
+		"\r\n \r\n":              "",
+		"boot\r\nlogin: ":        " (console: login:)",
+		"a\x1b[0m\n\x1b[2J\n":    " (console: a)",
+		strings.Repeat("x", 500): " (console: " + strings.Repeat("x", 160) + ")",
+		// A kernel that cannot mount its root panics and reboots in a loop: the line
+		// that says why is above the last one.
+		"VFS: Unable to mount root fs\r\nKernel panic - not syncing\r\nRebooting in 1 seconds..\r\n": " (console: Kernel panic - not syncing)",
+		"all fine\r\nstill fine\r\n": " (console: still fine)",
+		// Only the last few lines are looked at: an old error far above is not news.
+		"error: old\r\n" + strings.Repeat("ok\r\n", 50): " (console: ok)",
+	} {
+		if got := lastConsoleLine(in); got != want {
+			t.Errorf("lastConsoleLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// ConsoleTail makes bootingEngine a vmm.ConsoleReader when it has a console.
+func (e *bootingEngine) ConsoleTail(id string, max int) string { return e.console }
+
+// A resume whose guest never answers goes back to stopped with its disk, so it
+// can be tried again: the same teardown as a first boot, without losing the disk.
+func TestResumeFailsWhenTheGuestStaysSilent(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	eng := &bootingEngine{FakeVMM: vmm.NewFakeVMM(nil), t: t}
+	rec, disks := retainRec(t, cp, eng)
+	rec.Registry = poddaemon.NewRegistry(nil)
+	rec.GuestReadyTimeout = 5 * time.Second
+	rec.tick(context.Background())
+	if got, _ := cp.state(idA); got != "running" {
+		t.Fatalf("first boot: %s", got)
+	}
+	cp.setState(idA, "stopping")
+	rec.tick(context.Background())
+	if got, _ := cp.state(idA); got != "stopped" {
+		t.Fatalf("stop: %s", got)
+	}
+
+	eng.refuse = 1 << 30 // the next guest never answers
+	rec.GuestReadyTimeout = 300 * time.Millisecond
+	cp.mu.Lock()
+	cp.boxes[idA].State, cp.boxes[idA].BootCount = "requested", 2
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+
+	got, detail := cp.state(idA)
+	if got != "stopped" || !strings.Contains(detail, "resume failed") || !strings.Contains(detail, "guest_not_ready") {
+		t.Fatalf("state=%s detail=%q", got, detail)
+	}
+	if !exists(diskOf(disks, idA)) || len(rec.Handles()) != 0 {
+		t.Fatalf("disk=%v handles=%v", exists(diskOf(disks, idA)), rec.Handles())
 	}
 }
