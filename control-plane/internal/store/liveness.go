@@ -80,7 +80,7 @@ func (m *MemoryStore) FailNodeSandboxes(nodeID, reason string, silentSince time.
 	var out []Sandbox
 	var lost []lostSandbox
 	for id, sb := range m.sandboxes {
-		if sb.NodeID == nil || *sb.NodeID != nodeID || !(OccupiesNode(sb.State) || sb.State == SandboxDeleting) {
+		if sb.NodeID == nil || *sb.NodeID != nodeID || !OccupiesNode(sb.State) {
 			continue
 		}
 		from := sb.State

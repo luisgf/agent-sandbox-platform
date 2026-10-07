@@ -203,6 +203,12 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "session start: --force destroy %s: %v\n", existing.SandboxID, err)
 			return 1
 		}
+		// The node removes the VM after its next poll, and a deleting sandbox holds
+		// its capacity until then: wait, or the new one could be refused for room
+		// the old one is about to free. Not being able to confirm is not an error.
+		if err := waitGone(ctx, cOld, existing.SandboxID, 30*time.Second); err != nil {
+			fmt.Fprintf(stderr, "session start: could not confirm that %s is gone yet (%v); continuing\n", existing.SandboxID, err)
+		}
 		if err := session.Clear(path); err != nil {
 			fmt.Fprintf(stderr, "session start: clear %s: %v\n", path, err)
 			return 1
@@ -966,4 +972,36 @@ func loadSessionClient(fs *flag.FlagSet, loc sessionLoc, g *globalFlags, stderr 
 		return "", session.State{}, nil, code
 	}
 	return path, st, c, 0
+}
+
+// waitGone polls until the control plane no longer holds the sandbox: its state
+// is deleted (the node removed the VM and the disk and freed the capacity), it is
+// gone from the API, or it is in a state a delete does not pass through (failed,
+// stopped without a node: there is nothing for a node to remove).
+func waitGone(ctx context.Context, c *client.Client, id string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	pause := 100 * time.Millisecond
+	for {
+		sb, err := c.GetSandbox(ctx, id)
+		var he *client.HTTPError
+		switch {
+		case err == nil && sb.State == "deleted":
+			return nil
+		case errors.As(err, &he) && he.StatusCode == http.StatusNotFound:
+			return nil
+		case err != nil:
+			return err
+		case sb.State != "deleting":
+			return nil // not being deleted: nobody is going to report it deleted
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("still deleting after %s", timeout)
+		case <-time.After(pause):
+		}
+		if pause < time.Second {
+			pause *= 2
+		}
+	}
 }
