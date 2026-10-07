@@ -646,7 +646,12 @@ func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) err
 func (r *Reconciler) selfFence(ctx context.Context, id, why string) {
 	r.Logger.Warn("self-fencing: stopping a sandbox the control plane no longer assigns here",
 		"sandbox_id", id, "node_id", r.NodeID, "reason", why)
-	r.teardownLocal(ctx, id, teardownOpts{})
+	// A control plane that keeps disks decides what happens to this one: a stop
+	// the user asked for while the VM was still booting (the running report was
+	// refused because the sandbox is already stopping) must keep it, a delete or
+	// the disk GC removes it. Removing it here would leave a stopped sandbox that
+	// cannot be resumed. An older control plane keeps no disks: remove it as before.
+	r.teardownLocal(ctx, id, teardownOpts{keepDisk: r.retainsDisks()})
 }
 
 // teardownLocal stops the VM and releases everything it held on this host,

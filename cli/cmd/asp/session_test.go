@@ -1144,3 +1144,38 @@ func TestSandboxStopStartAndListAll(t *testing.T) {
 		t.Fatalf("calls=%s", got)
 	}
 }
+
+// The status detail of a failed resume already starts with "resume failed:": the
+// text around it must not say it twice.
+func TestStoppedTextDoesNotRepeatResumeFailed(t *testing.T) {
+	node := "n1"
+	sb := client.Sandbox{ID: "sb-1", State: "stopped", NodeID: &node, StatusDetail: "resume failed: the guest did not answer within 1m0s"}
+	got := stoppedText(sb, "/f")
+	if strings.Contains(got, "resume failed: resume failed") || !strings.Contains(got, "the last resume failed: the guest did not answer within 1m0s") {
+		t.Fatalf("text=%q", got)
+	}
+	sb.StatusDetail = "vm.boot failed"
+	if got := stoppedText(sb, "/f"); !strings.Contains(got, "the last resume failed: vm.boot failed") {
+		t.Fatalf("text=%q", got)
+	}
+}
+
+// When a resume ends failed (the retained disk was gone) the CLI must not say
+// the disk is kept or suggest trying again: there is nothing to try.
+func TestSessionResumeThatEndsFailedSaysItCannotBeResumed(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	l := newLifecycleServer(t, "stopped")
+	l.resumeTo = "failed"
+	l.detail = "disk_lost: the retained disk of this sandbox is missing on this node"
+	f := sessionFile(t, l)
+	var stdout, stderr strings.Builder
+	code := run([]string{"session", "resume", "--session-file", f, "--timeout", "5s"}, &stdout, &stderr)
+	out := stderr.String()
+	if code != 1 || !strings.Contains(out, "disk_lost") || !strings.Contains(out, "cannot be resumed") || !strings.Contains(out, "asp session rm") {
+		t.Fatalf("exit=%d stderr=%q", code, out)
+	}
+	if strings.Contains(out, "disk is kept") || strings.Contains(out, "try again") {
+		t.Fatalf("a failed resume has no disk to keep: %q", out)
+	}
+}

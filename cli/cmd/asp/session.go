@@ -511,7 +511,7 @@ func idleReapedText(id, path string) string {
 func stoppedText(sb client.Sandbox, path string) string {
 	msg := fmt.Sprintf("sandbox %s is stopped; its disk is kept on node %s. Session file kept (%s). Run: asp session resume", sb.ID, nodeOf(sb), path)
 	if sb.StatusDetail != "" {
-		msg += fmt.Sprintf(" (the last resume failed: %s)", sb.StatusDetail)
+		msg += fmt.Sprintf(" (the last resume failed: %s)", strings.TrimPrefix(sb.StatusDetail, "resume failed: "))
 	}
 	return msg
 }
@@ -651,11 +651,7 @@ func cmdSessionResume(args []string, stdout, stderr io.Writer) int {
 		sb, err = wait.WaitForState(waitCtx, c.GetSandbox, sb.ID, "running", wait.Options{Timeout: g.timeout, Log: stderr})
 		cancel()
 		if err != nil {
-			why := ""
-			if live, gerr := c.GetSandbox(ctx, st.SandboxID); gerr == nil && live.StatusDetail != "" {
-				why = fmt.Sprintf(" (%s)", live.StatusDetail)
-			}
-			fmt.Fprintf(stderr, "session resume: wait: %v%s. The disk is kept; try again, or asp session rm\n", err, why)
+			fmt.Fprintf(stderr, "session resume: %s\n", explainResumeWait(ctx, c, st.SandboxID, err))
 			return 1
 		}
 	}
@@ -665,6 +661,24 @@ func cmdSessionResume(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "asp: session resumed %s file=%s\n", sb.ID, path)
 	fmt.Fprintln(stdout, sb.ID)
 	return 0
+}
+
+// explainResumeWait says why waiting for a resumed sandbox to run ended. A resume
+// that could not start leaves it stopped with its disk, so it can be tried again;
+// one that failed (the disk was gone) cannot be resumed at all.
+func explainResumeWait(ctx context.Context, c *client.Client, id string, waitErr error) string {
+	live, err := c.GetSandbox(ctx, id)
+	if err != nil {
+		return fmt.Sprintf("wait: %v", waitErr)
+	}
+	why := ""
+	if live.StatusDetail != "" {
+		why = fmt.Sprintf(" (%s)", live.StatusDetail)
+	}
+	if live.State == "failed" {
+		return fmt.Sprintf("wait: %v%s. The sandbox cannot be resumed: asp session rm, then asp session start", waitErr, why)
+	}
+	return fmt.Sprintf("wait: %v%s. The disk is kept; try again, or asp session rm", waitErr, why)
 }
 
 // explainResumeError says what a refused resume means. The sandbox stays stopped.
