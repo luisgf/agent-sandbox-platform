@@ -129,9 +129,14 @@ type Node struct {
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	// AgentVersion is the build of the node-agent, as it said on its last register
 	// (023); empty for an agent that predates the field.
-	AgentVersion    string `json:"agent_version,omitempty"`
-	CertFingerprint string `json:"cert_fingerprint,omitempty"`
-	CertSerial      string `json:"cert_serial,omitempty"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	// GuestKernelDigest and GuestImageDigest are the digests ("sha256:<hex>") of the guest
+	// kernel and base image the node boots sandboxes from, as it said on its last register
+	// (024); empty until it has hashed them, and for a node that predates the fields.
+	GuestKernelDigest string `json:"guest_kernel_digest,omitempty"`
+	GuestImageDigest  string `json:"guest_image_digest,omitempty"`
+	CertFingerprint   string `json:"cert_fingerprint,omitempty"`
+	CertSerial        string `json:"cert_serial,omitempty"`
 	// CertNotAfter is when the current node certificate expires (016).
 	CertNotAfter *time.Time `json:"cert_not_after,omitempty"`
 	// DiskFreeMiB is the free space of the node's --disk-dir at its last
@@ -244,6 +249,9 @@ type RegisterNodeInput struct {
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	// AgentVersion is the build of the node-agent ("0.1.0", "dev+1a2b3c4d").
 	AgentVersion string `json:"agent_version,omitempty"`
+	// GuestKernelDigest and GuestImageDigest: what the node boots sandboxes from.
+	GuestKernelDigest string `json:"guest_kernel_digest,omitempty"`
+	GuestImageDigest  string `json:"guest_image_digest,omitempty"`
 }
 
 // acceptsWork resolves the optional register field.

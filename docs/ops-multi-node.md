@@ -139,7 +139,7 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 
 ## Diagnóstico
 
-Primero, **`asp node doctor <id>`**: el nodo comprueba KVM, hipervisor, imágenes, disco, nftables, reloj y su acceso al plano de control, y dice qué arreglar ([`how-to/troubleshooting.md`](how-to/troubleshooting.md)). En el propio nodo, aunque el agente no arranque: `sudo asp doctor`.
+Primero, **`asp node doctor <id>`**: el nodo comprueba KVM, hipervisor, imágenes, disco, nftables, reloj y su acceso al plano de control, y dice qué arreglar ([`how-to/troubleshooting.md`](how-to/troubleshooting.md)). `asp node list` muestra la versión del agente y el digest de la imagen del guest de cada nodo (`VERSION`, `GUEST IMAGE`): dos nodos con digests distintos arrancan imágenes distintas. En el propio nodo, aunque el agente no arranque: `sudo asp doctor`.
 
 | Síntoma | Causa probable |
 |---|---|

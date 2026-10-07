@@ -70,6 +70,10 @@ type RegisterRequest struct {
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	// AgentVersion is the build of this agent ("0.1.0", "dev+1a2b3c4d"), for asp node list.
 	AgentVersion string `json:"agent_version,omitempty"`
+	// GuestKernelDigest and GuestImageDigest are the digests ("sha256:<hex>") of the kernel and
+	// the base image this node boots sandboxes from, once it has hashed them.
+	GuestKernelDigest string `json:"guest_kernel_digest,omitempty"`
+	GuestImageDigest  string `json:"guest_image_digest,omitempty"`
 	// EgressEnforced says that the node forces its guests through the egress proxy
 	// (nft rules applied in enforce mode), so a policy for them means something.
 	EgressEnforced bool `json:"egress_enforced"`

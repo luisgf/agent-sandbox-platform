@@ -148,6 +148,14 @@ type Reconciler struct {
 	// kernel and the base image, so they say what was booted. Nil leaves them
 	// unmeasured, as in dry-run, which boots nothing.
 	Measure func(path string) (string, error)
+	// Expected returns the digest a SHA256SUMS next to a guest file gives it, as
+	// "sha256:<hex>" (measure.Expected). With GuestVerify it decides whether the kernel
+	// and the base image are the ones that were released.
+	Expected func(path string) (digest string, listed bool)
+	// GuestVerify is --guest-verify: "auto" refuses to boot from a kernel or base image
+	// that a SHA256SUMS next to it lists with another digest; "on" also refuses one that
+	// no SHA256SUMS lists; "off" (or empty) does not check.
+	GuestVerify string
 	// VMMVersion is what the hypervisor binary reports as its version, for the
 	// boot attestation. Empty is left out.
 	VMMVersion string
@@ -530,6 +538,10 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 	}
 	defer func() { r.Metrics.recordStart(kind, startedAt, retErr) }()
 
+	if err := r.checkGuestFile("kernel", r.KernelPath); err != nil {
+		r.failStart(ctx, sb, err)
+		return err
+	}
 	cfg := r.vmConfig(sb)
 	// releaseVM undoes vmConfig on a failed start: the CID, and the directory the
 	// VMM would have worked in.
@@ -1259,6 +1271,9 @@ func (r *Reconciler) cloneRootFS(sandboxID string) (path, baseDigest string, err
 	}
 	dst := filepath.Join(r.DiskDir, rootfsName(sandboxID))
 	removeDiskFiles(dst) // a leftover from a crash must not be reused
+	if err := r.checkGuestFile("base image", r.RootFSPath); err != nil {
+		return "", "", err
+	}
 	if r.Measure != nil {
 		d, err := r.Measure(r.RootFSPath)
 		if err != nil {

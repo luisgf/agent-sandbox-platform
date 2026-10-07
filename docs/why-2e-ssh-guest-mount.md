@@ -13,7 +13,7 @@ El host ya expone el SSH agent en AF_VSOCK CID **2** puerto **26501** (`--host-v
 ## Qué ganamos
 
 - Helper **`vsock-ssh-agent-proxy`** (`images/guest/cmd/vsock-ssh-agent-proxy/`): escucha unix en `/run/agent-sandbox/ssh-agent.sock` y diala vsock `2:26501`.
-- Unidad systemd **`ssh-agent-vsock.service`** (+ ejemplo OpenRC) habilitada al construir el rootfs (`scripts/build-guest-rootfs.sh`).
+- Unidad systemd **`ssh-agent-vsock.service`** (+ ejemplo OpenRC) habilitada al construir la imagen (`images/guest/Dockerfile`).
 - Fallback lab: `ASP_SSH_AGENT_UPSTREAM=unix:/path` (p. ej. `host-vsock-26501.sock`) sin KVM.
 - Alternativa in-process: `pod-daemon --ssh-auth-bridge` (mismo contrato de path).
 - (La bandera `--guest-ssh-agent-auto` solo escribía una línea en el log: ya no hace nada y avisa. Que `ssh-agent-vsock.service` corra o no lo decide la imagen del guest.)

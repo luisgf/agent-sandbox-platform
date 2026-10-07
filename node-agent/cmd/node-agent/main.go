@@ -121,6 +121,7 @@ type config struct {
 	DoctorJSON           bool          // --doctor-json: the report as JSON
 	GuestKernel          string        // --guest-kernel: the kernel every VM boots
 	GuestRootFS          string        // --guest-rootfs: the base image every sandbox disk is copied from
+	GuestVerify          string        // --guest-verify: auto | on | off
 	VMConfine            string        // --vm-confine: auto | on | off
 	VMSurviveRestart     bool          // --vm-survive-restart: confined VMs keep running when the agent restarts
 	VMUnprivileged       string        // --vm-unprivileged: auto | on | off
@@ -571,8 +572,14 @@ func main() {
 		)
 	}
 
+	// guestDigests is set once the node measures its guest files (not in dry-run).
+	var guestDigests func() (kernel, image string)
 	register := func(ctx context.Context) error {
-		return cp.Register(ctx, registerRequest(cfg))
+		req := registerRequest(cfg)
+		if guestDigests != nil {
+			req.GuestKernelDigest, req.GuestImageDigest = guestDigests()
+		}
+		return cp.Register(ctx, req)
 	}
 	heartbeatInfo := func() cpclient.HeartbeatInfo {
 		var info cpclient.HeartbeatInfo
@@ -644,13 +651,23 @@ func main() {
 		if !cfg.DryRun {
 			measurer := measure.NewCache()
 			rec.Measure = measurer.SHA256
+			rec.Expected, rec.GuestVerify = measure.Expected, cfg.GuestVerify
 			rec.VMMVersion = vmmVersion(ctx, cfg.VMMBinary)
+			guestDigests = func() (string, string) { return measurer.Peek(rec.KernelPath), measurer.Peek(rec.RootFSPath) }
 			// Hash the kernel and the base image now, in the background, so the
-			// first boot does not wait for it.
+			// first boot does not wait for it. The control plane learns them from the
+			// next register, which this makes once they are known.
 			go func() {
+				ok := true
 				for _, path := range []string{rec.KernelPath, rec.RootFSPath} {
 					if _, err := measurer.SHA256(path); err != nil {
 						slog.Warn("boot attestation: file not measured", "path", path, "error", err)
+						ok = false
+					}
+				}
+				if ok {
+					if err := register(ctx); err != nil {
+						slog.Debug("register with the guest digests failed; the next register will carry them", "error", err)
 					}
 				}
 			}()
@@ -785,6 +802,7 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.String(&cfg.VMMBinary, "ch-binary", "cloud-hypervisor", "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)", settings.Legacy("CLOUD_HYPERVISOR_BIN"))
 	s.String(&cfg.WorkspaceRoots, "workspace-root", workspace.DefaultRoot, "comma-separated directories a sandbox's workspace may live under: a workspace must be inside <root>/<tenant>/ (symbolic links resolved). The workspace path comes from the sandbox spec, so without this any caller could export the node's disks and keys; with no root that exists, no sandbox can have a workspace", settings.Env("ASP_WORKSPACE_ROOTS"))
 	s.String(&cfg.GuestKernel, "guest-kernel", reconciler.DefaultKernelPath, "kernel (an uncompressed vmlinux) every VM boots")
+	s.String(&cfg.GuestVerify, "guest-verify", reconciler.GuestVerifyAuto, "check the guest kernel and base image against a SHA256SUMS next to them (asp image pull installs one): auto (refuse to boot from a file the sums list with another digest), on (also refuse one no sums list) or off")
 	s.String(&cfg.GuestRootFS, "guest-rootfs", reconciler.DefaultRootFSPath, "base rootfs image every sandbox's private disk is copied from; never booted itself")
 	s.String(&cfg.VMConfine, "vm-confine", "auto", "run each microVM and its virtiofsd in a transient systemd service with resource limits: auto (when this host can: root, systemd), on (refuse to start if it cannot) or off (children of this process, as before)")
 	s.Bool(&cfg.VMSurviveRestart, "vm-survive-restart", true, "a confined microVM keeps running when the agent stops or restarts, and the next agent process takes it over (default). =false binds each VM's service to the agent's, so systemd stops the VMs with it, as before")
@@ -876,6 +894,13 @@ func loadConfig() config {
 	}
 	if cfg.EnrollURL == "" {
 		cfg.EnrollURL = cfg.ControlPlaneURL
+	}
+	cfg.GuestVerify = strings.ToLower(strings.TrimSpace(cfg.GuestVerify))
+	switch cfg.GuestVerify {
+	case reconciler.GuestVerifyAuto, reconciler.GuestVerifyOn, reconciler.GuestVerifyOff:
+	default:
+		slog.Error("--guest-verify takes auto, on or off", "value", cfg.GuestVerify)
+		os.Exit(2)
 	}
 	switch cfg.ReapLeftovers {
 	case reapOn, reapReport, reapOff:

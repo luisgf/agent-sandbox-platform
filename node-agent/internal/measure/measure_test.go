@@ -157,3 +157,86 @@ func TestVMMVersion(t *testing.T) {
 		t.Error("a binary that prints nothing reported a version")
 	}
 }
+
+func TestFromSums(t *testing.T) {
+	h := strings.Repeat("Ab", 32)
+	sums := []byte(h + "  rootfs.img\n" + strings.Repeat("cd", 32) + " *vmlinux\nnot a line\n")
+	if d, ok := FromSums(sums, "rootfs.img"); !ok || d != "sha256:"+strings.ToLower(h) {
+		t.Fatalf("rootfs.img: %q %v", d, ok)
+	}
+	if d, ok := FromSums(sums, "vmlinux"); !ok || d != "sha256:"+strings.Repeat("cd", 32) {
+		t.Fatalf("vmlinux (binary mode): %q %v", d, ok)
+	}
+	if _, ok := FromSums(sums, "other"); ok {
+		t.Fatal("a file that is not listed has a sum")
+	}
+	if _, ok := FromSums([]byte("abc  short\n"), "short"); ok {
+		t.Fatal("a sum that is not 64 characters was accepted")
+	}
+}
+
+// A release is installed in a directory of its own and linked into /opt/sandbox: the sums
+// are found beside the file as named and beside the one the link leads to.
+func TestExpectedFollowsLinks(t *testing.T) {
+	dir := t.TempDir()
+	set := filepath.Join(dir, "images", "0.1.0")
+	link := filepath.Join(dir, "sandbox")
+	for _, d := range []string{set, link} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := strings.Repeat("ab", 32)
+	if err := os.WriteFile(filepath.Join(set, "vmlinux"), []byte("k"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(set, "SHA256SUMS"), []byte(sum+"  vmlinux\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(set, "vmlinux"), filepath.Join(link, "vmlinux")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(set, "vmlinux"), filepath.Join(link, "vmlinux")} {
+		if d, ok := Expected(path); !ok || d != "sha256:"+sum {
+			t.Errorf("%s: %q %v", path, d, ok)
+		}
+	}
+	// Linked under another name: the sums list the name of the file itself.
+	if err := os.Symlink(filepath.Join(set, "vmlinux"), filepath.Join(link, "kernel")); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := Expected(filepath.Join(link, "kernel")); !ok || d != "sha256:"+sum {
+		t.Errorf("a link with another name: %q %v", d, ok)
+	}
+	if _, ok := Expected(filepath.Join(dir, "nowhere", "vmlinux")); ok {
+		t.Error("a path with no sums has a digest")
+	}
+}
+
+func TestPeekNeverReadsAndForgetsAChangedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "img")
+	if err := os.WriteFile(path, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCache()
+	if got := c.Peek(path); got != "" {
+		t.Fatalf("Peek before the file was hashed: %q", got)
+	}
+	want, err := c.SHA256(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Peek(path); got != want {
+		t.Fatalf("Peek = %q, want %q", got, want)
+	}
+	// Changed: the old sum is not the file's any more.
+	if err := os.WriteFile(path, []byte("two!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Peek(path); got != "" {
+		t.Fatalf("Peek of a changed file: %q", got)
+	}
+	if got := c.Peek(filepath.Join(t.TempDir(), "missing")); got != "" {
+		t.Fatalf("Peek of a missing file: %q", got)
+	}
+}

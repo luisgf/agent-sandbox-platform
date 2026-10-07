@@ -608,12 +608,14 @@ func (p *PostgresStore) RegisterNode(ctx context.Context, input RegisterNodeInpu
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib,
 				last_seen_at, created_at, updated_at,
-				max_sandboxes, accepts_work, local_net_dial, agent_instance_id, egress_enforced, agent_version
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14)
+				max_sandboxes, accepts_work, local_net_dial, agent_instance_id, egress_enforced, agent_version,
+				guest_kernel_digest, guest_image_digest
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB, now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 			strings.TrimSpace(input.AgentInstanceID), input.EgressEnforced, strings.TrimSpace(input.AgentVersion),
+			strings.TrimSpace(input.GuestKernelDigest), strings.TrimSpace(input.GuestImageDigest),
 		))
 	} else {
 		// cordoned and the fence target are admin decisions: register never
@@ -627,12 +629,14 @@ func (p *PostgresStore) RegisterNode(ctx context.Context, input RegisterNodeInpu
 				last_seen_at=$8, updated_at=$8,
 				max_sandboxes=$9, accepts_work=$10, local_net_dial=$11,
 				agent_instance_id=CASE WHEN $12 = '' THEN agent_instance_id ELSE $12 END,
-				egress_enforced=$13, agent_version=$14
+				egress_enforced=$13, agent_version=$14,
+				guest_kernel_digest=$15, guest_image_digest=$16
 			WHERE id=$1
 			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles, input.CapacityCPU, input.CapacityMemMiB, now,
 			input.MaxSandboxes, input.acceptsWork(), strings.TrimSpace(input.LocalNetDial),
 			strings.TrimSpace(input.AgentInstanceID), input.EgressEnforced, strings.TrimSpace(input.AgentVersion),
+			strings.TrimSpace(input.GuestKernelDigest), strings.TrimSpace(input.GuestImageDigest),
 		))
 		if err == nil && agentRestarted(prevInstance, strings.TrimSpace(input.AgentInstanceID)) {
 			err = failRestartOrphansTx(ctx, tx, id, now, input.AdoptedSandboxes)
@@ -1338,7 +1342,8 @@ func scanSandbox(row scannable, pre ...any) (Sandbox, error) {
 const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
 		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial, agent_instance_id,
 		cert_fingerprint, cert_serial, cert_not_after, fence_token, fence_endpoint, enrolled_at,
-		revoked_at, last_seen_at, created_at, updated_at, disk_free_mib, egress_enforced, agent_version`
+		revoked_at, last_seen_at, created_at, updated_at, disk_free_mib, egress_enforced, agent_version,
+		guest_kernel_digest, guest_image_digest`
 
 // scanNode reads nodeColumns; pre as in scanSandbox.
 func scanNode(row scannable, pre ...any) (Node, error) {
@@ -1348,6 +1353,7 @@ func scanNode(row scannable, pre ...any) (Node, error) {
 		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial, &n.AgentInstanceID,
 		&n.CertFingerprint, &n.CertSerial, &n.CertNotAfter, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
 		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt, &n.DiskFreeMiB, &n.EgressEnforced, &n.AgentVersion,
+		&n.GuestKernelDigest, &n.GuestImageDigest,
 	)...)
 	if err != nil {
 		return Node{}, err

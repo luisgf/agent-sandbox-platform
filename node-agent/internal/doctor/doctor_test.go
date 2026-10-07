@@ -458,3 +458,45 @@ func TestStandardChecksAreTheOnesTheIssueNames(t *testing.T) {
 		seen[n] = true
 	}
 }
+
+// A release installed by asp image pull sits in a directory of its own with its SHA256SUMS, and
+// /opt/sandbox holds links to it.
+func TestGuestImagesFollowLinksToTheirSums(t *testing.T) {
+	f := newFakeHost()
+	c := baseConfig()
+	f.files["/opt/sandbox/vmlinux"] = 70 << 20
+	f.files["/var/lib/asp/images/0.1.0/vmlinux"] = 70 << 20
+	f.contents["/var/lib/asp/images/0.1.0/SHA256SUMS"] = "aaaa  vmlinux\n"
+	f.digests["/opt/sandbox/vmlinux"] = "sha256:aaaa"
+	h := f.host()
+	h.EvalSymlinks = func(p string) (string, error) {
+		if p == "/opt/sandbox/vmlinux" {
+			return "/var/lib/asp/images/0.1.0/vmlinux", nil
+		}
+		return p, nil
+	}
+	want(t, run(t, find(t, h, c, "guest-kernel")), OK, "matches SHA256SUMS")
+	f.digests["/opt/sandbox/vmlinux"] = "sha256:bbbb"
+	want(t, run(t, find(t, h, c, "guest-kernel")), Fail, "refuses to boot from it")
+}
+
+func TestGuestVerifyModesInTheDoctor(t *testing.T) {
+	f := newFakeHost()
+	c := baseConfig()
+	f.files["/opt/sandbox/vmlinux"] = 70 << 20
+	f.digests["/opt/sandbox/vmlinux"] = "sha256:aaaa"
+
+	c.GuestVerify = "on"
+	got := run(t, find(t, f.host(), c, "guest-kernel"))
+	want(t, got, Fail, "--guest-verify=on")
+	if !strings.Contains(got.Fix, "asp image pull") {
+		t.Errorf("fix: %q", got.Fix)
+	}
+	f.contents["/opt/sandbox/SHA256SUMS"] = "aaaa  vmlinux\n"
+	want(t, run(t, find(t, f.host(), c, "guest-kernel")), OK, "matches SHA256SUMS")
+
+	// A mismatch with --guest-verify=off is a warning: the node boots from it anyway.
+	c.GuestVerify = "off"
+	f.contents["/opt/sandbox/SHA256SUMS"] = "bbbb  vmlinux\n"
+	want(t, run(t, find(t, f.host(), c, "guest-kernel")), Warn, "boots from it anyway")
+}

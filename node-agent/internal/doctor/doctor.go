@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -140,6 +141,8 @@ type Host struct {
 	DiskFreeMiB func(dir string) (int64, bool)
 	// SHA256 is the digest of a file, "sha256:<hex>".
 	SHA256 func(path string) (string, error)
+	// EvalSymlinks is filepath.EvalSymlinks; nil means no file is a link.
+	EvalSymlinks func(path string) (string, error)
 	// Writable checks that a file can be created in dir.
 	Writable func(dir string) error
 }
@@ -149,7 +152,7 @@ type Host struct {
 func RealHost(diskFree func(string) (int64, bool), sha256 func(string) (string, error)) Host {
 	return Host{
 		GOOS: goos(), Euid: os.Geteuid(),
-		Stat: os.Stat, ReadFile: os.ReadFile, LookPath: exec.LookPath,
+		Stat: os.Stat, ReadFile: os.ReadFile, LookPath: exec.LookPath, EvalSymlinks: filepath.EvalSymlinks,
 		OpenRW: func(path string) error {
 			f, err := os.OpenFile(path, os.O_RDWR, 0)
 			if err != nil {

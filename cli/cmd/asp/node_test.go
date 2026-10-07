@@ -22,7 +22,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/nodes", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"nodes":[
-			{"id":"node-a","state":"ready","schedulable":true,"egress_enforced":true,"agent_version":"0.1.0","last_seen_at":"` + time.Now().UTC().Add(-3*time.Second).Format(time.RFC3339) + `",
+			{"id":"node-a","state":"ready","schedulable":true,"egress_enforced":true,"agent_version":"0.1.0","guest_image_digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","last_seen_at":"` + time.Now().UTC().Add(-3*time.Second).Format(time.RFC3339) + `",
 			 "cert_not_after":"` + time.Now().UTC().Add(200*24*time.Hour+time.Hour).Format(time.RFC3339) + `",
 			 "stopped_sandboxes":3,"disk_free_mib":716800,
 			 "allocated":{"cpu_millis":1500,"memory_mib":1024,"sandboxes":1},"allocatable":{"cpu_millis":16000,"memory_mib":7168,"sandboxes":0}},
@@ -49,7 +49,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 		t.Fatalf("list exit=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d", "STOPPED (DISKS)", "DISK FREE", "700 GiB", "EGRESS", "enforced", "VERSION", "0.1.0"} {
+	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d", "STOPPED (DISKS)", "DISK FREE", "700 GiB", "EGRESS", "enforced", "VERSION", "0.1.0", "GUEST IMAGE", "0123456789ab"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("node list missing %q:\n%s", want, out)
 		}
