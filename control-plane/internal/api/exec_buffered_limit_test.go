@@ -161,3 +161,58 @@ func TestBufferedExecHonoursAShorterRequest(t *testing.T) {
 		t.Fatalf("status %d after %v: %s", rr.Code, time.Since(started), rr.Body.String())
 	}
 }
+
+// The client the control plane really uses to reach an agent gives the agent
+// 30 s to start answering. A buffered exec is answered only when the command ends,
+// so that wait must not cut it: this is the regression a test with a bare
+// httptest client missed (the lab host answered 502 at 30 s).
+func TestBufferedExecIsNotCutByTheResponseHeaderTimeout(t *testing.T) {
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") == "1" {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			_, _ = io.WriteString(w, "{\"type\":\"exit\",\"exit_code\":0}\n")
+			return
+		}
+		time.Sleep(700 * time.Millisecond) // the command takes longer than the header wait below
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"stdout":"done","stderr":"","exit_code":0}`))
+	}))
+	defer agent.Close()
+	mem := store.NewMemoryStore()
+	mem.SetProvisionNodeID("n")
+	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(mem)
+	srv.Client = newAgentHTTPClient(AgentTimeouts{Dial: time.Second, TLSHandshake: time.Second, ResponseHeader: 200 * time.Millisecond})
+	srv.BufferedExecTimeout = 10 * time.Second
+	mux := testMux(srv)
+	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runSandbox(t, mem, sb.ID)
+
+	post := func(query string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sb.ID+"/exec"+query, strings.NewReader(`{"cmd":["make"]}`)))
+		return rr
+	}
+	if rr := post(""); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "done") {
+		t.Fatalf("buffered exec behind a 200 ms header wait: %d %s", rr.Code, rr.Body.String())
+	}
+	// The twin is made once per client and reused.
+	first := srv.bufferedTwin(srv.Client)
+	if first == srv.Client || srv.bufferedTwin(srv.Client) != first {
+		t.Fatal("the buffered twin is not cached")
+	}
+	// A stream still gets the wait: its agent answers at once.
+	if rr := post("?stream=1"); rr.Code != http.StatusOK {
+		t.Fatalf("stream: %d %s", rr.Code, rr.Body.String())
+	}
+	// A client with no such wait is its own twin.
+	plain := &http.Client{Transport: &http.Transport{}}
+	if srv.bufferedTwin(plain) != plain || srv.bufferedTwin(nil) != nil {
+		t.Fatal("a client without a header wait was copied")
+	}
+}

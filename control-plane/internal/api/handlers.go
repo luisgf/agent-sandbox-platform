@@ -63,6 +63,9 @@ type Server struct {
 	// agentToken is the secret of a same-host node agent's local API.
 	agentToken agentTokenSource
 
+	// bufferedTwins caches bufferedTwin's clients, keyed by the client they twin.
+	bufferedTwins sync.Map
+
 	// ReservedNodeNames are the names of the control plane's own TLS
 	// certificate: no node may enroll under one of them (see checkNodeNameFree).
 	ReservedNodeNames []string
@@ -744,6 +747,9 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		httpReq.Header.Set("Accept", "application/x-ndjson")
 	}
 	s.authorizeAgentRequest(httpReq)
+	if !stream {
+		client = s.bufferedTwin(client)
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		if !stream && errors.Is(ctx.Err(), context.DeadlineExceeded) {
