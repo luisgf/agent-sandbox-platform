@@ -96,7 +96,7 @@ func reapConfig(cfg config, report bool) reconciler.ReapConfig {
 	rc := reconciler.ReapConfig{
 		SocketDir: cfg.CHSocketDir,
 		// Never removed, even when named like a leftover.
-		Keep:     []string{reconciler.DefaultRootFSPath, cfg.CHAPISocket, cfg.SSHAgentBridge, cfg.IdentityListen, cfg.PodDaemonSock},
+		Keep:     []string{cfg.GuestRootFS, cfg.CHAPISocket, cfg.SSHAgentBridge, cfg.IdentityListen, cfg.PodDaemonSock},
 		Report:   report,
 		Tap:      &tap.Manager{Logger: slog.Default()},
 		LocalNet: localnet.NewHost(localNetKeyDir(cfg)),

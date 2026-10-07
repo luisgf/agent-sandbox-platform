@@ -108,6 +108,8 @@ type config struct {
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
 	ReapOnly             bool          // --reap-only: clean up and exit, without registering
 	PrintMeasurement     bool          // --print-measurement: print what this node would attest and exit
+	GuestKernel          string        // --guest-kernel: the kernel every VM boots
+	GuestRootFS          string        // --guest-rootfs: the base image every sandbox disk is copied from
 	VMConfine            string        // --vm-confine: auto | on | off
 	VMSlice              string        // --vm-slice
 	VMMemoryOverheadMiB  int           // --vm-memory-overhead-mib
@@ -118,7 +120,7 @@ type config struct {
 func main() {
 	cfg := loadConfig()
 	if cfg.PrintMeasurement {
-		os.Exit(printMeasurement(cfg, reconciler.DefaultKernelPath, reconciler.DefaultRootFSPath, os.Stdout, os.Stderr))
+		os.Exit(printMeasurement(cfg, cfg.GuestKernel, cfg.GuestRootFS, os.Stdout, os.Stderr))
 	}
 	if err := checkNodeKeyLocations(cfg); err != nil {
 		slog.Error("refusing to start", "error", err)
@@ -557,6 +559,7 @@ func main() {
 			os.Exit(1)
 		}
 		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
+		rec.KernelPath, rec.RootFSPath = cfg.GuestKernel, cfg.GuestRootFS
 		rec.Workers = cfg.ReconcileWorkers
 		if !cfg.DryRun {
 			rec.GuestReadyTimeout = cfg.GuestReadyTimeout
@@ -719,6 +722,8 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
 	flag.StringVar(&cfg.WorkspaceRoots, "workspace-root", getenv("ASP_WORKSPACE_ROOTS", workspace.DefaultRoot), "comma-separated directories a sandbox's workspace may live under: a workspace must be inside <root>/<tenant>/ (symbolic links resolved). The workspace path comes from the sandbox spec, so without this any caller could export the node's disks and keys; with no root that exists, no sandbox can have a workspace")
+	flag.StringVar(&cfg.GuestKernel, "guest-kernel", getenv("ASP_GUEST_KERNEL", reconciler.DefaultKernelPath), "kernel (an uncompressed vmlinux) every VM boots")
+	flag.StringVar(&cfg.GuestRootFS, "guest-rootfs", getenv("ASP_GUEST_ROOTFS", reconciler.DefaultRootFSPath), "base rootfs image every sandbox's private disk is copied from; never booted itself")
 	flag.StringVar(&cfg.VMConfine, "vm-confine", getenv("ASP_VM_CONFINE", "auto"), "run each microVM and its virtiofsd in a transient systemd service with resource limits: auto (when this host can: root, systemd), on (refuse to start if it cannot) or off (children of this process, as before)")
 	flag.StringVar(&cfg.VMSlice, "vm-slice", getenv("ASP_VM_SLICE", vmm.DefaultSlice), "systemd slice of the microVM services")
 	flag.IntVar(&cfg.VMMemoryOverheadMiB, "vm-memory-overhead-mib", getenvInt("ASP_VM_MEMORY_OVERHEAD_MIB", vmm.DefaultMemoryOverheadMiB), "memory added to the guest's for the VMM's own use, in the unit's MemoryMax")
