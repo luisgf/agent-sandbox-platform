@@ -48,6 +48,7 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Bind address |
 | `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
+| `ASP_BUFFERED_EXEC_TIMEOUT` | `10m` | Cuánto puede tardar un `exec` sin `?stream=1` (`asp sandbox exec/run`, `session exec --buffered`), también en el guest. Una petición puede pedir menos con `timeout_seconds`. `0`/`off` sin límite. Pasado el límite, 504. Un stream no tiene límite |
 | `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
 | `ASP_INSECURE_OPEN_API` | unset | `1` acepta peticiones sin credencial (solo labs y smokes dry-run; avisa al arrancar). Una credencial incorrecta se rechaza igual. `ASP_REQUIRE_API_KEY` ya no hace nada: la autenticación está siempre activa |
 | `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
@@ -152,11 +153,14 @@ Parar una sandbox (`POST …/stop`, `asp session stop`, el reaper de inactividad
 | Conexión TCP | 10 s |
 | Handshake TLS | 10 s |
 | Hasta que el agente empieza a responder (cabeceras) | 30 s |
-| `exec` sin `?stream=1` y `exec/stdin`, de principio a fin | 30 s |
+| `exec` sin `?stream=1`, de principio a fin | `ASP_BUFFERED_EXEC_TIMEOUT` (10 min por defecto; `0`/`off` sin límite) o el `timeout_seconds` de la petición, si es menor |
+| `exec/stdin`, de principio a fin | 30 s |
 
 Un stream no tiene límite total: dura lo que el comando. Si el cliente cuelga, el plano de control cancela la llamada al agente. Si el nodo desaparece a mitad de stream, lo detecta el keep-alive de TCP en unos minutos.
 
-**Límites.** El agente responde a un `exec` acumulado cuando el comando termina, así que ese `exec` sigue limitado a 30 s, como antes; para algo más largo, el stream (`asp session exec` lo usa por defecto). El node-agent y el plano de control envían las cabeceras del stream en cuanto el comando arranca, así que un comando que no escribe nada no agota esos 30 s. Los valores no se configuran por entorno. Por debajo, el node-agent limita a 60 s solo las llamadas acumuladas al pod-daemon, y el pod-daemon solo mata el exec acumulado a los `--exec-timeout-secs` (default 30). Un stream dura lo que el comando: termina si el cliente se va (el guest mata el comando y su grupo de procesos) y, con `--stream-idle-timeout-secs`, tras ese tiempo sin salida ni entrada.
+**Exec acumulado.** El agente responde a un `exec` acumulado cuando el comando termina. Su límite ya no es un 30 s fijo: lo pone `ASP_BUFFERED_EXEC_TIMEOUT` (10 min por defecto) y una petición puede pedir menos con `timeout_seconds` (`asp sandbox exec|run --exec-timeout`, `asp session exec --buffered --exec-timeout`); nunca más que el tope. El plano de control pasa ese tiempo al node-agent y este al pod-daemon (`timeout_secs`, con su propio tope `--exec-max-timeout-secs`, 3600), de modo que el guest corta el comando a la vez (`exit_code` 124 con lo que llevaba escrito) y el node-agent espera 15 s más antes de rendirse. Un acumulado que el plano de control corta es un **504** que dice el límite y qué hacer (el stream, o subir el tope), no un 502 que culpa al nodo. Para algo más largo que el tope, el stream (`asp session exec` lo usa por defecto).
+
+**Límites.** El node-agent y el plano de control envían las cabeceras del stream en cuanto el comando arranca, así que un comando que no escribe nada no agota los 30 s hasta las cabeceras. Esos 30 s y los de `exec/stdin` no se configuran por entorno. Un stream dura lo que el comando: termina si el cliente se va (el guest mata el comando y su grupo de procesos) y, con `--stream-idle-timeout-secs`, tras ese tiempo sin salida ni entrada.
 
 ## Lab IdP (Keycloak)
 

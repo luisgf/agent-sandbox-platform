@@ -63,16 +63,27 @@ type Server struct {
 	// agentToken is the secret of a same-host node agent's local API.
 	agentToken agentTokenSource
 
+	// bufferedTwins caches bufferedTwin's clients, keyed by the client they twin.
+	bufferedTwins sync.Map
+
 	// ReservedNodeNames are the names of the control plane's own TLS
 	// certificate: no node may enroll under one of them (see checkNodeNameFree).
 	ReservedNodeNames []string
 }
 
+// DefaultBufferedExecTimeout is how long a buffered exec (no ?stream=1) may run
+// unless ASP_BUFFERED_EXEC_TIMEOUT says otherwise. It was 30 s, which cut every
+// build and test run that was not streamed.
+const DefaultBufferedExecTimeout = 10 * time.Minute
+
+// EnvBufferedExecTimeout sets Server.BufferedExecTimeout ("10m", "0" for none).
+const EnvBufferedExecTimeout = "ASP_BUFFERED_EXEC_TIMEOUT"
+
 func NewServer(s store.Store) *Server {
 	return &Server{
 		Store:               s,
 		Client:              newAgentHTTPClient(defaultAgentTimeouts()),
-		BufferedExecTimeout: 30 * time.Second,
+		BufferedExecTimeout: DefaultBufferedExecTimeout,
 		Sched:               sched.DefaultConfig(),
 	}
 }
@@ -113,6 +124,9 @@ type execRequest struct {
 	// AsRoot runs the command as root in the guest. By default it runs as the
 	// owner of the workspace, or as the guest's default exec user (pod-daemon).
 	AsRoot bool `json:"as_root,omitempty"`
+	// TimeoutSeconds is how long a buffered exec (no ?stream=1) may run, at most
+	// ASP_BUFFERED_EXEC_TIMEOUT; 0 uses that limit. A stream has no limit.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 type execStdinRequest struct {
@@ -664,6 +678,10 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cmd required")
 		return
 	}
+	if req.TimeoutSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "timeout_seconds cannot be negative")
+		return
+	}
 	actorSub := resolveActorSub(r, req.ActorSub, "")
 	sb, err := s.Store.GetSandbox(id)
 	if err != nil {
@@ -696,6 +714,8 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	// it runs, not only once it ends: the sandbox is touched now and while the call
 	// to the agent is open (a stream, or a buffered call waiting for its answer).
 	defer s.keepActive(sb.ID)()
+	stream := wantsExecStream(r)
+	limit := s.execLimit(req.TimeoutSeconds, stream)
 	egressPol := s.effectiveEgress(sb.TenantID)
 	payload, _ := json.Marshal(map[string]any{
 		"sandbox_id":       sb.ID,
@@ -708,14 +728,14 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		"stdin":            req.Stdin,
 		"stdin_stream":     req.StdinStream,
 		"as_root":          req.AsRoot,
+		"timeout_seconds":  int((limit + time.Second - 1) / time.Second),
 		"egress_allowlist": egressPol,
 	})
-	stream := wantsExecStream(r)
 	url := agentURL + "/v1/internal/exec"
 	if stream {
 		url += "?stream=1"
 	}
-	ctx, cancel := s.agentCallContext(r, stream)
+	ctx, cancel := s.agentCallContextFor(r, stream, limit)
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
@@ -727,8 +747,18 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		httpReq.Header.Set("Accept", "application/x-ndjson")
 	}
 	s.authorizeAgentRequest(httpReq)
+	if !stream {
+		client = s.bufferedTwin(client)
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		if !stream && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// The limit this control plane puts on a buffered exec, not a node problem.
+			writeError(w, http.StatusGatewayTimeout, fmt.Sprintf("exec exceeded the %s limit of a buffered exec; "+
+				"stream it instead (asp session exec streams by default), or raise timeout_seconds up to %s (ASP_BUFFERED_EXEC_TIMEOUT)",
+				limit.Round(time.Millisecond), s.BufferedExecTimeout))
+			return
+		}
 		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
 		return
 	}
@@ -892,10 +922,32 @@ func writeAgentError(w http.ResponseWriter, status int, body []byte) {
 // the caller's request, so a disconnect cancels the call. A buffered call is also
 // bounded by BufferedExecTimeout; a stream is not, it lasts as long as the command.
 func (s *Server) agentCallContext(r *http.Request, stream bool) (context.Context, context.CancelFunc) {
-	if stream || s.BufferedExecTimeout <= 0 {
+	return s.agentCallContextFor(r, stream, s.BufferedExecTimeout)
+}
+
+// agentCallContextFor is agentCallContext with the limit of a buffered call given.
+func (s *Server) agentCallContextFor(r *http.Request, stream bool, limit time.Duration) (context.Context, context.CancelFunc) {
+	if stream || limit <= 0 {
 		return r.Context(), func() {}
 	}
-	return context.WithTimeout(r.Context(), s.BufferedExecTimeout)
+	return context.WithTimeout(r.Context(), limit)
+}
+
+// execLimit is how long a buffered exec may run: what the request asks for, never
+// more than BufferedExecTimeout (0 there means no cap), and BufferedExecTimeout
+// when it asks for nothing. A stream has none (0).
+func (s *Server) execLimit(requestedSeconds int, stream bool) time.Duration {
+	if stream {
+		return 0
+	}
+	limit := s.BufferedExecTimeout
+	if requestedSeconds > 0 {
+		asked := time.Duration(requestedSeconds) * time.Second
+		if limit <= 0 || asked < limit {
+			limit = asked
+		}
+	}
+	return limit
 }
 
 // wantsExecStream is true when the client asked for NDJSON chunks on the

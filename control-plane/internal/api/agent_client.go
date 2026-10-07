@@ -50,7 +50,8 @@ type AgentTimeouts struct {
 	// ResponseHeader bounds the wait for the agent to start answering once the
 	// request is sent. An agent answers a stream with its first event (at once for
 	// a PTY or a stdin stream) but a buffered exec only when the command exits, so
-	// this also caps a buffered exec.
+	// a buffered exec goes through bufferedTwin, which has no such wait: its own
+	// limit is the call's context (Server.BufferedExecTimeout).
 	ResponseHeader time.Duration
 }
 
@@ -222,4 +223,26 @@ func (s *Server) agentTarget(sb store.Sandbox) (baseURL string, client *http.Cli
 		client = http.DefaultClient
 	}
 	return baseURL, client, 0, ""
+}
+
+// bufferedTwin returns a client like c for a buffered exec. The agent answers
+// one only when the command exits, so the wait for response headers that bounds
+// a call to the agent (30 s) would cut every buffered exec at 30 s whatever its
+// limit; the twin has none, and the call's context bounds it. The twin of a
+// client is made once and kept, so its connections are reused.
+func (s *Server) bufferedTwin(c *http.Client) *http.Client {
+	if c == nil {
+		return c
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok || tr.ResponseHeaderTimeout == 0 {
+		return c
+	}
+	if v, ok := s.bufferedTwins.Load(c); ok {
+		return v.(*http.Client)
+	}
+	clone := tr.Clone()
+	clone.ResponseHeaderTimeout = 0
+	v, _ := s.bufferedTwins.LoadOrStore(c, &http.Client{Transport: clone, CheckRedirect: c.CheckRedirect})
+	return v.(*http.Client)
 }

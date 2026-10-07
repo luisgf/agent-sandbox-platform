@@ -93,6 +93,10 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     exec_timeout_secs: u64,
 
+    /// The longest a request may ask a buffered exec to run (`timeout_secs`).
+    #[arg(long, default_value_t = 3600)]
+    exec_max_timeout_secs: u64,
+
     /// Kill a streamed exec after this many seconds without output and without
     /// stdin. 0 (default): a stream lasts as long as its command and its client.
     #[arg(long, default_value_t = 0)]
@@ -153,6 +157,7 @@ fn main() -> io::Result<()> {
     let policy: &'static runas::ExecPolicy = Box::leak(Box::new(build_policy(&args)));
     let limits = http_serve::ExecLimits {
         buffered: Duration::from_secs(args.exec_timeout_secs),
+        max_buffered: Duration::from_secs(args.exec_max_timeout_secs.max(args.exec_timeout_secs)),
         stream_idle: (args.stream_idle_timeout_secs > 0).then(|| Duration::from_secs(args.stream_idle_timeout_secs)),
         policy,
     };

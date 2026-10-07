@@ -138,6 +138,11 @@ func run(ctx context.Context, args []string) error {
 	slog.Info("oidc signer ready", "issuer", oidcSigner.Issuer, "kid", oidcSigner.KID(), "key_path", oidcSigner.KeyPath, "prev_key", oidcSigner.PrevPath != "")
 
 	srv := api.NewServer(st)
+	bufferedExec, err := bufferedExecTimeoutFromEnv(os.Getenv(api.EnvBufferedExecTimeout))
+	if err != nil {
+		return configError{err}
+	}
+	srv.BufferedExecTimeout = bufferedExec
 	srv.CA = ca
 	srv.Sched = schedCfg
 	srv.Agents = api.NewAgentDialer(ca, api.EnvTruthy(api.EnvInsecureAgentHTTP))

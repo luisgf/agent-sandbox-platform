@@ -28,6 +28,9 @@ type ExecRequest struct {
 	// StdinStream keeps a pipe open on the non-PTY stream path so the client
 	// can POST stdin and then close it (real EOF). PTY sessions do not need it.
 	StdinStream bool `json:"stdin_stream,omitempty"`
+	// TimeoutSecs is how long a buffered exec may run in the guest (pod-daemon
+	// caps it); 0 uses the daemon's default. A stream ignores it.
+	TimeoutSecs int `json:"timeout_secs,omitempty"`
 	// AsRoot runs the command as root in the guest. Without it pod-daemon runs it
 	// as the owner of the workspace, or as its default exec user. A pod-daemon
 	// that predates this ignores the field and runs everything as root.
@@ -107,6 +110,19 @@ func (c *Client) buffered(ctx context.Context) (context.Context, context.CancelF
 	return context.WithTimeout(ctx, c.BufferedTimeout)
 }
 
+// bufferedFor is buffered for an exec that may run for command: the deadline is
+// the longer of the client's own and command plus a margin.
+func (c *Client) bufferedFor(ctx context.Context, command time.Duration) (context.Context, context.CancelFunc) {
+	limit := c.BufferedTimeout
+	if command > 0 && limit > 0 && command+bufferedMargin > limit {
+		limit = command + bufferedMargin
+	}
+	if limit <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
 func (c *Client) Healthz(ctx context.Context) error {
 	ctx, cancel := c.buffered(ctx)
 	defer cancel()
@@ -125,8 +141,13 @@ func (c *Client) Healthz(ctx context.Context) error {
 	return nil
 }
 
+// bufferedMargin is what a buffered exec's deadline here exceeds the time the
+// guest gives the command, so the guest's own timeout (exit 124 with the output
+// so far) answers before this client gives up.
+const bufferedMargin = 15 * time.Second
+
 func (c *Client) Exec(ctx context.Context, in ExecRequest) (ExecResponse, error) {
-	ctx, cancel := c.buffered(ctx)
+	ctx, cancel := c.bufferedFor(ctx, time.Duration(in.TimeoutSecs)*time.Second)
 	defer cancel()
 	body, err := json.Marshal(in)
 	if err != nil {
