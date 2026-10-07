@@ -25,6 +25,11 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	// A name that was renamed still works and says so on this command's stderr.
 	envcfg.Warn = func(msg string) { fmt.Fprintf(stderr, "asp: warning: %s\n", msg) }
+	args, choice, err := leadingConfigFlag(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "asp: %v\n", err)
+		return 2
+	}
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		printRootUsage(stderr)
 		if len(args) == 0 {
@@ -35,7 +40,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "version" || args[0] == "--version" {
 		return cmdVersion(args[1:], stdout, stderr)
 	}
+	if args[0] != "config" {
+		// The files go under the environment and the flags: they set what those do not.
+		if err := loadConfigFiles(choice); err != nil {
+			fmt.Fprintf(stderr, "asp: %v\n", err)
+			return 2
+		}
+	}
 	switch args[0] {
+	case "config":
+		return cmdConfig(args[1:], choice, stdout, stderr)
 	case "sandbox":
 		return sandboxCmd(args[1:], stdout, stderr)
 	case "session":
@@ -61,6 +75,7 @@ func printRootUsage(w io.Writer) {
 	fmt.Fprintf(w, `asp — Agent Sandbox Platform demo CLI
 
 Usage:
+  asp [--config FILE] <command> ...
   asp sandbox create [flags]
   asp sandbox get <id>
   asp sandbox list [--tenant] [--all]
@@ -83,7 +98,12 @@ Usage:
   asp apikey create --name N [--tenant T] [--scope tenant|platform] [--ttl 30d]
   asp apikey list [--tenant T] [--json]
   asp apikey revoke|rotate <id>
+  asp config show [--effective] [--component asp|server|agent]   where the settings come from: the config files, the environment, the defaults
   asp version [--json]
+
+Config files: /etc/asp/asp.yaml, then ~/.config/asp/asp.yaml over it, each with its drop-ins in <file>.d/*.yaml.
+A key is a variable below without ASP_, in lower case (control_plane_url, tenant, api_key...). Flags and
+environment variables win over the files. "asp --config FILE <command>" or ASP_CONFIG reads that file instead.
 
 Global env:
   ASP_CONTROL_PLANE_URL   control-plane base URL (also --control-plane-url; default http://127.0.0.1:8080)

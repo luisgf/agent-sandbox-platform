@@ -95,7 +95,8 @@ func TestEitherNameOfTheFlagCountsAsGiven(t *testing.T) {
 // Every variable the CLI reads has the ASP_ prefix, apart from the ones that are not
 // ours.
 func TestNoVariableIsReadWithoutThePrefix(t *testing.T) {
-	external := map[string]bool{}
+	// The one place a config file may be: XDG says where the user keeps theirs.
+	external := map[string]bool{"XDG_CONFIG_HOME": true}
 	root := filepath.Join("..", "..")
 	found := map[string][]string{}
 	fset := token.NewFileSet()
