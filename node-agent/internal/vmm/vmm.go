@@ -40,6 +40,10 @@ type MicroVMConfig struct {
 	// WorkspaceFSSocket is the virtiofsd socket for this sandbox. Empty means
 	// do not add an fs device (no workspace, or virtiofsd was not started).
 	WorkspaceFSSocket string
+	// SerialSocket is a unix socket Cloud Hypervisor serves the guest's serial
+	// console on, which the agent reads into a bounded buffer (Console). Empty
+	// leaves the console alone, as before.
+	SerialSocket string
 }
 
 // MicroVM is the lifecycle interface used by the node-agent reconciler.
@@ -47,6 +51,13 @@ type MicroVM interface {
 	Start(ctx context.Context, config MicroVMConfig) error
 	Stop(ctx context.Context, id string) error
 	Pause(ctx context.Context, id string) error
+}
+
+// ConsoleReader is implemented by VMMs that keep the last of a guest's serial
+// console, for the log of a guest that never came up.
+type ConsoleReader interface {
+	// ConsoleTail returns up to max bytes of the console of sandbox id, or "".
+	ConsoleTail(id string, max int) string
 }
 
 // Shutdowner is implemented by VMMs that can tell when a guest has powered

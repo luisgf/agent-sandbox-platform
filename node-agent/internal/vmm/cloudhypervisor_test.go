@@ -142,6 +142,11 @@ type fakeCHRunner struct {
 	// stubborn makes the processes ignore Kill until the test closes them.
 	stubborn bool
 	procs    []*fakeCHProc
+	// serialOut, when set, is what a guest writes to its serial console: the fake
+	// serves it on the socket vm.create names, once something connects.
+	serialOut string
+	// created holds the vm.create bodies.
+	created []chVMConfig
 }
 
 type fakeStart struct {
@@ -216,10 +221,25 @@ func (r *fakeCHRunner) Start(name string, args ...string) (Process, error) {
 		_, _ = w.Write([]byte(`{"version":"fake"}`))
 	})
 	mux.HandleFunc(chPathVMCreate, func(w http.ResponseWriter, req *http.Request) {
+		var body chVMConfig
+		_ = json.NewDecoder(req.Body).Decode(&body)
 		r.mu.Lock()
 		r.creates++
+		r.created = append(r.created, body)
+		out := r.serialOut
 		r.mu.Unlock()
-		_, _ = io.Copy(io.Discard, req.Body)
+		if out != "" && body.Serial != nil && body.Serial.Socket != "" {
+			if sln, err := net.Listen("unix", body.Serial.Socket); err == nil {
+				go func() {
+					defer sln.Close()
+					if conn, err := sln.Accept(); err == nil {
+						_, _ = conn.Write([]byte(out))
+						time.Sleep(300 * time.Millisecond)
+						_ = conn.Close()
+					}
+				}()
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc(chPathVMBoot, func(w http.ResponseWriter, _ *http.Request) {
@@ -604,5 +624,70 @@ func TestStopAfterGuestPoweredOff(t *testing.T) {
 	}
 	if ch.InstanceCount() != 0 {
 		t.Fatalf("instances=%d", ch.InstanceCount())
+	}
+}
+
+// With a SerialSocket the VM is created with its serial port on that socket and
+// the console device off, the agent reads the guest's output from before the
+// boot, and Stop removes the socket.
+func TestStartCapturesTheGuestConsole(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	fake := &fakeCHRunner{serialOut: "[    0.000000] Linux version 7.0\nVFS: Unable to mount root fs\n"}
+	ch := NewSpawningCloudHypervisor("cloud-hypervisor", dir)
+	ch.Runner = fake
+	ch.ReadyTimeout = 5 * time.Second
+	serial := filepath.Join(dir, "serial-sb-1.sock")
+	if err := ch.Start(context.Background(), MicroVMConfig{ID: "sb-1", KernelPath: "/k", SerialSocket: serial}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.created) != 1 || fake.created[0].Serial == nil || fake.created[0].Serial.Mode != "Socket" ||
+		fake.created[0].Serial.Socket != serial || fake.created[0].Console == nil || fake.created[0].Console.Mode != "Off" {
+		t.Fatalf("vm.create: %+v", fake.created)
+	}
+	var tail string
+	for i := 0; i < 200; i++ {
+		if tail = ch.ConsoleTail("sb-1", 4096); strings.Contains(tail, "Unable to mount root fs") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(tail, "Linux version") || !strings.Contains(tail, "Unable to mount root fs") {
+		t.Fatalf("console tail: %q", tail)
+	}
+	if ch.ConsoleTail("nobody", 100) != "" {
+		t.Fatal("a console for a sandbox that is not running")
+	}
+	if err := ch.Stop(context.Background(), "sb-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := os.Stat(serial); !os.IsNotExist(err) {
+		t.Fatalf("the serial socket survived Stop: %v", err)
+	}
+	if ch.ConsoleTail("sb-1", 100) != "" {
+		t.Fatal("a console for a sandbox that was stopped")
+	}
+}
+
+// Without a SerialSocket the VM config says nothing about serial or console.
+func TestStartWithoutASerialSocketLeavesTheConsoleAlone(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	fake := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("cloud-hypervisor", dir)
+	ch.Runner = fake
+	ch.ReadyTimeout = 5 * time.Second
+	if err := ch.Start(context.Background(), MicroVMConfig{ID: "sb-2", KernelPath: "/k"}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ch.Stop(context.Background(), "sb-2") }()
+	if len(fake.created) != 1 || fake.created[0].Serial != nil || fake.created[0].Console != nil {
+		t.Fatalf("vm.create: %+v", fake.created)
 	}
 }

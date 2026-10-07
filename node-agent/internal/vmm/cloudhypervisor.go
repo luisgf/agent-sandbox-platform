@@ -70,6 +70,10 @@ type chInstance struct {
 	// exited is set once WaitShutdown saw the API go away: the process ended on
 	// its own after the guest powered off, so Stop has no VM left to delete.
 	exited bool
+	// console keeps the last of the guest's serial output; serialSocket is its
+	// socket, removed at stop. Nil/empty without MicroVMConfig.SerialSocket.
+	console      *Console
+	serialSocket string
 }
 
 // NewCloudHypervisor constructs a shared-socket client (legacy / --ch-api-socket).
@@ -223,14 +227,28 @@ type chFsConfig struct {
 	Socket string `json:"socket"`
 }
 
+// chSerialConfig and chConsoleConfig are the guest's serial port and its
+// console. With a SerialSocket the serial port goes to a unix socket the agent
+// reads (Console) and the console device is off.
+type chSerialConfig struct {
+	Mode   string `json:"mode"`
+	Socket string `json:"socket,omitempty"`
+}
+
+type chConsoleConfig struct {
+	Mode string `json:"mode"`
+}
+
 type chVMConfig struct {
-	CPUs    chCpusConfig    `json:"cpus"`
-	Memory  chMemoryConfig  `json:"memory"`
-	Payload chPayloadConfig `json:"payload"`
-	Disks   []chDiskConfig  `json:"disks,omitempty"`
-	Net     []chNetConfig   `json:"net,omitempty"`
-	Vsock   *chVsockConfig  `json:"vsock,omitempty"`
-	Fs      []chFsConfig    `json:"fs,omitempty"`
+	CPUs    chCpusConfig     `json:"cpus"`
+	Memory  chMemoryConfig   `json:"memory"`
+	Payload chPayloadConfig  `json:"payload"`
+	Disks   []chDiskConfig   `json:"disks,omitempty"`
+	Net     []chNetConfig    `json:"net,omitempty"`
+	Vsock   *chVsockConfig   `json:"vsock,omitempty"`
+	Fs      []chFsConfig     `json:"fs,omitempty"`
+	Serial  *chSerialConfig  `json:"serial,omitempty"`
+	Console *chConsoleConfig `json:"console,omitempty"`
 }
 
 func (c *CloudHypervisor) Ping(ctx context.Context) error {
@@ -301,6 +319,10 @@ func (c *CloudHypervisor) createVMWith(ctx context.Context, client *http.Client,
 	if config.VsockCID != 0 && config.VsockPath != "" {
 		body.Vsock = &chVsockConfig{CID: config.VsockCID, Socket: config.VsockPath}
 	}
+	if config.SerialSocket != "" {
+		body.Serial = &chSerialConfig{Mode: "Socket", Socket: config.SerialSocket}
+		body.Console = &chConsoleConfig{Mode: "Off"}
+	}
 	// virtiofs is attached only when a virtiofsd socket is already listening.
 	// The reconciler starts that daemon when workspace_host_path is set and
 	// puts the socket here. An fs device without a socket would fail vm.create,
@@ -367,6 +389,8 @@ func (c *CloudHypervisor) Start(ctx context.Context, config MicroVMConfig) error
 	if !c.sharedMode() {
 		return c.startPerSandbox(ctx, config)
 	}
+	// Nobody reads a console socket in shared mode: leave the console alone.
+	config.SerialSocket = ""
 	if err := c.CreateVM(ctx, config); err != nil {
 		return err
 	}
@@ -424,16 +448,27 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 
 	if err := c.createVMWith(ctx, client, config); err != nil {
 		c.cleanupFailed(proc, sock)
+		c.removeSerial(config.SerialSocket)
 		return err
+	}
+	// Read the console from before the first instruction: connect now, boot next.
+	var console *Console
+	if config.SerialSocket != "" {
+		console = NewConsole(ConsoleBytes)
+		console.Attach(config.SerialSocket, 15*time.Second)
 	}
 	if err := c.bootWith(ctx, client); err != nil {
 		_ = c.deleteWith(ctx, client)
 		c.cleanupFailed(proc, sock)
+		if console != nil {
+			console.Close()
+		}
+		c.removeSerial(config.SerialSocket)
 		return err
 	}
 
 	c.mu.Lock()
-	c.instances[config.ID] = &chInstance{socketPath: sock, proc: proc, client: client}
+	c.instances[config.ID] = &chInstance{socketPath: sock, proc: proc, client: client, console: console, serialSocket: config.SerialSocket}
 	c.mu.Unlock()
 	c.logger().Info("CH spawned", "sandbox_id", config.ID, "socket", sock, "pid", proc.Pid())
 	return nil
@@ -536,6 +571,10 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 			errs = append(errs, fmt.Errorf("remove socket lock: %w", err))
 		}
 	}
+	if inst.console != nil {
+		inst.console.Close()
+	}
+	c.removeSerial(inst.serialSocket)
 	c.logger().Info("CH stopped", "sandbox_id", id, "socket", inst.socketPath)
 	if len(errs) > 0 {
 		return fmt.Errorf("stop %s: %v", id, errs)
@@ -683,3 +722,23 @@ func (c *CloudHypervisor) do(ctx context.Context, client *http.Client, method, p
 var _ MicroVM = (*CloudHypervisor)(nil)
 var _ VMM = (*CloudHypervisor)(nil)
 var _ Shutdowner = (*CloudHypervisor)(nil)
+
+// removeSerial removes the console socket Cloud Hypervisor left, if any.
+func (c *CloudHypervisor) removeSerial(path string) {
+	if path != "" {
+		_ = os.Remove(path)
+	}
+}
+
+// ConsoleTail implements ConsoleReader: what the guest of sandbox id last wrote
+// to its serial console, up to max bytes. Empty for a sandbox with no console
+// capture or one that is not running.
+func (c *CloudHypervisor) ConsoleTail(id string, max int) string {
+	c.mu.Lock()
+	inst := c.instances[id]
+	c.mu.Unlock()
+	if inst == nil || inst.console == nil {
+		return ""
+	}
+	return inst.console.Tail(max)
+}

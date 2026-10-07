@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -202,12 +203,14 @@ const (
 	vsockPrefix    = "vsock-"     // VsockDir: CH vsock muxer, and its {muxer}_{port} hybrid listeners
 	virtiofsPrefix = "virtiofs-"  // VsockDir: virtiofsd socket
 	sshAgentPrefix = "ssh-agent-" // VsockDir: link to the sandbox's SSH agent upstream
+	serialPrefix   = "serial-"    // VsockDir: socket CH serves the guest's serial console on
 	rootfsPrefix   = "rootfs-"    // DiskDir: private rootfs copy
 )
 
 func vsockName(id string) string    { return vsockPrefix + id + ".sock" }
 func virtiofsName(id string) string { return virtiofsPrefix + id + ".sock" }
 func sshAgentName(id string) string { return sshAgentPrefix + id + ".sock" }
+func serialName(id string) string   { return serialPrefix + id + ".sock" }
 func rootfsName(id string) string   { return rootfsPrefix + id + ".img" }
 
 func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Logger, every time.Duration) *Reconciler {
@@ -595,15 +598,16 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 
 	r.registerEndpoint(sb.ID, h)
 	if !r.waitGuest(ctx, sb.ID) {
-		if resumed {
-			// A resumed guest that never answers (a kernel that no longer matches the
-			// disk's modules, say) is no use: stop it again, keeping the disk.
-			err := fmt.Errorf("the guest did not answer within %s", r.GuestReadyTimeout)
-			r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: true})
-			r.failStart(ctx, sb, err)
-			return fmt.Errorf("resume: %w", err)
-		}
-		r.Logger.Warn("reporting running anyway", "sandbox_id", sb.ID)
+		// A guest that never answers (a kernel that cannot find its disk, a broken
+		// image, a kernel that no longer matches a resumed disk's modules) is no
+		// use: tear the VM down, with what it printed on its console in the log, and
+		// report the start failed. A first boot is failed and loses its fresh disk;
+		// a resume goes back to stopped with its disk, as for any failed resume.
+		console := r.consoleTail(sb.ID)
+		err := fmt.Errorf("guest_not_ready: the guest did not answer within %s%s", r.GuestReadyTimeout, lastConsoleLine(console))
+		r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: resumed})
+		r.failStart(ctx, sb, err)
+		return fmt.Errorf("start: %w", err)
 	}
 
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "running", "vmm started"); err != nil {
@@ -1000,6 +1004,9 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 		TapDevice:  tap.DeviceName(sb.ID),
 		VsockCID:   cid,
 		VsockPath:  vsockPath,
+		// The agent keeps the last of the guest's console for the log of a guest
+		// that never comes up. Only Cloud Hypervisor in per-sandbox mode serves it.
+		SerialSocket: filepath.Join(vsockDir, serialName(sb.ID)),
 		// Host path only. The virtiofsd socket is filled by startWorkspace
 		// before Engine.Start when this string is non-empty. Empty means no
 		// fs device.
@@ -1227,4 +1234,47 @@ func (r *Reconciler) HandleOf(id string) (Handle, bool) {
 	defer r.mu.Unlock()
 	h, ok := r.handles[id]
 	return h, ok
+}
+
+// consoleTail is the last of what sandbox id's guest wrote to its serial console,
+// logged as it is gathered. It must run before the VM is torn down.
+func (r *Reconciler) consoleTail(id string) string {
+	cr, ok := r.Engine.(vmm.ConsoleReader)
+	if !ok {
+		return ""
+	}
+	tail := cr.ConsoleTail(id, 2048)
+	if tail == "" {
+		r.Logger.Warn("the guest wrote nothing to its console", "sandbox_id", id)
+		return ""
+	}
+	r.Logger.Warn("last output of the guest's console", "sandbox_id", id, "console", tail)
+	return tail
+}
+
+// ansiSequence is a terminal escape sequence (colours, cursor movement).
+var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
+// lastConsoleLine is the last printable line of a console tail, without its
+// terminal escapes, for a status detail: " (last console line: ...)", or "" when
+// there is none.
+func lastConsoleLine(tail string) string {
+	lines := strings.Split(strings.ReplaceAll(ansiSequence.ReplaceAllString(tail, ""), "\r", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, lines[i])
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 120 {
+			line = line[:120]
+		}
+		return fmt.Sprintf(" (last console line: %s)", line)
+	}
+	return ""
 }

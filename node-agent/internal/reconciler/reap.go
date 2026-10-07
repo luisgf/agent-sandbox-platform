@@ -331,6 +331,7 @@ func socketDirKind(name string) (fs.FileMode, bool) {
 	}{
 		{vsockPrefix, fs.ModeSocket},
 		{virtiofsPrefix, fs.ModeSocket},
+		{serialPrefix, fs.ModeSocket},
 		{sshAgentPrefix, fs.ModeSymlink},
 	} {
 		if id, ok := between(name, k.prefix, ".sock"); ok {
