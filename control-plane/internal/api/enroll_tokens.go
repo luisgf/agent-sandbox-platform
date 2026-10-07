@@ -1,11 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -42,9 +42,15 @@ func (s *Server) CreateEnrollToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body enrollTokenRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	reqBody, ok := readBody(w, r, maxSmallBodyBytes)
+	if !ok {
 		return
+	}
+	if len(bytes.TrimSpace(reqBody)) > 0 {
+		if err := json.Unmarshal(reqBody, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
 	}
 	nodeID := strings.TrimSpace(body.NodeID)
 	if nodeID != "" {
