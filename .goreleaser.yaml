@@ -162,6 +162,11 @@ dockers_v2:
 checksum:
   name_template: SHA256SUMS
   algorithm: sha256
+  # The installer and the scripts that take ASP away are checked like the rest.
+  extra_files:
+    - glob: scripts/install.sh
+    - glob: scripts/uninstall.sh
+    - glob: scripts/killall.sh
 
 # A software bill of materials for each archive (needs syft on the runner).
 sboms:
@@ -186,6 +191,11 @@ release:
   github:
     owner: luisgf
     name: agent-sandbox-platform
+  # curl -fsSL .../releases/latest/download/install.sh | sudo sh
+  extra_files:
+    - glob: scripts/install.sh
+    - glob: scripts/uninstall.sh
+    - glob: scripts/killall.sh
   draft: false
   prerelease: auto
   header: |
