@@ -49,15 +49,18 @@ type Node struct {
 	Cordoned      bool   `json:"cordoned"`
 	// FenceConfigured says the control plane can power the node off if it loses
 	// it; the target itself is never served.
-	FenceConfigured bool       `json:"fence_configured"`
-	AcceptsWork     bool       `json:"accepts_work"`
-	CapacityCPU     int        `json:"capacity_cpu"`
-	CapacityMemMiB  int        `json:"capacity_mem_mib"`
-	MaxSandboxes    int        `json:"max_sandboxes"`
-	LastSeenAt      *time.Time `json:"last_seen_at"`
-	CertNotAfter    *time.Time `json:"cert_not_after,omitempty"`
-	Allocated       NodeUsage  `json:"allocated"`
-	Allocatable     NodeUsage  `json:"allocatable"` // 0 = not enforced
+	FenceConfigured bool `json:"fence_configured"`
+	// EgressEnforced: the node forces its guests through its egress proxy, so a
+	// tenant's egress policy binds them.
+	EgressEnforced bool       `json:"egress_enforced"`
+	AcceptsWork    bool       `json:"accepts_work"`
+	CapacityCPU    int        `json:"capacity_cpu"`
+	CapacityMemMiB int        `json:"capacity_mem_mib"`
+	MaxSandboxes   int        `json:"max_sandboxes"`
+	LastSeenAt     *time.Time `json:"last_seen_at"`
+	CertNotAfter   *time.Time `json:"cert_not_after,omitempty"`
+	Allocated      NodeUsage  `json:"allocated"`
+	Allocatable    NodeUsage  `json:"allocatable"` // 0 = not enforced
 	// StoppedSandboxes counts the stopped sandboxes on the node: each keeps a
 	// disk there and holds no CPU or memory.
 	StoppedSandboxes int64 `json:"stopped_sandboxes"`

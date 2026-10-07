@@ -41,6 +41,13 @@ Environment=ASP_RECONCILE=1
 Environment=ASP_TAP_AUTO=1
 Environment=ASP_HOST_VSOCK=1
 Environment=ASP_EGRESS_ENFORCE=1
+# Guests reach the network only through the node's forward proxy and DNS sink, forced
+# with nftables (table asp_egress; the script is built into the binary). With the proxy
+# set the redirect is on and in enforce mode: a node that cannot apply the rules (no
+# root, no nft) does not start instead of running guests without egress control.
+# `asp node list` shows EGRESS enforced once it registered. Docs: docs/bare-metal-ch.md section 3.
+Environment=ASP_EGRESS_PROXY_LISTEN=:8888
+Environment=ASP_EGRESS_DNS_SINK=:5353
 EnvironmentFile=/etc/asp/node-agent.env
 ExecStart=/usr/local/bin/node-agent
 # The VMs do not survive the agent: a new agent process does not adopt them and

@@ -210,3 +210,41 @@ func TestLateStatusReportIs409(t *testing.T) {
 		t.Fatalf("late running report: want 409, got %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// A node says whether it forces its guests through the egress proxy, and the list
+// shows it: that is what tells an operator whether a tenant's egress policy binds
+// the guests on that server.
+func TestNodeListShowsEgressEnforcement(t *testing.T) {
+	mux := testMux(NewServer(store.NewMemoryStore()))
+	for _, body := range []string{
+		`{"id":"enforcing","agent_endpoint":"http://127.0.0.1:9100","egress_enforced":true}`,
+		`{"id":"open","agent_endpoint":"http://127.0.0.1:9101"}`, // an agent that predates the field
+	} {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/nodes/register", bytes.NewBufferString(body)))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", body, rr.Code, rr.Body.String())
+		}
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/nodes", nil))
+	var list struct {
+		Nodes []struct {
+			ID             string `json:"id"`
+			EgressEnforced *bool  `json:"egress_enforced"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, n := range list.Nodes {
+		if n.EgressEnforced == nil {
+			t.Fatalf("%s: egress_enforced is missing from the list", n.ID)
+		}
+		got[n.ID] = *n.EgressEnforced
+	}
+	if len(got) != 2 || !got["enforcing"] || got["open"] {
+		t.Fatalf("egress_enforced by node: %v", got)
+	}
+}

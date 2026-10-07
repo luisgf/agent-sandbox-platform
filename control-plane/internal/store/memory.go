@@ -510,6 +510,7 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		MaxSandboxes:    input.MaxSandboxes,
 		AcceptsWork:     input.acceptsWork(),
 		LocalNetDial:    strings.TrimSpace(input.LocalNetDial),
+		EgressEnforced:  input.EgressEnforced,
 		AgentInstanceID: strings.TrimSpace(input.AgentInstanceID),
 		LastSeenAt:      &seen,
 		CreatedAt:       now,
@@ -702,6 +703,7 @@ func (m *MemoryStore) EnrollNode(ctx context.Context, input EnrollNodeInput, cer
 		node.Cordoned = existing.Cordoned
 		node.AcceptsWork = existing.AcceptsWork
 		node.LocalNetDial = existing.LocalNetDial
+		node.EgressEnforced = existing.EgressEnforced
 		node.AgentInstanceID = existing.AgentInstanceID
 		// Re-enroll clears prior revoke so a fresh cert can talk again after rotate/re-enroll.
 		if existing.CertFingerprint != "" && existing.CertFingerprint != fp {

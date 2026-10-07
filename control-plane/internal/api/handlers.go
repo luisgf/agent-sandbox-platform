@@ -593,6 +593,10 @@ func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if node.AcceptsWork && !node.EgressEnforced {
+		slog.Warn("node registered without egress enforcement: its guests are not forced through the egress proxy, so a tenant's egress policy does not bind them",
+			"node_id", node.ID)
+	}
 	writeJSON(w, http.StatusOK, node)
 }
 

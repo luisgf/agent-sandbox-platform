@@ -21,7 +21,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/nodes", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"nodes":[
-			{"id":"node-a","state":"ready","schedulable":true,"last_seen_at":"` + time.Now().UTC().Add(-3*time.Second).Format(time.RFC3339) + `",
+			{"id":"node-a","state":"ready","schedulable":true,"egress_enforced":true,"last_seen_at":"` + time.Now().UTC().Add(-3*time.Second).Format(time.RFC3339) + `",
 			 "cert_not_after":"` + time.Now().UTC().Add(200*24*time.Hour+time.Hour).Format(time.RFC3339) + `",
 			 "stopped_sandboxes":3,"disk_free_mib":716800,
 			 "allocated":{"cpu_millis":1500,"memory_mib":1024,"sandboxes":1},"allocatable":{"cpu_millis":16000,"memory_mib":7168,"sandboxes":0}},
@@ -48,7 +48,7 @@ func TestNodeListCordonUncordon(t *testing.T) {
 		t.Fatalf("list exit=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d", "STOPPED (DISKS)", "DISK FREE", "700 GiB"} {
+	for _, want := range []string{"NODE", "node-a", "yes", "1.5/16.0", "1024/7168", "1/-", "node-b", "no: cordoned", "0/4", "never", "CERT EXPIRES", "in 200d", "STOPPED (DISKS)", "DISK FREE", "700 GiB", "EGRESS", "enforced"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("node list missing %q:\n%s", want, out)
 		}
@@ -64,8 +64,11 @@ func TestNodeListCordonUncordon(t *testing.T) {
 			rowB = line
 		}
 	}
-	if f := strings.Fields(rowA); len(f) < 9 || f[6] != "3" {
-		t.Errorf("node-a row should show 3 stopped sandboxes: %q", rowA)
+	if f := strings.Fields(rowA); len(f) < 10 || f[7] != "3" || f[3] != "enforced" {
+		t.Errorf("node-a row should show egress enforced and 3 stopped sandboxes: %q", rowA)
+	}
+	if f := strings.Fields(rowB); len(f) < 5 || f[len(f)-1] == "enforced" || !strings.Contains(rowB, " off ") {
+		t.Errorf("node-b does not enforce egress: %q", rowB)
 	}
 	if !strings.Contains(rowB, "  0  ") || !strings.Contains(rowB, " -  ") {
 		t.Errorf("node-b reported no disk and has no stopped sandboxes: %q", rowB)

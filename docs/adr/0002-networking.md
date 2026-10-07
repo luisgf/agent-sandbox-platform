@@ -77,7 +77,7 @@ El control plane guarda reglas por tenant (`PUT /v1/tenants/{id}/egress`).
 | Rate limit | `node-agent/internal/egress/ratelimit.go` |
 | TAP manager | `node-agent/internal/tap/` + `--tap-auto` / `ASP_TAP_AUTO=1` |
 | nft enforcer | `node-agent/internal/nftredirect/` + `scripts/nftables-egress-redirect.sh` |
-| Flags nft | `--nft-egress-redirect`, `--nft-egress-mode=soft\|enforce`, `--nft-http-ports`, `--nft-dns-action`, `--guest-subnet` |
+| Flags nft | `--nft-egress-redirect` (por defecto activo con `--egress-proxy-listen`), `--nft-egress-mode=soft\|enforce` (por defecto `enforce`; ADR-0006), `--nft-http-ports`, `--nft-dns-action`, `--guest-subnet` |
 | Proxy listen | `--egress-proxy-listen`, `--egress-dns-sink`, `--egress-enforce` |
 | CP egress API | `PUT/GET /v1/tenants/{id}/egress`, `POST …/egress/check` |
 | Migración | `control-plane/migrations/003_tenant_egress.sql` |

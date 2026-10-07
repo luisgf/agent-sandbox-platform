@@ -85,12 +85,14 @@ type config struct {
 	APIKeyFile           string // --api-key-file: the node's API key for a control plane reached over plain HTTP
 	EgressMITM           bool
 	SSHAgentConfirm      bool
-	SSHGlobalApprovals   bool   // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
-	SSHAgentSockTemplate string // ASP_SSH_AGENT_SOCK_TEMPLATE
-	MultiUser            bool   // ASP_MULTI_USER=1 → confirm default-on + scoped SSH
-	EgressNFTRedirect    bool
-	NFTEgressMode        string // soft | enforce
-	NFTDNSAction         string // redirect | drop
+	SSHGlobalApprovals   bool    // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
+	SSHAgentSockTemplate string  // ASP_SSH_AGENT_SOCK_TEMPLATE
+	MultiUser            bool    // ASP_MULTI_USER=1 → confirm default-on + scoped SSH
+	EgressNFTRedirect    bool    // resolved by resolveEgress
+	egressNFTRedirect    optBool // --egress-nft-redirect as given (unset: on with an egress proxy)
+	EgressEnforced       bool    // reported on register: proxy listening and nft rules applied in enforce mode
+	NFTEgressMode        string  // soft | enforce ("": enforce, soft with --dry-run)
+	NFTDNSAction         string  // redirect | drop
 	NFTHTTPPorts         string
 	GuestSubnet          string
 	CapacityCPU          int    // --capacity-cpu: cores offered; -1 detect, 0 not enforced
@@ -376,10 +378,10 @@ func main() {
 			}
 		}
 		mode := nftredirect.ModeSoft
-		if strings.EqualFold(cfg.NFTEgressMode, "enforce") {
+		if cfg.NFTEgressMode == nftModeEnforce {
 			mode = nftredirect.ModeEnforce
 		}
-		if err := nftredirect.Apply(nftredirect.Config{
+		applied, err := nftredirect.ApplyChecked(nftredirect.Config{
 			GuestSubnet: cfg.GuestSubnet,
 			ProxyPort:   proxyPort,
 			DNSSinkPort: dnsSinkPort,
@@ -387,10 +389,15 @@ func main() {
 			DNSAction:   cfg.NFTDNSAction,
 			Mode:        mode,
 			Logger:      slog.Default(),
-		}); err != nil {
+		})
+		if err != nil {
 			slog.Error("egress-nft-redirect", "error", err, "mode", mode)
 			os.Exit(1)
 		}
+		cfg.EgressEnforced = egressEnforced(cfg, applied)
+	}
+	if !cfg.DryRun && cfg.Reconcile && !cfg.EgressEnforced {
+		slog.Warn("this node does not enforce egress: its guests are not forced through the egress proxy", "egress_proxy_listen", cfg.EgressProxyListen, "nft_redirect", cfg.EgressNFTRedirect, "nft_mode", cfg.NFTEgressMode)
 	}
 
 	// Per-sandbox SSH agent upstream registry (ADR-0007 phase 4).
@@ -769,9 +776,10 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.SSHGlobalApprovals, "insecure-ssh-agent-global-approvals", getenv("ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS", "") == "1", "with --ssh-agent-confirm, accept approvals without sandbox_id; they unlock one sign on listeners that cannot tell guests apart (--ssh-agent-bridge, global --host-vsock), from whichever guest asks first (lab only)")
 	flag.StringVar(&cfg.SSHAgentSockTemplate, "ssh-agent-sock-template", os.Getenv("ASP_SSH_AGENT_SOCK_TEMPLATE"), "per-sandbox SSH agent upstream path template ({owner_sub}/{sandbox_id}/{id}); missing → FakeAgent")
 	flag.BoolVar(&cfg.MultiUser, "multi-user", getenv("ASP_MULTI_USER", "") == "1" || getenv("ASP_IDP_REQUIRED", "") == "1", "multi-user profile: SSH confirm default-on + prefer scoped agent socks")
-	flag.BoolVar(&cfg.EgressNFTRedirect, "egress-nft-redirect", getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1" || getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1", "apply nftables guest HTTP+DNS redirect (see --nft-egress-mode)")
-	flag.BoolVar(&cfg.EgressNFTRedirect, "nft-egress-redirect", getenv("ASP_NFT_EGRESS_REDIRECT", "") == "1" || getenv("ASP_EGRESS_NFT_REDIRECT", "") == "1", "alias of --egress-nft-redirect (Fase 2e)")
-	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", "soft"), "nft redirect failure mode: soft (SoftFail) | enforce (fail hard)")
+	cfg.egressNFTRedirect = envOptBool("ASP_EGRESS_NFT_REDIRECT", "ASP_NFT_EGRESS_REDIRECT")
+	flag.Var(&cfg.egressNFTRedirect, "egress-nft-redirect", "force guest HTTP(S)+DNS through the egress proxy and sink with nftables and drop the rest. Default: on when --egress-proxy-listen is set and this is not --dry-run; --egress-nft-redirect=false turns it off (HTTP_PROXY is then voluntary)")
+	flag.Var(&cfg.egressNFTRedirect, "nft-egress-redirect", "alias of --egress-nft-redirect (Fase 2e)")
+	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", ""), "what a node that cannot apply the nft rules does: enforce (refuse to start; the default) or soft (start without egress enforcement; the default with --dry-run)")
 	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
 	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
 	flag.IntVar(&cfg.CapacityCPU, "capacity-cpu", getenvInt("ASP_CAPACITY_CPU", capacity.Detected), "CPU cores offered to sandboxes: -1 detects, 0 is not enforced (the control plane overcommits CPU)")
@@ -801,8 +809,9 @@ func loadConfig() config {
 			cfg.GuestSSHAgentAuto = true
 		}
 	}
-	if cfg.NFTEgressMode == "" {
-		cfg.NFTEgressMode = "soft"
+	if err := resolveEgress(&cfg); err != nil {
+		slog.Error("egress configuration", "error", err)
+		os.Exit(2)
 	}
 	if cfg.EnrollURL == "" {
 		cfg.EnrollURL = cfg.ControlPlaneURL
@@ -885,6 +894,7 @@ func registerRequest(cfg config) cpclient.RegisterRequest {
 		AcceptsWork:     &acceptsWork,
 		LocalNetDial:    cfg.LocalNetDial,
 		AgentInstanceID: cfg.InstanceID,
+		EgressEnforced:  cfg.EgressEnforced,
 	}
 }
 

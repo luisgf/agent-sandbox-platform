@@ -67,8 +67,8 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--insecure-ssh-agent-global-approvals` | `ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS=1` | con confirm, acepta approves sin `sandbox_id`; solo los usan `--ssh-agent-bridge` y el host-vsock global, para el primer guest que firme (solo lab) |
 | `--ssh-agent-sock-template` | `ASP_SSH_AGENT_SOCK_TEMPLATE` | path template por sandbox (`{owner_sub}`/`{sandbox_id}`); missing → FakeAgent |
 | `--multi-user` | `ASP_MULTI_USER=1` (o `ASP_IDP_REQUIRED=1`) | perfil multi-user: confirm default-on |
-| `--egress-nft-redirect` / `--nft-egress-redirect` | `ASP_EGRESS_NFT_REDIRECT` / `ASP_NFT_EGRESS_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect |
-| `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `soft` (default) \| `enforce` |
+| `--egress-nft-redirect` / `--nft-egress-redirect` | `ASP_EGRESS_NFT_REDIRECT` / `ASP_NFT_EGRESS_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect. **Default: activo** con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga (el proxy es voluntario y el agente lo avisa). Con redirect y `--nft-dns-action=redirect` el DNS sink arranca en `:5353` si no lo nombras. El script va dentro del binario (`ASP_NFT_SCRIPT` nombra uno propio) |
+| `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `enforce` (default: un nodo que no puede aplicar las reglas no arranca) \| `soft` (arranca sin forzar el egress, con aviso; default con `--dry-run`). El nodo informa `egress_enforced=true` al registrarse solo con el proxy escuchando y las reglas puestas en `enforce` |
 | `--nft-http-ports` | `ASP_NFT_HTTP_PORTS` | default `80,443` |
 | `--nft-dns-action` | `ASP_NFT_DNS_ACTION` | `redirect` (default) \| `drop` |
 | `--guest-ssh-agent-auto` | `ASP_GUEST_SSH_AGENT_AUTO` | default on with `--host-vsock` / bridge |

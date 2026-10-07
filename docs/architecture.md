@@ -167,8 +167,8 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 1. TAP `asp-{shortid}` con su propia /30 de `--guest-subnet` (TAP `.1`, guest `.2` vía `ip=` en la cmdline). El proxy identifica el sandbox por esa IP de origen.
 2. NAT MASQUERADE ops (`asp_nat`) — conectividad mínima hacia el proxy.
 3. Guest `HTTP_PROXY=http://<gateway>:8888`.
-4. `--nft-egress-redirect --nft-egress-mode=enforce` fuerza HTTP(S)+DNS por proxy/sink y descarta el resto: otros puertos, guest→guest, guest→servicios del host y orígenes falsificados.
-5. En CI: `--nft-egress-mode=soft` (SoftFail sin root).
+4. Con `--egress-proxy-listen` el nodo aplica por defecto el redirect nft en modo `enforce`: fuerza HTTP(S)+DNS por proxy/sink y descarta el resto (otros puertos, guest→guest, guest→servicios del host y orígenes falsificados), y un nodo que no puede aplicarlo no arranca. Informa `egress_enforced` al plano de control (`asp node list`, columna `EGRESS`).
+5. En CI y con `--dry-run`: modo `soft` (SoftFail sin root); `--nft-egress-mode=soft` lo pide en un nodo real, con aviso.
 
 **Atribución de flujos → humano (futuro):** hoy el proxy puede ver `X-ASP-Sandbox-ID` (forgeable) y no propaga `owner_sub`. Diseño en evaluación — [ADR-0008](adr/0008-network-flow-attribution.md), [`why-network-flow-attribution.md`](why-network-flow-attribution.md): lookup host-side (IP/TAP o `ct mark`) → `sandbox_id` → `owner_sub`; forced egress corporativo con identidad inyectada en el host. **No implementado.**
 
