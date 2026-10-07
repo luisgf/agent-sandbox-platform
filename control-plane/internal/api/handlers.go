@@ -185,6 +185,10 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	if !authorizeTenant(w, r, input.TenantID) {
 		return
 	}
+	if err := checkWorkspacePath(workspaceRoots(), input.TenantID, strings.TrimSpace(input.WorkspaceHostPath)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	input.OwnerSub = strings.TrimSpace(input.OwnerSub)
 	input.OwnerEmail = strings.TrimSpace(input.OwnerEmail)
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {

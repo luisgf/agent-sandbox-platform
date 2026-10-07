@@ -25,6 +25,8 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local (exec, egress-check, approve). Pide `Authorization: Bearer <token>` salvo `GET /healthz`; fuera de loopback no arranca |
 | `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | Fichero con el secreto de esa API. Se crea (0600) si no existe, con 32 bytes aleatorios. El plano de control del mismo host lee el mismo fichero (`ASP_AGENT_TOKEN_FILE`) y debe poder leerlo: si no corre como root, crea el fichero antes (`install -m 0640 -o root -g <grupo> …`). Defecto `/var/lib/asp/agent.token`, o `$TMPDIR/asp-agent.token` si ese directorio no es escribible (labs sin root; avisa en el log) |
 | `--insecure-agent-listen` | `ASP_INSECURE_AGENT_LISTEN=1` | permite `--agent-listen` fuera de loopback (solo lab) |
+| `--workspace-root` | `ASP_WORKSPACE_ROOTS` | Directorios (separados por comas) bajo los que puede vivir el workspace de una sandbox: debe estar dentro de `<raíz>/<tenant>/`, con los enlaces simbólicos resueltos. El path viene del spec de la sandbox, así que sin esto cualquiera que pueda crear una exportaría los discos y las claves del nodo. Defecto `/srv/asp/workspaces`; si no existe, ninguna sandbox puede tener workspace |
+| `--virtiofsd-sandbox` | `ASP_VIRTIOFSD_SANDBOX` | `--sandbox` de virtiofsd: `chroot` (lo confina al workspace), `namespace` o `none`. Defecto `chroot` si el agente es root, `none` si no |
 | `--capacity-cpu` | `ASP_CAPACITY_CPU` | `-1` = núcleos del host; `0` = no limita |
 | `--capacity-mem-mib` | `ASP_CAPACITY_MEM_MIB` | `-1` = `MemTotal − max(1 GiB, 10 %)`; `0` = no limita |
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |

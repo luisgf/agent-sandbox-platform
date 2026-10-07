@@ -395,10 +395,12 @@ func TestReapRemovesWhatEnsureRunningCreates(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "rootfs.img")
 	writeFile(t, base, "base")
 	fake := vmm.NewFakeVMM(nil)
+	roots, host := workspaceUnder(t, "acme")
 	wr := newWorkspaceRec(t, fake, sockDir, cpclient.Sandbox{
-		ID: leftID, State: "requested", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 128,
-		WorkspaceHostPath: t.TempDir(),
+		ID: leftID, TenantID: "acme", State: "requested", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 128,
+		WorkspaceHostPath: host,
 	})
+	wr.WorkspaceRoots = roots
 	wr.RootFSPath = base
 	wr.DiskDir = diskDir
 	wr.CloneDisk = func(_, dst string) error { return os.WriteFile(dst, []byte("copy"), 0o600) }

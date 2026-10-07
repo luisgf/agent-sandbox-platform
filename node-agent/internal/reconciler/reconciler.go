@@ -24,6 +24,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/workspace"
 )
 
 // GuestHostAcceptor registers per-sandbox CH/Firecracker hybrid guest→host
@@ -112,6 +113,12 @@ type Reconciler struct {
 	// Empty uses ASP_ATTEST_KEY (attest.SignNow).
 	Attest []*attest.Signer
 
+	// WorkspaceRoots are the directories a sandbox's workspace may live under
+	// (<root>/<tenant>/…). With none, no sandbox may have a workspace: the path
+	// comes from the sandbox spec and virtiofsd shares it with the guest.
+	WorkspaceRoots workspace.Roots
+	// VirtiofsdSandbox is virtiofsd's --sandbox mode (none, chroot, namespace).
+	VirtiofsdSandbox string
 	// VirtiofsdBin is the virtiofsd executable. Empty means "virtiofsd" on PATH.
 	// Used only when the sandbox spec has a workspace_host_path.
 	VirtiofsdBin string
@@ -966,12 +973,11 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 	if host == "" {
 		return "", nil, nil
 	}
-	info, err := os.Stat(host)
+	// The path is the caller's: it must be inside this tenant's directory under
+	// a workspace root, and what virtiofsd shares is the resolved path.
+	host, err := r.WorkspaceRoots.Resolve(sb.TenantID, host)
 	if err != nil {
-		return "", nil, fmt.Errorf("workspace host path: %w", err)
-	}
-	if !info.IsDir() {
-		return "", nil, fmt.Errorf("workspace host path %s is not a directory", host)
+		return "", nil, err
 	}
 	vsockDir := r.VsockDir
 	if vsockDir == "" {
@@ -989,6 +995,7 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 			Binary:     r.VirtiofsdBin,
 			SocketPath: sock,
 			SharedDir:  host,
+			Sandbox:    r.VirtiofsdSandbox,
 		})
 	}
 	if err != nil {

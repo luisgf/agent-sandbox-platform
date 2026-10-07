@@ -36,7 +36,9 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/workspace"
 )
 
 type config struct {
@@ -94,6 +96,8 @@ type config struct {
 	InstanceID           string // random per process; sent on every register
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
+	VirtiofsdSandbox     string // --virtiofsd-sandbox: none | chroot | namespace; "" = chroot as root, none otherwise
+	WorkspaceRoots       string // --workspace-root: where sandboxes' workspaces may live
 	DiskDir              string
 	StopGrace            time.Duration // --stop-grace
 	DiskMinFreeMiB       int           // --disk-min-free-mib: -1 twice the base image, 0 not checked
@@ -561,6 +565,17 @@ func main() {
 		rec.SSHRegistry = sshRegistry
 		rec.Attest = attestSigners(cfg, nodeCert)
 		rec.VirtiofsdBin = cfg.VirtiofsdBin
+		roots, err := workspace.ParseRoots(cfg.WorkspaceRoots)
+		if err != nil {
+			slog.Error("--workspace-root", "error", err)
+			os.Exit(2)
+		}
+		rec.WorkspaceRoots = roots
+		rec.VirtiofsdSandbox, err = virtiofsSandbox(cfg.VirtiofsdSandbox, os.Geteuid())
+		if err != nil {
+			slog.Error("--virtiofsd-sandbox", "error", err)
+			os.Exit(2)
+		}
 		if !cfg.DryRun {
 			// Never boot the shared image writable: every VM gets its own copy.
 			rec.DiskDir = cfg.DiskDir
@@ -657,6 +672,8 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHAPISocket, "ch-api-socket", os.Getenv("CH_API_SOCKET"), "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir")
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
+	flag.StringVar(&cfg.WorkspaceRoots, "workspace-root", getenv("ASP_WORKSPACE_ROOTS", workspace.DefaultRoot), "comma-separated directories a sandbox's workspace may live under: a workspace must be inside <root>/<tenant>/ (symbolic links resolved). The workspace path comes from the sandbox spec, so without this any caller could export the node's disks and keys; with no root that exists, no sandbox can have a workspace")
+	flag.StringVar(&cfg.VirtiofsdSandbox, "virtiofsd-sandbox", getenv("ASP_VIRTIOFSD_SANDBOX", ""), "virtiofsd --sandbox mode: chroot (confine the daemon to the workspace), namespace or none. Default chroot when running as root, none otherwise")
 	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
 	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")
 	flag.DurationVar(&cfg.StopGrace, "stop-grace", getenvDuration("ASP_STOP_GRACE", 15*time.Second), "a stop asks the guest to power off and waits up to this long for the VM to exit before stopping it hard (0: stop hard at once; ignored with --dry-run)")
@@ -1096,4 +1113,21 @@ func agentTokenFor(cfg config) (string, error) {
 	}
 	slog.Info("local API requires the agent token", "token_file", path)
 	return tok, nil
+}
+
+// virtiofsSandbox picks virtiofsd's --sandbox mode: the one asked for, or
+// chroot when the agent is root (it confines the daemon to the workspace) and
+// none when it is not, since chroot needs CAP_SYS_CHROOT.
+func virtiofsSandbox(mode string, euid int) (string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if !virtiofs.ValidSandbox(mode) {
+		return "", fmt.Errorf("%q: want chroot, namespace or none", mode)
+	}
+	if mode != "" {
+		return mode, nil
+	}
+	if euid == 0 {
+		return virtiofs.SandboxChroot, nil
+	}
+	return virtiofs.SandboxNone, nil
 }
