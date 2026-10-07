@@ -8,7 +8,7 @@ import (
 // The node-agent, the control plane and the CLI are separate modules, so each has its
 // own copy of this package: they must be the same files.
 func TestSameAsTheOtherBinaries(t *testing.T) {
-	for _, f := range []string{"envcfg.go", "envcfg_test.go"} {
+	for _, f := range []string{"envcfg.go", "envcfg_test.go", "file.go", "file_test.go"} {
 		mine, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

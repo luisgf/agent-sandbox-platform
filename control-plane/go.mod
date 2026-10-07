@@ -2,7 +2,10 @@ module github.com/luisgf/agent-sandbox-platform/control-plane
 
 go 1.25.0
 
-require github.com/jackc/pgx/v5 v5.11.0
+require (
+	github.com/jackc/pgx/v5 v5.11.0
+	go.yaml.in/yaml/v3 v3.0.5
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
