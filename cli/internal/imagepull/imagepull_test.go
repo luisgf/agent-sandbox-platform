@@ -434,3 +434,29 @@ func TestSparseWriterKeepsContentAndSize(t *testing.T) {
 		t.Fatalf("content differs (len %d vs %d)", len(got), len(want))
 	}
 }
+
+// A release can carry the root filesystem alone (the kernel is the operator's own).
+func TestPullAReleaseWithoutAKernel(t *testing.T) {
+	r := newRelease(t)
+	r.kernel = nil
+	r.manifest = []byte(fmt.Sprintf(`{"schema":1,"version":"1.0","rootfs":{"file":"rootfs.img","sha256":%q,"size":%d,"gzip":{"file":"rootfs.img.gz","sha256":%q,"size":%d}}}`,
+		hexSum(r.rootfs), len(r.rootfs), hexSum(r.rootfsGz), len(r.rootfsGz)))
+	r.sums = []byte(fmt.Sprintf("%s  rootfs.img\n%s  rootfs.img.gz\n%s  image.json\n", hexSum(r.rootfs), hexSum(r.rootfsGz), hexSum(r.manifest)))
+	srv, hits := serve(t, r, nil)
+	dir, link := t.TempDir(), filepath.Join(t.TempDir(), "sandbox")
+	o := opts(srv, dir)
+	o.LinkDir = link
+	res, err := Pull(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Kernel != "" || hits("vmlinux") != 0 {
+		t.Fatalf("a kernel was looked for: %+v, %d requests", res, hits("vmlinux"))
+	}
+	if _, err := os.Lstat(filepath.Join(link, "vmlinux")); err == nil {
+		t.Error("a kernel link was made for a release with none")
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(link, "rootfs.img")), r.rootfs) {
+		t.Error("the rootfs through the link is not the release's")
+	}
+}
