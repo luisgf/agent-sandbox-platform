@@ -77,7 +77,7 @@ func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince tim
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		FROM victims v WHERE s.id = v.id
 		RETURNING v.state, `+sandboxColumnsS,
-		nodeID, silentSince, now, reason, append(occupyingStateNames(), string(SandboxDeleting)))
+		nodeID, silentSince, now, reason, occupyingStateNames())
 	if err != nil {
 		return nil, err
 	}

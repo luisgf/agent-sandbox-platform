@@ -44,7 +44,7 @@ requested → starting → running → stopping → stopped ──start──▶
 
 - Un informe tardío del nodo no puede resucitar nada: de un nodo, `stopped` solo admite `stopped`; `deleting` solo admite `deleted` o `failed`; `deleted` es final; `deleted` solo se acepta viniendo de `deleting`.
 - La reanudación es una transición del **plano de control**, no un informe del nodo.
-- `deleting` **no ocupa capacidad** en el nodo pero **necesita acción del nodo**.
+- `deleting` **sigue ocupando capacidad** en el nodo hasta que este informa `deleted`, y **necesita acción del nodo**. Antes liberaba la CPU y la memoria al instante, aunque el nodo todavía tuviera la VM hasta el siguiente sondeo más el `--stop-grace`, y un create concurrente podía sobrecargar el nodo (#116). Costó una concesión: borrar una sandbox `stopped` (que no tiene VM) también retiene su tamaño el segundo que el nodo tarda en borrar el disco. `asp session start --force` espera a `deleted` antes de crear la nueva.
 - **Las filas nunca se borran.** `sandbox_events` cuelga de `sandboxes` con `ON DELETE CASCADE`: un `DELETE FROM` físico borraría la auditoría. `deleted` es un estado; `GET /v1/sandboxes` lo oculta salvo con `?include_deleted=1`.
 - Una sandbox `failed` se borra directamente (`deleted`): su VM ya no existe, y si quedó algún disco lo recoge el GC del nodo (apartado 5).
 

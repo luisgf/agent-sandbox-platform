@@ -354,7 +354,7 @@ func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	}
 	ctx := context.Background()
 	// What holds capacity, what is being deleted, and what a stop keeps.
-	states := append(occupyingStateNames(), string(SandboxDeleting), string(SandboxStopped))
+	states := append(occupyingStateNames(), string(SandboxStopped))
 	rows, err := p.pool.Query(ctx, `
 		SELECT `+sandboxColumns+`
 		FROM sandboxes

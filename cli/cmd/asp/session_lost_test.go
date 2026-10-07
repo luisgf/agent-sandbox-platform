@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -183,5 +184,61 @@ func TestStoppedTextSaysTheVMEndedOnItsOwn(t *testing.T) {
 	}
 	if sb.LostWithNode() || sb.StoppedByNodeEvent() {
 		t.Error("an exited VM is not a node event")
+	}
+}
+
+// A deleting sandbox holds its node capacity until the node reports it deleted, so
+// --force waits for that before it creates the new sandbox: otherwise the create
+// could be refused for the room the old one is about to free.
+func TestSessionStartForceWaitsForTheOldSandboxToBeGone(t *testing.T) {
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	var mu sync.Mutex
+	var calls []string
+	gets := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gets++
+		state := "running" // the guard before the delete
+		switch {
+		case gets > 1 && gets <= 3:
+			state = "deleting" // the node has not removed the VM yet
+		case gets > 3:
+			state = "deleted"
+		}
+		calls = append(calls, "GET:"+state)
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: r.PathValue("id"), State: state})
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, "DELETE")
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: r.PathValue("id"), State: "deleting"})
+	})
+	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, "CREATE")
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "new-1", State: "running", TenantID: "t"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("ASP_CP_URL", srv.URL)
+	sessFile := filepath.Join(t.TempDir(), "session.json")
+	if err := session.Save(sessFile, session.State{SandboxID: "old-1", CPURL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	if code := run([]string{"session", "start", "--force", "--session-file", sessFile, "--timeout", "5s"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	got := strings.Join(calls, ",")
+	if !strings.HasSuffix(got, "GET:deleted,CREATE") || !strings.Contains(got, "DELETE,GET:deleting") {
+		t.Fatalf("calls: %s", got)
 	}
 }
