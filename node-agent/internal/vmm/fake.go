@@ -15,6 +15,8 @@ type FakeVMM struct {
 	Calls   []string
 	Configs []MicroVMConfig
 	Running map[string]MicroVMConfig
+	// Adopted is what the VMs this process took over were adopted with.
+	Adopted map[string]AdoptedVM
 	Logger  *slog.Logger
 	onExit  func(id string, info ExitInfo)
 }
@@ -116,7 +118,7 @@ func (f *FakeVMM) Crash(id string, err error, lived time.Duration) bool {
 
 // Alive implements Adopter: a VM the test put in Running (a VM "an earlier agent
 // started") can be adopted.
-func (f *FakeVMM) Alive(_ context.Context, id string) error {
+func (f *FakeVMM) Alive(_ context.Context, id, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.Running[id]; !ok {
@@ -126,11 +128,17 @@ func (f *FakeVMM) Alive(_ context.Context, id string) error {
 }
 
 // Adopt implements Adopter: it records the adoption of a VM that is Running.
-func (f *FakeVMM) Adopt(ctx context.Context, id string, _ time.Time, _ string) error {
-	if err := f.Alive(ctx, id); err != nil {
+func (f *FakeVMM) Adopt(ctx context.Context, id string, vm AdoptedVM) error {
+	if err := f.Alive(ctx, id, vm.APISocket); err != nil {
 		return err
 	}
 	f.record("adopt:" + id)
+	f.mu.Lock()
+	if f.Adopted == nil {
+		f.Adopted = make(map[string]AdoptedVM)
+	}
+	f.Adopted[id] = vm
+	f.mu.Unlock()
 	return nil
 }
 

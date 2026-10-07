@@ -367,7 +367,7 @@ func TestReconcilerSkipsHybridWhenPodDaemonUnix(t *testing.T) {
 	rec := New(nil, "n1", vmm.NewFakeVMM(nil), nil, time.Hour)
 	rec.GuestHost = gh
 	rec.PodDaemonUnix = "/tmp/pod.sock"
-	if err := rec.attachGuestHost("sb", "/run/asp/vsock-sb.sock"); err != nil {
+	if err := rec.attachGuestHost("sb", "/run/asp/vsock-sb.sock", 0); err != nil {
 		t.Fatal(err)
 	}
 	gh.mu.Lock()

@@ -23,6 +23,10 @@ import (
 // them as node_agent_restarted when the new process registers, so whatever the
 // old process left belongs to nobody, and Reap removes it.
 type ReapConfig struct {
+	// RunDir is the directory of the VMs whose VMM runs as a user of its own
+	// (vmm.Unprivileged.RunDir): one directory per sandbox with its sockets. Empty
+	// when there are none.
+	RunDir string
 	// SocketDir is --ch-socket-dir. Cloud Hypervisor and virtiofsd processes
 	// are matched by the sockets they serve here, and the per-sandbox sockets
 	// and links are removed: ch-{id}.sock, vsock-{id}.sock and its
@@ -34,6 +38,10 @@ type ReapConfig struct {
 	// node-agent leaves it empty: it keeps the disks of stopped sandboxes
 	// (ADR-0012) and removes the ones nobody owns itself (Reconciler.gcDisks).
 	DiskDir string
+	// ReclaimDisks is a disk directory whose disks no VM holds any more: the ones
+	// still owned by the user a VMM ran as (the agent died with the VM running) are
+	// made root's again. Nothing is removed. Empty skips it.
+	ReclaimDisks string
 	// Keep are paths never removed even when named like a leftover: the base
 	// rootfs, the shared --ch-api-socket, the bridge and identity sockets.
 	Keep []string
@@ -67,7 +75,11 @@ type ReapReport struct {
 	Taps     []string
 	// Sockets are the sockets, links, and lock and pid files in SocketDir.
 	Sockets []string
+	// RunDirs are the directories of VMs that ran as users of their own.
+	RunDirs []string
 	Disks   []string
+	// Reclaimed are disks that were made root's again.
+	Reclaimed []string
 	// Err joins every leftover it could not list, stop or remove.
 	Err error
 }
@@ -122,7 +134,7 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 	// to such a socket is still the process's own and stays.
 	running := map[string]bool{}
 	if cfg.Procs != nil {
-		procs, err := orphanProcesses(cfg.Procs, socketDir, keep, spare)
+		procs, err := orphanProcesses(cfg.Procs, socketDir, cfg.RunDir, keep, spare)
 		fail("list processes", err)
 		stop := make([]hostproc.Proc, 0, len(procs))
 		for _, p := range procs {
@@ -205,6 +217,30 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 	}
 	rep.Sockets = socks
 
+	if cfg.RunDir != "" {
+		dirs, err := leftoverRunDirs(cfg.RunDir, keep, running, spare)
+		fail("list "+cfg.RunDir, err)
+		for _, d := range dirs {
+			log.Log(ctx, sockLevel, msg, "kind", "vm-dir", "path", d)
+			if !cfg.Report {
+				fail("remove "+d, os.RemoveAll(d))
+			}
+		}
+		rep.RunDirs = dirs
+	}
+
+	if cfg.ReclaimDisks != "" {
+		disks, err := disksOfAUser(cfg.ReclaimDisks, spare)
+		fail("list "+cfg.ReclaimDisks, err)
+		for _, p := range disks {
+			log.Info(msg, "kind", "rootfs-owner", "path", p)
+			if !cfg.Report {
+				fail("take back "+p, os.Lchown(p, 0, 0))
+			}
+		}
+		rep.Reclaimed = disks
+	}
+
 	if cfg.DiskDir != "" {
 		disks, err := leftoverDisks(cfg.DiskDir, keep, spare)
 		fail("list "+cfg.DiskDir, err)
@@ -224,13 +260,13 @@ func Reap(ctx context.Context, cfg ReapConfig) ReapReport {
 	}
 	log.Info(summary, "socket_dir", socketDir,
 		"processes", len(rep.Processes), "local_net", len(rep.LocalNet), "taps", len(rep.Taps),
-		"sockets", len(rep.Sockets), "disks", len(rep.Disks), "errors", rep.Err != nil)
+		"sockets", len(rep.Sockets), "vm_dirs", len(rep.RunDirs), "disks", len(rep.Disks), "disks_reclaimed", len(rep.Reclaimed), "errors", rep.Err != nil)
 	return rep
 }
 
 // orphanProcesses finds the Cloud Hypervisor and virtiofsd processes serving a
 // per-sandbox socket in socketDir. This process and Keep sockets are skipped.
-func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool, spare spareSet) ([]ReapedProcess, error) {
+func orphanProcesses(t hostproc.Table, socketDir, runDir string, keep map[string]bool, spare spareSet) ([]ReapedProcess, error) {
 	all, err := t.List()
 	if err != nil {
 		return nil, err
@@ -241,20 +277,28 @@ func orphanProcesses(t hostproc.Table, socketDir string, keep map[string]bool, s
 		if p.PID == self {
 			continue
 		}
-		if id, ok := vmm.SpawnedSandbox(p.Argv, socketDir); ok {
-			sock := filepath.Join(socketDir, vmm.APISocketName(id))
+		if id, sock, ok := vmm.SpawnedSocket(p.Argv, socketDir, runDir); ok {
 			if isSandboxID(id) && !keep[sock] && !spare.has(id) {
 				out = append(out, ReapedProcess{Proc: p, Kind: "cloud-hypervisor", SandboxID: id, Socket: sock})
 			}
 			continue
 		}
 		sock, ok := virtiofs.SocketPathOf(p.Argv)
-		if !ok || filepath.Clean(filepath.Dir(sock)) != filepath.Clean(socketDir) {
+		if !ok {
 			continue
 		}
-		if id, ok := between(filepath.Base(sock), virtiofsPrefix, ".sock"); ok && isSandboxID(id) && !spare.has(id) {
-			sock = filepath.Join(socketDir, filepath.Base(sock))
-			out = append(out, ReapedProcess{Proc: p, Kind: "virtiofsd", SandboxID: id, Socket: sock})
+		sock = filepath.Clean(sock)
+		dir := filepath.Dir(sock)
+		if dir == filepath.Clean(socketDir) {
+			if id, ok := between(filepath.Base(sock), virtiofsPrefix, ".sock"); ok && isSandboxID(id) && !spare.has(id) {
+				out = append(out, ReapedProcess{Proc: p, Kind: "virtiofsd", SandboxID: id, Socket: sock})
+			}
+			continue
+		}
+		if runDir != "" && filepath.Base(sock) == vmm.RunFSSocket && filepath.Dir(dir) == filepath.Clean(runDir) {
+			if id := filepath.Base(dir); isSandboxID(id) && !spare.has(id) {
+				out = append(out, ReapedProcess{Proc: p, Kind: "virtiofsd", SandboxID: id, Socket: sock})
+			}
 		}
 	}
 	return out, nil
@@ -316,6 +360,52 @@ func leftoverSockets(socketDir string, keep, running map[string]bool, spare spar
 			}
 		}
 		out = append(out, path)
+	}
+	return out, nil
+}
+
+// leftoverRunDirs lists the directories of VMs that ran as users of their own:
+// one per sandbox, named by its id. A directory stays when it is kept, when its
+// sandbox is adopted, or when its VMM outlived the kill (running).
+func leftoverRunDirs(runDir string, keep, running map[string]bool, spare spareSet) ([]string, error) {
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		path := filepath.Join(runDir, e.Name())
+		if !e.IsDir() || !isSandboxID(e.Name()) || keep[path] || spare.has(e.Name()) {
+			continue
+		}
+		if running[filepath.Join(path, vmm.RunAPISocket)] || running[filepath.Join(path, vmm.RunFSSocket)] {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out, nil
+}
+
+// disksOfAUser lists the rootfs copies in diskDir that a user other than root
+// owns, except those of sandboxes whose VM is adopted: those are in use.
+func disksOfAUser(diskDir string, spare spareSet) ([]string, error) {
+	entries, err := os.ReadDir(diskDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		id, ok := between(e.Name(), rootfsPrefix, ".img")
+		if !ok || !isSandboxID(id) || spare.has(id) {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if uid, ok := fileUID(fi); ok && uid != 0 {
+			out = append(out, filepath.Join(diskDir, e.Name()))
+		}
 	}
 	return out, nil
 }

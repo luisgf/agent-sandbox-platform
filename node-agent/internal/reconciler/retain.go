@@ -102,6 +102,9 @@ func (r *Reconciler) rootFSFor(sb cpclient.Sandbox) (path, baseDigest string, re
 	if err := r.checkDiskSpace(); err != nil {
 		return "", "", sb.BootCount > 1, err
 	}
+	if err := r.prepareDiskDir(); err != nil {
+		return "", "", sb.BootCount > 1, err
+	}
 	dst := filepath.Join(r.DiskDir, rootfsName(sb.ID))
 	fi, statErr := os.Stat(dst)
 	have := statErr == nil && fi.Mode().IsRegular()

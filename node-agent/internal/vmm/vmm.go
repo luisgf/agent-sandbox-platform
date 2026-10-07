@@ -44,6 +44,10 @@ type MicroVMConfig struct {
 	// console on, which the agent reads into a bounded buffer (Console). Empty
 	// leaves the console alone, as before.
 	SerialSocket string
+	// RunDir is the directory of this VM when its VMM runs as a user of its own
+	// (Confinement.Unprivileged): the one place that user can write, and where its
+	// API socket is. Empty keeps the sockets in the node's socket directory.
+	RunDir string
 }
 
 // MicroVM is the lifecycle interface used by the node-agent reconciler.

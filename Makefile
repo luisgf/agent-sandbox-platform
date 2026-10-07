@@ -1,4 +1,4 @@
-.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-proxy smoke-asp smoke-asp-auth asp build pack clean help
+.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm smoke-proxy smoke-asp smoke-asp-auth asp build pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
@@ -7,7 +7,7 @@ GO_MODULES := control-plane node-agent cli images/guest/cmd/vsock-ssh-agent-prox
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
 
 help:
-	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-asp | smoke-asp-auth | asp | build | pack | clean"
+	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | smoke-asp | smoke-asp-auth | asp | build | pack | clean"
 
 test: test-go test-rust test-guest-helper
 
@@ -43,6 +43,9 @@ smoke-multi-node:
 # Needs root, KVM and a guest image (ASP_SMOKE_ROOTFS); see the script.
 smoke-egress-kvm:
 	$(ROOT)scripts/smoke-egress-kvm.sh
+
+smoke-vmm-user-kvm:
+	$(ROOT)scripts/smoke-vmm-user-kvm.sh
 
 smoke-proxy:
 	$(ROOT)scripts/smoke-egress-proxy.sh

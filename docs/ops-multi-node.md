@@ -87,6 +87,8 @@ El bootstrap token compartido (`--bootstrap-token`, `ASP_NODE_BOOTSTRAP_TOKEN`) 
 
 En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)): los mismos ajustes van en `/etc/asp/node-agent.env` como variables de entorno. Un solo node-agent por servidor.
 
+El agente corre cada `cloud-hypervisor` como un usuario sin privilegios propio ([bare-metal §5.7](bare-metal-ch.md#57-el-vmm-sin-privilegios-un-usuario-por-vm)); necesita `setpriv`, y el kernel y el binario del hipervisor legibles por todos. Al arrancar lo comprueba y, si el host no puede, lo dice en el log (`microVMs run as root: …`) y los deja como root: míralo en el primer arranque de cada nodo (`journalctl -u asp-node-agent | grep -i unprivileged`).
+
 Después, desde un puesto con rol admin u operador:
 
 ```bash

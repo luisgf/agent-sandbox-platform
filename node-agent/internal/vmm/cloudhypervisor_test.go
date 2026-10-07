@@ -447,7 +447,7 @@ func TestSpawnedSandboxMatchesWhatStartRuns(t *testing.T) {
 	s := runner.starts[0]
 	runner.mu.Unlock()
 	argv := append([]string{s.Name}, s.Args...)
-	if got, ok := SpawnedSandbox(argv, dir); !ok || got != id {
+	if got, ok := SpawnedSandbox(argv, dir, ""); !ok || got != id {
 		t.Fatalf("SpawnedSandbox(%q) = %q %v, want %s", argv, got, ok, id)
 	}
 	sock := ch.SocketPath(id)
@@ -467,7 +467,7 @@ func TestSpawnedSandboxMatchesWhatStartRuns(t *testing.T) {
 		{[]string{"curl", "--unix-socket", sock, "http://localhost/api/v1/vmm.ping"}, false},
 		{[]string{"cloud-hypervisor"}, false},
 	} {
-		if _, ok := SpawnedSandbox(tc.argv, dir); ok != tc.want {
+		if _, ok := SpawnedSandbox(tc.argv, dir, ""); ok != tc.want {
 			t.Errorf("SpawnedSandbox(%q) = %v, want %v", tc.argv, ok, tc.want)
 		}
 	}

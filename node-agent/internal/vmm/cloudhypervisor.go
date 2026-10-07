@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -135,13 +136,21 @@ func ParseAPISocketName(name string) (string, bool) {
 
 // SpawnedSandbox reports which sandbox a cloud-hypervisor process serves when
 // a per-sandbox CloudHypervisor with this socketDir started it: its argv names
-// --api-socket socketDir/ch-{id}.sock. The node-agent reaper uses it to find
-// VMs a previous agent process left running. A CH on any other socket (the
+// --api-socket socketDir/ch-{id}.sock, or runDir/{id}/api.sock when the VMM runs
+// as a user of its own (runDir is empty otherwise). The node-agent reaper uses it
+// to find VMs a previous agent process left running. A CH on any other socket (the
 // shared --ch-api-socket, another agent's directory) does not match.
-func SpawnedSandbox(argv []string, socketDir string) (string, bool) {
+func SpawnedSandbox(argv []string, socketDir, runDir string) (string, bool) {
+	id, _, ok := SpawnedSocket(argv, socketDir, runDir)
+	return id, ok
+}
+
+// SpawnedSocket is SpawnedSandbox, and also says which API socket the process
+// serves.
+func SpawnedSocket(argv []string, socketDir, runDir string) (id, socket string, ok bool) {
 	sock, ok := hostproc.FlagValue(argv, "--api-socket")
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	// Newer Cloud Hypervisor also takes "path=<socket>[,...]".
 	if p, ok := strings.CutPrefix(sock, "path="); ok {
@@ -150,14 +159,28 @@ func SpawnedSandbox(argv []string, socketDir string) (string, bool) {
 	if socketDir == "" {
 		socketDir = defaultCHSocketDir
 	}
-	if filepath.Clean(filepath.Dir(sock)) != filepath.Clean(socketDir) {
-		return "", false
+	sock = filepath.Clean(sock)
+	dir := filepath.Dir(sock)
+	if dir == filepath.Clean(socketDir) {
+		id, ok := ParseAPISocketName(filepath.Base(sock))
+		return id, sock, ok
 	}
-	return ParseAPISocketName(filepath.Base(sock))
+	if runDir != "" && filepath.Base(sock) == RunAPISocket && filepath.Dir(dir) == filepath.Clean(runDir) {
+		return filepath.Base(dir), sock, true
+	}
+	return "", "", false
 }
 
 func (c *CloudHypervisor) sharedMode() bool {
 	return c.APISocket != ""
+}
+
+// unprivileged is how the VMMs of this driver run as users of their own, or nil.
+func (c *CloudHypervisor) unprivileged() *Unprivileged {
+	if c.Confine == nil {
+		return nil
+	}
+	return c.Confine.Unprivileged
 }
 
 func (c *CloudHypervisor) logger() *slog.Logger {
@@ -427,6 +450,13 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 		return fmt.Errorf("mkdir socket dir: %w", err)
 	}
 	sock := filepath.Join(socketDir, APISocketName(config.ID))
+	unpriv := c.unprivileged()
+	if unpriv != nil {
+		if config.RunDir == "" || config.VsockCID == 0 {
+			return fmt.Errorf("a VMM that runs as a user of its own needs the directory and the CID of its VM")
+		}
+		sock = filepath.Join(config.RunDir, RunAPISocket)
+	}
 	_ = os.Remove(sock) // drop stale socket
 
 	binary := c.BinaryPath
@@ -439,7 +469,15 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 	var proc Process
 	var err error
 	if c.Confine != nil {
-		proc, err = c.Confine.Launcher.Start(c.Confine.Spec(config.ID, config), binary, args...)
+		name := binary
+		if unpriv != nil {
+			// setpriv looks the command up in the unit's PATH, not the agent's.
+			if p, err := exec.LookPath(binary); err == nil {
+				binary = p
+			}
+			name, args = unpriv.Wrap(config.VsockCID, binary, args...)
+		}
+		proc, err = c.Confine.Launcher.Start(c.Confine.Spec(config.ID, config), name, args...)
 	} else {
 		proc, err = c.runner().Start(binary, args...)
 	}
@@ -813,16 +851,27 @@ func (c *CloudHypervisor) watch(id string, inst *chInstance) {
 // started and that kept running: its service is not bound to the agent's.
 type Adopter interface {
 	// Alive says, as an error, why the VM of sandbox id cannot be taken over: its
-	// service is not active, or its API does not answer, or the VM is not running.
-	Alive(ctx context.Context, id string) error
+	// service is not active, or its API (apiSocket, "" for the node's socket
+	// directory) does not answer, or the VM is not running.
+	Alive(ctx context.Context, id, apiSocket string) error
 	// Adopt takes the VM over: from now on it is supervised and reported as if
-	// this process had started it. bootedAt is when it was booted, serialSocket
-	// the socket its console is served on ("" for none).
-	Adopt(ctx context.Context, id string, bootedAt time.Time, serialSocket string) error
+	// this process had started it.
+	Adopt(ctx context.Context, id string, vm AdoptedVM) error
+}
+
+// AdoptedVM is what an agent needs to know about a VM it did not start.
+type AdoptedVM struct {
+	// APISocket is where the VMM serves its API. Empty is the socket of that
+	// sandbox in the node's socket directory.
+	APISocket string
+	// SerialSocket is the socket its console is served on ("" for none).
+	SerialSocket string
+	// BootedAt is when it was booted.
+	BootedAt time.Time
 }
 
 // Alive implements Adopter.
-func (c *CloudHypervisor) Alive(ctx context.Context, id string) error {
+func (c *CloudHypervisor) Alive(ctx context.Context, id, apiSocket string) error {
 	if c.sharedMode() {
 		return errors.New("a shared Cloud Hypervisor runs one VM and is not adopted")
 	}
@@ -832,7 +881,10 @@ func (c *CloudHypervisor) Alive(ctx context.Context, id string) error {
 	if !c.Confine.Launcher.Active(UnitName(id)) {
 		return fmt.Errorf("its service %s.service is not active", UnitName(id))
 	}
-	state, err := c.vmState(ctx, unixHTTPClient(c.apiSocketPath(id)))
+	if apiSocket == "" {
+		apiSocket = c.apiSocketPath(id)
+	}
+	state, err := c.vmState(ctx, unixHTTPClient(apiSocket))
 	if err != nil {
 		return fmt.Errorf("its API does not answer: %w", err)
 	}
@@ -843,8 +895,8 @@ func (c *CloudHypervisor) Alive(ctx context.Context, id string) error {
 }
 
 // Adopt implements Adopter.
-func (c *CloudHypervisor) Adopt(ctx context.Context, id string, bootedAt time.Time, serialSocket string) error {
-	if err := c.Alive(ctx, id); err != nil {
+func (c *CloudHypervisor) Adopt(ctx context.Context, id string, vm AdoptedVM) error {
+	if err := c.Alive(ctx, id, vm.APISocket); err != nil {
 		return err
 	}
 	c.mu.Lock()
@@ -857,7 +909,11 @@ func (c *CloudHypervisor) Adopt(ctx context.Context, id string, bootedAt time.Ti
 	}
 	c.mu.Unlock()
 
-	sock := c.apiSocketPath(id)
+	sock := vm.APISocket
+	if sock == "" {
+		sock = c.apiSocketPath(id)
+	}
+	serialSocket, bootedAt := vm.SerialSocket, vm.BootedAt
 	var console *Console
 	if serialSocket != "" {
 		// CH serves its serial port on this socket; a client that connects reads the

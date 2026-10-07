@@ -50,6 +50,9 @@ Environment=ASP_EGRESS_PROXY_LISTEN=:8888
 Environment=ASP_EGRESS_DNS_SINK=:5353
 EnvironmentFile=/etc/asp/node-agent.env
 ExecStart=/usr/local/bin/node-agent
+# Each Cloud Hypervisor also runs as an unprivileged user of its own, without any
+# capability (--vm-unprivileged, ADR-0015): the kernel and the hypervisor binary must be
+# readable by everybody, and the agent says at start if the host cannot do it.
 # With --vm-confine (the default on a host with systemd) each VM runs in a unit of
 # its own (asp-vm-<id>.service in asp-vms.slice) that is NOT bound to this service:
 # restarting, upgrading or crashing the agent leaves the VMs running and the new

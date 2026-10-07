@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -133,6 +134,14 @@ func (m *Manager) Create(name string) error {
 
 // CreateWithCIDR brings up a TAP with hostCIDR on it (empty = HostCIDR).
 func (m *Manager) CreateWithCIDR(name, hostCIDR string) error {
+	return m.CreateOwned(name, hostCIDR, nil)
+}
+
+// CreateOwned brings up a TAP that the user with id *owner can open without any
+// privilege: a VMM running as that user attaches to it (TUNSETIFF checks the
+// owner of a persistent device). A nil owner leaves the device to root, as
+// CreateWithCIDR does.
+func (m *Manager) CreateOwned(name, hostCIDR string, owner *uint32) error {
 	if hostCIDR == "" {
 		hostCIDR = m.cidr()
 	}
@@ -150,11 +159,15 @@ func (m *Manager) CreateWithCIDR(name, hostCIDR string) error {
 		return err
 	}
 	r := m.runner()
+	add := []string{"tuntap", "add", "dev", name, "mode", "tap"}
+	if owner != nil {
+		add = append(add, "user", strconv.FormatUint(uint64(*owner), 10))
+	}
 	steps := []struct {
 		bin  string
 		args []string
 	}{
-		{"ip", []string{"tuntap", "add", "dev", name, "mode", "tap"}},
+		{"ip", add},
 		{"ip", []string{"link", "set", name, "up"}},
 		{"ip", []string{"addr", "add", hostCIDR, "dev", name}},
 	}

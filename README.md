@@ -524,6 +524,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes, capacity placement |
 | [0012](docs/adr/0012-retained-disks.md) | Stop is not delete: a sandbox's disk survives a stop, bounded by a TTL |
 | [0014](docs/adr/0014-vms-outlive-the-agent.md) | VMs outlive the node-agent: a restart leaves them running and the next process adopts them |
+| [0015](docs/adr/0015-unprivileged-vmm.md) | The VMM runs as an unprivileged user of its own, one per VM |
 
 Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 

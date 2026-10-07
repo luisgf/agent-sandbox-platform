@@ -230,7 +230,7 @@ func TestAdoptableIDsAreTheRecordsWithALiveVM(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	alive := func(_ context.Context, id string) error {
+	alive := func(_ context.Context, id, _ string) error {
 		if id == idB {
 			return errors.New("its service is not active")
 		}

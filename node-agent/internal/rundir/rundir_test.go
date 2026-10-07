@@ -80,3 +80,50 @@ func TestEnsureRefusesAFile(t *testing.T) {
 		t.Fatal("a regular file is not a socket directory")
 	}
 }
+
+func TestEnsureSearchableLetsOthersThroughButNotIn(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run", "asp-vm")
+	if err := EnsureSearchable(dir); err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(t, dir); m != SearchableMode {
+		t.Fatalf("new dir mode = %o, want 711", m)
+	}
+	// An existing directory that others can list, or that they cannot enter, is
+	// brought to the same mode.
+	for _, before := range []os.FileMode{0o755, 0o700, 0o750} {
+		d := filepath.Join(t.TempDir(), "d")
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, before); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureSearchable(d); err != nil {
+			t.Fatal(err)
+		}
+		if m := mode(t, d); m != SearchableMode {
+			t.Fatalf("mode %o became %o, want 711", before, m)
+		}
+	}
+	// Shared directories are not ours to restrict, and they let everyone through.
+	for _, d := range []string{"/", "/tmp", os.TempDir()} {
+		if _, err := os.Stat(d); err != nil {
+			continue
+		}
+		before := mode(t, d)
+		if err := EnsureSearchable(d); err != nil {
+			t.Fatalf("EnsureSearchable(%s): %v", d, err)
+		}
+		if after := mode(t, d); after != before {
+			t.Fatalf("EnsureSearchable(%s) changed its mode from %o to %o", d, before, after)
+		}
+	}
+	f := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(f, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSearchable(f); err == nil {
+		t.Fatal("a regular file is not a directory to search")
+	}
+}
