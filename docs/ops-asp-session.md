@@ -23,7 +23,7 @@ El contrato del agente es **una sesión con nombre**: un JSON local (id + URL de
 
 | Pieza | Comportamiento |
 |---|---|
-| `asp session start --name NOMBRE` | Mismos flags de create que `sandbox run` (`--tenant`, `--image`, `--cpu-millis`, `--memory-mib`, `--node-id`, `--vmm-profile`, `--timeout`, `--cp-url`, auth) más `--workspace`. Espera `running`. Escribe `NOMBRE.json`. Imprime **solo el id** en stdout. Nombre omitido = `default`. |
+| `asp session start --name NOMBRE` | Mismos flags de create que `sandbox run` (`--tenant`, `--image`, `--cpu-millis`, `--memory-mib`, `--node-id`, `--vmm-profile`, `--timeout`, `--control-plane-url`, auth) más `--workspace`. Espera `running`. Escribe `NOMBRE.json`. Imprime **solo el id** en stdout. Nombre omitido = `default`. |
 | Estado local | Directorio `~/.cache/asp/sessions/` (o `ASP_SESSION_DIR` / `--session-dir`), modo `0700`. Un fichero por nombre, `0600`: `<nombre>.json`. Campos: `name`, `sandbox_id`, `cp_url`, `tenant_id`, `image_ref`, `workspace`, `created_at`. **Sin** token ni API key. |
 | Fichero explícito | `--session-file` o `ASP_SESSION_FILE` sigue eligiendo **un** path y no usa `--name`. Sirve para tests y para migrar el `session.json` viejo. El default ya no es `~/.cache/asp/session.json`. |
 | `asp session exec --name` | Mismo id. Por defecto **stream NDJSON**: stdout/stderr se imprimen al llegar. Exit code del proceso = `exit_code` del evento `exit`. `--cmd '…'` **o** `-- argv…`. `--buffered` o `--json` piden el JSON acumulado de siempre (smokes). Solo un sandbox `running` acepta exec: en `requested`/`starting` el CP responde 409 (`sandbox is starting; wait until it is running`) sin llamar al nodo, y también 409 si el node-agent ya no tiene la VM. |
@@ -106,8 +106,8 @@ Lo que no arregla el kit:
 Secuencia de operador / agente:
 
 ```bash
-export ASP_CP_URL=http://127.0.0.1:8080   # dry-run local; lab: http://127.0.0.1:18112
-# lab IdP: export ASP_IDP_REQUIRED=1  y secretos en ~/.secrets/ (ver ops-asp-agent-runner.md)
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:8080   # dry-run local; lab: http://127.0.0.1:18112
+# lab IdP: export ASP_REQUIRE_TOKEN=1  y secretos en ~/.secrets/ (ver ops-asp-agent-runner.md)
 asp session start --name opencode --workspace /ruta/absoluta/del/repo \
   --tenant=tenant-demo --timeout=120s
 # el plano de control elige un nodo con hueco; --node-id=… lo fija
@@ -170,7 +170,7 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 | `ASP_SESSION_FILE` / `--session-file` | Path de un solo JSON. Si está, **ignora** el nombre para elegir fichero. Ya no es el default. |
 | `--workspace` | Solo `start`. Directorio absoluto. El nodo lo exporta con virtiofsd si el binario existe. La imagen nueva monta el tag al boot; la vieja, a mano. |
 | `--buffered` | Solo `exec`. JSON acumulado, sin PTY y sin stream. Un stdin que no sea TTY se manda en el campo `stdin` (hasta 1 MiB). |
-| `ASP_CP_URL` / `--cp-url` | En `start`, la URL que se guarda. En `exec`/`status`/`stop`, si **no** pasas `--cp-url`, se usa la URL guardada. |
+| `ASP_CONTROL_PLANE_URL` / `--control-plane-url` | En `start`, la URL que se guarda. En `exec`/`status`/`stop`, si **no** pasas `--control-plane-url`, se usa la URL guardada. |
 | Resto `ASP_IDP_*`, `ASP_ID_TOKEN`, `ASP_API_KEY` | Igual que [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). |
 | `--force` | Solo `start`. Destruye el id anotado en ese nombre (404 = ya no está) y crea otro. |
 | `--local` | Solo `stop`. No llama al CP. |
@@ -199,11 +199,11 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 | `node pin rejected: …` en start (409) | `--node-id` apunta a un nodo desconocido, caído, revocado o en cordon. Quita el pin o revisa ese nodo. |
 | `lost_with_node=true` / `sandbox was lost with its node` | Estaba `failed` porque su nodo dejó de dar señales (`node_lost`): el disco vivía en ese servidor, `asp session start --force --name …`. |
 | `was stopped when the node agent restarted` / `…when its node stopped responding` | Es una sandbox `stopped` (`node_agent_restarted`, o `node_lost` si se estaba parando): su VM murió (con el agente, o mientras estaba parado: un reinicio normal del agente **no** la para, la adopta) pero **el disco se conserva** en el nodo. `asp session resume` (cuando el nodo vuelva, si es `node_lost`). `start --force` la borraría: pide `--yes` a propósito. |
-| exec 401 | Token caducado o `ASP_IDP_REQUIRED` sin secretos. `asp auth status`. |
+| exec 401 | Token caducado o `ASP_REQUIRE_TOKEN` sin secretos. `asp auth status`. |
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
 | `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. El fin del stream no refresca la actividad (su tiempo abierto sí la refrescó). |
 | `state file kept` | `DELETE` falló (no 404). El JSON sigue para reintentar `rm`. |
-| El guest no ve `/workspace` | Imagen nueva: `systemctl status workspace-virtiofs` en el guest. Si el tag no estaba, la unidad sale 0 y no hay mount (sandbox sin workspace, o `virtiofsd` no arrancó). Imagen vieja, sin esa unidad: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `VIRTIOFSD_BIN`). |
+| El guest no ve `/workspace` | Imagen nueva: `systemctl status workspace-virtiofs` en el guest. Si el tag no estaba, la unidad sale 0 y no hay mount (sandbox sin workspace, o `virtiofsd` no arrancó). Imagen vieja, sin esa unidad: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `ASP_VIRTIOFSD_BIN`). |
 | Salida de golpe al final | `--buffered`, `--json`, o un pod-daemon que no habla `?stream=1` (el node-agent emite un burst). |
 
 
@@ -217,7 +217,7 @@ El spec `workspace_host_path` sin daemon era una etiqueta: el guest no veía el 
 
 | Pieza | Comportamiento |
 |---|---|
-| `virtiofsd` por sandbox | Solo si `workspace_host_path` no está vacío. Socket `virtiofs-{id}.sock` bajo el directorio de sockets del nodo (`--ch-socket-dir`, default `/run/asp`). Argumentos: `--socket-path`, `--shared-dir`, `--cache never`, `--sandbox none`. Binario: `--virtiofsd-bin` o `VIRTIOFSD_BIN` (default `virtiofsd`, CLI Rust). |
+| `virtiofsd` por sandbox | Solo si `workspace_host_path` no está vacío. Socket `virtiofs-{id}.sock` bajo el directorio de sockets del nodo (`--ch-socket-dir`, default `/run/asp`). Argumentos: `--socket-path`, `--shared-dir`, `--cache never`, `--sandbox none`. Binario: `--virtiofsd-bin` o `ASP_VIRTIOFSD_BIN` (default `virtiofsd`, CLI Rust). |
 | `vm.create` | `fs: [{ "tag": "workspace", "socket": "…" }]`. Sin workspace, o con socket vacío, el campo `fs` no va en el JSON. |
 | Fallo cerrado | Workspace pedido y `virtiofsd` ausente, o el directorio no existe en **el nodo**: el sandbox pasa a `failed` y no se llama al VMM. Sin workspace, no se busca el binario. |
 | Mount del guest | Automático en la imagen de este corte: `workspace-virtiofs.service` ejecuta `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`. Si el tag no está, el helper sale 0 y el boot sigue. Imágenes ya desplegadas (p. ej. la de ncc1701d) **no** lo hacen hasta reconstruir el rootfs; ahí sigue valiendo el comando a mano. |

@@ -22,30 +22,12 @@ func TestOptBoolFlag(t *testing.T) {
 	if err := fs.Parse([]string{"-r=maybe"}); err == nil {
 		t.Fatal("a non-bool value was accepted")
 	}
-}
-
-func TestEnvOptBool(t *testing.T) {
-	for _, k := range []string{"ASP_T_A", "ASP_T_B"} {
-		t.Setenv(k, "")
-	}
-	if got := envOptBool("ASP_T_A", "ASP_T_B"); got.set {
-		t.Fatalf("nothing set: %+v", got)
-	}
-	for v, want := range map[string]optBool{
-		"1": {true, true}, "true": {true, true}, "YES": {true, true}, "on": {true, true},
-		"0": {true, false}, "false": {true, false}, "No": {true, false}, "off": {true, false},
-		"auto": {}, "2": {},
-	} {
-		t.Setenv("ASP_T_B", v)
-		if got := envOptBool("ASP_T_A", "ASP_T_B"); got != want {
-			t.Errorf("ASP_T_B=%q: %+v, want %+v", v, got, want)
+	// The spellings of every other boolean of the node-agent.
+	for in, want := range map[string]bool{"yes": true, "on": true, "no": false, "off": false} {
+		b = optBool{}
+		if err := fs.Parse([]string{"-r=" + in}); err != nil || !b.set || b.value != want {
+			t.Fatalf("-r=%s: %+v %v", in, b, err)
 		}
-	}
-	// The first key that is set wins.
-	t.Setenv("ASP_T_A", "0")
-	t.Setenv("ASP_T_B", "1")
-	if got := envOptBool("ASP_T_A", "ASP_T_B"); !got.set || got.value {
-		t.Fatalf("first key: %+v", got)
 	}
 }
 

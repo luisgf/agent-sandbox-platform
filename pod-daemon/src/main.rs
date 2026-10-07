@@ -112,26 +112,27 @@ struct Args {
     #[arg(long, default_value = "/run/agent-sandbox/ssh-agent.sock")]
     ssh_auth_socket: PathBuf,
 
-    /// Guest Unix socket for POST /v1/tokens/oidc requests (aud only).
-    /// Prefer dialing host vsock CID (ASP_HOST_CID, default 2) port 26502 in productive mode.
-    #[arg(long, default_value = "/run/agent-sandbox/identity.sock")]
-    identity_socket: PathBuf,
+    /// Deprecated, no effect: it was only printed at start-up. The guest reaches the
+    /// identity service over vsock (ASP_HOST_CID, port 26502).
+    #[arg(long, hide = true)]
+    identity_socket: Option<PathBuf>,
 
-    /// Expected path of a host-forwarded SSH agent socket (virtiofs or socat→vsock:26501).
-    /// Alias of --ssh-auth-socket for operators; does not create the socket itself.
-    #[arg(long)]
+    /// Deprecated alias of --ssh-auth-socket.
+    #[arg(long, hide = true)]
     ssh_auth_sock: Option<PathBuf>,
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let host_cid = std::env::var("ASP_HOST_CID").unwrap_or_else(|_| "2".into());
-    if let Some(ref sock) = args.ssh_auth_sock {
-        // Operators may pass --ssh-auth-sock as the expected forwarded path.
-        let _ = sock;
+    if args.identity_socket.is_some() {
+        eprintln!("pod-daemon: --identity-socket is deprecated and has no effect: the guest reaches the identity service over vsock (ASP_HOST_CID, port 26502)");
+    }
+    if args.ssh_auth_sock.is_some() {
+        eprintln!("pod-daemon: --ssh-auth-sock is deprecated: use --ssh-auth-socket");
     }
     println!(
-        "pod-daemon v{} starting: transport={:?}, vsock_port={}, tcp_addr={}, exec_timeout_secs={}, stream_idle_timeout_secs={}, ssh_auth_bridge={}, identity_socket={}, asp_host_cid={}",
+        "pod-daemon v{} starting: transport={:?}, vsock_port={}, tcp_addr={}, exec_timeout_secs={}, stream_idle_timeout_secs={}, ssh_auth_bridge={}, asp_host_cid={}",
         env!("CARGO_PKG_VERSION"),
         args.listen,
         args.vsock_port,
@@ -139,7 +140,6 @@ fn main() -> io::Result<()> {
         args.exec_timeout_secs,
         args.stream_idle_timeout_secs,
         args.ssh_auth_bridge,
-        args.identity_socket.display(),
         host_cid
     );
 
@@ -260,5 +260,23 @@ mod tests {
         assert_eq!(exec_user_flag(" dev "), Some("dev".into()));
         assert_eq!(exec_user_flag("none"), None);
         assert_eq!(exec_user_flag(""), None);
+    }
+
+    // The flags that did nothing (or only an alias) are still accepted, so a guest
+    // image that passes them keeps booting; they are hidden from --help.
+    #[test]
+    fn deprecated_flags_are_still_accepted() {
+        let args = Args::try_parse_from([
+            "pod-daemon",
+            "--identity-socket",
+            "/run/agent-sandbox/identity.sock",
+            "--ssh-auth-sock",
+            "/run/agent-sandbox/ssh-agent.sock",
+        ])
+        .expect("old flags must parse");
+        assert!(args.identity_socket.is_some());
+        assert!(args.ssh_auth_sock.is_some());
+        let none = Args::try_parse_from(["pod-daemon"]).expect("defaults parse");
+        assert!(none.identity_socket.is_none() && none.ssh_auth_sock.is_none());
     }
 }

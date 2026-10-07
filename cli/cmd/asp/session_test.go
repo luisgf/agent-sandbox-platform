@@ -17,6 +17,7 @@ import (
 )
 
 func TestSessionStartExecRemove(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -84,7 +85,7 @@ func TestSessionStartExecRemove(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := run([]string{
 		"session", "start",
-		"--cp-url", srv.URL,
+		"--control-plane-url", srv.URL,
 		"--session-file", sessFile,
 		"--tenant", "acme",
 		"--image", "img:test",
@@ -177,6 +178,7 @@ func TestSessionStartExecRemove(t *testing.T) {
 }
 
 func TestSessionExecRequiresSession(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	sessFile := filepath.Join(t.TempDir(), "missing.json")
@@ -196,6 +198,7 @@ func TestSessionExecRequiresSession(t *testing.T) {
 }
 
 func TestSessionExecDashDash(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	mux := http.NewServeMux()
@@ -229,6 +232,7 @@ func TestSessionExecDashDash(t *testing.T) {
 }
 
 func TestSessionStartRefusesExistingUnlessForce(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	var deletes atomic.Int32
@@ -249,13 +253,13 @@ func TestSessionStartRefusesExistingUnlessForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr strings.Builder
-	code := run([]string{"session", "start", "--session-file", sessFile, "--cp-url", srv.URL}, &stdout, &stderr)
+	code := run([]string{"session", "start", "--session-file", sessFile, "--control-plane-url", srv.URL}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "active session") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	code = run([]string{"session", "start", "--force", "--session-file", sessFile, "--cp-url", srv.URL, "--timeout", "2s"}, &stdout, &stderr)
+	code = run([]string{"session", "start", "--force", "--session-file", sessFile, "--control-plane-url", srv.URL, "--timeout", "2s"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("force exit=%d stderr=%q", code, stderr.String())
 	}
@@ -269,6 +273,7 @@ func TestSessionStartRefusesExistingUnlessForce(t *testing.T) {
 }
 
 func TestSessionRemoveKeepsFileOnAPIError(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +298,7 @@ func TestSessionRemoveKeepsFileOnAPIError(t *testing.T) {
 }
 
 func TestSessionStatusAndExecIdleReaped(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	var execs atomic.Int32
@@ -336,6 +342,7 @@ func TestSessionStatusAndExecIdleReaped(t *testing.T) {
 }
 
 func TestNamedSessionsAreIndependent(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_SESSION_FILE", "")
@@ -367,7 +374,7 @@ func TestNamedSessionsAreIndependent(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := run([]string{
 		"session", "start", "--name", "alpha", "--session-dir", dir,
-		"--cp-url", srv.URL, "--timeout", "2s", "--workspace", ws,
+		"--control-plane-url", srv.URL, "--timeout", "2s", "--workspace", ws,
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("alpha start exit=%d stderr=%q", code, stderr.String())
@@ -377,7 +384,7 @@ func TestNamedSessionsAreIndependent(t *testing.T) {
 	stderr.Reset()
 	code = run([]string{
 		"session", "start", "--name", "beta", "--session-dir", dir,
-		"--cp-url", srv.URL, "--timeout", "2s",
+		"--control-plane-url", srv.URL, "--timeout", "2s",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("beta start exit=%d stderr=%q", code, stderr.String())
@@ -418,6 +425,7 @@ func TestNamedSessionsAreIndependent(t *testing.T) {
 func fmtID(n int32) string { return "sb-" + string(rune('0'+n)) }
 
 func TestSessionExecStreamsAsChunksArrive(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_SESSION_FILE", "")
@@ -534,6 +542,7 @@ func ioWrite(w interface{ Write([]byte) (int, error) }, s string) (int, error) {
 }
 
 func TestSessionLocalNetFlagAndHandshake(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -587,7 +596,7 @@ func TestSessionLocalNetFlagAndHandshake(t *testing.T) {
 	dir := t.TempDir()
 	sess := filepath.Join(dir, "s.json")
 	var stdout, stderr strings.Builder
-	code := run([]string{"session", "start", "--cp-url", srv.URL, "--session-file", sess, "--tenant", "acme", "--image", "img", "--local-net", "--timeout", "2s"}, &stdout, &stderr)
+	code := run([]string{"session", "start", "--control-plane-url", srv.URL, "--session-file", sess, "--tenant", "acme", "--image", "img", "--local-net", "--timeout", "2s"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("start %d %s", code, stderr.String())
 	}
@@ -605,7 +614,7 @@ func TestSessionLocalNetFlagAndHandshake(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	code = run([]string{"session", "local-net", "up", "--cp-url", srv.URL, "--session-file", sess}, &stdout, &stderr)
+	code = run([]string{"session", "local-net", "up", "--control-plane-url", srv.URL, "--session-file", sess}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("up %d %s", code, stderr.String())
 	}
@@ -652,6 +661,7 @@ func TestSessionLocalNetFlagAndHandshake(t *testing.T) {
 }
 
 func TestLocalNetUpAppliesMockWireGuardAndDownDeletesIt(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -707,7 +717,7 @@ func TestLocalNetUpAppliesMockWireGuardAndDownDeletesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr strings.Builder
-	code := run([]string{"session", "local-net", "up", "--cp-url", srv.URL, "--session-file", sess}, &stdout, &stderr)
+	code := run([]string{"session", "local-net", "up", "--control-plane-url", srv.URL, "--session-file", sess}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("up %d %s", code, stderr.String())
 	}
@@ -783,6 +793,7 @@ func mustReadFile(t *testing.T, path string) []byte {
 
 // A healthy exec is one request: no GetSandbox before it.
 func TestSessionExecIsOneRequest(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	var requests atomic.Int32
@@ -819,6 +830,7 @@ func TestSessionExecIsOneRequest(t *testing.T) {
 }
 
 func TestSessionExecExplainsSandboxLostWithNode(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	mux := http.NewServeMux()
@@ -937,6 +949,7 @@ func sessionFile(t *testing.T, l *lifecycleServer) string {
 // stop keeps the session file, waits for the node to power the sandbox off, and
 // says its disk is kept; resume boots it again and waits for running.
 func TestSessionStopKeepsTheSessionAndResumeBootsIt(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "running")
@@ -977,6 +990,7 @@ func TestSessionStopKeepsTheSessionAndResumeBootsIt(t *testing.T) {
 
 // --no-wait returns as soon as the stop is requested.
 func TestSessionStopNoWait(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "running")
@@ -992,6 +1006,7 @@ func TestSessionStopNoWait(t *testing.T) {
 
 // A resume that no node can take says so, and the session and the sandbox stay.
 func TestSessionResumeRefusals(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	for status, want := range map[int]string{
@@ -1016,6 +1031,7 @@ func TestSessionResumeRefusals(t *testing.T) {
 // A resume whose start fails ends stopped again: the CLI says why, and that the
 // disk is kept.
 func TestSessionResumeThatGoesBackToStopped(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "stopped")
@@ -1031,6 +1047,7 @@ func TestSessionResumeThatGoesBackToStopped(t *testing.T) {
 
 // rm deletes the sandbox and its disk and clears the file; --local only clears the file.
 func TestSessionRemoveDeletesAndClears(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "stopped")
@@ -1058,6 +1075,7 @@ func TestSessionRemoveDeletesAndClears(t *testing.T) {
 
 // stop on a sandbox that cannot be stopped explains, and keeps the file.
 func TestSessionStopOfAFailedOrGoneSandbox(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	for status, want := range map[int]string{
@@ -1088,6 +1106,7 @@ func TestSessionStopOfAFailedOrGoneSandbox(t *testing.T) {
 
 // exec and status on a stopped session say to resume it, not to start a new one.
 func TestSessionExecAndStatusOfAStoppedSandbox(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "stopped")
@@ -1119,15 +1138,16 @@ func TestIdleReapedTextSaysResume(t *testing.T) {
 
 // sandbox stop/start/list --all hit the matching routes.
 func TestSandboxStopStartAndListAll(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "running")
 	var stdout, stderr strings.Builder
 	for _, args := range [][]string{
-		{"sandbox", "stop", "sb-1", "--cp-url", l.srv.URL},
-		{"sandbox", "start", "sb-1", "--cp-url", l.srv.URL},
-		{"sandbox", "list", "--all", "--cp-url", l.srv.URL},
-		{"sandbox", "delete", "sb-1", "--cp-url", l.srv.URL},
+		{"sandbox", "stop", "sb-1", "--control-plane-url", l.srv.URL},
+		{"sandbox", "start", "sb-1", "--control-plane-url", l.srv.URL},
+		{"sandbox", "list", "--all", "--control-plane-url", l.srv.URL},
+		{"sandbox", "delete", "sb-1", "--control-plane-url", l.srv.URL},
 	} {
 		stdout.Reset()
 		stderr.Reset()
@@ -1163,6 +1183,7 @@ func TestStoppedTextDoesNotRepeatResumeFailed(t *testing.T) {
 // When a resume ends failed (the retained disk was gone) the CLI must not say
 // the disk is kept or suggest trying again: there is nothing to try.
 func TestSessionResumeThatEndsFailedSaysItCannotBeResumed(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	l := newLifecycleServer(t, "stopped")

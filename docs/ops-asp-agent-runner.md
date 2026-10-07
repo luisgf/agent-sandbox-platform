@@ -44,9 +44,9 @@ El comando de un agente largo no es `asp sandbox run` por tool; es `asp session 
 
 | Variable | Rol |
 |---|---|
-| `ASP_CP_URL` | Base del CP (lab: `http://127.0.0.1:18112`) |
+| `ASP_CONTROL_PLANE_URL` | Base del CP (lab: `http://127.0.0.1:18112`) |
 | `ASP_ID_TOKEN` | Access token ya obtenido (prioridad máxima; también `--id-token`) |
-| `ASP_IDP_REQUIRED` | `1` → exigir token; si hay secretos, auto-fetch |
+| `ASP_REQUIRE_TOKEN` | `1` → exigir token; si hay secretos, auto-fetch (antes `ASP_IDP_REQUIRED`, que sigue valiendo con un aviso) |
 | `ASP_IDP_TOKEN_URL` | Endpoint token; si vacío, `{ASP_IDP_ISSUER}/protocol/openid-connect/token` |
 | `ASP_IDP_ISSUER` | Issuer OIDC (lab: `https://auth.luisgf.es/realms/asp`) |
 | `ASP_IDP_SECRETS_FILE` | Fichero `KEY=VALUE` (default `~/.secrets/asp-keycloak-lab.txt`) |
@@ -72,8 +72,8 @@ Para el bucle del harness, para aquí y usa [`ops-asp-session.md`](ops-asp-sessi
 
 ```bash
 # Precondiciones: build/asp, secretos 600 en ~/.secrets/, unit asp-control-plane activo
-export ASP_CP_URL=http://127.0.0.1:18112
-export ASP_IDP_REQUIRED=1
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112
+export ASP_REQUIRE_TOKEN=1
 # ASP_IDP_SECRETS_FILE por defecto: ~/.secrets/asp-keycloak-lab.txt
 
 ./build/asp sandbox run --tenant=default --timeout=120s --cmd 'echo hello-from-agent'
@@ -99,14 +99,14 @@ eval "$(./build/asp auth login --print-env)"
 ```bash
 ssh -L 18112:127.0.0.1:18112 ubuntu@ncc1701d
 # otro terminal, con copia local de secretos o SSH remote-command:
-export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
 asp sandbox run --tenant=default --cmd 'uname -a'
 ```
 
 ### Solo comprobar auth (sin nodo / sin VMM)
 
 ```bash
-export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
 ./build/asp auth login
 ./build/asp sandbox list --tenant=default
 # Esperado: 200 (lista posiblemente vacía). Sin token → 401.
@@ -120,7 +120,7 @@ export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
 2. Cache válida (`exp` − 30s)
 3. Fetch IdP si hay `CLIENT_ID` + token URL/issuer (fichero o env)
 4. `ASP_API_KEY`
-5. Si `ASP_IDP_REQUIRED` y nada de lo anterior → error claro (no llamar al CP a ciegas)
+5. Si `ASP_REQUIRE_TOKEN` y nada de lo anterior → error claro (no llamar al CP a ciegas)
 
 ---
 
@@ -154,7 +154,7 @@ make smoke-asp
 ## Checklist ops
 
 1. ¿Rotó `CLIENT_SECRET`? Solo el fichero del host; reiniciar no hace falta en el CP (solo JWKS).
-2. ¿`ASP_IDP_REQUIRED=0`? El auto-fetch sigue si hay secretos, pero el CP puede aceptar llamadas sin JWT.
+2. ¿`ASP_REQUIRE_TOKEN=0`? El auto-fetch sigue si hay secretos, pero el CP puede aceptar llamadas sin JWT.
 3. ¿Agente en CI? Preferir secret store → env `ASP_IDP_*`; no copiar `asp-keycloak-lab.txt` al repo ni a logs.
 4. ¿Promoción Entra/Okta? Nuevo grant; no reutilizar password grant ni el usuario `asp-lab`.
 

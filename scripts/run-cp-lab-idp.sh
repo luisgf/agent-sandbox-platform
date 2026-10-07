@@ -33,7 +33,7 @@ set -a
 . "$IDP_ENV"
 set +a
 
-export LISTEN_ADDR="127.0.0.1:${CP_PORT}"
+export ASP_LISTEN_ADDR="127.0.0.1:${CP_PORT}"
 export ASP_OIDC_ISSUER="${ASP_OIDC_ISSUER:-http://127.0.0.1:${CP_PORT}}"
 # Authentication is always on; nodes of this lab authenticate with a platform key.
 export ASP_INSECURE_OPEN_API="${ASP_INSECURE_OPEN_API:-1}"

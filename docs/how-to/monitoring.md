@@ -6,7 +6,7 @@ El plano de control y cada node-agent exponen métricas en formato de texto de P
 
 | Qué | Plano de control | Node-agent |
 |---|---|---|
-| Métricas, en el puerto del API | `GET /metrics` en `LISTEN_ADDR`. Pide una **clave API de plataforma** o un token del IdP con rol `admin` u `operator` (las cifras abarcan a todos los tenants); el lab sin claves la deja abierta, como `GET /v1/nodes` | no hay API de red: ver la fila siguiente |
+| Métricas, en el puerto del API | `GET /metrics` en `ASP_LISTEN_ADDR`. Pide una **clave API de plataforma** o un token del IdP con rol `admin` u `operator` (las cifras abarcan a todos los tenants); el lab sin claves la deja abierta, como `GET /v1/nodes` | no hay API de red: ver la fila siguiente |
 | Métricas, en un puerto aparte | `ASP_METRICS_LISTEN=127.0.0.1:9101` | `--metrics-listen=127.0.0.1:9102` (`ASP_METRICS_LISTEN`) |
 | Perfiles de Go (`/debug/pprof/`) | `ASP_PPROF_LISTEN=127.0.0.1:6060` | `--pprof-listen=127.0.0.1:6061` (`ASP_PPROF_LISTEN`) |
 | Escuchar fuera de loopback | `ASP_INSECURE_OBS_LISTEN=1` | `--insecure-obs-listen` (`ASP_INSECURE_OBS_LISTEN=1`) |

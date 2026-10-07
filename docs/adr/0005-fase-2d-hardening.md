@@ -99,7 +99,7 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 - Flag `--egress-nft-redirect`: best-effort; **SoftFail** sin root/`nft`.
 - Redirige TCP 80/443 del subnet guest al puerto del forward proxy.
 
-> **Addendum:** el sketch se **completa** en ADR-0006 (puertos configurables, DNS redirect/drop, modos soft|enforce, alias `--nft-egress-redirect`).
+> **Addendum:** el sketch se **completa** en ADR-0006 (puertos configurables, DNS redirect/drop, modos soft|enforce, alias `--nft-egress-redirect`, hoy `--egress-nft-redirect`).
 
 ## Alternativas consideradas
 

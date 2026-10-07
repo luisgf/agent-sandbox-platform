@@ -109,7 +109,7 @@ export ASP_SSH_AGENT_UPSTREAM=unix:/run/asp/host-vsock-26501.sock
 vsock-ssh-agent-proxy --listen /tmp/guest-ssh.sock --upstream "$ASP_SSH_AGENT_UPSTREAM"
 ```
 
-Host: `--host-vsock` (+ `--guest-ssh-agent-auto`, default on with host-vsock / ssh-agent-bridge).
+Host: `--host-vsock` (and `--ssh-agent-bridge` for a shared agent).
 
 ## Dry-run / no KVM
 

@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +36,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/settings"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
@@ -86,6 +86,7 @@ type config struct {
 	APIKeyFile           string // --api-key-file: the node's API key for a control plane reached over plain HTTP
 	EgressMITM           bool
 	SSHAgentConfirm      bool
+	sshAgentConfirm      optBool // --ssh-agent-confirm as given; unset: on in the multi-user profile
 	SSHGlobalApprovals   bool    // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
 	SSHAgentSockTemplate string  // ASP_SSH_AGENT_SOCK_TEMPLATE
 	MultiUser            bool    // ASP_MULTI_USER=1 → confirm default-on + scoped SSH
@@ -104,7 +105,6 @@ type config struct {
 	MaxSandboxes         int    // --max-sandboxes: 0 = no limit
 	LocalNetDial         string // --local-net-dial: host[:port] laptops dial for local-net
 	InstanceID           string // random per process; sent on every register
-	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
 	VirtiofsdSandbox     string // --virtiofsd-sandbox: none | chroot | namespace; "" = chroot as root, none otherwise
 	WorkspaceRoots       string // --workspace-root: where sandboxes' workspaces may live
@@ -166,7 +166,6 @@ func main() {
 		"multi_user", cfg.MultiUser,
 		"egress_nft_redirect", cfg.EgressNFTRedirect,
 		"nft_egress_mode", cfg.NFTEgressMode,
-		"guest_ssh_agent_auto", cfg.GuestSSHAgentAuto,
 		"reap_leftovers", cfg.ReapLeftovers,
 	)
 
@@ -552,19 +551,6 @@ func main() {
 		)
 	}
 
-	if cfg.GuestSSHAgentAuto {
-		if !cfg.HostVsock && cfg.SSHAgentBridge == "" {
-			slog.Warn("guest-ssh-agent-auto set but neither --host-vsock nor --ssh-agent-bridge; guest unit will have nothing to dial")
-		} else {
-			slog.Info("guest-ssh-agent-auto: guest image should run ssh-agent-vsock.service",
-				"guest_sock", "/run/agent-sandbox/ssh-agent.sock",
-				"host_cid", hostvsock.HostCID,
-				"host_port", hostvsock.PortSSHAgent,
-				"env_SSH_AUTH_SOCK", "/run/agent-sandbox/ssh-agent.sock",
-			)
-		}
-	}
-
 	register := func(ctx context.Context) error {
 		return cp.Register(ctx, registerRequest(cfg))
 	}
@@ -767,107 +753,100 @@ func agentEndpointURL(cfg config) string {
 	return "http://" + cfg.AgentListen
 }
 
+// settingsOf declares every flag of the node-agent, with the environment variable that
+// sets it (see the settings package), on s.
+func declareSettings(s *settings.Set, cfg *config) {
+	s.String(&cfg.ControlPlaneURL, "control-plane-url", "http://127.0.0.1:8080", "control plane base URL", settings.Legacy("CONTROL_PLANE_URL"))
+	s.String(&cfg.ControlPlaneCA, "control-plane-ca", "", "PEM CA that signed the control plane's TLS certificate (enroll and API calls); default: cert-dir/ca.crt, then system roots")
+	s.String(&cfg.EnrollURL, "enroll-url", "", "control-plane URL for --enroll when it differs from --control-plane-url (ASP_MTLS_STRICT serves enroll on a separate listener)")
+	s.String(&cfg.NodeID, "node-id", "", "node identifier", settings.Legacy("NODE_ID"))
+	s.String(&cfg.CHAPISocket, "ch-api-socket", "", "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir", settings.Legacy("CH_API_SOCKET"))
+	s.String(&cfg.CHSocketDir, "ch-socket-dir", "/run/asp", "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)", settings.Legacy("CH_SOCKET_DIR"))
+	s.String(&cfg.VMMBinary, "ch-binary", "cloud-hypervisor", "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)", settings.Legacy("CLOUD_HYPERVISOR_BIN"))
+	s.String(&cfg.WorkspaceRoots, "workspace-root", workspace.DefaultRoot, "comma-separated directories a sandbox's workspace may live under: a workspace must be inside <root>/<tenant>/ (symbolic links resolved). The workspace path comes from the sandbox spec, so without this any caller could export the node's disks and keys; with no root that exists, no sandbox can have a workspace", settings.Env("ASP_WORKSPACE_ROOTS"))
+	s.String(&cfg.GuestKernel, "guest-kernel", reconciler.DefaultKernelPath, "kernel (an uncompressed vmlinux) every VM boots")
+	s.String(&cfg.GuestRootFS, "guest-rootfs", reconciler.DefaultRootFSPath, "base rootfs image every sandbox's private disk is copied from; never booted itself")
+	s.String(&cfg.VMConfine, "vm-confine", "auto", "run each microVM and its virtiofsd in a transient systemd service with resource limits: auto (when this host can: root, systemd), on (refuse to start if it cannot) or off (children of this process, as before)")
+	s.Bool(&cfg.VMSurviveRestart, "vm-survive-restart", true, "a confined microVM keeps running when the agent stops or restarts, and the next agent process takes it over (default). =false binds each VM's service to the agent's, so systemd stops the VMs with it, as before")
+	s.String(&cfg.VMUnprivileged, "vm-unprivileged", "auto", "run each microVM's Cloud Hypervisor as an unprivileged user of its own, with no capabilities and a service that cannot open IP sockets or write outside its own files: auto (when this host can), on (refuse to start if it cannot) or off (root, as before). Needs --vm-confine; virtiofsd stays root (--virtiofsd-sandbox)")
+	s.Uint(&cfg.VMUIDBase, "vm-uid-base", uint(vmm.DefaultUIDBase), "first user id of the microVMs: the one with guest CID n runs as this plus n. Pick a range that no user, container tool or other agent uses")
+	s.String(&cfg.VMRunDir, "vm-run-dir", "", "directory with one subdirectory per microVM, owned by the VM's user, where its VMM keeps its sockets; mode 0711. Default: --ch-socket-dir with -vm appended (/run/asp-vm)")
+	s.String(&cfg.VMSlice, "vm-slice", vmm.DefaultSlice, "systemd slice of the microVM services")
+	s.Int(&cfg.VMMemoryOverheadMiB, "vm-memory-overhead-mib", vmm.DefaultMemoryOverheadMiB, "memory added to the guest's for the VMM's own use, in the unit's MemoryMax")
+	s.Int(&cfg.VMCPUOverheadPercent, "vm-cpu-overhead-percent", vmm.DefaultCPUOverheadPercent, "percent of one CPU added to the guest's vCPUs for the VMM's own threads, in the unit's CPUQuota")
+	s.Int(&cfg.VMTasksMax, "vm-tasks-max", vmm.DefaultTasksMax, "most processes and threads of one microVM service")
+	s.String(&cfg.VirtiofsdSandbox, "virtiofsd-sandbox", "", "virtiofsd --sandbox mode: chroot (confine the daemon to the workspace), namespace or none. Default chroot when running as root, none otherwise")
+	s.String(&cfg.VirtiofsdBin, "virtiofsd-bin", "virtiofsd", "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set", settings.Legacy("VIRTIOFSD_BIN"))
+	s.String(&cfg.DiskDir, "disk-dir", "/var/lib/asp/disks", "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")
+	s.Duration(&cfg.StopGrace, "stop-grace", 15*time.Second, "a stop asks the guest to power off and waits up to this long for the VM to exit before stopping it hard (0: stop hard at once; ignored with --dry-run)")
+	s.Int(&cfg.DiskMinFreeMiB, "disk-min-free-mib", -1, "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")
+	s.Bool(&cfg.DryRun, "dry-run", false, "use FakeVMM and skip real CH", settings.Legacy("DRY_RUN"))
+	s.String(&cfg.ReapLeftovers, "reap-leftovers", reapOn, "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing (not the rootfs copies in --disk-dir: the reconciler removes the ones no sandbox owns). on | report (log, remove nothing) | off; --dry-run only reports")
+	s.Bool(&cfg.PrintMeasurement, "print-measurement", false, "print the digests of the kernel and base image and the hypervisor version this node attests, as an entry for the control plane's ASP_ATTEST_ALLOWED_IMAGES, and exit", settings.NoEnv())
+	s.Bool(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir", settings.NoEnv())
+	s.String(&cfg.Endpoint, "endpoint", "", "node callback endpoint advertised to control plane", settings.Legacy("NODE_ENDPOINT"))
+	s.String(&cfg.AgentListen, "agent-listen", "127.0.0.1:9100", "loopback listen addr for the exec proxy and operator routes (ssh-agent approve, egress-check); plain HTTP, no authentication")
+	s.String(&cfg.AgentTLSListen, "agent-tls-listen", "", "listen addr for the control plane's mTLS exec API (e.g. 0.0.0.0:9443) when the control plane runs on another host; uses the enrolled node certificate")
+	s.Bool(&cfg.InsecureAgentListen, "insecure-agent-listen", false, "allow --agent-listen on a non-loopback address (plain HTTP, no authentication; lab only)")
+	s.Bool(&cfg.Enroll, "enroll", false, "perform bootstrap enrollment before register")
+	s.String(&cfg.BootstrapToken, "bootstrap-token", "", "shared bootstrap token for enrollment: enrolls a new node id or a revoked node, never re-keys an enrolled one", settings.Env("ASP_NODE_BOOTSTRAP_TOKEN"))
+	s.String(&cfg.EnrollToken, "enroll-token", "", "single-use enroll token from an admin (asp node enroll-token), used instead of --bootstrap-token; one pinned to this node re-keys it even when it is enrolled", settings.Env("ASP_NODE_ENROLL_TOKEN"))
+	s.String(&cfg.CertDir, "cert-dir", "/var/lib/asp/node-certs", "directory for node client certs")
+	s.Bool(&cfg.MTLS, "mtls", false, "require mTLS client certs for control-plane calls")
+	s.String(&cfg.PodDaemonSock, "pod-daemon-sock", "", "unix socket path for pod-daemon (dry-run / local fallback)")
+	s.Uint(&cfg.PodDaemonPort, "pod-daemon-port", 26500, "guest vsock/TCP port for pod-daemon HTTP (CH hybrid CONNECT)")
+	s.Bool(&cfg.EgressEnforce, "egress-enforce", false, "return 403 on /v1/internal/egress-check denials; required intent for --egress-proxy-listen")
+	s.String(&cfg.EgressProxyListen, "egress-proxy-listen", "", "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
+	s.String(&cfg.EgressDNSSink, "egress-dns-sink", "", "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names")
+	s.String(&cfg.EgressAllowCIDRs, "egress-allow-cidr", "", "comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows", settings.Env("ASP_EGRESS_ALLOW_CIDRS"))
+	s.String(&cfg.APIKeyFile, "api-key-file", "", "file with the platform-scoped API key this node sends to the control plane (also env ASP_NODE_API_KEY). Needed when the control plane is reached over plain HTTP, where there is no client certificate; the control plane refuses every node call without a credential", settings.Env("ASP_NODE_API_KEY_FILE"))
+	s.String(&cfg.AgentTokenFile, "agent-token-file", "", "file holding the secret that guards the local API on --agent-listen (bearer token). Created, 0600, if missing. A control plane on this host reads the same file (ASP_AGENT_TOKEN_FILE) and must be able to read it. Default "+execproxy.DefaultTokenFile+", or a temporary file when that directory is not writable (dry-run labs)")
+	s.String(&cfg.EgressMITMCA, "egress-mitm-ca", "", "optional path to MITM CA PEM (generate/load); used only with --egress-mitm / ASP_EGRESS_MITM=1")
+	s.Bool(&cfg.EgressMITM, "egress-mitm", false, "ENABLE CONNECT TLS bump (corp caution; default off)")
+	s.String(&cfg.SSHAgentBridge, "ssh-agent-bridge", "", "unix socket path for SSH agent bridge (proxies SSH_AUTH_SOCK or FakeAgent)")
+	s.String(&cfg.IdentityListen, "identity-listen", "", "unix path (.sock) or TCP addr for guest OIDC identity proxy")
+	s.String(&cfg.DefaultSandboxID, "default-sandbox-id", "", "sandbox for identity requests without X-ASP-Sandbox-ID on listeners not bound to a sandbox; only with --insecure-identity-sandbox-header (dry-run)", settings.Env("ASP_SANDBOX_ID"))
+	s.Bool(&cfg.TrustSandboxHeader, "insecure-identity-sandbox-header", false, "let identity listeners not bound to a sandbox (--identity-listen, global --host-vsock) take the sandbox from the client's X-ASP-Sandbox-ID, then --default-sandbox-id; anyone who reaches them can mint any sandbox's token (lab only)")
+	s.Bool(&cfg.Reconcile, "reconcile", false, "poll control-plane work and drive VMM lifecycle")
+	s.Bool(&cfg.TapAuto, "tap-auto", false, "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
+	s.Bool(&cfg.HostVsock, "host-vsock", false, "guest→host SSH(26501)+identity(26502): AF_VSOCK/unix lab + per-sandbox CH hybrid {vsock}_{port}")
+	s.String(&cfg.HostVsockDir, "host-vsock-dir", "", "if set, use unix sockets under this dir instead of AF_VSOCK (lab)")
+	s.Tri(&cfg.sshAgentConfirm, "ssh-agent-confirm", "require POST /v1/internal/ssh-agent/approve with the signing sandbox's sandbox_id before each SignRequest (one-shot TTL); default on in multi-user")
+	s.Bool(&cfg.SSHGlobalApprovals, "insecure-ssh-agent-global-approvals", false, "with --ssh-agent-confirm, accept approvals without sandbox_id; they unlock one sign on listeners that cannot tell guests apart (--ssh-agent-bridge, global --host-vsock), from whichever guest asks first (lab only)")
+	s.String(&cfg.SSHAgentSockTemplate, "ssh-agent-sock-template", "", "per-sandbox SSH agent upstream path template ({owner_sub}/{sandbox_id}/{id}); missing → FakeAgent")
+	s.Bool(&cfg.MultiUser, "multi-user", false, "multi-user profile: SSH confirm default-on + prefer scoped agent socks", settings.Legacy("ASP_IDP_REQUIRED"))
+	s.Tri(&cfg.egressNFTRedirect, "egress-nft-redirect", "force guest HTTP(S)+DNS through the egress proxy and sink with nftables and drop the rest. Default: on when --egress-proxy-listen is set and this is not --dry-run; --egress-nft-redirect=false turns it off (HTTP_PROXY is then voluntary)", settings.LegacyFlag("nft-egress-redirect"), settings.Legacy("ASP_NFT_EGRESS_REDIRECT"))
+	s.String(&cfg.NFTEgressMode, "nft-egress-mode", "", "what a node that cannot apply the nft rules does: enforce (refuse to start; the default) or soft (start without egress enforcement; the default with --dry-run)")
+	s.String(&cfg.MetricsListen, "metrics-listen", "", "serve Prometheus metrics on this address (GET /metrics), e.g. 127.0.0.1:9102. No authentication, so loopback only unless --insecure-obs-listen. Off by default")
+	s.String(&cfg.PprofListen, "pprof-listen", "", "serve Go runtime profiles on this address (/debug/pprof/), e.g. 127.0.0.1:6060. No authentication, so loopback only unless --insecure-obs-listen. Off by default")
+	s.Bool(&cfg.InsecureObsListen, "insecure-obs-listen", false, "allow --metrics-listen and --pprof-listen on a non-loopback address (no authentication; put a proxy that authenticates in front)")
+	s.String(&cfg.NFTDNSAction, "nft-dns-action", "redirect", "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
+	s.String(&cfg.NFTHTTPPorts, "nft-http-ports", "80,443", "comma-separated guest TCP ports redirected to egress proxy")
+	s.Int(&cfg.CapacityCPU, "capacity-cpu", capacity.Detected, "CPU cores offered to sandboxes: -1 detects, 0 is not enforced (the control plane overcommits CPU)")
+	s.Int(&cfg.CapacityMemMiB, "capacity-mem-mib", capacity.Detected, "memory offered to sandboxes in MiB: -1 detects MemTotal minus max(1 GiB, 10%), 0 is not enforced")
+	s.Int(&cfg.MaxSandboxes, "max-sandboxes", 0, "maximum sandboxes on this node; 0 = no limit")
+	s.String(&cfg.LocalNetDial, "local-net-dial", "", "host[:port] laptops dial for this node's local-net tunnels (default: the control plane's ASP_LOCAL_NET_DIAL)")
+	s.String(&cfg.GuestSubnet, "guest-subnet", "10.200.0.0/16", "guest pool: each TAP gets its own /30 from it; also the nft --egress-nft-redirect match")
+	s.Deprecated("guest-ssh-agent-auto", "ASP_GUEST_SSH_AGENT_AUTO", "it only logged what the guest image does; the image decides whether its ssh-agent-vsock service runs")
+	s.Duration(&cfg.ReconcileEvery, "reconcile-interval", 2*time.Second, "reconciler poll interval")
+	s.Int(&cfg.ReconcileWorkers, "reconcile-workers", reconciler.DefaultWorkers, "sandboxes the reconciler starts or stops at once (1 with --ch-api-socket)")
+	s.Duration(&cfg.GuestReadyTimeout, "guest-ready-timeout", 120*time.Second, "wait up to this long for pod-daemon in a new VM to answer before reporting running; a guest that never does fails the start (0: report running as soon as the VMM is up; ignored with --dry-run)")
+	s.Duration(&cfg.HeartbeatEvery, "heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")
+}
+
 func loadConfig() config {
 	var cfg config
-	flag.StringVar(&cfg.ControlPlaneURL, "control-plane-url", getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8080"), "control plane base URL")
-	flag.StringVar(&cfg.ControlPlaneCA, "control-plane-ca", os.Getenv("ASP_CONTROL_PLANE_CA"), "PEM CA that signed the control plane's TLS certificate (enroll and API calls); default: cert-dir/ca.crt, then system roots")
-	flag.StringVar(&cfg.EnrollURL, "enroll-url", os.Getenv("ASP_ENROLL_URL"), "control-plane URL for --enroll when it differs from --control-plane-url (ASP_MTLS_STRICT serves enroll on a separate listener)")
-	flag.StringVar(&cfg.NodeID, "node-id", os.Getenv("NODE_ID"), "node identifier")
-	flag.StringVar(&cfg.CHAPISocket, "ch-api-socket", os.Getenv("CH_API_SOCKET"), "optional shared CH --api-socket (legacy/debug); empty = per-sandbox spawn via --ch-socket-dir")
-	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
-	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
-	flag.StringVar(&cfg.WorkspaceRoots, "workspace-root", getenv("ASP_WORKSPACE_ROOTS", workspace.DefaultRoot), "comma-separated directories a sandbox's workspace may live under: a workspace must be inside <root>/<tenant>/ (symbolic links resolved). The workspace path comes from the sandbox spec, so without this any caller could export the node's disks and keys; with no root that exists, no sandbox can have a workspace")
-	flag.StringVar(&cfg.GuestKernel, "guest-kernel", getenv("ASP_GUEST_KERNEL", reconciler.DefaultKernelPath), "kernel (an uncompressed vmlinux) every VM boots")
-	flag.StringVar(&cfg.GuestRootFS, "guest-rootfs", getenv("ASP_GUEST_ROOTFS", reconciler.DefaultRootFSPath), "base rootfs image every sandbox's private disk is copied from; never booted itself")
-	flag.StringVar(&cfg.VMConfine, "vm-confine", getenv("ASP_VM_CONFINE", "auto"), "run each microVM and its virtiofsd in a transient systemd service with resource limits: auto (when this host can: root, systemd), on (refuse to start if it cannot) or off (children of this process, as before)")
-	surviveDefault := true
-	if v := envOptBool("ASP_VM_SURVIVE_RESTART"); v.set {
-		surviveDefault = v.value
+	s := settings.New(flag.CommandLine, nil)
+	declareSettings(s, &cfg)
+	if err := s.Parse(os.Args[1:]); err != nil {
+		slog.Error("configuration", "error", err)
+		os.Exit(2)
 	}
-	flag.BoolVar(&cfg.VMSurviveRestart, "vm-survive-restart", surviveDefault, "a confined microVM keeps running when the agent stops or restarts, and the next agent process takes it over (default). =false binds each VM's service to the agent's, so systemd stops the VMs with it, as before")
-	flag.StringVar(&cfg.VMUnprivileged, "vm-unprivileged", getenv("ASP_VM_UNPRIVILEGED", "auto"), "run each microVM's Cloud Hypervisor as an unprivileged user of its own, with no capabilities and a service that cannot open IP sockets or write outside its own files: auto (when this host can), on (refuse to start if it cannot) or off (root, as before). Needs --vm-confine; virtiofsd stays root (--virtiofsd-sandbox)")
-	flag.UintVar(&cfg.VMUIDBase, "vm-uid-base", uint(getenvInt("ASP_VM_UID_BASE", int(vmm.DefaultUIDBase))), "first user id of the microVMs: the one with guest CID n runs as this plus n. Pick a range that no user, container tool or other agent uses")
-	flag.StringVar(&cfg.VMRunDir, "vm-run-dir", getenv("ASP_VM_RUN_DIR", ""), "directory with one subdirectory per microVM, owned by the VM's user, where its VMM keeps its sockets; mode 0711. Default: --ch-socket-dir with -vm appended (/run/asp-vm)")
-	flag.StringVar(&cfg.VMSlice, "vm-slice", getenv("ASP_VM_SLICE", vmm.DefaultSlice), "systemd slice of the microVM services")
-	flag.IntVar(&cfg.VMMemoryOverheadMiB, "vm-memory-overhead-mib", getenvInt("ASP_VM_MEMORY_OVERHEAD_MIB", vmm.DefaultMemoryOverheadMiB), "memory added to the guest's for the VMM's own use, in the unit's MemoryMax")
-	flag.IntVar(&cfg.VMCPUOverheadPercent, "vm-cpu-overhead-percent", getenvInt("ASP_VM_CPU_OVERHEAD_PERCENT", vmm.DefaultCPUOverheadPercent), "percent of one CPU added to the guest's vCPUs for the VMM's own threads, in the unit's CPUQuota")
-	flag.IntVar(&cfg.VMTasksMax, "vm-tasks-max", getenvInt("ASP_VM_TASKS_MAX", vmm.DefaultTasksMax), "most processes and threads of one microVM service")
-	flag.StringVar(&cfg.VirtiofsdSandbox, "virtiofsd-sandbox", getenv("ASP_VIRTIOFSD_SANDBOX", ""), "virtiofsd --sandbox mode: chroot (confine the daemon to the workspace), namespace or none. Default chroot when running as root, none otherwise")
-	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
-	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")
-	flag.DurationVar(&cfg.StopGrace, "stop-grace", getenvDuration("ASP_STOP_GRACE", 15*time.Second), "a stop asks the guest to power off and waits up to this long for the VM to exit before stopping it hard (0: stop hard at once; ignored with --dry-run)")
-	flag.IntVar(&cfg.DiskMinFreeMiB, "disk-min-free-mib", getenvInt("ASP_DISK_MIN_FREE_MIB", -1), "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")
-	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
-	flag.StringVar(&cfg.ReapLeftovers, "reap-leftovers", getenv("ASP_REAP_LEFTOVERS", reapOn), "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing (not the rootfs copies in --disk-dir: the reconciler removes the ones no sandbox owns). on | report (log, remove nothing) | off; --dry-run only reports")
-	flag.BoolVar(&cfg.PrintMeasurement, "print-measurement", false, "print the digests of the kernel and base image and the hypervisor version this node attests, as an entry for the control plane's ASP_ATTEST_ALLOWED_IMAGES, and exit")
-	flag.BoolVar(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir")
-	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
-	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "loopback listen addr for the exec proxy and operator routes (ssh-agent approve, egress-check); plain HTTP, no authentication")
-	flag.StringVar(&cfg.AgentTLSListen, "agent-tls-listen", os.Getenv("ASP_AGENT_TLS_LISTEN"), "listen addr for the control plane's mTLS exec API (e.g. 0.0.0.0:9443) when the control plane runs on another host; uses the enrolled node certificate")
-	flag.BoolVar(&cfg.InsecureAgentListen, "insecure-agent-listen", getenv("ASP_INSECURE_AGENT_LISTEN", "") == "1", "allow --agent-listen on a non-loopback address (plain HTTP, no authentication; lab only)")
-	flag.BoolVar(&cfg.Enroll, "enroll", getenv("ASP_ENROLL", "") == "1", "perform bootstrap enrollment before register")
-	flag.StringVar(&cfg.BootstrapToken, "bootstrap-token", os.Getenv("ASP_NODE_BOOTSTRAP_TOKEN"), "shared bootstrap token for enrollment: enrolls a new node id or a revoked node, never re-keys an enrolled one")
-	flag.StringVar(&cfg.EnrollToken, "enroll-token", os.Getenv("ASP_NODE_ENROLL_TOKEN"), "single-use enroll token from an admin (asp node enroll-token), used instead of --bootstrap-token; one pinned to this node re-keys it even when it is enrolled")
-	flag.StringVar(&cfg.CertDir, "cert-dir", getenv("ASP_CERT_DIR", "/var/lib/asp/node-certs"), "directory for node client certs")
-	flag.BoolVar(&cfg.MTLS, "mtls", getenv("ASP_MTLS", "") == "1", "require mTLS client certs for control-plane calls")
-	flag.StringVar(&cfg.PodDaemonSock, "pod-daemon-sock", os.Getenv("ASP_POD_DAEMON_SOCK"), "unix socket path for pod-daemon (dry-run / local fallback)")
-	flag.UintVar(&cfg.PodDaemonPort, "pod-daemon-port", 26500, "guest vsock/TCP port for pod-daemon HTTP (CH hybrid CONNECT)")
-	flag.BoolVar(&cfg.EgressEnforce, "egress-enforce", getenv("ASP_EGRESS_ENFORCE", "") == "1", "return 403 on /v1/internal/egress-check denials; required intent for --egress-proxy-listen")
-	flag.StringVar(&cfg.EgressProxyListen, "egress-proxy-listen", os.Getenv("ASP_EGRESS_PROXY_LISTEN"), "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
-	flag.StringVar(&cfg.EgressDNSSink, "egress-dns-sink", os.Getenv("ASP_EGRESS_DNS_SINK"), "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names")
-	flag.StringVar(&cfg.EgressAllowCIDRs, "egress-allow-cidr", os.Getenv("ASP_EGRESS_ALLOW_CIDRS"), "comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows")
-	flag.StringVar(&cfg.APIKeyFile, "api-key-file", getenv("ASP_NODE_API_KEY_FILE", ""), "file with the platform-scoped API key this node sends to the control plane (also env ASP_NODE_API_KEY). Needed when the control plane is reached over plain HTTP, where there is no client certificate; the control plane refuses every node call without a credential")
-	flag.StringVar(&cfg.AgentTokenFile, "agent-token-file", getenv("ASP_AGENT_TOKEN_FILE", ""), "file holding the secret that guards the local API on --agent-listen (bearer token). Created, 0600, if missing. A control plane on this host reads the same file (ASP_AGENT_TOKEN_FILE) and must be able to read it. Default "+execproxy.DefaultTokenFile+", or a temporary file when that directory is not writable (dry-run labs)")
-	flag.StringVar(&cfg.EgressMITMCA, "egress-mitm-ca", os.Getenv("ASP_EGRESS_MITM_CA"), "optional path to MITM CA PEM (generate/load); used only with --egress-mitm / ASP_EGRESS_MITM=1")
-	flag.BoolVar(&cfg.EgressMITM, "egress-mitm", getenv("ASP_EGRESS_MITM", "") == "1", "ENABLE CONNECT TLS bump (corp caution; default off)")
-	flag.StringVar(&cfg.SSHAgentBridge, "ssh-agent-bridge", os.Getenv("ASP_SSH_AGENT_BRIDGE"), "unix socket path for SSH agent bridge (proxies SSH_AUTH_SOCK or FakeAgent)")
-	flag.StringVar(&cfg.IdentityListen, "identity-listen", os.Getenv("ASP_IDENTITY_LISTEN"), "unix path (.sock) or TCP addr for guest OIDC identity proxy")
-	flag.StringVar(&cfg.DefaultSandboxID, "default-sandbox-id", os.Getenv("ASP_SANDBOX_ID"), "sandbox for identity requests without X-ASP-Sandbox-ID on listeners not bound to a sandbox; only with --insecure-identity-sandbox-header (dry-run)")
-	flag.BoolVar(&cfg.TrustSandboxHeader, "insecure-identity-sandbox-header", getenv("ASP_INSECURE_IDENTITY_SANDBOX_HEADER", "") == "1", "let identity listeners not bound to a sandbox (--identity-listen, global --host-vsock) take the sandbox from the client's X-ASP-Sandbox-ID, then --default-sandbox-id; anyone who reaches them can mint any sandbox's token (lab only)")
-	flag.BoolVar(&cfg.Reconcile, "reconcile", getenv("ASP_RECONCILE", "") == "1", "poll control-plane work and drive VMM lifecycle")
-	flag.BoolVar(&cfg.TapAuto, "tap-auto", getenv("ASP_TAP_AUTO", "") == "1", "create/delete asp-{shortid} TAP around VMM Start/Stop (soft-fail without CAP_NET_ADMIN)")
-	flag.BoolVar(&cfg.HostVsock, "host-vsock", getenv("ASP_HOST_VSOCK", "") == "1", "guest→host SSH(26501)+identity(26502): AF_VSOCK/unix lab + per-sandbox CH hybrid {vsock}_{port}")
-	flag.StringVar(&cfg.HostVsockDir, "host-vsock-dir", os.Getenv("ASP_HOST_VSOCK_DIR"), "if set, use unix sockets under this dir instead of AF_VSOCK (lab)")
-	flag.BoolVar(&cfg.SSHAgentConfirm, "ssh-agent-confirm", false, "require POST /v1/internal/ssh-agent/approve with the signing sandbox's sandbox_id before each SignRequest (one-shot TTL); default on in multi-user")
-	flag.BoolVar(&cfg.SSHGlobalApprovals, "insecure-ssh-agent-global-approvals", getenv("ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS", "") == "1", "with --ssh-agent-confirm, accept approvals without sandbox_id; they unlock one sign on listeners that cannot tell guests apart (--ssh-agent-bridge, global --host-vsock), from whichever guest asks first (lab only)")
-	flag.StringVar(&cfg.SSHAgentSockTemplate, "ssh-agent-sock-template", os.Getenv("ASP_SSH_AGENT_SOCK_TEMPLATE"), "per-sandbox SSH agent upstream path template ({owner_sub}/{sandbox_id}/{id}); missing → FakeAgent")
-	flag.BoolVar(&cfg.MultiUser, "multi-user", getenv("ASP_MULTI_USER", "") == "1" || getenv("ASP_IDP_REQUIRED", "") == "1", "multi-user profile: SSH confirm default-on + prefer scoped agent socks")
-	cfg.egressNFTRedirect = envOptBool("ASP_EGRESS_NFT_REDIRECT", "ASP_NFT_EGRESS_REDIRECT")
-	flag.Var(&cfg.egressNFTRedirect, "egress-nft-redirect", "force guest HTTP(S)+DNS through the egress proxy and sink with nftables and drop the rest. Default: on when --egress-proxy-listen is set and this is not --dry-run; --egress-nft-redirect=false turns it off (HTTP_PROXY is then voluntary)")
-	flag.Var(&cfg.egressNFTRedirect, "nft-egress-redirect", "alias of --egress-nft-redirect (Fase 2e)")
-	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", ""), "what a node that cannot apply the nft rules does: enforce (refuse to start; the default) or soft (start without egress enforcement; the default with --dry-run)")
-	flag.StringVar(&cfg.MetricsListen, "metrics-listen", os.Getenv("ASP_METRICS_LISTEN"), "serve Prometheus metrics on this address (GET /metrics), e.g. 127.0.0.1:9102. No authentication, so loopback only unless --insecure-obs-listen. Off by default")
-	flag.StringVar(&cfg.PprofListen, "pprof-listen", os.Getenv("ASP_PPROF_LISTEN"), "serve Go runtime profiles on this address (/debug/pprof/), e.g. 127.0.0.1:6060. No authentication, so loopback only unless --insecure-obs-listen. Off by default")
-	flag.BoolVar(&cfg.InsecureObsListen, "insecure-obs-listen", getenv("ASP_INSECURE_OBS_LISTEN", "") == "1", "allow --metrics-listen and --pprof-listen on a non-loopback address (no authentication; put a proxy that authenticates in front)")
-	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
-	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
-	flag.IntVar(&cfg.CapacityCPU, "capacity-cpu", getenvInt("ASP_CAPACITY_CPU", capacity.Detected), "CPU cores offered to sandboxes: -1 detects, 0 is not enforced (the control plane overcommits CPU)")
-	flag.IntVar(&cfg.CapacityMemMiB, "capacity-mem-mib", getenvInt("ASP_CAPACITY_MEM_MIB", capacity.Detected), "memory offered to sandboxes in MiB: -1 detects MemTotal minus max(1 GiB, 10%), 0 is not enforced")
-	flag.IntVar(&cfg.MaxSandboxes, "max-sandboxes", getenvInt("ASP_MAX_SANDBOXES", 0), "maximum sandboxes on this node; 0 = no limit")
-	flag.StringVar(&cfg.LocalNetDial, "local-net-dial", os.Getenv("ASP_LOCAL_NET_DIAL"), "host[:port] laptops dial for this node's local-net tunnels (default: the control plane's ASP_LOCAL_NET_DIAL)")
-	flag.StringVar(&cfg.GuestSubnet, "guest-subnet", getenv("ASP_GUEST_SUBNET", "10.200.0.0/16"), "guest pool: each TAP gets its own /30 from it; also the nft --egress-nft-redirect match")
-	flag.BoolVar(&cfg.GuestSSHAgentAuto, "guest-ssh-agent-auto", guestSSHAgentAutoDefault(), "expect guest image unit to expose host SSH agent at /run/agent-sandbox/ssh-agent.sock via vsock CID2:26501")
-	recEvery := flag.Duration("reconcile-interval", 2*time.Second, "reconciler poll interval")
-	flag.IntVar(&cfg.ReconcileWorkers, "reconcile-workers", getenvInt("ASP_RECONCILE_WORKERS", reconciler.DefaultWorkers), "sandboxes the reconciler starts or stops at once (1 with --ch-api-socket)")
-	flag.DurationVar(&cfg.GuestReadyTimeout, "guest-ready-timeout", getenvDuration("ASP_GUEST_READY_TIMEOUT", 120*time.Second), "wait up to this long for pod-daemon in a new VM to answer before reporting running; a guest that never does fails the start (0: report running as soon as the VMM is up; ignored with --dry-run)")
-	hb := flag.Duration("heartbeat-interval", 30*time.Second, "control-plane heartbeat interval")
-	flag.Parse()
-	cfg.HeartbeatEvery = *hb
-	cfg.ReconcileEvery = *recEvery
 
-	// ADR-0007 phase 4: confirm default-on when multi-user / sock template / IdP required.
-	// ASP_SSH_AGENT_CONFIRM=0 forces off; =1 forces on; unset → multi-user default.
-	cfg.SSHAgentConfirm = sshAgentConfirmDefault(cfg)
+	// ADR-0007 phase 4: confirm is on in the multi-user profile and with a per-sandbox
+	// agent socket template, unless the operator said otherwise (flag or variable).
+	cfg.SSHAgentConfirm = sshAgentConfirm(cfg)
 
-	// Fase 2e: default guest SSH auto-mount when host side is enabled, unless
-	// ASP_GUEST_SSH_AGENT_AUTO=0 was used to force-disable via guestSSHAgentAutoDefault.
-	if !cfg.GuestSSHAgentAuto {
-		disable := os.Getenv("ASP_GUEST_SSH_AGENT_AUTO")
-		forcedOff := disable == "0" || disable == "false" || disable == "FALSE" || disable == "no" || disable == "NO"
-		if !forcedOff && (cfg.HostVsock || cfg.SSHAgentBridge != "") {
-			cfg.GuestSSHAgentAuto = true
-		}
-	}
 	if err := resolveEgress(&cfg); err != nil {
 		slog.Error("egress configuration", "error", err)
 		os.Exit(2)
@@ -929,6 +908,7 @@ func loadConfig() config {
 		}
 	}
 	return cfg
+
 }
 
 // tapManager builds the reconciler's TAP manager. Only a dry-run agent shrugs
@@ -969,38 +949,6 @@ func newInstanceID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func getenvDuration(key string, fallback time.Duration) time.Duration {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		slog.Error("invalid duration", "env", key, "value", v)
-		os.Exit(2)
-	}
-	return d
-}
-
-func getenvInt(key string, fallback int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		slog.Error("invalid integer", "env", key, "value", v)
-		os.Exit(2)
-	}
-	return n
-}
-
-// enrollNode enrolls with the control plane and writes the certificates to
-// cert-dir; it returns the node id. The control plane refuses (409) to
-// re-enroll a node that holds a live certificate unless the credential is an
-// enroll token pinned to it. Then a certificate in cert-dir that names this
-// node and has not expired is kept: an agent restarted with --enroll goes on
-// with the identity it has.
 func enrollNode(ctx context.Context, cfg config, c *cpclient.Client, now time.Time) (string, error) {
 	credential := cfg.EnrollToken
 	if credential == "" {
@@ -1163,50 +1111,14 @@ func defaultTLSEndpoint(addr string) string {
 	return "https://" + net.JoinHostPort(host, port)
 }
 
-func getenv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+// sshAgentConfirm resolves --ssh-agent-confirm: what the operator said, by flag or
+// by ASP_SSH_AGENT_CONFIRM (the flag wins); unset, on in the multi-user profile and
+// with a per-sandbox agent socket template.
+func sshAgentConfirm(cfg config) bool {
+	if cfg.sshAgentConfirm.set {
+		return cfg.sshAgentConfirm.value
 	}
-	return fallback
-}
-
-// sshAgentConfirmDefault: ASP_SSH_AGENT_CONFIRM=1 on, =0 off;
-// unset → on when multi-user (ASP_MULTI_USER / ASP_IDP_REQUIRED / sock template).
-func sshAgentConfirmDefault(cfg config) bool {
-	v := os.Getenv("ASP_SSH_AGENT_CONFIRM")
-	switch v {
-	case "1", "true", "TRUE", "yes", "YES":
-		return true
-	case "0", "false", "FALSE", "no", "NO":
-		return false
-	}
-	// Flag explicitly passed as true via --ssh-agent-confirm without env.
-	if cfg.SSHAgentConfirm {
-		return true
-	}
-	if cfg.MultiUser || cfg.SSHAgentSockTemplate != "" {
-		return true
-	}
-	return false
-}
-
-// guestSSHAgentAutoDefault: ASP_GUEST_SSH_AGENT_AUTO=0 disables; =1 enables;
-// unset → enabled when ASP_HOST_VSOCK=1 or ASP_SSH_AGENT_BRIDGE is set (Fase 2e).
-func guestSSHAgentAutoDefault() bool {
-	v := os.Getenv("ASP_GUEST_SSH_AGENT_AUTO")
-	switch v {
-	case "0", "false", "FALSE", "no", "NO":
-		return false
-	case "1", "true", "TRUE", "yes", "YES":
-		return true
-	}
-	if os.Getenv("ASP_HOST_VSOCK") == "1" {
-		return true
-	}
-	if os.Getenv("ASP_SSH_AGENT_BRIDGE") != "" {
-		return true
-	}
-	return false
+	return cfg.MultiUser || cfg.SSHAgentSockTemplate != ""
 }
 
 // diskMinFreeMiB resolves --disk-min-free-mib: a negative value is twice the

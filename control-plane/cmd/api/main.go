@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"log/slog"
 	"net"
 	"net/http"
@@ -60,7 +61,7 @@ func main() {
 // requests (streamed execs included) get up to ASP_SHUTDOWN_TIMEOUT to finish,
 // the background loops stop with ctx, and the Postgres pool closes last.
 func run(ctx context.Context, args []string) error {
-	addr := os.Getenv("LISTEN_ADDR")
+	addr := listenAddr()
 	if addr == "" {
 		// Loopback unless the operator says otherwise: an API that can create
 		// sandboxes and run commands in them is not something to offer to the
@@ -78,7 +79,7 @@ func run(ctx context.Context, args []string) error {
 	var st store.Store
 	storeName := "memory"
 
-	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+	if dbURL := databaseURL(); dbURL != "" {
 		dbTimeouts, err := store.DBTimeoutsFromEnv()
 		if err != nil {
 			return configError{err}
@@ -106,10 +107,9 @@ func run(ctx context.Context, args []string) error {
 		slog.Info("using Postgres store", "migrations", "ok")
 	} else {
 		st = store.NewMemoryStore()
-		// Memory-dev: empty egress = allow-all unless ASP_EGRESS_DENY_DEFAULT=1.
-		if !store.EnvTruthy("ASP_EGRESS_DENY_DEFAULT") && os.Getenv("ASP_EGRESS_DEFAULT_ALLOW") == "" {
-			_ = os.Setenv("ASP_EGRESS_DEFAULT_ALLOW", "1")
-		}
+	}
+	if err := resolveEgressDefault(storeName == "memory"); err != nil {
+		return configError{err}
 	}
 
 	schedCfg, err := sched.ConfigFromEnv()
@@ -156,7 +156,7 @@ func run(ctx context.Context, args []string) error {
 	srv.BufferedExecTimeout = bufferedExec
 	srv.CA = ca
 	srv.Sched = schedCfg
-	srv.Agents = api.NewAgentDialer(ca, api.EnvTruthy(api.EnvInsecureAgentHTTP))
+	srv.Agents = api.NewAgentDialer(ca, envcfg.Truthy(api.EnvInsecureAgentHTTP))
 	if srv.Agents.AllowInsecureHTTP {
 		slog.Warn(api.EnvInsecureAgentHTTP + "=1: plain HTTP agent endpoints on other hosts are allowed; exec traffic is unauthenticated (lab only)")
 	}
@@ -167,12 +167,12 @@ func run(ctx context.Context, args []string) error {
 	// Metrics and profiles on a listener of their own, loopback-only: neither has
 	// authentication. GET /metrics on the API port serves the metrics to a platform key.
 	if addr := strings.TrimSpace(os.Getenv(envMetricsListen)); addr != "" {
-		if err := metrics.Serve(ctx, "metrics", addr, api.EnvTruthy(envInsecureObsListen), srv.MetricsRegistry().Mux()); err != nil {
+		if err := metrics.Serve(ctx, "metrics", addr, envcfg.Truthy(envInsecureObsListen), srv.MetricsRegistry().Mux()); err != nil {
 			return configError{err}
 		}
 	}
 	if addr := strings.TrimSpace(os.Getenv(envPprofListen)); addr != "" {
-		if err := metrics.Serve(ctx, "pprof", addr, api.EnvTruthy(envInsecureObsListen), metrics.PprofHandler()); err != nil {
+		if err := metrics.Serve(ctx, "pprof", addr, envcfg.Truthy(envInsecureObsListen), metrics.PprofHandler()); err != nil {
 			return configError{err}
 		}
 	}
@@ -235,7 +235,7 @@ func run(ctx context.Context, args []string) error {
 			"note", "a stopped sandbox keeps its disk on its node until it is deleted or this expires")
 		if store.IsMemory(st) {
 			slog.Warn("stopped sandboxes are kept in memory: restarting the control plane forgets them, "+
-				"and each node then removes their disks. Set DATABASE_URL (Postgres) to keep them across restarts",
+				"and each node then removes their disks. Set ASP_DATABASE_URL (Postgres) to keep them across restarts",
 				"store", storeName)
 		}
 	} else {
@@ -265,7 +265,7 @@ func run(ctx context.Context, args []string) error {
 	tlsCert := strings.TrimSpace(os.Getenv("ASP_TLS_CERT"))
 	tlsKey := strings.TrimSpace(os.Getenv("ASP_TLS_KEY"))
 	clientCAPath := strings.TrimSpace(os.Getenv("ASP_CLIENT_CA"))
-	mtlsStrict := api.EnvTruthy("ASP_MTLS_STRICT")
+	mtlsStrict := envcfg.Truthy("ASP_MTLS_STRICT")
 	useTLS := tlsCert != "" && tlsKey != ""
 	if useTLS {
 		names, err := tlsCertNames(tlsCert)

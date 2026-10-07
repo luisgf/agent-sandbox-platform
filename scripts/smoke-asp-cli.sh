@@ -48,7 +48,7 @@ done
 [[ -S "$SOCK" ]] || { echo "pod-daemon sock missing"; cat "$PD_LOG"; exit 1; }
 
 echo "==> start control-plane on 18081"
-LISTEN_ADDR=127.0.0.1:18081 ASP_AUTO_PROVISION=0 "$WORKDIR/api" >"$CP_LOG" 2>&1 &
+ASP_LISTEN_ADDR=127.0.0.1:18081 ASP_AUTO_PROVISION=0 "$WORKDIR/api" >"$CP_LOG" 2>&1 &
 CP_PID=$!
 for i in $(seq 1 50); do
   curl -sf "$CP_URL/healthz" >/dev/null && break
@@ -79,7 +79,7 @@ curl -sf http://127.0.0.1:19101/healthz | grep -q ok
 wait_node_schedulable "$CP_URL" cli-smoke-node
 
 ASP="$WORKDIR/asp"
-export ASP_CP_URL="$CP_URL"
+export ASP_CONTROL_PLANE_URL="$CP_URL"
 
 echo "==> asp sandbox run"
 OUT=$("$ASP" sandbox run --node-id=cli-smoke-node --tenant=smoke --timeout=30s --cmd 'echo hello-cli' 2>"$WORKDIR/asp.err")

@@ -120,11 +120,12 @@ func cleanWorkspaceFlag(p string) (string, error) {
 	return filepath.Clean(p), nil
 }
 
-// cpURLWasSet reports whether the user passed --cp-url on this command.
+// cpURLWasSet reports whether the user passed --control-plane-url (or its old name,
+// --cp-url) on this command.
 func cpURLWasSet(fs *flag.FlagSet) bool {
 	set := false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "cp-url" {
+		if f.Name == "control-plane-url" || f.Name == "cp-url" {
 			set = true
 		}
 	})
@@ -184,7 +185,7 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	if loadErr == nil && *force {
 		// The recorded sandbox lives on the control plane the session file names,
-		// whatever ASP_CP_URL says now (unless --cp-url was given).
+		// whatever ASP_CONTROL_PLANE_URL says now (unless --control-plane-url was given).
 		gOld := g
 		if !cpURLWasSet(fs) && existing.CPURL != "" {
 			gOld.cpURL = existing.CPURL
@@ -585,7 +586,7 @@ func endLocalNet(c *client.Client, st session.State, path string, stderr io.Writ
 }
 
 // loadSessionFor reads the session file a stop, resume or rm acts on and
-// points the client at its control plane unless --cp-url was given.
+// points the client at its control plane unless --control-plane-url was given.
 func loadSessionFor(fs *flag.FlagSet, g *globalFlags, loc sessionLoc, verb string, stderr io.Writer) (st session.State, path string, code int) {
 	path, err := resolveSessionPath(fs, loc)
 	if err != nil {

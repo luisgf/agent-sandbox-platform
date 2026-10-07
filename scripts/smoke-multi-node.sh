@@ -4,7 +4,7 @@
 # frozen like a partition (its sandboxes fail as node_lost, and once back it
 # stops them because they left its assigned set) and an agent restart (its
 # running sandboxes stop as node_agent_restarted and can be resumed). Liveness thresholds are seconds here.
-# Each node offers 2 sandbox slots. Honours DATABASE_URL (node ids are unique
+# Each node offers 2 sandbox slots. Honours ASP_DATABASE_URL, or DATABASE_URL (node ids are unique
 # per run so leftover rows do not count as usage).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,12 +28,13 @@ export ASP_OIDC_KEY="$WORKDIR/oidc.pem"
 # attestation key, because the control plane only trusts configured keys.
 export ASP_ATTEST_KEY="$WORKDIR/attest.pem"
 export ASP_AUTO_PROVISION=0
-# With DATABASE_URL the control plane runs in production mode; the smoke keeps
+# With a database the control plane runs in production mode; the smoke keeps
 # its keys in WORKDIR on purpose.
+export ASP_DATABASE_URL="${ASP_DATABASE_URL:-${DATABASE_URL:-}}"
 export ASP_ALLOW_TMP_KEYS=1
 # Empty tenant rules deny (the memory store would allow all): step 1b checks
 # that rules reach a running sandbox in both directions.
-export ASP_EGRESS_DENY_DEFAULT=1
+export ASP_EGRESS_DEFAULT_ALLOW=0
 export ASP_NODE_STALE_AFTER=3s ASP_NODE_FAILOVER_AFTER=4s ASP_NODE_MONITOR_INTERVAL=1s
 
 cleanup() {
@@ -57,7 +58,7 @@ echo "==> build"
 (cd "$ROOT/node-agent" && go build -o "$WORKDIR/node-agent" ./cmd/node-agent)
 
 echo "==> start control-plane (auto_provision=0, policy spread)"
-LISTEN_ADDR=127.0.0.1:18090 "$WORKDIR/api" >"$WORKDIR/cp.log" 2>&1 &
+ASP_LISTEN_ADDR=127.0.0.1:18090 "$WORKDIR/api" >"$WORKDIR/cp.log" 2>&1 &
 CP_PID=$!
 for _ in $(seq 1 50); do curl -sf "$CP/healthz" >/dev/null && break; sleep 0.1; done
 curl -sf "$CP/healthz" | grep -q ok || fail "control plane did not start"

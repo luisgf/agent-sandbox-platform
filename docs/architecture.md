@@ -190,7 +190,7 @@ Tablas / entidades principales (migraciones `001`–`017`):
 | `tenant_egress_rules` | host_pattern, port, enabled (003) |
 | attestation evidence | BootStatement firmado (005) |
 
-Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde al reiniciar).
+Stores: `PostgresStore` si `ASP_DATABASE_URL`; si no, `MemoryStore` (lab; se pierde al reiniciar).
 
 ## Fallos y recuperación
 

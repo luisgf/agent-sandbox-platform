@@ -50,7 +50,7 @@ func TestSandboxRunLifecycle(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := run([]string{
 		"sandbox", "run",
-		"--cp-url", srv.URL,
+		"--control-plane-url", srv.URL,
 		"--timeout", "2s",
 		"--node-id", "n1",
 		"--cmd", "echo hello",
@@ -90,7 +90,7 @@ func TestSandboxRunKeep(t *testing.T) {
 
 	var stdout, stderr strings.Builder
 	code := run([]string{
-		"sandbox", "run", "--cp-url", srv.URL, "--keep", "--", "true",
+		"sandbox", "run", "--control-plane-url", srv.URL, "--keep", "--", "true",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
@@ -113,12 +113,14 @@ func TestSandboxListSendsIDToken(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
+
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	var stdout, stderr strings.Builder
 	code := run([]string{
 		"sandbox", "list",
-		"--cp-url", srv.URL,
+		"--control-plane-url", srv.URL,
 		"--id-token", "jwt-from-flag",
 		"--tenant", "default",
 	}, &stdout, &stderr)
@@ -135,6 +137,7 @@ func TestSandboxListSendsIDToken(t *testing.T) {
 func TestFlagsAfterTheID(t *testing.T) {
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	var mu sync.Mutex
 	var gotID string
@@ -162,11 +165,11 @@ func TestFlagsAfterTheID(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"flags after the id", []string{"sandbox", "exec", "sb-1", "--cp-url", srv.URL, "--cmd", "echo hi"}, "echo hi"},
-		{"flags before the id", []string{"sandbox", "exec", "--cp-url", srv.URL, "--cmd", "echo hi", "sb-1"}, "echo hi"},
-		{"--name=value after the id", []string{"sandbox", "exec", "sb-1", "--cp-url=" + srv.URL, "-cmd=echo hi"}, "echo hi"},
-		{"command after --", []string{"sandbox", "exec", "sb-1", "--cp-url", srv.URL, "--", "ls", "-la"}, "ls -la"},
-		{"undelimited command keeps its flags", []string{"sandbox", "exec", "--cp-url", srv.URL, "sb-1", "ls", "-la"}, "ls -la"},
+		{"flags after the id", []string{"sandbox", "exec", "sb-1", "--control-plane-url", srv.URL, "--cmd", "echo hi"}, "echo hi"},
+		{"flags before the id", []string{"sandbox", "exec", "--control-plane-url", srv.URL, "--cmd", "echo hi", "sb-1"}, "echo hi"},
+		{"--name=value after the id", []string{"sandbox", "exec", "sb-1", "--control-plane-url=" + srv.URL, "-cmd=echo hi"}, "echo hi"},
+		{"command after --", []string{"sandbox", "exec", "sb-1", "--control-plane-url", srv.URL, "--", "ls", "-la"}, "ls -la"},
+		{"undelimited command keeps its flags", []string{"sandbox", "exec", "--control-plane-url", srv.URL, "sb-1", "ls", "-la"}, "ls -la"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr strings.Builder
@@ -182,11 +185,11 @@ func TestFlagsAfterTheID(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	if code := run([]string{"sandbox", "get", "sb-1", "--cp-url", srv.URL, "--json"}, &stdout, &stderr); code != 0 || !strings.HasPrefix(strings.TrimSpace(stdout.String()), "{") {
+	if code := run([]string{"sandbox", "get", "sb-1", "--control-plane-url", srv.URL, "--json"}, &stdout, &stderr); code != 0 || !strings.HasPrefix(strings.TrimSpace(stdout.String()), "{") {
 		t.Fatalf("get with --json after the id: exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
-	if code := run([]string{"node", "cordon", "node-a", "--cp-url", srv.URL, "--json"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"cordoned": true`) {
+	if code := run([]string{"node", "cordon", "node-a", "--control-plane-url", srv.URL, "--json"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"cordoned": true`) {
 		t.Fatalf("cordon with flags after the id: exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }

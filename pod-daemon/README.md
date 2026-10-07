@@ -76,7 +76,7 @@ Env: `ASP_HOST_CID=2` (hypervisor/host).
 
 Flags:
 
-- `--ssh-auth-bridge` / `--ssh-auth-socket` / `--ssh-auth-sock` — path esperado de un socket **reenviado desde el host** (socat VSOCK-CONNECT:2:26501 o virtiofs). El proxy del agente (solo listar claves y firmar) vive en node-agent.
-- `--identity-socket` — path unix local opcional; en productivo preferir dial vsock CID 2:26502.
+- `--ssh-auth-bridge` / `--ssh-auth-socket` — path esperado de un socket **reenviado desde el host** (socat VSOCK-CONNECT:2:26501 o virtiofs). El proxy del agente (solo listar claves y firmar) vive en node-agent.
+- `--ssh-auth-sock` (alias de `--ssh-auth-socket`) y `--identity-socket` (solo se imprimía al arrancar; la identidad se pide por vsock CID 2:26502) están **obsoletos**: se aceptan, avisan por stderr y se quitarán.
 
 Detalle: [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).

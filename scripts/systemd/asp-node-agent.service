@@ -9,10 +9,10 @@
 #
 # /etc/asp/node-agent.env (mode 600) holds this node's settings and overrides
 # the Environment= lines below. For example:
-#   CONTROL_PLANE_URL=https://cp.example.corp:8443
+#   ASP_CONTROL_PLANE_URL=https://cp.example.corp:8443
 #   ASP_CONTROL_PLANE_CA=/etc/asp/cp-ca.pem
 #   ASP_AGENT_TLS_LISTEN=0.0.0.0:9443
-#   NODE_ENDPOINT=https://node1.example.corp:9443
+#   ASP_ENDPOINT=https://node1.example.corp:9443
 #   ASP_GUEST_SUBNET=10.200.16.0/20
 # First start only: add ASP_ENROLL=1 and ASP_NODE_BOOTSTRAP_TOKEN=..., and
 # remove both once the journal says "enrolled" (the token must not stay here).
@@ -32,7 +32,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-Environment=CH_SOCKET_DIR=/run/asp
+Environment=ASP_CH_SOCKET_DIR=/run/asp
 Environment=ASP_DISK_DIR=/var/lib/asp/disks
 Environment=ASP_LOCAL_NET_KEY_DIR=/var/lib/asp/local-net
 Environment=ASP_CERT_DIR=/var/lib/asp/node-certs

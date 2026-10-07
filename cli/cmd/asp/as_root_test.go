@@ -19,6 +19,7 @@ import (
 func TestRootFlagReachesTheExecRequest(t *testing.T) {
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	var mu sync.Mutex
 	var asked []bool
@@ -50,12 +51,12 @@ func TestRootFlagReachesTheExecRequest(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{"sandbox exec", []string{"sandbox", "exec", "sb-1", "--cp-url", srv.URL, "--cmd", "id"}, false},
-		{"sandbox exec --root", []string{"sandbox", "exec", "sb-1", "--cp-url", srv.URL, "--root", "--cmd", "id"}, true},
+		{"sandbox exec", []string{"sandbox", "exec", "sb-1", "--control-plane-url", srv.URL, "--cmd", "id"}, false},
+		{"sandbox exec --root", []string{"sandbox", "exec", "sb-1", "--control-plane-url", srv.URL, "--root", "--cmd", "id"}, true},
 		{"session exec", []string{"session", "exec", "--buffered", "--session-file", sessFile, "--", "id"}, false},
 		{"session exec --root", []string{"session", "exec", "--buffered", "--root", "--session-file", sessFile, "--", "id"}, true},
-		{"sandbox run", []string{"sandbox", "run", "--cp-url", srv.URL, "--cmd", "id"}, false},
-		{"sandbox run --root", []string{"sandbox", "run", "--cp-url", srv.URL, "--root", "--cmd", "id"}, true},
+		{"sandbox run", []string{"sandbox", "run", "--control-plane-url", srv.URL, "--cmd", "id"}, false},
+		{"sandbox run --root", []string{"sandbox", "run", "--control-plane-url", srv.URL, "--root", "--cmd", "id"}, true},
 	} {
 		mu.Lock()
 		asked = nil

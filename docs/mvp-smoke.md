@@ -1,6 +1,6 @@
 # MVP smoke — control-plane + node-agent + exec (+ Postgres / mTLS opcional)
 
-Guía rápida del camino **dry-run** (FakeVMM, sin KVM): memoria por defecto, Postgres cuando `DATABASE_URL` está set, enrollment/mTLS y exec dataplane.
+Guía rápida del camino **dry-run** (FakeVMM, sin KVM): memoria por defecto, Postgres cuando `ASP_DATABASE_URL` está set, enrollment/mTLS y exec dataplane.
 
 Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal-ch.md`](bare-metal-ch.md). Arquitectura: [`architecture.md`](architecture.md). Diagrama: [`diagram.svg`](diagram.svg).
 
@@ -8,7 +8,7 @@ Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal
 
 | | Detalle |
 |---|---|
-| **Precondiciones** | Go 1.22+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
+| **Precondiciones** | Go 1.25+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
 | **Qué demuestra** | Plano de control + enroll + exec unix + (scripts) identity/egress/reconcile/CLI y reparto entre dos nodos (`smoke-multi-node`). Contrato de APIs y flags. |
 | **Qué NO demuestra** | Aislamiento de hipervisor, bypass-proof nft, AF_VSOCK real, TAP/NAT. Eso es bare-metal. |
 | **Resultado OK** | `curl /healthz` → `{"status":"ok"}`; exec → `exit_code:0`; smokes exit 0; `asp sandbox run` imprime stdout del guest. |
@@ -31,7 +31,7 @@ Desde la raíz del repo:
 
 ```bash
 docker compose up -d postgres
-export DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
+export ASP_DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 # opcional: API key de bootstrap
 export ASP_BOOTSTRAP_API_KEY='dev-bootstrap-key'
 # La autenticación está siempre activa. Sin API key ni IdP el CP no arranca; para estos
@@ -39,7 +39,7 @@ export ASP_BOOTSTRAP_API_KEY='dev-bootstrap-key'
 export ASP_INSECURE_OPEN_API=1
 ```
 
-Sin Docker/`DATABASE_URL`, el API usa `MemoryStore` (los tests offline también).
+Sin Docker/`ASP_DATABASE_URL`, el API usa `MemoryStore` (los tests offline también).
 
 ## 1. Arrancar el control plane
 
@@ -47,7 +47,7 @@ Sin Docker/`DATABASE_URL`, el API usa `MemoryStore` (los tests offline también)
 cd control-plane
 # Enrollment CA: ASP_CA_CERT/ASP_CA_KEY o auto-create en /tmp/asp-dev-ca
 export ASP_NODE_BOOTSTRAP_TOKEN='dev-node-bootstrap'
-LISTEN_ADDR=127.0.0.1:8080 go run ./cmd/api
+ASP_LISTEN_ADDR=127.0.0.1:8080 go run ./cmd/api
 ```
 
 Health (siempre público):
@@ -185,8 +185,8 @@ Flujo: cliente → control-plane `POST /v1/sandboxes/{id}/exec` → node-agent `
 (cd node-agent && go test ./...)
 (cd pod-daemon && cargo test && cargo check)
 
-# Integración Postgres (skip si no hay DATABASE_URL):
-(cd control-plane && DATABASE_URL="$DATABASE_URL" go test ./... -count=1)
+# Integración Postgres (los tests la saltan si no hay DATABASE_URL; el API usa ASP_DATABASE_URL):
+(cd control-plane && DATABASE_URL="$ASP_DATABASE_URL" go test ./... -count=1)
 
 # Smoke e2e dry-run:
 ./scripts/smoke-enroll-exec.sh
@@ -197,8 +197,8 @@ Flujo: cliente → control-plane `POST /v1/sandboxes/{id}/exec` → node-agent `
 
 ## Notas
 
-- Sin `DATABASE_URL`: persistencia solo en memoria; reiniciar el API borra sandboxes/nodos.
-- Con `DATABASE_URL`: migraciones embebidas `001`–`017` al arrancar (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo).
+- Sin `ASP_DATABASE_URL`: persistencia solo en memoria; reiniciar el API borra sandboxes/nodos.
+- Con `ASP_DATABASE_URL`: migraciones embebidas `001`–`017` al arrancar (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo).
 - Auth opcional API key en rutas de tenant; `/healthz` y `/v1/nodes/enroll` son públicos respecto a API keys (enroll usa `ASP_NODE_BOOTSTRAP_TOKEN`). Con `ASP_MTLS_STRICT=1` el enroll vive en `ASP_ENROLL_LISTEN` (ver ADR-0005).
 - TLS: `ASP_TLS_CERT`/`ASP_TLS_KEY`; client CA con `ASP_CLIENT_CA` (lab: `VerifyClientCertIfGiven` + middleware; prod: `ASP_MTLS_STRICT=1`).
 - CA de enrollment: `ASP_CA_CERT`/`ASP_CA_KEY` o auto-create en `/tmp/asp-dev-ca`.
@@ -215,8 +215,9 @@ Script automatizado:
 ### Egress
 
 ```bash
-# Harden empty-rules deny (memory-dev otherwise sets ASP_EGRESS_DEFAULT_ALLOW=1):
-export ASP_EGRESS_DENY_DEFAULT=1
+# Una sandbox sin reglas: el control plane en memoria permite todo, el que usa Postgres lo deniega.
+# ASP_EGRESS_DEFAULT_ALLOW=0 lo deniega también en memoria (antes: ASP_EGRESS_DENY_DEFAULT=1).
+export ASP_EGRESS_DEFAULT_ALLOW=0
 
 # Replace tenant allowlist
 curl -s -X PUT http://127.0.0.1:8080/v1/tenants/tenant-demo/egress \
@@ -248,8 +249,8 @@ Defaults:
 | Condición | Mode |
 |---|---|
 | ≥1 regla enabled | `deny-default` |
-| 0 reglas + `ASP_EGRESS_DEFAULT_ALLOW=1` | `allow-all` (memory-dev auto) |
-| 0 reglas + `ASP_EGRESS_DENY_DEFAULT=1` / sin allow | `deny-default` |
+| 0 reglas + `ASP_EGRESS_DEFAULT_ALLOW=1` (por defecto con el store en memoria) | `allow-all` |
+| 0 reglas + `ASP_EGRESS_DEFAULT_ALLOW=0` (por defecto con Postgres) | `deny-default` |
 
 ### OIDC
 
@@ -319,7 +320,7 @@ Con el stack dry-run del §4 (CP + node-agent `--reconcile` + pod-daemon):
 
 ```bash
 make asp
-./build/asp sandbox run --cp-url=http://127.0.0.1:8080 --cmd 'echo hello'
+./build/asp sandbox run --control-plane-url=http://127.0.0.1:8080 --cmd 'echo hello'
 # o: ./build/asp sandbox run -- echo hello   (--node-id fija un nodo si hace falta)
 ```
 

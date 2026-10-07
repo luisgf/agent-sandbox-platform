@@ -175,7 +175,7 @@ Docs: [`adr/0005-fase-2d-hardening.md`](adr/0005-fase-2d-hardening.md), `docs/wh
 ## Fase 2e — nft completo + SSH guest auto
 
 1. **nftables anti-bypass completo** — HTTP(S) puertos configurables + DNS redirect/drop; `--nft-egress-mode=soft|enforce`.
-2. **SSH agent mount automatizado** — `vsock-ssh-agent-proxy` + `ssh-agent-vsock.service`; `--guest-ssh-agent-auto`.
+2. **SSH agent mount automatizado** — `vsock-ssh-agent-proxy` + `ssh-agent-vsock.service` en la imagen del guest.
 
 **Qué entregó / por qué importaba:** frontera de egress host-side creíble en bare-metal; `SSH_AUTH_SOCK` out-of-the-box en la imagen.
 

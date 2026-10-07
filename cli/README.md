@@ -9,11 +9,13 @@ make asp
 ./build/asp sandbox run --cmd 'echo hello'   # --node-id fija un nodo si hace falta
 
 # Lab IdP (ncc1701d) — el agente solo pasa el comando
-export ASP_CP_URL=http://127.0.0.1:18112 ASP_IDP_REQUIRED=1
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
 ./build/asp sandbox run --tenant=default --cmd 'echo hello'   # --tenant/ASP_TENANT optional: by default, your token's or key's tenant
 ```
 
 `stop` apaga la sandbox y **conserva su disco** (`asp session stop`, `asp sandbox stop`); `resume`/`start` la arranca otra vez en el mismo nodo y disco; `rm`/`delete` borra la sandbox y su disco ([ADR-0012](../docs/adr/0012-retained-disks.md)). `asp session stop` ya no borra.
+
+Configuración: la URL del plano de control es `--control-plane-url` / `ASP_CONTROL_PLANE_URL` (como en el node-agent); la bandera manda sobre la variable. `ASP_REQUIRE_TOKEN=1` hace que el CLI falle si no puede conseguir un token del IdP, en vez de llamar sin él. Los nombres antiguos, `--cp-url`, `ASP_CP_URL` y `ASP_IDP_REQUIRED` (que en el CLI, el plano de control y el nodo significaba tres cosas distintas), siguen valiendo con un aviso en stderr.
 
 Subcomandos: `sandbox create|get|list [--all]|exec|stop|start|delete|run`, `session start|exec|status|stop|resume|rm`, `auth login|logout|status`, `node list|cordon|uncordon|enroll-token`.
 

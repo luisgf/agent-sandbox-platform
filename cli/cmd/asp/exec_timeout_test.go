@@ -27,6 +27,7 @@ func TestExecSeconds(t *testing.T) {
 func TestExecTimeoutFlagReachesTheRequest(t *testing.T) {
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	var mu sync.Mutex
 	var asked []int
@@ -57,10 +58,10 @@ func TestExecTimeoutFlagReachesTheRequest(t *testing.T) {
 		args []string
 		want int
 	}{
-		{"sandbox exec", []string{"sandbox", "exec", "sb-1", "--cp-url", srv.URL, "--cmd", "id"}, 0},
-		{"sandbox exec --exec-timeout", []string{"sandbox", "exec", "sb-1", "--cp-url", srv.URL, "--exec-timeout", "45m", "--cmd", "id"}, 2700},
+		{"sandbox exec", []string{"sandbox", "exec", "sb-1", "--control-plane-url", srv.URL, "--cmd", "id"}, 0},
+		{"sandbox exec --exec-timeout", []string{"sandbox", "exec", "sb-1", "--control-plane-url", srv.URL, "--exec-timeout", "45m", "--cmd", "id"}, 2700},
 		{"session exec --buffered --exec-timeout", []string{"session", "exec", "--buffered", "--exec-timeout", "90s", "--session-file", sessFile, "--", "id"}, 90},
-		{"sandbox run --exec-timeout", []string{"sandbox", "run", "--cp-url", srv.URL, "--exec-timeout", "2m", "--cmd", "id"}, 120},
+		{"sandbox run --exec-timeout", []string{"sandbox", "run", "--control-plane-url", srv.URL, "--exec-timeout", "2m", "--cmd", "id"}, 120},
 	} {
 		mu.Lock()
 		asked = nil
@@ -81,6 +82,7 @@ func TestExecTimeoutFlagReachesTheRequest(t *testing.T) {
 func TestRunSaysTheSandboxIsDestroyedAfterAFailedExec(t *testing.T) {
 	t.Setenv("ASP_API_KEY", "")
 	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
@@ -97,14 +99,14 @@ func TestRunSaysTheSandboxIsDestroyedAfterAFailedExec(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	var stdout, stderr strings.Builder
-	code := run([]string{"sandbox", "run", "--cp-url", srv.URL, "--cmd", "sleep 9999"}, &stdout, &stderr)
+	code := run([]string{"sandbox", "run", "--control-plane-url", srv.URL, "--cmd", "sleep 9999"}, &stdout, &stderr)
 	out := stderr.String()
 	if code != 1 || !strings.Contains(out, "limit of a buffered exec") || !strings.Contains(out, "destroyed with its command") || !strings.Contains(out, "--keep") || !strings.Contains(out, "asp session exec streams") {
 		t.Fatalf("exit=%d stderr=%q", code, out)
 	}
 	// With --keep nothing is destroyed and the extra advice is not shown.
 	stderr.Reset()
-	code = run([]string{"sandbox", "run", "--cp-url", srv.URL, "--keep", "--cmd", "sleep 9999"}, &stdout, &stderr)
+	code = run([]string{"sandbox", "run", "--control-plane-url", srv.URL, "--keep", "--cmd", "sleep 9999"}, &stdout, &stderr)
 	if code != 1 || strings.Contains(stderr.String(), "destroyed with its command") || !strings.Contains(stderr.String(), "keeping sandbox") {
 		t.Fatalf("--keep: exit=%d stderr=%q", code, stderr.String())
 	}

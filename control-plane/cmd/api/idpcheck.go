@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"log/slog"
 
-	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/api"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 )
 
@@ -24,7 +24,7 @@ func checkIdPAudience(cfg idp.Config) error {
 		slog.Warn("idp enabled without ASP_IDP_AUDIENCE: tokens issued to any client of the issuer are accepted", "issuer", cfg.Issuer)
 		return nil
 	}
-	if api.EnvTruthy(EnvAllowAnyAudience) {
+	if envcfg.Truthy(EnvAllowAnyAudience) {
 		slog.Warn(EnvAllowAnyAudience+"=1: tokens issued to any client of the issuer are accepted", "issuer", cfg.Issuer)
 		return nil
 	}

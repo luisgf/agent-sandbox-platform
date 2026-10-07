@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/envcfg"
 	"io"
 	"log/slog"
 	"math/big"
@@ -101,7 +102,7 @@ func ConfigFromEnv() Config {
 		Issuer:   strings.TrimSpace(os.Getenv("ASP_IDP_ISSUER")),
 		Audience: strings.TrimSpace(os.Getenv("ASP_IDP_AUDIENCE")),
 		JWKSURL:  strings.TrimSpace(os.Getenv("ASP_IDP_JWKS_URL")),
-		Required: envTruthy("ASP_IDP_REQUIRED"),
+		Required: envcfg.Truthy("ASP_IDP_REQUIRED"),
 		// ASP_IDP_REQUIRE_EXP=0 is the escape hatch for IdPs that omit exp.
 		AllowMissingExp: envFalsy("ASP_IDP_REQUIRE_EXP"),
 		TenantClaim:     strings.TrimSpace(os.Getenv("ASP_IDP_TENANT_CLAIM")),
@@ -112,16 +113,8 @@ func ConfigFromEnv() Config {
 }
 
 func envFalsy(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "0", "false", "no", "off":
-		return true
-	}
-	return false
-}
-
-func envTruthy(key string) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	v, ok := envcfg.ParseBool(os.Getenv(key))
+	return ok && !v
 }
 
 // Enabled reports whether IdP validation can run (issuer configured).

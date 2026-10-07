@@ -24,9 +24,9 @@ export ASP_CA_CERT="$WORKDIR/ca.crt"
 export ASP_CA_KEY="$WORKDIR/ca.key"
 export ASP_OIDC_KEY="$OIDC_KEY"
 export ASP_OIDC_ISSUER="http://127.0.0.1:18081"
-export ASP_EGRESS_DENY_DEFAULT=1
+# Empty rules deny in this smoke (the memory store would allow all).
+export ASP_EGRESS_DEFAULT_ALLOW=0
 export ASP_AUTO_PROVISION=0
-# Do not set ASP_EGRESS_DEFAULT_ALLOW — empty rules deny in this smoke.
 
 cleanup() {
   [[ -n "${NA_PID:-}" ]] && kill "$NA_PID" 2>/dev/null || true
@@ -52,7 +52,7 @@ done
 [[ -S "$SOCK" ]] || { echo "pod-daemon sock missing"; cat "$PD_LOG"; exit 1; }
 
 echo "==> start control-plane (memory + deny-default egress, auto_provision=0)"
-LISTEN_ADDR=127.0.0.1:18081 ASP_AUTO_PROVISION=0 "$WORKDIR/api" >"$CP_LOG" 2>&1 &
+ASP_LISTEN_ADDR=127.0.0.1:18081 ASP_AUTO_PROVISION=0 "$WORKDIR/api" >"$CP_LOG" 2>&1 &
 CP_PID=$!
 for i in $(seq 1 50); do
   curl -sf http://127.0.0.1:18081/healthz >/dev/null && break

@@ -25,7 +25,7 @@ Dos mecanismos complementarios; **ningún secreto de larga duración** vive en l
   - Unix: `--ssh-agent-bridge=/path.sock`
   - Guest→host productivo (Cloud Hypervisor / Firecracker hybrid): con `--host-vsock --reconcile`, el reconciler hace **`AttachSandbox`** y escucha UDS **`{vsockPath}_26501`** (p. ej. `/run/asp/vsock-{id}.sock_26501`). El guest diala AF_VSOCK CID **2**:26501; el VMM conecta a ese UDS. Ver [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md).
   - Lab / VMM no-hybrid: `--host-vsock` también puede abrir **AF_VSOCK Listen(26501)** y/o `--host-vsock-dir` → `host-vsock-26501.sock`. **AF_VSOCK Listen solo no basta** con el muxer hybrid de CH (sin `{muxer}_{port}` → RST).
-- En el guest, `vsock-ssh-agent-proxy` (+ `ssh-agent-vsock.service`) materializa `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock` dialando `2:26501` (Fase 2e, `--guest-ssh-agent-auto`) — sin cambios en el guest entre AF_VSOCK global y hybrid attach.
+- En el guest, `vsock-ssh-agent-proxy` (+ `ssh-agent-vsock.service`) materializa `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock` dialando `2:26501` (Fase 2e) — sin cambios en el guest entre AF_VSOCK global y hybrid attach.
 - Opcional: `--ssh-agent-confirm` exige `POST /v1/internal/ssh-agent/approve` (TTL one-shot) antes de cada `SSH2_AGENTC_SIGN_REQUEST`; sin approve → `SSH_AGENT_FAILURE`.
 
 **Actualizado 2026-10:** el bridge copiaba bytes en los dos sentidos, así que el guest podía mandar al agente del operador cualquier petición del protocolo: añadir su propia clave (persistencia), borrar todas o bloquear el agente (denegación de servicio). Ahora todas las rutas (`--ssh-agent-bridge`, host-vsock global y acceptors hybrid) pasan por el mismo proxy, que lee mensaje a mensaje y solo reenvía al agente del host:
@@ -145,7 +145,7 @@ Lo que esto **sí** da: los hashes los calcula el nodo y los firma el nodo, y el
 | Mint | `POST /v1/internal/oidc/token` (nodo/lab); guest vía identity proxy |
 | JWKS / discovery | `GET /oidc/jwks.json`, `GET /.well-known/openid-configuration` |
 | Approve SSH | `POST /v1/internal/ssh-agent/approve` (node-agent) |
-| Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--insecure-identity-sandbox-header` (lab), `--default-sandbox-id` (lab), `--guest-ssh-agent-auto`, `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY`, `ASP_ATTEST_PUB`, `ASP_ATTEST_TRUSTED_PUBS` |
+| Flags | `--host-vsock`, `--host-vsock-dir`, `--ssh-agent-bridge`, `--ssh-agent-confirm`, `--identity-listen`, `--insecure-identity-sandbox-header` (lab), `--default-sandbox-id` (lab), `ASP_OIDC_KEY`, `ASP_OIDC_KEY_PREV`, `ASP_OIDC_ISSUER`, `ASP_ATTEST_KEY`, `ASP_ATTEST_PUB`, `ASP_ATTEST_TRUSTED_PUBS` |
 | Notas vsock | `scripts/guest-vsock-notes.md`, `docs/why-ch-hybrid-guest-host.md` |
 | Smoke | `scripts/smoke-identity-egress.sh` |
 

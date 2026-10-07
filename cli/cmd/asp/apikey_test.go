@@ -12,6 +12,7 @@ import (
 )
 
 func TestAPIKeyCommands(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")
 	t.Setenv("ASP_ID_TOKEN", "")
 	t.Setenv("ASP_API_KEY", "")
@@ -46,7 +47,7 @@ func TestAPIKeyCommands(t *testing.T) {
 	defer srv.Close()
 	do := func(args ...string) (int, string, string) {
 		var stdout, stderr strings.Builder
-		code := run(append([]string{"apikey"}, append(args, "--cp-url", srv.URL)...), &stdout, &stderr)
+		code := run(append([]string{"apikey"}, append(args, "--control-plane-url", srv.URL)...), &stdout, &stderr)
 		return code, stdout.String(), stderr.String()
 	}
 

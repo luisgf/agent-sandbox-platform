@@ -16,7 +16,7 @@ El host ya expone el SSH agent en AF_VSOCK CID **2** puerto **26501** (`--host-v
 - Unidad systemd **`ssh-agent-vsock.service`** (+ ejemplo OpenRC) habilitada al construir el rootfs (`scripts/build-guest-rootfs.sh`).
 - Fallback lab: `ASP_SSH_AGENT_UPSTREAM=unix:/path` (p. ej. `host-vsock-26501.sock`) sin KVM.
 - Alternativa in-process: `pod-daemon --ssh-auth-bridge` (mismo contrato de path).
-- Flag node-agent **`--guest-ssh-agent-auto`**: default on cuando hay `--host-vsock` o `--ssh-agent-bridge`; off forzado con `ASP_GUEST_SSH_AGENT_AUTO=0`.
+- (La bandera `--guest-ssh-agent-auto` solo escribía una línea en el log: ya no hace nada y avisa. Que `ssh-agent-vsock.service` corra o no lo decide la imagen del guest.)
 - El **confirm gate** (`--ssh-agent-confirm`, Fase 2d) sigue aplicando a firmas vía este path.
 
 ## Elección: vsock proxy en guest (no virtiofs)
