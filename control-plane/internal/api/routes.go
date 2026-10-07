@@ -45,6 +45,8 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/nodes/{id}/work", s.ListNodeWork)
 	mux.HandleFunc("POST /v1/nodes/{id}/cordon", s.CordonNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/uncordon", s.UncordonNode)
+	mux.HandleFunc("PUT /v1/nodes/{id}/fence", s.SetNodeFence)
+	mux.HandleFunc("DELETE /v1/nodes/{id}/fence", s.ClearNodeFence)
 	mux.HandleFunc("GET /v1/nodes", s.ListNodes)
 	return mux
 }

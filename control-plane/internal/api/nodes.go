@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 )
@@ -23,7 +24,10 @@ type nodeView struct {
 	VMOverheadMiB int64           `json:"vm_overhead_mib"`
 	// StoppedSandboxes counts the stopped sandboxes on the node: each keeps a
 	// disk there and holds no CPU or memory (ADR-0012).
-	StoppedSandboxes    int64  `json:"stopped_sandboxes"`
+	StoppedSandboxes int64 `json:"stopped_sandboxes"`
+	// FenceConfigured says the control plane can power the node off when it
+	// declares it lost. The target itself is never serialized.
+	FenceConfigured     bool   `json:"fence_configured"`
 	Schedulable         bool   `json:"schedulable"`
 	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
 }
@@ -44,6 +48,7 @@ func (s *Server) nodeView(n store.Node, u store.NodeUsage, stopped int64, now ti
 		Allocatable:         store.NodeUsage{CPUMillis: cpu, MemoryMiB: mem, Sandboxes: slots},
 		VMOverheadMiB:       s.Sched.VMOverheadMiB,
 		StoppedSandboxes:    stopped,
+		FenceConfigured:     strings.TrimSpace(n.FenceEndpoint) != "",
 		Schedulable:         reason == "",
 		UnschedulableReason: string(reason),
 	}
@@ -87,6 +92,72 @@ func (s *Server) CordonNode(w http.ResponseWriter, r *http.Request) {
 // UncordonNode lets the scheduler place sandboxes on the node again.
 func (s *Server) UncordonNode(w http.ResponseWriter, r *http.Request) {
 	s.setNodeCordoned(w, r, false)
+}
+
+// setFenceRequest is the body of PUT /v1/nodes/{id}/fence.
+type setFenceRequest struct {
+	// Endpoint is where the control plane asks for the power-off: a webhook URL,
+	// a Redfish base URL or an IPMI host, according to ASP_FENCE_PROVIDER.
+	Endpoint string `json:"endpoint"`
+	// Token is the credential for it: the secret, or a reference the control
+	// plane resolves when it fences ("env:NAME", "file:/abs/path").
+	Token string `json:"token,omitempty"`
+}
+
+// SetNodeFence says how the control plane powers a node off when it declares it
+// lost. Only an admin may: a node that chose its own target could have the
+// control plane power off another host.
+func (s *Server) SetNodeFence(w http.ResponseWriter, r *http.Request) {
+	if !authorizeNodeAdmin(w, r, "configure node fencing", "an idp admin token or a platform api key is required to configure node fencing") {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "node id required")
+		return
+	}
+	var req setFenceRequest
+	if !decodeJSON(w, r, maxSmallBodyBytes, &req) {
+		return
+	}
+	req.Endpoint = strings.TrimSpace(req.Endpoint)
+	req.Token = strings.TrimSpace(req.Token)
+	if req.Endpoint == "" || len(req.Endpoint) > 2048 || strings.ContainsAny(req.Endpoint, "\r\n\x00") {
+		writeError(w, http.StatusBadRequest, "endpoint required (at most 2048 characters, no control characters)")
+		return
+	}
+	if err := fence.ValidateSecretRef(req.Token); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.storeNodeFence(w, r, id, req.Endpoint, req.Token)
+}
+
+// ClearNodeFence removes a node's fence target.
+func (s *Server) ClearNodeFence(w http.ResponseWriter, r *http.Request) {
+	if !authorizeNodeAdmin(w, r, "configure node fencing", "an idp admin token or a platform api key is required to configure node fencing") {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "node id required")
+		return
+	}
+	s.storeNodeFence(w, r, id, "", "")
+}
+
+func (s *Server) storeNodeFence(w http.ResponseWriter, r *http.Request, id, endpoint, token string) {
+	if _, err := s.Store.SetNodeFence(id, endpoint, token); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The log says that a target changed and who changed it, never what it is.
+	slog.Info("node fence target changed", "node_id", id, "configured", endpoint != "", "actor_sub", resolveActorSub(r, "", ""))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordoned bool) {

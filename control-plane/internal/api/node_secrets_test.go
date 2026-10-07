@@ -37,17 +37,24 @@ func TestNodeResponsesNeverIncludeFenceCredentials(t *testing.T) {
 		return rr.Body.String()
 	}
 
-	responses := map[string]string{
-		"register": do(http.MethodPost, "/v1/nodes/register",
-			`{"id":"n1","agent_endpoint":"http://127.0.0.1:9100","fence_endpoint":"https://bmc.example/redfish","fence_token":"bmc-password"}`, false),
+	// A node cannot choose its own fence target: the fields are ignored.
+	reg := `{"id":"n1","agent_endpoint":"http://127.0.0.1:9100","fence_endpoint":"https://evil.example/redfish","fence_token":"evil"}`
+	responses := map[string]string{"register": do(http.MethodPost, "/v1/nodes/register", reg, false)}
+	if n, err := mem.GetNode("n1"); err != nil || n.FenceEndpoint != "" || n.FenceToken != "" {
+		t.Fatalf("a node registered its own fence target: %+v %v", n, err)
 	}
+	// The operator sets it; it survives the node registering again.
+	if _, err := mem.SetNodeFence("n1", "https://bmc.example/redfish", "bmc-password"); err != nil {
+		t.Fatal(err)
+	}
+	responses["register again"] = do(http.MethodPost, "/v1/nodes/register", reg, false)
 	responses["enroll"] = do(http.MethodPost, "/v1/nodes/enroll", `{"id":"n1","agent_endpoint":"http://127.0.0.1:9100"}`, true)
 	responses["heartbeat"] = do(http.MethodPost, "/v1/nodes/n1/heartbeat", "", false)
 	responses["list"] = do(http.MethodGet, "/v1/nodes", "", false)
 	responses["revoke"] = do(http.MethodPost, "/v1/nodes/n1/revoke", "", true)
 
 	for name, body := range responses {
-		if strings.Contains(body, "bmc-password") || strings.Contains(body, "fence_") || strings.Contains(body, "bmc.example") {
+		if strings.Contains(body, "bmc-password") || strings.Contains(body, "fence_endpoint") || strings.Contains(body, "fence_token") || strings.Contains(body, "bmc.example") || strings.Contains(body, "evil") {
 			t.Errorf("%s response leaks fence credentials: %s", name, body)
 		}
 	}

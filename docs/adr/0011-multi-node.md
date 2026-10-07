@@ -57,7 +57,7 @@ Las dos salidas existen para laboratorios. Dejan el `exec` sin autenticar y se a
 
 ### 4. Secretos de fencing
 
-`fence_token` y `fence_endpoint` no se serializan nunca. Siguen en el store para el fencing. `GET /v1/nodes` exige rol admin u operador cuando hay principal de IdP.
+`fence_token` y `fence_endpoint` no se serializan nunca. Siguen en el store para el fencing. Desde 2026-10 (#100) no los elige el nodo al registrarse, sino un admin (`PUT /v1/nodes/{id}/fence`, `asp node fence set`): un nodo comprometido podía apuntarlos al BMC de otro host. El token puede ser una referencia (`env:NAME`, `file:/ruta`) que el plano de control resuelve al fencear. `GET /v1/nodes` exige rol admin u operador cuando hay principal de IdP.
 
 ### 5. Enroll contra un plano de control remoto
 

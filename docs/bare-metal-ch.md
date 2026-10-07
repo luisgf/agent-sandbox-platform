@@ -686,7 +686,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 - Cada `GET /v1/nodes/{id}/work` trae `assigned`: las sandboxes colocadas en ese nodo que lo siguen ocupando. El reconciler para cualquier VM local que no esté ahí (fallada por nodo perdido, destruida o de otro nodo), sin reportar estado. Un 409 al reportar `running` también la para.
 - Sustituye a los leases por sandbox (`node_lease_until`, migración `004`, y `POST …/renew-lease`), retirados en 2026-10: `renew-lease` responde 410 y la columna ya no se escribe. En estado estable el nodo solo hace el sondeo de `/work` y el heartbeat.
 - Ningún nodo reclama sandboxes de otro: un nodo caído lo detecta el monitor del plano de control ([ADR-0011](adr/0011-multi-node.md), [`ops-multi-node.md`](ops-multi-node.md)): `offline` a los `ASP_NODE_STALE_AFTER` (90 s); fencing y sandboxes → `failed` (`node_lost`) a los `ASP_NODE_FAILOVER_AFTER` (5 min).
-- `nodes.fence_token` es opcional (metadato ops).
+- El destino de fencing de un nodo (`fence_endpoint`, `fence_token`) lo fija un admin en el plano de control (`asp node fence set`, §8c), nunca el nodo: un agente comprometido podría apuntarlo al BMC de otro servidor.
 
 **Límite split-brain (honesto):** la autodefensa del nodo **no** es STONITH. Un nodo particionado sigue corriendo sus VMs hasta que vuelve y ve que ya no están en su conjunto `assigned`, o hasta el fencing. Mitigación: `ASP_FENCE_PROVIDER` (ver §8c).
 
@@ -716,7 +716,16 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 | `redfish` | Stub HTTP basic → `{endpoint}/redfish/v1/Systems/1/Actions/ComputerSystem.Reset` |
 | `ipmi` | Exec `ipmitool … chassis power off` si existe; **SoftFail** si no |
 
-Registro de nodo: `fence_endpoint` + `fence_token` (migración `005`). Cuando el monitor da un nodo por perdido y tiene sandboxes, el CP llama al provider (una vez por caída) antes de marcarlas `failed`. Si el fencing falla, se registra `node.fence_failed` y se marcan igual.
+El destino de cada nodo lo configura un admin (IdP admin o API key de plataforma), no el nodo:
+
+```bash
+asp node fence set ncc1701d --endpoint https://bmc.example/redfish --token-env BMC_PW   # lee BMC_PW del entorno del CP al fencear
+asp node fence set ncc1701d --endpoint 10.0.0.9 --token-file /etc/asp/bmc.pw             # o de un fichero del host del CP
+echo -n "$PW" | asp node fence set ncc1701d --endpoint … --token-stdin                     # o se guarda en la base de datos
+asp node fence clear ncc1701d
+```
+
+(API: `PUT`/`DELETE /v1/nodes/{id}/fence`.) El endpoint y el token nunca salen en ninguna respuesta; `GET /v1/nodes` solo dice `fence_configured`. Con `--token-env`/`--token-file` el secreto no llega a Postgres; un `ipmitool` recibe la contraseña por `IPMI_PASSWORD`, no por la línea de comandos. Los campos `fence_endpoint`/`fence_token` que mande un agente al registrarse se ignoran, y `ASP_FENCE_ENDPOINT`/`ASP_FENCE_TOKEN` del node-agent ya no hacen nada (avisa en el log). Cuando el monitor da un nodo por perdido y tiene sandboxes, el CP llama al provider (una vez por caída) antes de marcarlas `failed`. Si el fencing falla, se registra `node.fence_failed` y se marcan igual.
 
 > **Ops:** STONITH real exige BMC out-of-band (Redfish/IPMI alcanzable aunque el host esté hung). Una fila en Postgres **no** apaga VMs huérfanas.
 

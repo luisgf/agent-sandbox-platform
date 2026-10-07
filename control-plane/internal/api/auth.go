@@ -114,7 +114,7 @@ func isNodeAdminPath(path string) bool {
 	if !strings.HasPrefix(path, "/v1/nodes/") {
 		return false
 	}
-	for _, suffix := range []string{"/cordon", "/uncordon", "/revoke", "/rotate-cert"} {
+	for _, suffix := range []string{"/cordon", "/uncordon", "/revoke", "/rotate-cert", "/fence"} {
 		if strings.HasSuffix(path, suffix) {
 			return true
 		}

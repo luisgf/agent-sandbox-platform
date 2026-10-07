@@ -92,6 +92,11 @@ type Store interface {
 	TouchNodePoll(id string, now time.Time) error
 	// SetNodeCordoned stops (true) or resumes (false) new placements on a node.
 	SetNodeCordoned(id string, cordoned bool) (Node, error)
+	// SetNodeFence sets, or with an empty endpoint clears, the power-off target
+	// the control plane uses when it declares the node lost. It is an operator
+	// decision: a node never chooses it, or a compromised one could have the
+	// control plane power off another host. ErrNotFound for an unknown node.
+	SetNodeFence(id, endpoint, token string) (Node, error)
 	// ListNodeUsage sums what is placed on each node (states that hold a node).
 	ListNodeUsage() (map[string]NodeUsage, error)
 	// MarkNodeOffline marks a silent node offline: only if it is not revoked, not

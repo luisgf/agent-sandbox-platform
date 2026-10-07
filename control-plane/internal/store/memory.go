@@ -503,8 +503,6 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		AcceptsWork:     input.acceptsWork(),
 		LocalNetDial:    strings.TrimSpace(input.LocalNetDial),
 		AgentInstanceID: strings.TrimSpace(input.AgentInstanceID),
-		FenceEndpoint:   strings.TrimSpace(input.FenceEndpoint),
-		FenceToken:      strings.TrimSpace(input.FenceToken),
 		LastSeenAt:      &seen,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -548,12 +546,9 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		if node.AgentEndpoint == "" {
 			node.AgentEndpoint = existing.AgentEndpoint
 		}
-		if node.FenceEndpoint == "" {
-			node.FenceEndpoint = existing.FenceEndpoint
-		}
-		if node.FenceToken == "" {
-			node.FenceToken = existing.FenceToken
-		}
+		// The fence target is an admin decision too (SetNodeFence).
+		node.FenceEndpoint = existing.FenceEndpoint
+		node.FenceToken = existing.FenceToken
 		m.nodes[id] = node
 		return cloneNode(node), nil
 	}
@@ -830,6 +825,23 @@ func (m *MemoryStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
 		return Node{}, ErrNotFound
 	}
 	n.Cordoned = cordoned
+	n.UpdatedAt = time.Now().UTC()
+	m.nodes[id] = n
+	return cloneNode(n), nil
+}
+
+func (m *MemoryStore) SetNodeFence(id, endpoint, token string) (Node, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return Node{}, ErrNotFound
+	}
+	n.FenceEndpoint = strings.TrimSpace(endpoint)
+	n.FenceToken = strings.TrimSpace(token)
+	if n.FenceEndpoint == "" {
+		n.FenceToken = ""
+	}
 	n.UpdatedAt = time.Now().UTC()
 	m.nodes[id] = n
 	return cloneNode(n), nil

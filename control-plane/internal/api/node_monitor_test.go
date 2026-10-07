@@ -162,9 +162,10 @@ func TestNodeMonitorFencesALostNodeOncePerOutage(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := store.NewMemoryStore()
 	for _, id := range []string{"busy", "idle"} {
-		if _, err := mem.RegisterNode(store.RegisterNodeInput{
-			ID: id, AgentEndpoint: "http://127.0.0.1:9100", FenceEndpoint: webhook.URL, FenceToken: "tok-" + id,
-		}); err != nil {
+		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mem.SetNodeFence(id, webhook.URL, "tok-"+id); err != nil {
 			t.Fatal(err)
 		}
 	}

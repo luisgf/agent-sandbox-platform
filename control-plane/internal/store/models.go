@@ -214,8 +214,6 @@ type RegisterNodeInput struct {
 	// AgentInstanceID is random per node-agent process; a new one on register
 	// means the agent restarted and its running sandboxes are orphaned.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
-	FenceEndpoint   string `json:"fence_endpoint,omitempty"`
-	FenceToken      string `json:"fence_token,omitempty"`
 }
 
 // acceptsWork resolves the optional register field.

@@ -43,18 +43,21 @@ type Sandbox struct {
 
 // Node mirrors the control plane's node view (GET /v1/nodes).
 type Node struct {
-	ID             string     `json:"id"`
-	State          string     `json:"state"`
-	AgentEndpoint  string     `json:"agent_endpoint,omitempty"`
-	Cordoned       bool       `json:"cordoned"`
-	AcceptsWork    bool       `json:"accepts_work"`
-	CapacityCPU    int        `json:"capacity_cpu"`
-	CapacityMemMiB int        `json:"capacity_mem_mib"`
-	MaxSandboxes   int        `json:"max_sandboxes"`
-	LastSeenAt     *time.Time `json:"last_seen_at"`
-	CertNotAfter   *time.Time `json:"cert_not_after,omitempty"`
-	Allocated      NodeUsage  `json:"allocated"`
-	Allocatable    NodeUsage  `json:"allocatable"` // 0 = not enforced
+	ID            string `json:"id"`
+	State         string `json:"state"`
+	AgentEndpoint string `json:"agent_endpoint,omitempty"`
+	Cordoned      bool   `json:"cordoned"`
+	// FenceConfigured says the control plane can power the node off if it loses
+	// it; the target itself is never served.
+	FenceConfigured bool       `json:"fence_configured"`
+	AcceptsWork     bool       `json:"accepts_work"`
+	CapacityCPU     int        `json:"capacity_cpu"`
+	CapacityMemMiB  int        `json:"capacity_mem_mib"`
+	MaxSandboxes    int        `json:"max_sandboxes"`
+	LastSeenAt      *time.Time `json:"last_seen_at"`
+	CertNotAfter    *time.Time `json:"cert_not_after,omitempty"`
+	Allocated       NodeUsage  `json:"allocated"`
+	Allocatable     NodeUsage  `json:"allocatable"` // 0 = not enforced
 	// StoppedSandboxes counts the stopped sandboxes on the node: each keeps a
 	// disk there and holds no CPU or memory.
 	StoppedSandboxes int64 `json:"stopped_sandboxes"`
@@ -199,6 +202,22 @@ func (c *Client) SetNodeCordoned(ctx context.Context, id string, cordoned bool) 
 	var out Node
 	err := c.doJSON(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(id)+"/"+action, nil, http.StatusOK, &out)
 	return out, err
+}
+
+// SetNodeFence sets the power-off target the control plane uses when it declares
+// a node lost (admin). token is the credential or a reference the control plane
+// resolves ("env:NAME", "file:/abs/path"). It is never returned by any call.
+func (c *Client) SetNodeFence(ctx context.Context, id, endpoint, token string) error {
+	body := map[string]string{"endpoint": endpoint}
+	if token != "" {
+		body["token"] = token
+	}
+	return c.doJSON(ctx, http.MethodPut, "/v1/nodes/"+url.PathEscape(id)+"/fence", body, http.StatusNoContent, nil)
+}
+
+// ClearNodeFence removes a node's fence target (admin).
+func (c *Client) ClearNodeFence(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(id)+"/fence", nil, http.StatusNoContent, nil)
 }
 
 // EnrollToken is a single-use node enrollment token.

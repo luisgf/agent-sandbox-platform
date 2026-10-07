@@ -167,7 +167,10 @@ func (i *IPMI) Fence(ctx context.Context, t Target) error {
 	if run == nil {
 		run = exec.CommandContext
 	}
-	cmd := run(ctx, bin, "-I", "lanplus", "-H", host, "-U", user, "-P", pass, "chassis", "power", "off")
+	// -E reads the password from IPMI_PASSWORD: with -P it would be in the
+	// argument list, which every user of the host can read with ps.
+	cmd := run(ctx, bin, "-I", "lanplus", "-H", host, "-U", user, "-E", "chassis", "power", "off")
+	cmd.Env = append(os.Environ(), "IPMI_PASSWORD="+pass)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ipmitool: %w (%s)", err, bytes.TrimSpace(out))

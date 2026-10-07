@@ -133,8 +133,10 @@ func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
 	for _, id := range []string{"node-b", "node-a"} {
 		if _, err := mem.RegisterNode(store.RegisterNodeInput{
 			ID: id, AgentEndpoint: "http://127.0.0.1:9100", CapacityCPU: 2, CapacityMemMiB: 4096, MaxSandboxes: 4,
-			FenceToken: "bmc-secret",
 		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mem.SetNodeFence(id, "https://bmc.example/"+id, "bmc-secret"); err != nil {
 			t.Fatal(err)
 		}
 	}

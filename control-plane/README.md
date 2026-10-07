@@ -35,9 +35,10 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`), `assigned`: las que el nodo debe seguir corriendo (para el resto), y `egress`: tenant de cada sandbox y política efectiva con `version` de cada tenant |
 | POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin o API key de plataforma) |
 | POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin o API key de plataforma) |
+| PUT / DELETE | `/v1/nodes/{id}/fence` | Fija (`{"endpoint","token"}`; el token puede ser `env:NAME` o `file:/ruta`) o quita el destino de fencing del nodo (admin o API key de plataforma; 204). Nunca se devuelve |
 | GET | `/v1/nodes` | Lista nodos con asignado/ofrecido, si son planificables y cuándo caduca su certificado (`cert_not_after`) (admin, operador o API key de plataforma) |
 
-Administrar nodos (listar, cordon, uncordon, revoke, rotate-cert) nunca acepta una API key de tenant: los nodos los comparten todos los tenants (403). Con `ASP_IDP_REQUIRED=1` hace falta un token del IdP con rol admin (operador para listar). `rotate-cert` acepta además el bootstrap token, para que un nodo se re-emita el certificado; `revoke` no, porque ese token lo tienen todos los nodos. En el lab abierto (sin API keys ni IdP) estas rutas quedan abiertas como el resto, salvo `rotate-cert`, que sigue pidiendo el bootstrap token porque entrega la clave privada de un nodo.
+Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca acepta una API key de tenant: los nodos los comparten todos los tenants (403). Con `ASP_IDP_REQUIRED=1` hace falta un token del IdP con rol admin (operador para listar). `rotate-cert` acepta además el bootstrap token, para que un nodo se re-emita el certificado; `revoke` no, porque ese token lo tienen todos los nodos. En el lab abierto (sin API keys ni IdP) estas rutas quedan abiertas como el resto, salvo `rotate-cert`, que sigue pidiendo el bootstrap token porque entrega la clave privada de un nodo.
 
 ## Variables de entorno
 
@@ -86,6 +87,7 @@ Administrar nodos (listar, cordon, uncordon, revoke, rotate-cert) nunca acepta u
 | `ASP_ATTEST_MAX_AGE` | `10m` | Freshness para verify + claim OIDC |
 | `ASP_FENCE_PROVIDER` | `noop` | `noop`\|`http_webhook`\|`redfish`\|`ipmi` |
 | `ASP_FENCE_USER` | | Usuario Redfish/IPMI |
+| `ASP_FENCE_PASS` | | Contraseña IPMI/Redfish por defecto si el nodo no tiene token. Un `ipmitool` la recibe por `IPMI_PASSWORD` |
 | `ASP_EGRESS_DEFAULT_ALLOW` | `1` en memory-dev | Vacío = allow-all |
 | `ASP_EGRESS_DENY_DEFAULT` | unset | Vacío = deny (harden; desactiva allow memory) |
 | `ASP_AUTO_PROVISION` | unset/false | `1` = stub sync Create→running; default deja `requested` |
