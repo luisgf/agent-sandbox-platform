@@ -4,16 +4,24 @@ After=network.target cmdline-ip.service
 ConditionPathExists=/usr/local/bin/pod-daemon
 
 [Service]
-# Run as root. systemd 252 returns 200/CHDIR for User=sandboxd before exec
-# (the listener never binds). Revisit when that chdir is fixed.
+# pod-daemon stays root: it has to start commands as other users (the owner of
+# the workspace, or sandboxd) and as root when a request says as_root. What it
+# does not do is hand root out: a command runs as root only on request, it only
+# answers the host (vsock CID 2), and every command gets resource limits and joins
+# a cgroup (/sys/fs/cgroup/asp-exec). See pod-daemon/README.md.
+# (A systemd 252 quirk kept User=sandboxd from working here: it returned 200/CHDIR
+# before exec and the listener never bound. Running the daemon unprivileged would
+# also take away as_root and the user switch.)
 Type=simple
 WorkingDirectory=/
 Environment=ASP_HOST_CID=2
 ExecStart=/usr/local/bin/pod-daemon --listen vsock --vsock-port 26500
 Restart=on-failure
 RestartSec=1
+# 0755: commands run as the workspace owner and reach the SSH agent socket through
+# this directory.
 RuntimeDirectory=agent-sandbox
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0755
 
 # Guest→host identity (OIDC mint) via host CID 2 port 26502 — apps may curl via a
 # small vsock HTTP client or socat; see scripts/guest-vsock-notes.md.

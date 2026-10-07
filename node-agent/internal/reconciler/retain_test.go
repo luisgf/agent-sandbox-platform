@@ -423,6 +423,11 @@ func TestStopAsksTheGuestToPowerOffFirst(t *testing.T) {
 	if !strings.Contains(events[0], "systemctl poweroff") || !strings.Contains(events[0], "sync") {
 		t.Fatalf("poweroff request=%q", events[0])
 	}
+	// pod-daemon runs a command as an unprivileged user unless it is asked for
+	// root, and an unprivileged systemctl cannot power the guest off.
+	if !strings.Contains(events[0], `"as_root":true`) {
+		t.Fatalf("poweroff request does not ask for root: %q", events[0])
+	}
 	if got, _ := cp.state(idA); got != "stopped" || !exists(diskOf(disks, idA)) {
 		t.Fatalf("state=%s, disk exists=%v", got, exists(diskOf(disks, idA)))
 	}

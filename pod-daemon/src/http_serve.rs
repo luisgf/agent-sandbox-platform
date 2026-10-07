@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::exec_session::{self, StdinSlot};
 use crate::pty::{self, PtyCommand};
+use crate::runas::{self, ExecPolicy, SystemAccounts};
 
 #[derive(Debug, Deserialize)]
 struct ExecRequest {
@@ -34,6 +35,10 @@ struct ExecRequest {
     /// Non-PTY stream: keep a pipe open and accept POST /v1/exec/stdin.
     #[serde(default)]
     stdin_stream: bool,
+    /// Run as root. Without it a command runs as the owner of the workspace, or
+    /// as the default exec user (see `runas`).
+    #[serde(default)]
+    as_root: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +74,20 @@ pub struct ExecLimits {
     /// Kills a streamed exec after this long without output and without stdin.
     /// None: a stream lasts as long as its command and its client.
     pub stream_idle: Option<Duration>,
+    /// Who commands run as and under which resource limits.
+    pub policy: &'static ExecPolicy,
+}
+
+#[cfg(test)]
+impl ExecLimits {
+    /// Time limits with commands keeping the daemon's own identity, unconfined.
+    pub fn new(buffered: Duration, stream_idle: Option<Duration>) -> ExecLimits {
+        ExecLimits {
+            buffered,
+            stream_idle,
+            policy: ExecPolicy::no_switch_static(),
+        }
+    }
 }
 
 /// Lets the stream path notice a client that closed the connection while the
@@ -207,10 +226,10 @@ pub fn handle_connection<S: Read + Write + PeerState>(stream: S, limits: ExecLim
         if req.method == "POST" && path_only == "/v1/exec" && stream_exec {
             return match parse_exec(&req.body) {
                 Err((status, body)) => write_bytes(conn.get_mut(), status, &body, false),
-                Ok(exec) => run_exec_stream(conn.get_mut(), &exec, limits.stream_idle),
+                Ok(exec) => run_exec_stream(conn.get_mut(), &exec, limits.stream_idle, limits.policy),
             };
         }
-        let (status, body) = respond_buffered(&req.method, path_only, &req.body, limits.buffered);
+        let (status, body) = respond_buffered(&req.method, path_only, &req.body, limits);
         let keep_alive = !req.close;
         write_bytes(conn.get_mut(), status, &body, keep_alive)?;
         if !keep_alive {
@@ -220,19 +239,29 @@ pub fn handle_connection<S: Read + Write + PeerState>(stream: S, limits: ExecLim
 }
 
 /// Answers every request but a streamed exec.
-fn respond_buffered(method: &str, path: &str, body: &[u8], timeout: Duration) -> (u16, Vec<u8>) {
+fn respond_buffered(method: &str, path: &str, body: &[u8], limits: ExecLimits) -> (u16, Vec<u8>) {
     match (method, path) {
         ("", _) => (400, br#"{"error":"bad request line"}"#.to_vec()),
         ("GET", "/healthz") => (200, br#"{"status":"ok"}"#.to_vec()),
         ("POST", "/v1/exec/stdin") => stdin_response(body),
         ("POST", "/v1/exec") => match parse_exec(body) {
             Err(resp) => resp,
-            Ok(req) => match run_exec(&req, timeout) {
+            Ok(req) => match run_exec(&req, limits.buffered, limits.policy) {
                 Ok(out) => json_body(200, &out),
-                Err(e) => json_body(500, &ErrorBody { error: e.to_string() }),
+                Err(e) => json_body(exec_error_status(&e), &ErrorBody { error: e.to_string() }),
             },
         },
         _ => (404, br#"{"error":"not found"}"#.to_vec()),
+    }
+}
+
+/// 403 for a request the daemon's policy refuses (as_root without root), 500 for
+/// a command that could not be started.
+fn exec_error_status(e: &io::Error) -> u16 {
+    if runas::is_refusal(e) {
+        403
+    } else {
+        500
     }
 }
 
@@ -281,12 +310,10 @@ fn path_and_stream(raw: &str) -> (&str, bool) {
     (path, stream)
 }
 
-fn apply_cwd_env(command: &mut Command, req: &ExecRequest) {
-    if let Some(cwd) = &req.cwd {
-        if !cwd.is_empty() {
-            command.current_dir(cwd);
-        }
-    }
+/// Puts the request's environment on a command. It runs after `Prepared::apply`,
+/// so a request can override HOME, USER and LOGNAME. The working directory is
+/// not set here: it is changed in the child, after the user switch.
+fn apply_env(command: &mut Command, req: &ExecRequest) {
     if let Some(env) = &req.env {
         for (k, v) in env {
             command.env(k, v);
@@ -294,27 +321,30 @@ fn apply_cwd_env(command: &mut Command, req: &ExecRequest) {
     }
 }
 
-fn spawn_command(req: &ExecRequest) -> io::Result<std::process::Child> {
-    let mut command = Command::new(&req.cmd[0]);
-    command
-        .args(&req.cmd[1..])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    apply_cwd_env(&mut command, req);
-    command.spawn()
+/// Decides who the command runs as and under which limits.
+fn prepare(req: &ExecRequest, policy: &ExecPolicy) -> io::Result<runas::Prepared> {
+    runas::prepare(policy, &SystemAccounts, runas::euid(), req.as_root, req.cwd.as_deref())
 }
 
-fn spawn_with_stdin_pipe(req: &ExecRequest) -> io::Result<std::process::Child> {
+fn spawn_command(req: &ExecRequest, policy: &ExecPolicy) -> io::Result<std::process::Child> {
+    spawn_piped(req, policy, Stdio::null())
+}
+
+fn spawn_with_stdin_pipe(req: &ExecRequest, policy: &ExecPolicy) -> io::Result<std::process::Child> {
+    spawn_piped(req, policy, Stdio::piped())
+}
+
+fn spawn_piped(req: &ExecRequest, policy: &ExecPolicy, stdin: Stdio) -> io::Result<std::process::Child> {
+    let prepared = prepare(req, policy)?;
     let mut command = Command::new(&req.cmd[0]);
     command
         .args(&req.cmd[1..])
-        .stdin(Stdio::piped())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    apply_cwd_env(&mut command, req);
+    prepared.apply(&mut command);
+    apply_env(&mut command, req);
     command.spawn()
 }
 
@@ -346,20 +376,25 @@ impl Drop for ChildGuard {
 /// user. It ends when the command exits, when the client closes the connection
 /// (the command is killed: nobody is left to read it), or, with `idle` set,
 /// after that long without output and without stdin (exit code 124).
-fn run_exec_stream<S: Write + PeerState>(out: &mut S, req: &ExecRequest, idle: Option<Duration>) -> io::Result<()> {
+fn run_exec_stream<S: Write + PeerState>(out: &mut S, req: &ExecRequest, idle: Option<Duration>, policy: &ExecPolicy) -> io::Result<()> {
     let mut session = SessionGuard(None);
     let mut pty_reader: Option<File> = None;
     let child = if req.pty {
-        let (child, master) = match pty::spawn(PtyCommand {
-            cmd: req.cmd.clone(),
-            cwd: req.cwd.clone(),
-            env: req.env.clone(),
-            rows: req.rows,
-            cols: req.cols,
-        }) {
+        let spawned = prepare(req, policy).and_then(|prepared| {
+            pty::spawn(
+                PtyCommand {
+                    cmd: req.cmd.clone(),
+                    env: req.env.clone(),
+                    rows: req.rows,
+                    cols: req.cols,
+                },
+                prepared,
+            )
+        });
+        let (child, master) = match spawned {
             Ok(v) => v,
             Err(e) => {
-                return write_json(out, 500, &ErrorBody { error: e.to_string() });
+                return write_json(out, exec_error_status(&e), &ErrorBody { error: e.to_string() });
             }
         };
         let reader = master.try_clone()?;
@@ -367,20 +402,20 @@ fn run_exec_stream<S: Write + PeerState>(out: &mut S, req: &ExecRequest, idle: O
         pty_reader = Some(reader);
         child
     } else if req.stdin_stream {
-        let mut child = match spawn_with_stdin_pipe(req) {
+        let mut child = match spawn_with_stdin_pipe(req, policy) {
             Ok(c) => c,
             Err(e) => {
-                return write_json(out, 500, &ErrorBody { error: e.to_string() });
+                return write_json(out, exec_error_status(&e), &ErrorBody { error: e.to_string() });
             }
         };
         let stdin = child.stdin.take();
         session.0 = Some(exec_session::register(StdinSlot::Pipe(Mutex::new(stdin))));
         child
     } else {
-        match spawn_command(req) {
+        match spawn_command(req, policy) {
             Ok(c) => c,
             Err(e) => {
-                return write_json(out, 500, &ErrorBody { error: e.to_string() });
+                return write_json(out, exec_error_status(&e), &ErrorBody { error: e.to_string() });
             }
         }
     };
@@ -547,14 +582,14 @@ fn write_chunk_end<S: Write>(stream: &mut S) -> io::Result<()> {
     stream.flush()
 }
 
-fn run_exec(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
+fn run_exec(req: &ExecRequest, timeout: Duration, policy: &ExecPolicy) -> io::Result<ExecResponse> {
     if req.pty {
-        return run_exec_pty_buffered(req, timeout);
+        return run_exec_pty_buffered(req, timeout, policy);
     }
     let child = if req.stdin.is_some() {
-        spawn_with_stdin_pipe(req)?
+        spawn_with_stdin_pipe(req, policy)?
     } else {
-        spawn_command(req)?
+        spawn_command(req, policy)?
     };
     collect_output(child, req.stdin.as_deref(), timeout)
 }
@@ -676,14 +711,16 @@ fn drain_for(rx: &mpsc::Receiver<(&'static str, Vec<u8>)>, out: &mut Collected, 
     }
 }
 
-fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration) -> io::Result<ExecResponse> {
-    let (mut child, master) = pty::spawn(PtyCommand {
-        cmd: req.cmd.clone(),
-        cwd: req.cwd.clone(),
-        env: req.env.clone(),
-        rows: req.rows,
-        cols: req.cols,
-    })?;
+fn run_exec_pty_buffered(req: &ExecRequest, timeout: Duration, policy: &ExecPolicy) -> io::Result<ExecResponse> {
+    let (mut child, master) = pty::spawn(
+        PtyCommand {
+            cmd: req.cmd.clone(),
+            env: req.env.clone(),
+            rows: req.rows,
+            cols: req.cols,
+        },
+        prepare(req, policy)?,
+    )?;
     // Read the master before writing to it: with echo on, input comes back as
     // output, and a master nobody reads stops accepting writes.
     let mut reader = master.try_clone()?;
@@ -761,6 +798,7 @@ fn write_bytes<S: Write>(stream: &mut S, status: u16, body: &[u8], keep_alive: b
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         500 => "Internal Server Error",
         _ => "Error",
@@ -779,6 +817,7 @@ fn write_bytes<S: Write>(stream: &mut S, status: u16, body: &[u8], keep_alive: b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runas::Accounts;
     use std::io::Cursor;
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
@@ -787,10 +826,7 @@ mod tests {
     impl PeerState for Cursor<Vec<u8>> {}
 
     fn limits(buffered_secs: u64) -> ExecLimits {
-        ExecLimits {
-            buffered: Duration::from_secs(buffered_secs),
-            stream_idle: None,
-        }
+        ExecLimits::new(Duration::from_secs(buffered_secs), None)
     }
 
     #[test]
@@ -989,8 +1025,9 @@ mod tests {
             cols: 0,
             stdin: stdin.map(str::to_string),
             stdin_stream: false,
+            as_root: false,
         };
-        run_exec(&req, timeout).unwrap()
+        run_exec(&req, timeout, ExecPolicy::no_switch_static()).unwrap()
     }
 
     #[test]
@@ -1066,10 +1103,7 @@ mod tests {
     // The buffered exec timeout does not apply to a stream.
     #[test]
     fn stream_exec_outlives_the_buffered_timeout() {
-        let addr = serve_with(ExecLimits {
-            buffered: Duration::from_millis(300),
-            stream_idle: None,
-        });
+        let addr = serve_with(ExecLimits::new(Duration::from_millis(300), None));
         let stream = post(addr, "/v1/exec?stream=1", r#"{"cmd":["/bin/sh","-c","sleep 1; echo done"]}"#);
         let mut r = BufReader::new(stream);
         read_headers(&mut r);
@@ -1099,10 +1133,7 @@ mod tests {
 
     #[test]
     fn stream_idle_timeout_stops_a_silent_command_only() {
-        let addr = serve_with(ExecLimits {
-            buffered: Duration::from_secs(30),
-            stream_idle: Some(Duration::from_millis(500)),
-        });
+        let addr = serve_with(ExecLimits::new(Duration::from_secs(30), Some(Duration::from_millis(500))));
         let started = Instant::now();
         let stream = post(addr, "/v1/exec?stream=1", r#"{"cmd":["/bin/sh","-c","exec sleep 10"]}"#);
         let mut r = BufReader::new(stream);
@@ -1123,10 +1154,7 @@ mod tests {
     // Typing into a silent command is activity too.
     #[test]
     fn stream_idle_timeout_counts_stdin() {
-        let addr = serve_with(ExecLimits {
-            buffered: Duration::from_secs(30),
-            stream_idle: Some(Duration::from_millis(500)),
-        });
+        let addr = serve_with(ExecLimits::new(Duration::from_secs(30), Some(Duration::from_millis(500))));
         let stream = post(
             addr,
             "/v1/exec?stream=1",
@@ -1220,5 +1248,222 @@ mod tests {
         let empty = Cursor::new(Vec::<u8>::new());
         handle_connection(empty, limits(1)).unwrap();
         let _ = cur;
+    }
+
+    // ---- who a command runs as, and its limits (#106) ----
+
+    fn leak(policy: ExecPolicy) -> &'static ExecPolicy {
+        Box::leak(Box::new(policy))
+    }
+
+    fn run(policy: &'static ExecPolicy, body: &str) -> (u16, String) {
+        let limits = ExecLimits {
+            buffered: Duration::from_secs(10),
+            stream_idle: None,
+            policy,
+        };
+        let (status, bytes) = respond_buffered("POST", "/v1/exec", body.as_bytes(), limits);
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn stdout_of(resp: &str) -> String {
+        let v: serde_json::Value = serde_json::from_str(resp).unwrap_or_else(|e| panic!("{e}: {resp}"));
+        v["stdout"].as_str().unwrap_or_default().trim().to_string()
+    }
+
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("pd-runas-{}-{}-{}", std::process::id(), tag, line!()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn chown(path: &std::path::Path, uid: u32, gid: u32) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(c.as_ptr(), uid, gid) }, 0, "chown {}", path.display());
+    }
+
+    fn switching(workspace: &std::path::Path, default_user: &str) -> ExecPolicy {
+        ExecPolicy {
+            default_user: Some(default_user.into()),
+            workspace_dir: workspace.to_path_buf(),
+            limits: runas::Limits::NONE,
+            cgroup: None,
+        }
+    }
+
+    // as_root on a daemon that is not root cannot be honoured, and says so: the
+    // caller would otherwise believe it ran as root.
+    #[test]
+    fn as_root_is_refused_by_a_daemon_that_is_not_root() {
+        if is_root() {
+            return;
+        }
+        let policy = leak(switching(std::path::Path::new("/nonexistent"), "sandboxd"));
+        let (status, body) = run(policy, r#"{"cmd":["id","-u"],"as_root":true}"#);
+        assert_eq!(status, 403, "{body}");
+        assert!(body.contains("as_root needs pod-daemon to run as root"), "{body}");
+        // The same command without as_root runs, as the daemon's own user.
+        let (status, body) = run(policy, r#"{"cmd":["id","-u"]}"#);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(stdout_of(&body), unsafe { libc::geteuid() }.to_string());
+        // The refusal covers the stream and PTY paths too.
+        let mut out = Cursor::new(Vec::new());
+        run_exec_stream(&mut out, &serde_json::from_str(r#"{"cmd":["id"],"as_root":true,"pty":true}"#).unwrap(), None, policy).unwrap();
+        let text = String::from_utf8_lossy(out.get_ref()).into_owned();
+        assert!(text.starts_with("HTTP/1.1 403 Forbidden"), "{text}");
+    }
+
+    // A command that cannot be executed is a failed start (500), not a refusal.
+    #[test]
+    fn a_missing_command_is_a_failed_start_not_a_refusal() {
+        let (status, body) = run(ExecPolicy::no_switch_static(), r#"{"cmd":["/nonexistent/binary"]}"#);
+        assert_eq!(status, 500, "{body}");
+    }
+
+    #[test]
+    fn limits_apply_to_every_command() {
+        let policy = leak(ExecPolicy {
+            default_user: None,
+            workspace_dir: std::path::PathBuf::new(),
+            limits: runas::Limits {
+                max_procs: 0,
+                max_open_files: 64,
+                core_dumps: false,
+            },
+            cgroup: None,
+        });
+        let (status, body) = run(policy, r#"{"cmd":["/bin/sh","-c","echo $(ulimit -n) $(ulimit -c)"]}"#);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(stdout_of(&body), "64 0");
+        // A request cannot lift them: soft and hard are both set.
+        let (_, body) = run(policy, r#"{"cmd":["/bin/sh","-c","ulimit -n 100000 2>&1; echo $(ulimit -n) $(ulimit -Hn)"]}"#);
+        assert!(stdout_of(&body).ends_with("64 64"), "{body}");
+        // Through a PTY as well.
+        let (_, body) = run(policy, r#"{"cmd":["/bin/sh","-c","ulimit -n"],"pty":true}"#);
+        assert_eq!(stdout_of(&body), "64", "{body}");
+    }
+
+    // Every command joins the exec cgroup: it writes 0 to cgroup.procs.
+    #[test]
+    fn commands_join_the_exec_cgroup() {
+        let dir = temp_dir("cgroup");
+        std::fs::write(dir.join("cgroup.procs"), "").unwrap();
+        let policy = leak(ExecPolicy {
+            default_user: None,
+            workspace_dir: std::path::PathBuf::new(),
+            limits: runas::Limits::NONE,
+            cgroup: Some(dir.clone()),
+        });
+        let (status, body) = run(policy, r#"{"cmd":["true"]}"#);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(std::fs::read_to_string(dir.join("cgroup.procs")).unwrap(), "0");
+        // A cgroup that cannot be joined stops the command rather than running it free.
+        std::fs::remove_file(dir.join("cgroup.procs")).unwrap();
+        let (status, _) = run(policy, r#"{"cmd":["true"]}"#);
+        assert_eq!(status, 500);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The working directory is entered after the switch: the command's user has to
+    // be able to reach it, as with su.
+    #[test]
+    fn cwd_is_entered_in_the_child() {
+        let dir = temp_dir("cwd");
+        let policy = leak(ExecPolicy::no_switch());
+        let (status, body) = run(policy, &format!(r#"{{"cmd":["pwd"],"cwd":{:?}}}"#, dir.to_str().unwrap()));
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            std::fs::canonicalize(stdout_of(&body)).unwrap(),
+            std::fs::canonicalize(&dir).unwrap()
+        );
+        let (status, _) = run(policy, r#"{"cmd":["pwd"],"cwd":"/nonexistent/dir"}"#);
+        assert_eq!(status, 500);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The tests below really switch users: they need root, as in the container the
+    // CI image's check runs them in. Elsewhere they return early.
+
+    #[test]
+    fn root_commands_run_as_the_workspace_owner() {
+        if !is_root() {
+            return;
+        }
+        let ws = temp_dir("owner");
+        chown(&ws, 12345, 12346);
+        let policy = leak(switching(&ws, "nobody"));
+        let (status, body) = run(policy, r#"{"cmd":["/bin/sh","-c","echo $(id -u):$(id -g):$(id -G):$HOME:${USER-unset}"]}"#);
+        assert_eq!(status, 200, "{body}");
+        // The directory's ids, no supplementary groups, HOME in /tmp for an owner without an account.
+        assert_eq!(stdout_of(&body), "12345:12346:12346:/tmp:unset");
+        // The request's own env wins over the defaults.
+        let (_, body) = run(policy, r#"{"cmd":["/bin/sh","-c","echo $HOME"],"env":{"HOME":"/var/empty"}}"#);
+        assert_eq!(stdout_of(&body), "/var/empty");
+        // Streams and PTYs switch too, and the PTY belongs to the command's user.
+        let (_, body) = run(policy, r#"{"cmd":["/bin/sh","-c","stat -c %u $(readlink /proc/self/fd/0); id -u"],"pty":true}"#);
+        assert_eq!(stdout_of(&body).replace('\r', "").split('\n').collect::<Vec<_>>(), ["12345", "12345"], "{body}");
+        let mut out = Cursor::new(Vec::new());
+        run_exec_stream(&mut out, &serde_json::from_str(r#"{"cmd":["id","-u"]}"#).unwrap(), None, policy).unwrap();
+        let text = String::from_utf8_lossy(out.get_ref()).into_owned();
+        assert!(text.contains("12345"), "{text}");
+        // as_root keeps root.
+        let (_, body) = run(policy, r#"{"cmd":["id","-u"],"as_root":true}"#);
+        assert_eq!(stdout_of(&body), "0");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn a_root_owned_workspace_falls_back_to_the_default_account() {
+        if !is_root() {
+            return;
+        }
+        let Some(nobody) = runas::SystemAccounts.by_name("nobody") else {
+            return;
+        };
+        let ws = temp_dir("rootws");
+        let policy = leak(switching(&ws, "nobody"));
+        let (status, body) = run(policy, r#"{"cmd":["id","-u"]}"#);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(stdout_of(&body), nobody.uid.to_string());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn a_missing_default_account_stops_the_command_unless_it_asks_for_root() {
+        if !is_root() {
+            return;
+        }
+        let ws = temp_dir("noacct");
+        let policy = leak(switching(&ws, "no-such-account-pd"));
+        let (status, body) = run(policy, r#"{"cmd":["id","-u"]}"#);
+        assert_eq!(status, 500, "{body}");
+        assert!(body.contains("no-such-account-pd"), "{body}");
+        let (status, body) = run(policy, r#"{"cmd":["id","-u"],"as_root":true}"#);
+        assert_eq!(status, 200, "{body}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn the_command_cannot_enter_a_directory_its_user_cannot_reach() {
+        if !is_root() {
+            return;
+        }
+        let ws = temp_dir("reach");
+        chown(&ws, 12345, 12346);
+        let secret = temp_dir("secret");
+        std::fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let policy = leak(switching(&ws, "nobody"));
+        let (status, body) = run(policy, &format!(r#"{{"cmd":["pwd"],"cwd":{:?}}}"#, secret.to_str().unwrap()));
+        assert_eq!(status, 500, "the switched command entered a root-only directory: {body}");
+        let (status, _) = run(policy, &format!(r#"{{"cmd":["pwd"],"cwd":{:?},"as_root":true}}"#, secret.to_str().unwrap()));
+        assert_eq!(status, 200);
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&secret);
     }
 }

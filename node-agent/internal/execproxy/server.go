@@ -52,6 +52,7 @@ type execBody struct {
 	Cols            int               `json:"cols,omitempty"`
 	Stdin           string            `json:"stdin,omitempty"`
 	StdinStream     bool              `json:"stdin_stream,omitempty"`
+	AsRoot          bool              `json:"as_root,omitempty"`
 	EgressAllowlist *egressPolicyDTO  `json:"egress_allowlist,omitempty"`
 }
 
@@ -244,6 +245,7 @@ func execRequestFromBody(body execBody) poddaemon.ExecRequest {
 		Cols:        body.Cols,
 		Stdin:       body.Stdin,
 		StdinStream: body.StdinStream,
+		AsRoot:      body.AsRoot,
 	}
 }
 

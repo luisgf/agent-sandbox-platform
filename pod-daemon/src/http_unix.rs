@@ -3,6 +3,7 @@
 use crate::http_serve;
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread;
@@ -15,7 +16,10 @@ pub fn serve(path: PathBuf, limits: http_serve::ExecLimits) -> io::Result<()> {
         fs::remove_file(&path)?;
     }
     let listener = UnixListener::bind(&path)?;
-    println!("listening on unix://{} (HTTP JSON)", path.display());
+    // Whoever can open the socket can run commands as the daemon's user (as root,
+    // when it asks): the owner and nobody else.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    println!("listening on unix://{} (HTTP JSON, owner only)", path.display());
 
     for stream in listener.incoming() {
         match stream {
@@ -51,10 +55,7 @@ mod tests {
         let _ = fs::remove_file(&sock);
         let listener = UnixListener::bind(&sock).unwrap();
         let (ready_tx, ready_rx) = mpsc::channel();
-        let limits = http_serve::ExecLimits {
-            buffered: Duration::from_secs(5),
-            stream_idle: None,
-        };
+        let limits = http_serve::ExecLimits::new(Duration::from_secs(5), None);
         thread::spawn(move || {
             ready_tx.send(()).ok();
             for _ in 0..2 {

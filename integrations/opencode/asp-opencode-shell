@@ -6,7 +6,8 @@
 #   ASP_WORKSPACE_HOST   host path given to --workspace; a cwd under it maps into the guest
 #   ASP_WORKSPACE_GUEST  guest mount point (default: /workspace)
 #   ASP_GUEST_CWD        guest directory set by the asp-sandbox plugin from `workdir`
-#   ASP_GUEST_AS_ROOT=1  run as root in the guest instead of as the owner of the workspace
+#   ASP_GUEST_AS_ROOT=1  run as root in the guest (asp --root) instead of as the owner of
+#                        the workspace, which is what the guest's pod-daemon does by default
 #   ASP_BIN              asp binary (default: asp)
 #   ASP_SSH              user@host: run asp there, for a control plane only reachable from it
 #   ASP_REMOTE_EXEC      command that runs this script on that host in --remote-exec mode
@@ -18,9 +19,12 @@ NAME="${ASP_SESSION_NAME:-opencode}"
 GUEST_ROOT="${ASP_WORKSPACE_GUEST:-/workspace}"
 ASP="${ASP_BIN:-asp}"
 
-# The ssh hop: --remote-exec NAME CWD, with the guest script on stdin.
-if [ "$1" = "--remote-exec" ] && [ $# -eq 3 ]; then
+# The ssh hop: --remote-exec NAME CWD [root], with the guest script on stdin.
+if [ "$1" = "--remote-exec" ] && { [ $# -eq 3 ] || [ $# -eq 4 ]; }; then
   script=$(cat)
+  if [ "${4:-}" = root ]; then
+    exec "$ASP" session exec --name "$2" --cwd "$3" --no-pty --root -- /bin/sh -c "$script" < /dev/null
+  fi
   exec "$ASP" session exec --name "$2" --cwd "$3" --no-pty -- /bin/sh -c "$script" < /dev/null
 fi
 
@@ -40,6 +44,9 @@ if [ $# -eq 0 ]; then
     echo "asp-opencode-shell: the interactive terminal needs asp on this machine, not ASP_SSH" >&2
     exit 125
   fi
+  if [ "${ASP_GUEST_AS_ROOT:-0}" = 1 ]; then
+    exec "$ASP" session exec --name "$NAME" --cwd "$cwd" --root -- /bin/bash -l
+  fi
   exec "$ASP" session exec --name "$NAME" --cwd "$cwd" -- /bin/bash -l
 fi
 if [ "$1" != "-c" ] || [ $# -ne 2 ]; then
@@ -48,13 +55,11 @@ if [ "$1" != "-c" ] || [ $# -ne 2 ]; then
 fi
 
 script=$2
-if [ "${ASP_GUEST_AS_ROOT:-0}" != 1 ]; then
-  # virtiofs does not map ids: run as the owner of the workspace so new files
-  # keep the host user's uid. Falls back to root when the owner is root or the
-  # workspace is not mounted.
-  q=$(printf '%s' "$2" | sed "s/'/'\\\\''/g")
-  script="if o=\$(stat -c %u:%g $GUEST_ROOT 2>/dev/null) && [ \"\${o%%:*}\" != 0 ]; then exec setpriv --reuid=\"\${o%%:*}\" --regid=\"\${o#*:}\" --clear-groups env HOME=/tmp /bin/sh -c '$q'; fi; exec /bin/sh -c '$q'"
-fi
+# The guest's pod-daemon runs the command as the owner of the workspace (virtiofs
+# does not map ids, so new files keep the host user's uid), or as its default
+# user when the workspace is root-owned. Root is asked for explicitly.
+root=
+[ "${ASP_GUEST_AS_ROOT:-0}" = 1 ] && root=root
 
 if [ -n "$ASP_SSH" ]; then
   # ssh joins its arguments into one remote command line: allow only plain names.
@@ -64,7 +69,11 @@ if [ -n "$ASP_SSH" ]; then
       exit 125
       ;;
   esac
-  printf '%s' "$script" | ssh -o BatchMode=yes "$ASP_SSH" "${ASP_REMOTE_EXEC:-asp-opencode-shell --remote-exec}" "$NAME" "$cwd"
+  # shellcheck disable=SC2086 # $root is empty or the single word "root"
+  printf '%s' "$script" | ssh -o BatchMode=yes "$ASP_SSH" "${ASP_REMOTE_EXEC:-asp-opencode-shell --remote-exec}" "$NAME" "$cwd" $root
   exit $?
+fi
+if [ -n "$root" ]; then
+  exec "$ASP" session exec --name "$NAME" --cwd "$cwd" --no-pty --root -- /bin/sh -c "$script"
 fi
 exec "$ASP" session exec --name "$NAME" --cwd "$cwd" --no-pty -- /bin/sh -c "$script"

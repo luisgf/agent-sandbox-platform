@@ -323,7 +323,7 @@ Against the dry-run stack from the [Quickstart](#quickstart-dry-run-no-kvm) noth
 install -m 0755 integrations/opencode/asp-opencode-shell ~/.local/bin/asp-opencode-shell
 ```
 
-The wrapper runs commands as the owner of `/workspace` (`setpriv` in the guest), so files the agent creates keep your uid on the host: virtiofs does not map ids. `ASP_GUEST_AS_ROOT=1` keeps root. Guest images built before [#83](https://github.com/luisgf/agent-sandbox-platform/pull/83) have `/` at mode 0700 and only root can run anything there: rebuild the rootfs, or set `ASP_GUEST_AS_ROOT=1`. The header of the script lists its other variables.
+Commands run as the owner of `/workspace`: the guest's pod-daemon does it (as its `sandboxd` account when the workspace is owned by root), so files the agent creates keep your uid on the host: virtiofs does not map ids. `ASP_GUEST_AS_ROOT=1` asks for root (`asp session exec --root`). A guest image built before pod-daemon learned this runs everything as root and ignores the request: rebuild the rootfs. Guest images built before [#83](https://github.com/luisgf/agent-sandbox-platform/pull/83) have `/` at mode 0700 and only root can run anything there: rebuild the rootfs, or set `ASP_GUEST_AS_ROOT=1`. The header of the script lists its other variables.
 
 ### 4. Add the plugin, the instructions and the config to the project
 

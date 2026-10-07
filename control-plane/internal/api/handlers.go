@@ -107,6 +107,9 @@ type execRequest struct {
 	Stdin string `json:"stdin,omitempty"`
 	// StdinStream keeps a guest pipe open on the non-PTY stream path.
 	StdinStream bool `json:"stdin_stream,omitempty"`
+	// AsRoot runs the command as root in the guest. By default it runs as the
+	// owner of the workspace, or as the guest's default exec user (pod-daemon).
+	AsRoot bool `json:"as_root,omitempty"`
 }
 
 type execStdinRequest struct {
@@ -697,6 +700,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		"cols":             req.Cols,
 		"stdin":            req.Stdin,
 		"stdin_stream":     req.StdinStream,
+		"as_root":          req.AsRoot,
 		"egress_allowlist": egressPol,
 	})
 	stream := wantsExecStream(r)
@@ -738,7 +742,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 			EventType: "sandbox.exec",
 			Actor:     "api",
 			ActorSub:  actorSub,
-			Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "stream": true}),
+			Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "stream": true, "as_root": req.AsRoot}),
 		})
 		_ = s.Store.TouchSandboxActivity(sb.ID)
 		return
@@ -759,7 +763,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		EventType: "sandbox.exec",
 		Actor:     "api",
 		ActorSub:  actorSub,
-		Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "exit_code": out.ExitCode}),
+		Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "exit_code": out.ExitCode, "as_root": req.AsRoot}),
 	})
 	// Successful exec is activity (including non-zero guest exit). Proxy failures return above.
 	// Streaming exec counts only after the NDJSON body is copied (see above).
