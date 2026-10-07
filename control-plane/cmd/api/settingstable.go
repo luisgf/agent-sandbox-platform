@@ -4,93 +4,106 @@ package main
 // nothing sets it, and whether it is a credential. The configuration file may set exactly
 // these (its key is the name without ASP_, in lower case), and --print-config lists them.
 type setting struct {
+	// Group is the heading the reference page lists it under.
+	Group   string
 	Env     string
 	Default string // documentation: where it is not obvious from the code, in words
 	Help    string
 	Secret  bool
 }
 
+// The headings of the reference page (docs/reference/configuration/control-plane.md), in order.
+const (
+	groupListen     = "Escucha y parada"
+	groupDatabase   = "Base de datos"
+	groupAuth       = "Autenticación y autorización"
+	groupNodes      = "Nodos, CA y TLS"
+	groupScheduling = "Planificación y vigilancia de los nodos"
+	groupKeys       = "Claves de identidad, atestación y fencing"
+	groupRetention  = "Salida a Internet, inactividad y retención"
+)
+
 // settingsTable is every variable the control plane reads. A test fails when the source reads
 // one that is not here, or this lists one the source does not read.
 var settingsTable = []setting{
 	// Where it listens, and how it stops.
-	{Env: "ASP_LISTEN_ADDR", Default: "127.0.0.1:8080", Help: "address the API listens on"},
-	{Env: "ASP_SHUTDOWN_TIMEOUT", Default: "30s", Help: "how long a SIGTERM waits for requests in flight"},
-	{Env: "ASP_BUFFERED_EXEC_TIMEOUT", Default: "10m", Help: "how long an exec without streaming may take"},
-	{Env: "ASP_METRICS_LISTEN", Help: "host:port of a listener of its own for GET /metrics (loopback unless ASP_INSECURE_OBS_LISTEN)"},
-	{Env: "ASP_PPROF_LISTEN", Help: "host:port of a listener of its own for /debug/pprof/ (loopback unless ASP_INSECURE_OBS_LISTEN)"},
-	{Env: "ASP_INSECURE_OBS_LISTEN", Help: "1 lets the metrics and pprof listeners listen outside the loopback (they have no authentication)"},
+	{Group: groupListen, Env: "ASP_LISTEN_ADDR", Default: "127.0.0.1:8080", Help: "Dirección `host:puerto` en la que escucha el API"},
+	{Group: groupListen, Env: "ASP_SHUTDOWN_TIMEOUT", Default: "30s", Help: "Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final."},
+	{Group: groupListen, Env: "ASP_BUFFERED_EXEC_TIMEOUT", Default: "10m", Help: "Cuánto puede tardar un `exec` sin `?stream=1` (`asp sandbox exec/run`, `session exec --buffered`), también en el guest. Una petición puede pedir menos con `timeout_seconds`. `0`/`off` sin límite. Pasado el límite, 504. Un stream no tiene límite"},
+	{Group: groupListen, Env: "ASP_METRICS_LISTEN", Help: "`host:puerto` de un listener aparte con `GET /metrics` (Prometheus). Sin autenticación: solo loopback salvo `ASP_INSECURE_OBS_LISTEN=1`. Además, `GET /metrics` en el puerto del API sirve lo mismo a una clave de plataforma o a un admin/operator del IdP. Catálogo: [`docs/how-to/monitoring.md`](docs/how-to/monitoring.md)"},
+	{Group: groupListen, Env: "ASP_PPROF_LISTEN", Help: "`host:puerto` de un listener aparte con los perfiles de Go (`/debug/pprof/`). Sin autenticación: solo loopback salvo `ASP_INSECURE_OBS_LISTEN=1`"},
+	{Group: groupListen, Env: "ASP_INSECURE_OBS_LISTEN", Help: "`1` deja que `ASP_METRICS_LISTEN` / `ASP_PPROF_LISTEN` escuchen fuera de loopback (sin autenticación)"},
 
 	// The database.
-	{Env: "ASP_DATABASE_URL", Help: "Postgres connection URL, or sqlite:///path for one file on this host; without it the state is in memory", Secret: true},
-	{Env: "ASP_DB_STATEMENT_TIMEOUT", Default: "30s", Help: "server-side limit for any one statement"},
-	{Env: "ASP_DB_LOCK_TIMEOUT", Default: "10s", Help: "server-side limit for waiting on a lock"},
-	{Env: "ASP_DB_IDLE_TX_TIMEOUT", Default: "60s", Help: "server-side limit for an idle transaction"},
+	{Group: groupDatabase, Env: "ASP_DATABASE_URL", Help: "Si está set → PostgresStore + migraciones embebidas. `sqlite:///var/lib/asp/server/asp.db` (o `sqlite:ruta.db`) guarda el estado en un fichero de este host: sin servidor de base de datos, para un único plano de control. El fichero se crea con modo 0600 (guarda hashes de claves y tokens de fence) en un directorio 0700; para copiarlo en caliente, `sqlite3 asp.db \".backup copia.db\"`", Secret: true},
+	{Group: groupDatabase, Env: "ASP_DB_STATEMENT_TIMEOUT", Default: "30s", Help: "`statement_timeout` de cada conexión del pool: una sentencia que tarda más se cancela en el servidor (`57014`). Una migración lo desactiva para sí misma. `0`/`off` lo quita. Un `?statement_timeout=…` en `ASP_DATABASE_URL` manda sobre este valor."},
+	{Group: groupDatabase, Env: "ASP_DB_LOCK_TIMEOUT", Default: "10s", Help: "`lock_timeout`: cuánto espera una sentencia a un bloqueo (incluido el advisory lock de la colocación) antes de fallar con `55P03`."},
+	{Group: groupDatabase, Env: "ASP_DB_IDLE_TX_TIMEOUT", Default: "60s", Help: "`idle_in_transaction_session_timeout`: una transacción abierta que nadie usa (un handler que murió a medias) se cierra y libera su conexión y sus bloqueos."},
 
 	// Who may call it.
-	{Env: "ASP_INSECURE_OPEN_API", Help: "1 accepts requests with no credential (labs and dry-run smokes only)"},
-	{Env: "ASP_BOOTSTRAP_API_KEY", Help: "the first API key, with platform scope unless ASP_BOOTSTRAP_API_KEY_SCOPE says otherwise", Secret: true},
-	{Env: "ASP_BOOTSTRAP_API_KEY_SCOPE", Default: "platform", Help: "scope of the bootstrap key: platform or tenant"},
-	{Env: "ASP_BOOTSTRAP_API_KEY_TENANT", Default: "default", Help: "tenant of the bootstrap key"},
-	{Env: "ASP_DEFAULT_TENANT", Default: "default", Help: "tenant of a create with no tenant from a caller that has none"},
-	{Env: "ASP_REQUIRE_API_KEY", Help: "no longer does anything: authentication is always on"},
-	{Env: "ASP_IDP_ISSUER", Help: "OIDC issuer of the corporate IdP; empty means no IdP"},
-	{Env: "ASP_IDP_AUDIENCE", Help: "audience the IdP's tokens must carry (required with ASP_IDP_REQUIRED)"},
-	{Env: "ASP_IDP_ALLOW_ANY_AUDIENCE", Help: "1 allows ASP_IDP_REQUIRED without an audience (lab only)"},
-	{Env: "ASP_IDP_JWKS_URL", Help: "the IdP's key set; derived from the issuer when empty"},
-	{Env: "ASP_IDP_REQUIRE_EXP", Default: "1", Help: "0 accepts tokens with no expiry (not recommended)"},
-	{Env: "ASP_IDP_REQUIRED", Default: "0", Help: "1 requires an IdP token on the sandbox routes"},
-	{Env: "ASP_IDP_ROLE_CLAIM", Default: "groups", Help: "claim that holds the user's groups or roles"},
-	{Env: "ASP_IDP_ROLE_MAP", Help: "CSV claim:role (admin, operator, user, viewer); wins over the prefix"},
-	{Env: "ASP_IDP_ROLE_PREFIX", Default: "asp-", Help: "prefix that makes a group a role (asp-admin, asp-operator, ...)"},
-	{Env: "ASP_IDP_DESTROY_ANY_GROUP", Default: "sandbox:destroy-any", Help: "group that lets an operator destroy sandboxes that are not theirs"},
-	{Env: "ASP_IDP_EXEC_ANY_GROUP", Default: "sandbox:exec-any", Help: "group that lets an operator exec in sandboxes that are not theirs"},
-	{Env: "ASP_IDP_TENANT_CLAIM", Default: "tenant_id", Help: "claim that holds the user's tenant"},
-	{Env: "ASP_IDP_DEFAULT_TENANT", Help: "tenant of a token that has no tenant claim (single-tenant setups)"},
+	{Group: groupAuth, Env: "ASP_INSECURE_OPEN_API", Help: "`1` acepta peticiones sin credencial (solo labs y smokes dry-run; avisa al arrancar). Una credencial incorrecta se rechaza igual. `ASP_REQUIRE_API_KEY` ya no hace nada: la autenticación está siempre activa"},
+	{Group: groupAuth, Env: "ASP_BOOTSTRAP_API_KEY", Help: "Key `bootstrap`: ámbito `platform` (ve todos los tenants) en el tenant `default`. Es la primera key: sin ninguna key en el store ni IdP configurado el CP **no arranca** (código 2). Con ella se crean las demás (`asp apikey create`, `POST /v1/api-keys`) y conviene rotarla o revocarla después. Sigue siendo `platform` por defecto porque con ámbito `tenant` no podría crear la key de plataforma de los nodos", Secret: true},
+	{Group: groupAuth, Env: "ASP_BOOTSTRAP_API_KEY_SCOPE", Default: "platform", Help: "Ámbito de la key `bootstrap`: `platform` (ve todos los tenants) o `tenant`, que la confina a `ASP_BOOTSTRAP_API_KEY_TENANT` como a cualquier otra key"},
+	{Group: groupAuth, Env: "ASP_BOOTSTRAP_API_KEY_TENANT", Default: "default", Help: "Tenant de la key `bootstrap`"},
+	{Group: groupAuth, Env: "ASP_DEFAULT_TENANT", Default: "default", Help: "Tenant de un create sin `tenant_id` de un llamante sin tenant propio (lab abierto, key `platform`)"},
+	{Group: groupAuth, Env: "ASP_REQUIRE_API_KEY", Help: "Ya no hace nada: la autenticación está siempre activa. Se acepta, con un aviso, para que una unidad antigua que la fija siga arrancando"},
+	{Group: groupAuth, Env: "ASP_IDP_ISSUER", Help: "Issuer OIDC corporativo; vacío = IdP off (lab)"},
+	{Group: groupAuth, Env: "ASP_IDP_AUDIENCE", Help: "Audiencia esperada del JWT (`aud`). **Obligatoria con `ASP_IDP_REQUIRED=1`**: sin ella el control plane no arranca (código 2), porque aceptaría el token que el emisor haya dado a cualquier otra aplicación de su realm. Con el IdP opcional solo deja un aviso"},
+	{Group: groupAuth, Env: "ASP_IDP_ALLOW_ANY_AUDIENCE", Help: "`1` permite `ASP_IDP_REQUIRED=1` sin `ASP_IDP_AUDIENCE` (solo lab; avisa en el log)"},
+	{Group: groupAuth, Env: "ASP_IDP_JWKS_URL", Help: "JWKS; si vacío → discovery desde issuer. Se refresca cada 5 min (una clave que el IdP retira deja de validar) y, ante un `kid` desconocido, como mucho una vez cada 30 s"},
+	{Group: groupAuth, Env: "ASP_IDP_REQUIRE_EXP", Default: "1", Help: "`0` acepta JWT sin `exp` (no recomendado: no caducarían). `nbf` admite 1 min de desfase de reloj; un `iat` más de 5 min en el futuro se rechaza"},
+	{Group: groupAuth, Env: "ASP_IDP_REQUIRED", Default: "0", Help: "`1` exige JWT IdP en create/list/get/exec/destroy/events"},
+	{Group: groupAuth, Env: "ASP_IDP_ROLE_CLAIM", Default: "groups", Help: "Claim del JWT con los grupos o roles que dan el rol RBAC"},
+	{Group: groupAuth, Env: "ASP_IDP_ROLE_MAP", Help: "CSV `claim:role` (admin|operator|user|viewer); si set, gana sobre prefijo"},
+	{Group: groupAuth, Env: "ASP_IDP_ROLE_PREFIX", Default: "asp-", Help: "Prefijo → rol (`asp-admin`, …) cuando no hay map. Un grupo a secas (`admin`, `operator`) **no** concede rol: con prefijo o con `ASP_IDP_ROLE_MAP` solo cuenta lo que ellos nombran"},
+	{Group: groupAuth, Env: "ASP_IDP_DESTROY_ANY_GROUP", Default: "sandbox:destroy-any", Help: "Operator puede destroy no-propios si el claim lo incluye"},
+	{Group: groupAuth, Env: "ASP_IDP_EXEC_ANY_GROUP", Default: "sandbox:exec-any", Help: "Operator puede hacer exec en sandboxes no propias si el claim lo incluye; sin él, solo en las suyas"},
+	{Group: groupAuth, Env: "ASP_IDP_TENANT_CLAIM", Default: "tenant_id", Help: "Claim del JWT con el tenant del usuario (string o array de un valor); sin tenant → 401"},
+	{Group: groupAuth, Env: "ASP_IDP_DEFAULT_TENANT", Help: "Tenant de los JWT sin ese claim (un solo tenant)"},
 
 	// Nodes.
-	{Env: "ASP_NODE_BOOTSTRAP_TOKEN", Help: "shared secret a node enrolls with (single-use enroll tokens are better)", Secret: true},
-	{Env: "ASP_CA_CERT", Default: "/tmp/asp-dev-ca/ca.crt", Help: "enrollment CA certificate (created if missing); keep it outside /tmp"},
-	{Env: "ASP_CA_KEY", Default: "/tmp/asp-dev-ca/ca.key", Help: "enrollment CA key (created if missing); keep it outside /tmp"},
-	{Env: "ASP_ALLOW_TMP_KEYS", Help: "1 starts in production mode with keys in a temporary directory"},
-	{Env: "ASP_TLS_CERT", Help: "TLS certificate of the API"},
-	{Env: "ASP_TLS_KEY", Help: "TLS key of the API"},
-	{Env: "ASP_CLIENT_CA", Help: "CA that vouches for node certificates; with it each route of a node needs that node's certificate"},
-	{Env: "ASP_MTLS_STRICT", Help: "1 requires a client certificate on the TLS listener"},
-	{Env: "ASP_ENROLL_LISTEN", Default: "127.0.0.1:8081", Help: "plaintext enroll-only listener when ASP_MTLS_STRICT is on"},
-	{Env: "ASP_AGENT_TOKEN_FILE", Default: "/var/lib/asp/agent.token", Help: "secret of the node-agent on this host, sent as bearer with each exec"},
-	{Env: "ASP_INSECURE_AGENT_HTTP", Help: "1 allows http:// agent endpoints outside the loopback (exec unauthenticated; lab only)"},
-	{Env: "ASP_WORKSPACE_ROOTS", Help: "CSV of workspace roots (<root>/<tenant>/...); a workspace outside is a 400 at create"},
-	{Env: "ASP_LOCAL_NET_DIAL", Help: "host[:port] laptops dial for local-net tunnels when the node does not say"},
+	{Group: groupNodes, Env: "ASP_NODE_BOOTSTRAP_TOKEN", Help: "Token para `/v1/nodes/enroll`", Secret: true},
+	{Group: groupNodes, Env: "ASP_CA_CERT", Default: "/tmp/asp-dev-ca/ca.crt", Help: "Certificado de la CA de enrollment, la que firma los certificados de nodo. Se crea si no existe. En producción, en almacenamiento persistente (ver `ASP_ALLOW_TMP_KEYS`)"},
+	{Group: groupNodes, Env: "ASP_CA_KEY", Default: "/tmp/asp-dev-ca/ca.key", Help: "Clave privada de esa CA. Se crea junto al certificado si no existe"},
+	{Group: groupNodes, Env: "ASP_ALLOW_TMP_KEYS", Help: "`1`: arranca en modo producción aunque `ASP_CA_CERT`, `ASP_CA_KEY`, `ASP_OIDC_KEY` o `ASP_ATTEST_KEY` apunten a un directorio temporal (`/tmp`, `/var/tmp`, `/dev/shm`, `$TMPDIR`), que un reinicio vacía: los certificados de nodo dejarían de verificar y los tokens cambiarían de `kid`. Es modo producción tener `ASP_DATABASE_URL`, `ASP_TLS_CERT`, `ASP_CLIENT_CA` o `ASP_IDP_REQUIRED=1`; ahí, sin esta variable, el control plane no arranca (código 2) y el error nombra cada variable. En un lab solo avisa"},
+	{Group: groupNodes, Env: "ASP_TLS_CERT", Help: "Certificado TLS del servidor. Sus nombres (DNS, IP, CN, comodines) quedan reservados: ningún nodo puede enrolarse con uno de ellos como id ([dos raíces de confianza](docs/ops-multi-node.md#las-dos-raíces-de-confianza))"},
+	{Group: groupNodes, Env: "ASP_TLS_KEY", Help: "Clave privada del certificado de `ASP_TLS_CERT`"},
+	{Group: groupNodes, Env: "ASP_CLIENT_CA", Help: "Client CA (register/heartbeat/oidc mint); habilita check de revocación y ata el CN del cert a cada ruta de nodo (403 si es otro nodo)"},
+	{Group: groupNodes, Env: "ASP_MTLS_STRICT", Help: "`1` → `RequireAndVerifyClientCert` en listener TLS"},
+	{Group: groupNodes, Env: "ASP_ENROLL_LISTEN", Default: "127.0.0.1:8081", Help: "Plaintext enroll-only cuando `ASP_MTLS_STRICT=1`"},
+	{Group: groupNodes, Env: "ASP_AGENT_TOKEN_FILE", Default: "/var/lib/asp/agent.token", Help: "Secreto del API local del node-agent del mismo host (su `--agent-token-file`): el CP lo manda como bearer en cada `exec` a un agente `http://`. Se relee si cambia. Un agente `https://` (mTLS) no lo recibe. Si el CP no puede leerlo, el agente responde 401 y el `exec` da 502 diciéndolo"},
+	{Group: groupNodes, Env: "ASP_INSECURE_AGENT_HTTP", Help: "`1` → permite `agent_endpoint` `http://` fuera de loopback (`exec` sin autenticar; solo lab). Por defecto: `http://` solo en loopback, `https://` con mTLS ([ADR-0011](docs/adr/0011-multi-node.md))"},
+	{Group: groupNodes, Env: "ASP_WORKSPACE_ROOTS", Help: "Raíces de workspace del despliegue (`<raíz>/<tenant>/…`). Con ellas, un `workspace_host_path` fuera da 400 al crear en vez de una sandbox que no arranca. El nodo aplica su propia regla (`--workspace-root`) con los enlaces resueltos; sin esta variable solo decide el nodo"},
+	{Group: groupNodes, Env: "ASP_LOCAL_NET_DIAL", Help: "`host[:puerto]` que marcan los portátiles para llegar a los túneles local-net de un nodo cuando el nodo no dice otro (`--local-net-dial` del node-agent)"},
 
 	// Scheduling and liveness.
-	{Env: "ASP_SCHED_POLICY", Default: "spread", Help: "spread or binpack"},
-	{Env: "ASP_SCHED_CPU_OVERCOMMIT", Default: "4", Help: "vCPUs per physical core; memory is never overcommitted"},
-	{Env: "ASP_SCHED_VM_OVERHEAD_MIB", Default: "64", Help: "memory a microVM costs besides its memory_mib"},
-	{Env: "ASP_NODE_STALE_AFTER", Default: "90s", Help: "a node silent this long gets no sandboxes and is marked offline"},
-	{Env: "ASP_NODE_MONITOR_INTERVAL", Default: "15s", Help: "how often the monitor checks the nodes"},
-	{Env: "ASP_NODE_FAILOVER_AFTER", Default: "5m", Help: "a node silent this long is fenced and its sandboxes fail (0 or off: only revoked nodes)"},
-	{Env: "ASP_AUTO_PROVISION", Help: "1 places sandboxes on a stub node with no agent (dev only)"},
+	{Group: groupScheduling, Env: "ASP_SCHED_POLICY", Default: "spread", Help: "`spread` (el nodo menos cargado) o `binpack` (el más cargado que aún cabe), ver [varios nodos](docs/ops-multi-node.md)"},
+	{Group: groupScheduling, Env: "ASP_SCHED_CPU_OVERCOMMIT", Default: "4", Help: "vCPU por core físico; la memoria no se sobresuscribe"},
+	{Group: groupScheduling, Env: "ASP_SCHED_VM_OVERHEAD_MIB", Default: "64", Help: "Memoria que cuesta cada microVM además de su `memory_mib` (proceso del VMM, colas virtio); se suma a cada sandbox al comprobar y mostrar la memoria del nodo. Una sandbox pide como mínimo 64 MiB"},
+	{Group: groupScheduling, Env: "ASP_NODE_STALE_AFTER", Default: "90s", Help: "Sin señales más tiempo → el nodo no recibe sandboxes y pasa a `offline`"},
+	{Group: groupScheduling, Env: "ASP_NODE_MONITOR_INTERVAL", Default: "15s", Help: "Cada cuánto revisa el monitor la vida de los nodos"},
+	{Group: groupScheduling, Env: "ASP_NODE_FAILOVER_AFTER", Default: "5m", Help: "Sin señales más tiempo → fencing y sandboxes del nodo → `failed` (`node_lost`); `0`/`off` desactiva (salvo revocados)"},
+	{Group: groupScheduling, Env: "ASP_AUTO_PROVISION", Help: "`1`: el create deja la sandbox en `running` en el acto, sin nodo (un stub para pruebas). Por defecto queda en `requested` hasta que un nodo la reclama"},
 
 	// Keys of the identity and attestation features.
-	{Env: "ASP_OIDC_KEY", Default: "/tmp/asp-oidc-key.pem", Help: "RSA key that signs workload tokens (created if missing); keep it outside /tmp"},
-	{Env: "ASP_OIDC_KEY_PREV", Help: "the previous RSA key, published in the JWKS during a rotation"},
-	{Env: "ASP_OIDC_ISSUER", Default: "http://<listen address>", Help: "OIDC issuer of the workload tokens"},
-	{Env: "ASP_ATTEST_KEY", Default: "$TMPDIR/asp-attest-key.pem", Help: "ECDSA key of the software attestor (created if missing); keep it outside /tmp"},
-	{Env: "ASP_ATTEST_PUB", Help: "public key that replaces ASP_ATTEST_KEY's for verifying evidence"},
-	{Env: "ASP_ATTEST_TRUSTED_PUBS", Help: "PEM bundle of more public keys or certificates trusted for evidence"},
-	{Env: "ASP_ATTEST_MAX_AGE", Default: "10m", Help: "how old evidence may be for the token claim"},
-	{Env: "ASP_ATTEST_ALLOWED_IMAGES", Help: "JSON file of the kernel/image digests a node may attest (node-agent --print-measurement)"},
-	{Env: "ASP_FENCE_PROVIDER", Default: "noop", Help: "how a lost node is powered off: noop, redfish or ipmi"},
-	{Env: "ASP_FENCE_USER", Help: "BMC user of the fence provider"},
-	{Env: "ASP_FENCE_PASS", Help: "BMC password of the fence provider", Secret: true},
+	{Group: groupKeys, Env: "ASP_OIDC_KEY", Default: "/tmp/asp-oidc-key.pem", Help: "Clave RSA (PEM) con la que el control plane firma los tokens OIDC que emite a las sandboxes (`mint`). Se crea si no existe. En producción, en almacenamiento persistente"},
+	{Group: groupKeys, Env: "ASP_OIDC_KEY_PREV", Help: "Clave RSA (PEM) anterior: solo se publica en el JWKS durante una rotación, para que los tokens ya emitidos sigan verificando"},
+	{Group: groupKeys, Env: "ASP_OIDC_ISSUER", Default: "http://<dirección de escucha>", Help: "Issuer OIDC. Si otros hosts verifican los tokens contra este control plane, ponla con la URL con la que llegan a él"},
+	{Group: groupKeys, Env: "ASP_ATTEST_KEY", Default: "$TMPDIR/asp-attest-key.pem", Help: "PEM ECDSA P-256 de atestación; su clave pública es de confianza (lab de un host: el node-agent usa el mismo fichero)"},
+	{Group: groupKeys, Env: "ASP_ATTEST_PUB", Help: "PEM de clave pública que sustituye a la de `ASP_ATTEST_KEY` para verificar"},
+	{Group: groupKeys, Env: "ASP_ATTEST_TRUSTED_PUBS", Help: "Bundle PEM (`PUBLIC KEY` y/o `CERTIFICATE`) de más claves de confianza. La clave que trae la evidencia (`public_key_pem`) nunca vale; por mTLS vale además la del certificado del nodo que llama"},
+	{Group: groupKeys, Env: "ASP_ATTEST_MAX_AGE", Default: "10m", Help: "Freshness para verify + claim OIDC"},
+	{Group: groupKeys, Env: "ASP_ATTEST_ALLOWED_IMAGES", Help: "JSON `{\"images\":[{\"name\",\"kernel\",\"rootfs\",\"vmm\"}]}` con las imágenes (SHA-256 del kernel y de la imagen base, y opcionalmente la versión del hipervisor) para las que se acepta evidencia de arranque. Con él, una evidencia de otra imagen o sin digests se rechaza (400) y no genera claim; se relee al cambiar el fichero. Sin él se guardan los digests que declare el nodo. `node-agent --print-measurement` imprime la entrada de un nodo"},
+	{Group: groupKeys, Env: "ASP_FENCE_PROVIDER", Default: "noop", Help: "`noop`|`http_webhook`|`redfish`|`ipmi`"},
+	{Group: groupKeys, Env: "ASP_FENCE_USER", Help: "Usuario Redfish/IPMI"},
+	{Group: groupKeys, Env: "ASP_FENCE_PASS", Help: "Contraseña IPMI/Redfish por defecto si el nodo no tiene token. Un `ipmitool` la recibe por `IPMI_PASSWORD`", Secret: true},
 
 	// Egress, idle and retention.
-	{Env: "ASP_EGRESS_DEFAULT_ALLOW", Default: "1 with the memory store, 0 with Postgres", Help: "what a tenant with no egress rules may reach: 1 everything, 0 nothing"},
-	{Env: "ASP_EGRESS_DENY_DEFAULT", Help: "the old name of ASP_EGRESS_DEFAULT_ALLOW, with the opposite meaning"},
-	{Env: "ASP_SANDBOX_IDLE_TIMEOUT", Default: "off", Help: "stop a sandbox idle this long (2h recommended; 0 or off disables)"},
-	{Env: "ASP_SANDBOX_IDLE_SWEEP", Default: "1m", Help: "how often the idle reaper runs"},
-	{Env: "ASP_STOPPED_SANDBOX_TTL", Default: "7d", Help: "a stopped sandbox is deleted with its disk after this (0 or off keeps them)"},
-	{Env: "ASP_MAX_STOPPED_PER_TENANT", Help: "the oldest stopped sandboxes of a tenant beyond this are deleted"},
-	{Env: "ASP_RETENTION_SWEEP", Default: "1m", Help: "how often the retention sweep runs"},
+	{Group: groupRetention, Env: "ASP_EGRESS_DEFAULT_ALLOW", Default: "1 con el store en memoria, 0 con Postgres", Help: "Qué puede alcanzar una sandbox cuyo tenant no tiene reglas: `1` todo, `0` nada. `ASP_EGRESS_DENY_DEFAULT` era este mismo ajuste con el sentido contrario; sigue valiendo si este no está, con un aviso"},
+	{Group: groupRetention, Env: "ASP_EGRESS_DENY_DEFAULT", Help: "El nombre antiguo de `ASP_EGRESS_DEFAULT_ALLOW`, con el sentido contrario (`1` deniega)"},
+	{Group: groupRetention, Env: "ASP_SANDBOX_IDLE_TIMEOUT", Default: "off", Help: "Parada por inactividad. Duración Go (`2h`, `1h`, `90m`). `0` / `off` / `false` / `disabled` desactiva. El valor recomendado de lab/producción es **2h** (también vale `1h`); no es el default del proceso, para que los smokes cortos no tumben sandboxes. Flag equivalente: `-idle-timeout` / `--idle-timeout` (pisa el env)."},
+	{Group: groupRetention, Env: "ASP_SANDBOX_IDLE_SWEEP", Default: "1m", Help: "Cada cuánto el bucle del CP llama al reaper. No enciende el reaper por sí solo. Mínimo efectivo 1s."},
+	{Group: groupRetention, Env: "ASP_STOPPED_SANDBOX_TTL", Default: "7d", Help: "Una sandbox parada más de este tiempo se borra con su disco (`stop_reason=retention_expired`), contado desde `stopped_at`. `7d` o una duración Go (`48h`); `0`/`off` las conserva hasta que se borren ([ADR-0012](docs/adr/0012-retained-disks.md))"},
+	{Group: groupRetention, Env: "ASP_MAX_STOPPED_PER_TENANT", Help: "Al superarlo, se borran las sandboxes paradas más antiguas del tenant (`tenant_cap`), con un aviso en el log"},
+	{Group: groupRetention, Env: "ASP_RETENTION_SWEEP", Default: "1m", Help: "Cada cuánto corre el barrido de retención"},
 }

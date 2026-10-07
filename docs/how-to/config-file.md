@@ -24,7 +24,7 @@ La clave es el nombre del ajuste en minúsculas con guiones bajos:
 - **plano de control y CLI**: la variable sin `ASP_` (`ASP_LISTEN_ADDR` → `listen_addr`, `ASP_TENANT` → `tenant`).
 - Un mapa anida: `egress: {proxy_listen: ":8888"}` es `egress_proxy_listen`. Una lista es el valor separado por comas que ya tomaba la variable. Los booleanos valen `true`/`false` y las demás grafías de siempre (`1`, `on`, `no`…).
 - Una clave que no es un ajuste **detiene el arranque**, con el fichero que la trae y la más parecida: `"listen_adr" is not a setting (did you mean listen_addr?)`. Sin eso, una errata sería un ajuste que no hace nada y nadie lo vería.
-- No van en el fichero las variables que el código lee a mano y no son ajustes declarados: en el node-agent, `ASP_ATTEST_KEY`, `ASP_NODE_API_KEY`, `ASP_EGRESS_ALLOWLIST_JSON`, `ASP_EGRESS_MAX_BODY`, `ASP_NFT_SCRIPT`, `ASP_EGRESS_PROXY_PORT` y `ASP_EGRESS_DNS_SINK_PORT`. Se ponen en la unit (`Environment=`) o en un `EnvironmentFile`.
+- No van en el fichero las variables que el código lee a mano y no son ajustes declarados: en el node-agent, las de la tabla [«Variables sin opción»](../reference/configuration/node-agent.md#variables-sin-opción) (`ASP_ATTEST_KEY`, `ASP_NODE_API_KEY`, `ASP_EGRESS_ALLOWLIST_JSON`…). Se ponen en la unit (`Environment=`) o en un `EnvironmentFile`.
 
 ```yaml
 # /etc/asp/agent.yaml.d/10-site.yaml
@@ -87,4 +87,4 @@ El fichero lleva a veces un secreto (`bootstrap_api_key`, `database_url`, `enrol
 2. Copia los ajustes que no son el valor por defecto a un `10-site.yaml`.
 3. Deja la unit en `ExecStart=… --config /etc/asp/agent.yaml` y quita lo que ya está en el fichero. Los dos caminos conviven mientras tanto: el fichero es una capa más, por debajo de la bandera y de la variable.
 
-Los ejemplos del repo: [`packaging/etc/agent.yaml`](../../packaging/etc/agent.yaml), [`packaging/etc/server.yaml`](../../packaging/etc/server.yaml) (lo que instalan los paquetes) y [`scripts/systemd/lab/`](../../scripts/systemd/lab) (el laboratorio de ncc1701d). La lista de ajustes de cada componente: `asp-node-agent -h`, [`control-plane/README.md`](../../control-plane/README.md), [`cli/README.md`](../../cli/README.md).
+Los ejemplos del repo: [`packaging/etc/agent.yaml`](../../packaging/etc/agent.yaml), [`packaging/etc/server.yaml`](../../packaging/etc/server.yaml) (lo que instalan los paquetes) y [`scripts/systemd/lab/`](../../scripts/systemd/lab) (el laboratorio de ncc1701d). La lista de ajustes de cada componente, generada del código: [plano de control](../reference/configuration/control-plane.md), [node-agent](../reference/configuration/node-agent.md), [`asp`](../reference/configuration/cli.md) y [`asp-server`](../reference/configuration/asp-server.md); las reglas que comparten, en [Configuración](../reference/configuration.md).
