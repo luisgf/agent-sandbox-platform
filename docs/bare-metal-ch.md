@@ -884,6 +884,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 | Permission denied cert-dir | `/var/lib/asp/node-certs` no writable | `mkdir` + owner; o `ASP_CERT_DIR` writable |
 | CID vsock conflict | (resuelto) allocator ≥3 | Si ves colisión, bug en `allocCID`; revisa handles |
 | `refusing to start … node-agent.lock is held by pid N` | Ya corre un node-agent (o un `--reap-only`) con ese `--ch-socket-dir` | `systemctl status asp-node-agent`; `ps -p N`; no arranques otro agente a mano junto al servicio |
+| `reconciler worker panicked` en el log, con `sandbox_id` y la traza | Un bug en el agente al arrancar, parar o borrar esa sandbox. El agente sigue vivo y las demás VMs también: la sandbox queda `failed` (primer arranque), `stopped` con su disco (reanudar o parar) o `deleted`, con `status_detail=panic: …`. Lo que el arranque aún no había registrado (la TAP y el CID que reservaba) lo libera el siguiente arranque del agente | Guarda la traza y abre una issue; `asp session status` muestra el detalle |
 | `host cleanup incomplete` al arrancar | La limpieza de §5.6 no pudo parar o borrar algo (permisos, proceso en estado D) | El error nombra el recurso; `node-agent --reap-only --reap-leftovers=report` lista lo que queda |
 | `cloud-hypervisor` o TAP `asp-*` huérfanos tras reiniciar el agente | Agente fuera de systemd, unit con `KillMode=process`, o `--reap-leftovers=off` | Usa la unit de §5.6; el siguiente arranque los borra |
 

@@ -100,6 +100,9 @@ type fakeCP struct {
 	egress map[string]cpclient.EgressPolicy
 	// attests holds the boot attestations posted for each sandbox, oldest first.
 	attests map[string][]attest.Evidence
+	// unknownNode answers the work poll with 404, as a control plane that lost
+	// this node does.
+	unknownNode bool
 }
 
 type fakeSandbox struct {
@@ -157,6 +160,10 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes/n1/work":
+		if f.unknownNode {
+			http.Error(w, `{"error":"node not registered"}`, http.StatusNotFound)
+			return
+		}
 		list := []any{}
 		assigned := []string{}
 		retained := []string{}

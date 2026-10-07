@@ -20,6 +20,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/rundir"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/safe"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
@@ -245,7 +246,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 	defer ticker.Stop()
 	// Immediate first pass. Polls do not wait for the workers: a sandbox still
 	// being handled is skipped until it is done.
-	r.poll(ctx)
+	r.safePoll(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -253,20 +254,23 @@ func (r *Reconciler) Run(ctx context.Context) {
 			r.Logger.Info("reconciler stopped")
 			return
 		case <-ticker.C:
-			r.poll(ctx)
+			r.safePoll(ctx)
 		}
 	}
 }
 
 // tick is one poll and the work it started (tests).
 func (r *Reconciler) tick(ctx context.Context) {
-	r.poll(ctx)
+	r.safePoll(ctx)
 	r.work.Wait()
 }
 
 // dispatch runs fn for sandbox id on a worker, unless a worker already
-// handles id. It returns whether fn was scheduled.
-func (r *Reconciler) dispatch(id string, fn func()) bool {
+// handles id. It returns whether fn was scheduled. A panic in fn is logged with
+// its stack and ends only this item: onPanic (may be nil) then frees what the
+// item held and tells the control plane, so the sandbox is not left in a state
+// nobody drives, and the agent and the other VMs carry on.
+func (r *Reconciler) dispatch(id string, fn func(), onPanic func(value any)) bool {
 	r.mu.Lock()
 	if r.inflight == nil {
 		r.inflight = make(map[string]bool)
@@ -296,9 +300,17 @@ func (r *Reconciler) dispatch(id string, fn func()) bool {
 			delete(r.inflight, id)
 			r.mu.Unlock()
 		}()
+		defer safe.Recover(r.Logger, "reconciler worker", onPanic, "sandbox_id", id)
 		fn()
 	}()
 	return true
+}
+
+// safePoll is poll with a panic contained: a bug in what a poll does (work
+// parsing, egress, the disk GC, a callback) costs this poll, not the agent.
+func (r *Reconciler) safePoll(ctx context.Context) {
+	defer safe.Recover(r.Logger, "reconciler poll", nil)
+	r.poll(ctx)
 }
 
 func (r *Reconciler) poll(ctx context.Context) {
@@ -327,19 +339,19 @@ func (r *Reconciler) poll(ctx context.Context) {
 				if err := r.ensureRunning(ctx, sb); err != nil {
 					r.Logger.Warn("ensure running failed", "sandbox_id", sb.ID, "error", err)
 				}
-			})
+			}, func(v any) { r.afterStartPanic(sb, v) })
 		case "stopping":
 			r.dispatch(sb.ID, func() {
 				if err := r.ensureStopped(ctx, sb); err != nil {
 					r.Logger.Warn("ensure stopped failed", "sandbox_id", sb.ID, "error", err)
 				}
-			})
+			}, func(v any) { r.afterStopPanic(sb, v) })
 		case "deleting":
 			r.dispatch(sb.ID, func() {
 				if err := r.ensureDeleted(ctx, sb); err != nil {
 					r.Logger.Warn("ensure deleted failed", "sandbox_id", sb.ID, "error", err)
 				}
-			})
+			}, func(v any) { r.afterDeletePanic(sb, v) })
 		}
 	}
 	r.fenceUnassigned(ctx, work.Assigned)
@@ -414,9 +426,10 @@ func (r *Reconciler) fenceUnassigned(ctx context.Context, assigned []string) {
 		id := id
 		// A worker that is starting or stopping id finishes first; the next
 		// poll fences what is left.
+		// A panic here is only logged: the next poll fences it again.
 		r.dispatch(id, func() {
 			r.selfFence(ctx, id, "the control plane no longer assigns it to this node")
-		})
+		}, nil)
 	}
 }
 
