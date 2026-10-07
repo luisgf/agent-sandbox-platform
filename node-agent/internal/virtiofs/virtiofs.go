@@ -115,7 +115,9 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 			return nil, err
 		}
 		if _, err := os.Stat(cfg.SocketPath); err == nil {
-			_ = os.Chmod(cfg.SocketPath, 0o666)
+			// Only root, the user the node-agent and Cloud Hypervisor run as,
+			// speaks vhost-user to this daemon.
+			_ = os.Chmod(cfg.SocketPath, 0o600)
 			return stop, nil
 		}
 		select {

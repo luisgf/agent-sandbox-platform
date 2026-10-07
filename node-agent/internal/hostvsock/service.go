@@ -28,6 +28,7 @@ import (
 	"sync"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/rundir"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/mdlayher/vsock"
 )
@@ -64,12 +65,12 @@ func (f UnixFactory) Listen(port uint32) (net.Listener, error) {
 	if f.Dir == "" {
 		return nil, errors.New("UnixFactory.Dir required")
 	}
-	if err := os.MkdirAll(f.Dir, 0o755); err != nil {
+	if err := rundir.Ensure(f.Dir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(f.Dir, fmt.Sprintf("host-vsock-%d.sock", port))
 	_ = os.Remove(path)
-	return net.Listen("unix", path)
+	return listenPrivate(path)
 }
 
 // PathFor returns the unix path UnixFactory would bind for port (tests/docs).

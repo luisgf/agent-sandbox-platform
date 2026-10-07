@@ -19,6 +19,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/rundir"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
@@ -841,7 +842,7 @@ func (r *Reconciler) linkSSHAgent(sandboxID string) string {
 	if vsockDir == "" {
 		vsockDir = "/run/asp"
 	}
-	_ = os.MkdirAll(vsockDir, 0o755)
+	_ = rundir.Ensure(vsockDir)
 	link := filepath.Join(vsockDir, sshAgentName(sandboxID))
 	_ = os.Remove(link)
 	if err := os.Symlink(target, link); err != nil {
@@ -935,7 +936,7 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 	if vsockDir == "" {
 		vsockDir = "/run/asp"
 	}
-	_ = os.MkdirAll(vsockDir, 0o755)
+	_ = rundir.Ensure(vsockDir)
 	vsockPath := filepath.Join(vsockDir, vsockName(sb.ID))
 	_ = os.Remove(vsockPath) // drop stale muxer socket before CH binds it
 	return vmm.MicroVMConfig{
@@ -976,7 +977,7 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 	if vsockDir == "" {
 		vsockDir = "/run/asp"
 	}
-	if err := os.MkdirAll(vsockDir, 0o755); err != nil {
+	if err := rundir.Ensure(vsockDir); err != nil {
 		return "", nil, fmt.Errorf("workspace socket dir: %w", err)
 	}
 	sock := filepath.Join(vsockDir, virtiofsName(sb.ID))

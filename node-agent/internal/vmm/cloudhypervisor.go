@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostproc"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/rundir"
 )
 
 // Cloud Hypervisor REST paths (OpenAPI /api/v1/* over a Unix socket).
@@ -388,7 +389,7 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 	}
 	c.mu.Unlock()
 
-	if err := os.MkdirAll(socketDir, 0o755); err != nil {
+	if err := rundir.Ensure(socketDir); err != nil {
 		return fmt.Errorf("mkdir socket dir: %w", err)
 	}
 	sock := filepath.Join(socketDir, APISocketName(config.ID))
