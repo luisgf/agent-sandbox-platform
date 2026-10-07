@@ -282,7 +282,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 func TestAuthMiddlewareOptionalOff(t *testing.T) {
 	mem := newTestStore(t)
 	srv := NewServer(mem)
-	h := AuthMiddleware(mem, AuthConfig{Require: false})(testMux(srv))
+	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(srv))
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -306,7 +306,7 @@ func TestAuthMiddlewareRequire(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
-	h := AuthMiddleware(mem, AuthConfig{Require: true})(testMux(srv))
+	h := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -696,7 +696,7 @@ func TestRotateRefusesTheBootstrapToken(t *testing.T) {
 	}
 	srv := NewServer(mem)
 	srv.CA = ca
-	h := AuthMiddleware(mem, AuthConfig{Require: false})(testMux(srv))
+	h := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/nodes/enroll", bytes.NewBufferString(
 		`{"id":"rb1","name":"rb1","agent_endpoint":"http://127.0.0.1:9"}`,

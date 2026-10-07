@@ -55,7 +55,10 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		// Loopback unless the operator says otherwise: an API that can create
+		// sandboxes and run commands in them is not something to offer to the
+		// network by default.
+		addr = "127.0.0.1:8080"
 	}
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
 	if err != nil {
@@ -159,6 +162,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	authCfg.IdP = idpVal
 	authCfg.IdPRequired = idpCfg.Required
+	if err := checkAuthConfigured(st, idpVal != nil, authCfg); err != nil {
+		return err
+	}
 	if idpVal != nil {
 		go idpVal.Run(ctx)
 	}
@@ -282,7 +288,7 @@ func run(ctx context.Context, args []string) error {
 	}
 
 	slog.Info("control-plane API listening", "addr", ln.Addr().String(), "tls", useTLS, "store", storeName,
-		"auth_require", authCfg.Require, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
+		"insecure_open", authCfg.InsecureOpen, "idp_required", authCfg.IdPRequired, "client_ca", clientCAPath != "",
 		"mtls_strict", mtlsStrict, "idle_timeout", idleTimeout.String(), "shutdown_timeout", shutdownTimeout.String())
 
 	select {

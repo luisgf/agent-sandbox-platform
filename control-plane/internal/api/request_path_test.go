@@ -27,8 +27,9 @@ func (c *countingStore) TouchAPIKey(id string) error {
 	return c.MemoryStore.TouchAPIKey(id)
 }
 
-// Authenticated requests no longer cost a count(*) and an UPDATE each.
-func TestAuthMiddlewareCachesKeyCountAndThrottlesTouches(t *testing.T) {
+// Authenticated requests cost neither a count(*) (authentication is always on,
+// so there is nothing to count) nor an UPDATE each.
+func TestAuthMiddlewareNeverCountsKeysAndThrottlesTouches(t *testing.T) {
 	cs := &countingStore{MemoryStore: newTestStore(t)}
 	const secret = "key-for-request-path"
 	if _, err := BootstrapAPIKey(cs, secret); err != nil {
@@ -44,8 +45,8 @@ func TestAuthMiddlewareCachesKeyCountAndThrottlesTouches(t *testing.T) {
 			t.Fatalf("request %d: %d %s", i, rr.Code, rr.Body.String())
 		}
 	}
-	if n := cs.counts.Load(); n > 1 {
-		t.Fatalf("100 requests counted the keys %d times, want 1 per %s", n, keyCountTTL)
+	if n := cs.counts.Load(); n != 0 {
+		t.Fatalf("100 requests counted the keys %d times, want none", n)
 	}
 	if n := cs.touches.Load(); n != 1 {
 		t.Fatalf("100 requests touched the key %d times, want 1 per %s", n, keyTouchEvery)
@@ -55,7 +56,7 @@ func TestAuthMiddlewareCachesKeyCountAndThrottlesTouches(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("the cached count must still enforce keys: got %d", rr.Code)
+		t.Fatalf("a request with no credential must be refused: got %d", rr.Code)
 	}
 }
 

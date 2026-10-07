@@ -84,6 +84,8 @@ El nodo debe salir como `SCHEDULABLE yes`. `STOPPED (DISKS)` cuenta las sandboxe
 | plano de control → nodo | `9443/tcp` (`--agent-tls-listen`) | `exec` con mTLS |
 | portátil → nodo | `47000–54999/udp` | solo local-net (WireGuard) |
 
+Los nodos se autentican ante el plano de control con su certificado de cliente (mTLS) o, por HTTP plano, con una API key de ámbito `platform` (`--api-key-file` / `ASP_NODE_API_KEY`); una key de tenant no sirve (403) y sin credencial todo da 401.
+
 `9100` no debe abrirse: es el API local del agente, HTTP en claro, y solo escucha en loopback. Pide además un bearer token (`--agent-token-file`) que solo root y el plano de control del mismo host pueden leer; un plano de control en otro host no lo usa, llega por mTLS al `9443`.
 
 **Subredes del guest:** dale a cada nodo un rango distinto dentro de `10.200.0.0/16` (`--guest-subnet`). Solo importa para local-net: un portátil con sesiones en dos nodos con el mismo rango vería las mismas IPs de guest.

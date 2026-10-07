@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -264,5 +265,69 @@ func TestHeartbeatCarriesFreeDisk(t *testing.T) {
 	}
 	if body != `{"disk_free_mib":123456}` || contentType != "application/json" {
 		t.Fatalf("body=%q content-type=%q", body, contentType)
+	}
+}
+
+// Over plain HTTP a node has no client certificate; its API key is how it
+// proves itself, on every call but enrollment (which has the bootstrap token).
+func TestClientSendsTheNodeAPIKeyExceptOnEnroll(t *testing.T) {
+	var got = map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got[r.Method+" "+r.URL.Path] = r.Header.Get("Authorization")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/work"):
+			_, _ = w.Write([]byte(`{"sandboxes":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/enroll"):
+			_ = json.NewEncoder(w).Encode(EnrollResponse{NodeID: "n1"})
+		case strings.HasSuffix(r.URL.Path, "/claim") || strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"id":"s1","state":"starting"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, srv.Client())
+	c.APIKey = "node-key-123"
+	ctx := context.Background()
+	if err := c.Register(ctx, RegisterRequest{ID: "n1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Heartbeat(ctx, "n1", HeartbeatInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListWork(ctx, "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Claim(ctx, "s1", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReportStatus(ctx, "s1", "running", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Attest(ctx, "s1", map[string]string{"k": "v"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range []string{"POST /v1/nodes/register", "POST /v1/nodes/n1/heartbeat", "GET /v1/nodes/n1/work",
+		"POST /v1/sandboxes/s1/claim", "POST /v1/sandboxes/s1/status", "POST /v1/sandboxes/s1/attest"} {
+		if got[call] != "Bearer node-key-123" {
+			t.Errorf("%s sent Authorization %q", call, got[call])
+		}
+	}
+	// Enrollment carries the bootstrap token, never the node's API key.
+	if _, err := c.Enroll(ctx, "boot-token", EnrollRequest{ID: "n1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got["POST /v1/nodes/enroll"] != "Bearer boot-token" {
+		t.Errorf("enroll sent Authorization %q", got["POST /v1/nodes/enroll"])
+	}
+
+	// With no key, no header.
+	got = map[string]string{}
+	c.APIKey = ""
+	if err := c.Heartbeat(ctx, "n1", HeartbeatInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	if got["POST /v1/nodes/n1/heartbeat"] != "" {
+		t.Errorf("no key, yet Authorization %q", got["POST /v1/nodes/n1/heartbeat"])
 	}
 }

@@ -27,7 +27,8 @@ WorkingDirectory=/home/ubuntu/src/bots
 EnvironmentFile=/home/ubuntu/.secrets/asp-idp.env
 Environment=LISTEN_ADDR=127.0.0.1:18112
 Environment=ASP_OIDC_ISSUER=http://127.0.0.1:18112
-Environment=ASP_AUTH_REQUIRE=0
+# Authentication is always on. The first key comes from ASP_BOOTSTRAP_API_KEY (in the env file) and
+# the node-agent sends it (ASP_NODE_API_KEY_FILE) because there is no client certificate over plain HTTP.
 # Stop sandboxes idle for 2h (successful exec / create / start). 0 or off disables.
 # Process default is off so unit tests and short smokes do not reap; this lab unit opts in.
 Environment=ASP_SANDBOX_IDLE_TIMEOUT=2h

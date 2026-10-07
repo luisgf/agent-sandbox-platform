@@ -82,7 +82,7 @@ func TestAttestWithTheNodeCertificateKey(t *testing.T) {
 	mem := newTestStore(t, "node-a")
 	srv := NewServer(mem)
 	srv.Attestor = attest.NewSoftwareAttestorFromKey(cpKey)
-	h := AuthMiddleware(mem, AuthConfig{RequireNodeClientCert: true})(testMux(srv))
+	h := AuthMiddleware(mem, AuthConfig{RequireNodeClientCert: true, InsecureOpen: true})(testMux(srv))
 	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 	if err != nil {
 		t.Fatal(err)

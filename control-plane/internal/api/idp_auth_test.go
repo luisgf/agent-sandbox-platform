@@ -150,7 +150,7 @@ func TestIdPOffKeepsLabBodyOwner(t *testing.T) {
 	mem := newTestStore(t)
 	srv := NewServer(mem)
 	// No IdP configured — phase 1 lab behavior.
-	h := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
+	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(srv))
 	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":128,"owner_sub":"user:lab"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()
@@ -165,7 +165,7 @@ func TestIdPOffKeepsLabBodyOwner(t *testing.T) {
 	}
 }
 
-func TestIdPDoesNotBreakNodeWorkWithoutJWT(t *testing.T) {
+func TestIdPDoesNotBreakNodeWorkWithAPlatformKey(t *testing.T) {
 	mem := store.NewMemoryStore()
 	srv := NewServer(mem)
 	_, err := mem.RegisterNode(store.RegisterNodeInput{
@@ -175,27 +175,40 @@ func TestIdPDoesNotBreakNodeWorkWithoutJWT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, _, v := testIdP(t)
-	_ = key
+	if _, err := mem.EnsureAPIKey("default", "node", store.APIKeyScopePlatform, "asp_node", store.HashAPIKeySecret("node-key")); err != nil {
+		t.Fatal(err)
+	}
+	key, kid, v := testIdP(t)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v, IdPRequired: true})(testMux(srv))
-
-	// Node work is not user-facing IdP-required; with no API keys and Require=false, open lab.
-	req := httptest.NewRequest(http.MethodGet, "/v1/nodes/n1/work", nil)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("node work want 200, got %d %s", rr.Code, rr.Body.String())
+	do := func(method, path, bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, bytes.NewBufferString(`{}`))
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
 	}
 
-	// Claim path is node-agent, not IdP-required.
-	t.Setenv("ASP_AUTO_PROVISION", "0")
-	// create still needs JWT when required
-	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/x/claim", bytes.NewBufferString(`{}`))
-	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-	// 404/conflict whatever — must not be 401 idp
-	if rr.Code == http.StatusUnauthorized {
-		t.Fatalf("claim must not require IdP JWT: %s", rr.Body.String())
+	// A node without a credential is refused, with or without IdP-required.
+	if rr := do(http.MethodGet, "/v1/nodes/n1/work", ""); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous node work want 401, got %d %s", rr.Code, rr.Body.String())
+	}
+	// The node's platform key works: node routes are not IdP-gated.
+	if rr := do(http.MethodGet, "/v1/nodes/n1/work", "node-key"); rr.Code != http.StatusOK {
+		t.Fatalf("node work with the node key want 200, got %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := do(http.MethodPost, "/v1/sandboxes/x/claim", "node-key"); rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
+		t.Fatalf("claim with the node key was refused by authentication: %d %s", rr.Code, rr.Body.String())
+	}
+	// A human's JWT is not a node credential.
+	jwt := mintUserJWTWithGroups(t, key, kid, "user:admin", "", []string{"asp-admin"})
+	if rr := do(http.MethodGet, "/v1/nodes/n1/work", jwt); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("a JWT on a node route want 401, got %d %s", rr.Code, rr.Body.String())
+	}
+	// Creating still needs a JWT when the IdP is required.
+	if rr := do(http.MethodPost, "/v1/sandboxes", "node-key"); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("create with a key under ASP_IDP_REQUIRED want 401, got %d %s", rr.Code, rr.Body.String())
 	}
 }
 

@@ -32,7 +32,7 @@ LISTEN_ADDR=127.0.0.1:$CP_PORT \
 ASP_OIDC_ISSUER=http://127.0.0.1:$CP_PORT \
 ASP_OIDC_KEY=$DEMO/asp-oidc-key.pem \
 ASP_ATTEST_KEY=$DEMO/asp-attest-key.pem \
-ASP_REQUIRE_API_KEY=0 \
+ASP_INSECURE_OPEN_API=1 \
 ASP_NODE_BOOTSTRAP_TOKEN=dev-bootstrap \
   "$DEMO/api" >"$DEMO/cp.log" 2>&1 &
 echo $! >"$DEMO/cp.pid"

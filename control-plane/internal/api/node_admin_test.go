@@ -84,7 +84,7 @@ func TestNodeAdministrationNeedsAnAdminOrAPlatformKey(t *testing.T) {
 // The open lab (no API keys, no IdP) keeps node administration open, except
 // rotate-cert: it hands out a node's private key.
 func TestNodeAdministrationInTheOpenLab(t *testing.T) {
-	h, mem := nodeAdminServer(t, AuthConfig{})
+	h, mem := nodeAdminServer(t, AuthConfig{InsecureOpen: true})
 	for i, suffix := range []string{"/revoke", "/cordon", "/uncordon", ""} {
 		if rr := callNodeRoute(t, h, mem, fmt.Sprintf("lab-%d", i), suffix, ""); rr.Code != http.StatusOK {
 			t.Errorf("open lab %q: want 200, got %d %s", suffix, rr.Code, rr.Body.String())

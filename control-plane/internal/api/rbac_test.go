@@ -212,7 +212,7 @@ func TestRBACIdPOffNoEnforcement(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t)
 	srv := NewServer(mem)
-	h := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
+	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(srv))
 	body := `{"tenant_id":"t1","image_ref":"img","cpu_millis":100,"memory_mib":128,"owner_sub":"lab"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(body))
 	rr := httptest.NewRecorder()

@@ -79,6 +79,7 @@ type config struct {
 	EgressMITMCA         string
 	EgressAllowCIDRs     string // --egress-allow-cidr: private destinations the proxy may reach
 	AgentTokenFile       string // --agent-token-file: secret of the local API, shared with a same-host control plane
+	APIKeyFile           string // --api-key-file: the node's API key for a control plane reached over plain HTTP
 	EgressMITM           bool
 	SSHAgentConfirm      bool
 	SSHGlobalApprovals   bool   // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
@@ -184,6 +185,12 @@ func main() {
 		slog.Info("using mTLS client certs", "cert_dir", cfg.CertDir, "cert_not_after", nodeCert.Leaf().NotAfter)
 	}
 	cp := cpclient.New(cfg.ControlPlaneURL, httpClient)
+	nodeAPIKey, err := loadNodeAPIKey(cfg)
+	if err != nil {
+		slog.Error("node api key", "error", err)
+		os.Exit(2)
+	}
+	cp.APIKey = nodeAPIKey
 	if nodeCert != nil && isHTTPS(cfg.ControlPlaneURL) {
 		// Renew a third of the lifetime ahead, authenticated by the current
 		// certificate; new connections present the renewed one.
@@ -408,6 +415,7 @@ func main() {
 	}
 
 	idProxy := &identity.Proxy{
+		APIKey:             nodeAPIKey,
 		ControlPlaneURL:    cfg.ControlPlaneURL,
 		HTTP:               httpClient,
 		TrustSandboxHeader: cfg.TrustSandboxHeader,
@@ -696,6 +704,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.EgressProxyListen, "egress-proxy-listen", os.Getenv("ASP_EGRESS_PROXY_LISTEN"), "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
 	flag.StringVar(&cfg.EgressDNSSink, "egress-dns-sink", os.Getenv("ASP_EGRESS_DNS_SINK"), "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names")
 	flag.StringVar(&cfg.EgressAllowCIDRs, "egress-allow-cidr", os.Getenv("ASP_EGRESS_ALLOW_CIDRS"), "comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows")
+	flag.StringVar(&cfg.APIKeyFile, "api-key-file", getenv("ASP_NODE_API_KEY_FILE", ""), "file with the platform-scoped API key this node sends to the control plane (also env ASP_NODE_API_KEY). Needed when the control plane is reached over plain HTTP, where there is no client certificate; the control plane refuses every node call without a credential")
 	flag.StringVar(&cfg.AgentTokenFile, "agent-token-file", getenv("ASP_AGENT_TOKEN_FILE", ""), "file holding the secret that guards the local API on --agent-listen (bearer token). Created, 0600, if missing. A control plane on this host reads the same file (ASP_AGENT_TOKEN_FILE) and must be able to read it. Default "+execproxy.DefaultTokenFile+", or a temporary file when that directory is not writable (dry-run labs)")
 	flag.StringVar(&cfg.EgressMITMCA, "egress-mitm-ca", os.Getenv("ASP_EGRESS_MITM_CA"), "optional path to MITM CA PEM (generate/load); used only with --egress-mitm / ASP_EGRESS_MITM=1")
 	flag.BoolVar(&cfg.EgressMITM, "egress-mitm", getenv("ASP_EGRESS_MITM", "") == "1", "ENABLE CONNECT TLS bump (corp caution; default off)")
@@ -1130,4 +1139,21 @@ func virtiofsSandbox(mode string, euid int) (string, error) {
 		return virtiofs.SandboxChroot, nil
 	}
 	return virtiofs.SandboxNone, nil
+}
+
+// loadNodeAPIKey returns the key this node sends to the control plane: the
+// file named by --api-key-file, else ASP_NODE_API_KEY, else none (mutual TLS).
+func loadNodeAPIKey(cfg config) (string, error) {
+	if path := strings.TrimSpace(cfg.APIKeyFile); path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("--api-key-file: %w", err)
+		}
+		key := strings.TrimSpace(string(b))
+		if key == "" {
+			return "", fmt.Errorf("--api-key-file %s is empty", path)
+		}
+		return key, nil
+	}
+	return strings.TrimSpace(os.Getenv("ASP_NODE_API_KEY")), nil
 }

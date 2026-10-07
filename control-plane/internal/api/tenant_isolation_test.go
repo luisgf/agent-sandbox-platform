@@ -91,7 +91,8 @@ func TestTenantKeyCannotReachAnotherTenant(t *testing.T) {
 		{http.MethodPost, b + "/local-net/heartbeat", `{"grant":"g","client_public_key":"k"}`, http.StatusNotFound},
 		{http.MethodDelete, b + "/local-net/attach", "", http.StatusNotFound},
 		{http.MethodDelete, b, "", http.StatusNotFound},
-		{http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"` + f.sbB + `","aud":"x"}`, http.StatusNotFound},
+		// Minting a workload token is a node route: a tenant key is refused outright.
+		{http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"` + f.sbB + `","aud":"x"}`, http.StatusForbidden},
 		{http.MethodPost, "/v1/sandboxes", `{"tenant_id":"tenant-b","image_ref":"img","cpu_millis":100,"memory_mib":64}`, http.StatusForbidden},
 		{http.MethodGet, "/v1/sandboxes?tenant_id=tenant-b", "", http.StatusForbidden},
 		{http.MethodGet, "/v1/tenants/tenant-b/egress", "", http.StatusForbidden},
@@ -116,8 +117,9 @@ func TestTenantKeyWorksWithinItsTenant(t *testing.T) {
 	if rr := f.do(keyTenantA, http.MethodGet, "/v1/tenants/tenant-a/egress", ""); rr.Code != http.StatusOK {
 		t.Fatalf("own egress: %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := f.do(keyTenantA, http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"`+f.sbA+`","aud":"x"}`); rr.Code != http.StatusOK {
-		t.Fatalf("own oidc mint: %d %s", rr.Code, rr.Body.String())
+	// Minting is what a node does for its guests, not something a tenant key does.
+	if rr := f.do(keyTenantA, http.MethodPost, "/v1/internal/oidc/token", `{"sandbox_id":"`+f.sbA+`","aud":"x"}`); rr.Code != http.StatusForbidden {
+		t.Fatalf("a tenant key minted a workload token: %d %s", rr.Code, rr.Body.String())
 	}
 
 	// Without tenant_id a create lands in the caller's tenant.
@@ -164,7 +166,7 @@ func TestPlatformKeySeesEveryTenant(t *testing.T) {
 // without tenant_id lands in ASP_DEFAULT_TENANT.
 func TestOpenLabHasNoTenantConfinement(t *testing.T) {
 	mem := newTestStore(t, "n1")
-	h := AuthMiddleware(mem, AuthConfig{})(testMux(NewServer(mem)))
+	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(NewServer(mem)))
 	t.Setenv(EnvDefaultTenant, "lab")
 	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", bytes.NewBufferString(`{"image_ref":"img","cpu_millis":100,"memory_mib":64}`))
 	rr := httptest.NewRecorder()

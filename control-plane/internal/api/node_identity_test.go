@@ -198,7 +198,7 @@ func TestNodeIdentityNotEnforcedInOpenLab(t *testing.T) {
 	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
-	h := AuthMiddleware(mem, AuthConfig{})(testMux(NewServer(mem)))
+	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(NewServer(mem)))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/nodes/n1/heartbeat", nil))
 	if rr.Code != http.StatusOK {

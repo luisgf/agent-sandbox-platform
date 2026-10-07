@@ -42,6 +42,8 @@ func startRun(t *testing.T) (string, context.CancelFunc, <-chan error) {
 		"ASP_SANDBOX_IDLE_TIMEOUT": "",
 		"ASP_EGRESS_DEFAULT_ALLOW": "",
 		"ASP_BOOTSTRAP_API_KEY":    "",
+		// These tests exercise shutdown, not authentication.
+		"ASP_INSECURE_OPEN_API": "1",
 	} {
 		t.Setenv(k, v)
 	}
