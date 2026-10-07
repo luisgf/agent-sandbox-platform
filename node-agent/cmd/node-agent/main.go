@@ -482,7 +482,16 @@ func main() {
 		"capacity_cpu", cfg.CapacityCPU, "capacity_mem_mib", cfg.CapacityMemMiB, "max_sandboxes", cfg.MaxSandboxes,
 		"accepts_work", cfg.Reconcile, "local_net_dial", cfg.LocalNetDial)
 
-	if err := cp.Heartbeat(ctx, cfg.NodeID); err != nil {
+	heartbeatInfo := func() cpclient.HeartbeatInfo {
+		var info cpclient.HeartbeatInfo
+		if !cfg.DryRun {
+			if mib, ok := reconciler.DiskFreeMiB(cfg.DiskDir); ok {
+				info.DiskFreeMiB = &mib
+			}
+		}
+		return info
+	}
+	if err := cp.Heartbeat(ctx, cfg.NodeID, heartbeatInfo()); err != nil {
 		slog.Warn("initial heartbeat failed", "error", err)
 	}
 
@@ -584,7 +593,7 @@ func main() {
 			slog.Info("node-agent shutting down")
 			return
 		case <-ticker.C:
-			if err := cp.Heartbeat(ctx, cfg.NodeID); err != nil {
+			if err := cp.Heartbeat(ctx, cfg.NodeID, heartbeatInfo()); err != nil {
 				if cpclient.IsNotFound(err) {
 					// The control plane lost this node (e.g. a memory-store restart).
 					slog.Warn("control plane does not know this node; registering again", "node_id", cfg.NodeID)

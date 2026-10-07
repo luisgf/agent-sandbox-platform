@@ -121,6 +121,16 @@ func (r *Reconciler) failStart(ctx context.Context, sb cpclient.Sandbox, err err
 	_, _ = r.CP.ReportStatus(ctx, sb.ID, state, detail)
 }
 
+// DiskFreeMiB is the free space in dir's filesystem, in MiB. ok is false when
+// it cannot be read.
+func DiskFreeMiB(dir string) (mib int64, ok bool) {
+	b, err := freeBytes(dir)
+	if err != nil {
+		return 0, false
+	}
+	return int64(b >> 20), true
+}
+
 // checkDiskSpace refuses to give a sandbox a disk when --disk-dir is nearly
 // full: the clone is sparse, but the guest writes into it.
 func (r *Reconciler) checkDiskSpace() error {

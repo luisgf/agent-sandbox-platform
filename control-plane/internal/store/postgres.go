@@ -1312,7 +1312,7 @@ func scanSandbox(row scannable, pre ...any) (Sandbox, error) {
 const nodeColumns = `id, name, endpoint, agent_endpoint, state, vmm_profiles,
 		capacity_cpu, capacity_mem_mib, max_sandboxes, cordoned, accepts_work, local_net_dial, agent_instance_id,
 		cert_fingerprint, cert_serial, cert_not_after, fence_token, fence_endpoint, enrolled_at,
-		revoked_at, last_seen_at, created_at, updated_at`
+		revoked_at, last_seen_at, created_at, updated_at, disk_free_mib`
 
 // scanNode reads nodeColumns; pre as in scanSandbox.
 func scanNode(row scannable, pre ...any) (Node, error) {
@@ -1321,7 +1321,7 @@ func scanNode(row scannable, pre ...any) (Node, error) {
 		&n.ID, &n.Name, &n.Endpoint, &n.AgentEndpoint, &n.State, &n.VMMProfiles,
 		&n.CapacityCPU, &n.CapacityMemMiB, &n.MaxSandboxes, &n.Cordoned, &n.AcceptsWork, &n.LocalNetDial, &n.AgentInstanceID,
 		&n.CertFingerprint, &n.CertSerial, &n.CertNotAfter, &n.FenceToken, &n.FenceEndpoint, &n.EnrolledAt,
-		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt,
+		&n.RevokedAt, &n.LastSeenAt, &n.CreatedAt, &n.UpdatedAt, &n.DiskFreeMiB,
 	)...)
 	if err != nil {
 		return Node{}, err

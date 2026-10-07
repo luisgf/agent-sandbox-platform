@@ -544,6 +544,7 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 		node.RevokedAt = existing.RevokedAt
 		// Cordon is an admin decision; an agent re-registering never lifts it.
 		node.Cordoned = existing.Cordoned
+		node.DiskFreeMiB = existing.DiskFreeMiB
 		if node.AgentEndpoint == "" {
 			node.AgentEndpoint = existing.AgentEndpoint
 		}
@@ -1040,6 +1041,10 @@ func cloneSandbox(sb Sandbox) Sandbox {
 
 func cloneNode(n Node) Node {
 	n.VMMProfiles = append([]string(nil), n.VMMProfiles...)
+	if n.DiskFreeMiB != nil {
+		v := *n.DiskFreeMiB
+		n.DiskFreeMiB = &v
+	}
 	if n.LastSeenAt != nil {
 		t := *n.LastSeenAt
 		n.LastSeenAt = &t

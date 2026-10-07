@@ -89,6 +89,9 @@ Administrar nodos (listar, cordon, uncordon, revoke, rotate-cert) nunca acepta u
 | `ASP_EGRESS_DENY_DEFAULT` | unset | Vacío = deny (harden; desactiva allow memory) |
 | `ASP_AUTO_PROVISION` | unset/false | `1` = stub sync Create→running; default deja `requested` |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | unset = **off** | Parada por inactividad. Duración Go (`2h`, `1h`, `90m`). `0` / `off` / `false` / `disabled` desactiva. El valor recomendado de lab/producción es **2h** (también vale `1h`); no es el default del proceso, para que los smokes cortos no tumben sandboxes. Flag equivalente: `-idle-timeout` / `--idle-timeout` (pisa el env). |
+| `ASP_STOPPED_SANDBOX_TTL` | `7d` | Una sandbox parada más de este tiempo se borra con su disco (`stop_reason=retention_expired`), contado desde `stopped_at`. `7d` o una duración Go (`48h`); `0`/`off` las conserva hasta que se borren ([ADR-0012](../docs/adr/0012-retained-disks.md)) |
+| `ASP_MAX_STOPPED_PER_TENANT` | unset = sin tope | Al superarlo, se borran las sandboxes paradas más antiguas del tenant (`tenant_cap`), con un aviso en el log |
+| `ASP_RETENTION_SWEEP` | `1m` | Cada cuánto corre el barrido de retención |
 | `ASP_SANDBOX_IDLE_SWEEP` | `1m` | Cada cuánto el bucle del CP llama al reaper. No enciende el reaper por sí solo. Mínimo efectivo 1s. |
 
 
@@ -120,6 +123,15 @@ ASP_SANDBOX_IDLE_TIMEOUT=2h   # recomendado; alternativa 1h
 La unit `scripts/systemd/asp-control-plane.service` fija `2h`. Los tests y smokes cortos no exportan la variable.
 
 **Límites.** El reaper no es un sustituto de `asp session rm`: el fichero local de sesión sigue apuntando al id; `asp session status` y `exec` lo dicen (`idle timeout` / `idle_reaped`, con el disco conservado) y hay que `asp session resume`. Una sandbox parada fija su disco y su nodo hasta que se borre. La migración `008` rellena `last_activity_at` de filas viejas con `now()`, así que al activar el reaper no se destruye de golpe todo lo creado hace horas; el reloj de esas filas empieza en la migración. Evento de auditoría: `sandbox.idle_reaped` (`stop_reason=idle_timeout`).
+
+## Retención de sandboxes paradas
+
+Parar una sandbox (`POST …/stop`, `asp session stop`, el reaper de inactividad) **conserva su disco** en el nodo ([ADR-0012](../docs/adr/0012-retained-disks.md)); `DELETE` lo borra. Dos límites acotan lo que se acumula, y los aplica un barrido cada `ASP_RETENTION_SWEEP`:
+
+- **TTL** (`ASP_STOPPED_SANDBOX_TTL`, por defecto 7 días): lo parado hace más que eso se borra (`deleting` para que el nodo quite el disco, `deleted` si ningún nodo tiene nada). Evento `sandbox.deleted` con `reason` y el TTL.
+- **Tope por tenant** (`ASP_MAX_STOPPED_PER_TENANT`): se borran las más antiguas de cada tenant que pasen del tope, con `reason=tenant_cap` y un aviso en el log: el disco de un usuario se va para hacer sitio.
+
+**Postgres es requisito.** Con el store en memoria, reiniciar el plano de control olvida las sandboxes paradas y el GC de cada nodo borra sus discos; el plano de control lo avisa al arrancar si hay retención activa. `asp node list` muestra, por nodo, cuántas paradas guardan un disco (`STOPPED (DISKS)`) y el espacio libre que el nodo informa en su heartbeat (`DISK FREE`, de `--disk-dir`).
 
 ## Timeouts hacia el node-agent
 

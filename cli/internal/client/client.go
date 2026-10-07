@@ -43,20 +43,25 @@ type Sandbox struct {
 
 // Node mirrors the control plane's node view (GET /v1/nodes).
 type Node struct {
-	ID                  string     `json:"id"`
-	State               string     `json:"state"`
-	AgentEndpoint       string     `json:"agent_endpoint,omitempty"`
-	Cordoned            bool       `json:"cordoned"`
-	AcceptsWork         bool       `json:"accepts_work"`
-	CapacityCPU         int        `json:"capacity_cpu"`
-	CapacityMemMiB      int        `json:"capacity_mem_mib"`
-	MaxSandboxes        int        `json:"max_sandboxes"`
-	LastSeenAt          *time.Time `json:"last_seen_at"`
-	CertNotAfter        *time.Time `json:"cert_not_after,omitempty"`
-	Allocated           NodeUsage  `json:"allocated"`
-	Allocatable         NodeUsage  `json:"allocatable"` // 0 = not enforced
-	Schedulable         bool       `json:"schedulable"`
-	UnschedulableReason string     `json:"unschedulable_reason,omitempty"`
+	ID             string     `json:"id"`
+	State          string     `json:"state"`
+	AgentEndpoint  string     `json:"agent_endpoint,omitempty"`
+	Cordoned       bool       `json:"cordoned"`
+	AcceptsWork    bool       `json:"accepts_work"`
+	CapacityCPU    int        `json:"capacity_cpu"`
+	CapacityMemMiB int        `json:"capacity_mem_mib"`
+	MaxSandboxes   int        `json:"max_sandboxes"`
+	LastSeenAt     *time.Time `json:"last_seen_at"`
+	CertNotAfter   *time.Time `json:"cert_not_after,omitempty"`
+	Allocated      NodeUsage  `json:"allocated"`
+	Allocatable    NodeUsage  `json:"allocatable"` // 0 = not enforced
+	// StoppedSandboxes counts the stopped sandboxes on the node: each keeps a
+	// disk there and holds no CPU or memory.
+	StoppedSandboxes int64 `json:"stopped_sandboxes"`
+	// DiskFreeMiB is the free space of the node's disk directory, as it last reported it.
+	DiskFreeMiB         *int64 `json:"disk_free_mib,omitempty"`
+	Schedulable         bool   `json:"schedulable"`
+	UnschedulableReason string `json:"unschedulable_reason,omitempty"`
 }
 
 // NodeUsage is what is placed on (or offered by) a node.

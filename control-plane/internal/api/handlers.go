@@ -532,6 +532,12 @@ func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, node)
 }
 
+// heartbeatRequest is what a node may send with its heartbeat.
+type heartbeatRequest struct {
+	// DiskFreeMiB is the free space of the node's --disk-dir. Nil: not reported.
+	DiskFreeMiB *int64 `json:"disk_free_mib"`
+}
+
 // HeartbeatNode updates last_seen for a registered/enrolled node.
 func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -541,6 +547,14 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 	}
 	if !authorizeNodeID(w, r, id) {
 		return
+	}
+	// The body is optional: a node that predates it sends none.
+	var info heartbeatRequest
+	if body, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &info); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
 	}
 	node, err := s.Store.HeartbeatNode(id)
 	if err != nil {
@@ -554,6 +568,14 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if info.DiskFreeMiB != nil && *info.DiskFreeMiB >= 0 {
+		if err := s.Store.SetNodeDiskFree(id, *info.DiskFreeMiB); err != nil {
+			slog.Warn("heartbeat: recording the node's free disk space failed", "node_id", id, "error", err)
+		} else {
+			v := *info.DiskFreeMiB
+			node.DiskFreeMiB = &v
+		}
 	}
 	writeJSON(w, http.StatusOK, node)
 }

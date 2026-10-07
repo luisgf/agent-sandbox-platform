@@ -187,3 +187,43 @@ func TestIsMemory(t *testing.T) {
 		t.Fatal("the memory store is memory")
 	}
 }
+
+// A node's reported free disk space is kept, survives a register (a restart of
+// its agent), and the stopped sandboxes on each node are counted.
+func testNodeDiskFreeAndStoppedCount(t *testing.T, s Store) {
+	lifecycleStore(t, s, 0, "node-a", "node-b")
+	if err := s.SetNodeDiskFree("ghost", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown node: %v", err)
+	}
+	if n, _ := s.GetNode("node-a"); n.DiskFreeMiB != nil {
+		t.Fatalf("not reported yet: %v", *n.DiskFreeMiB)
+	}
+	if err := s.SetNodeDiskFree("node-a", 700000); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.GetNode("node-a"); n.DiskFreeMiB == nil || *n.DiskFreeMiB != 700000 {
+		t.Fatalf("disk free: %v", n.DiskFreeMiB)
+	}
+	// The agent restarts and registers again: the last figure stays until its next heartbeat.
+	registerPlacementNodes(t, s, 0, "node-a")
+	if n, _ := s.GetNode("node-a"); n.DiskFreeMiB == nil || *n.DiskFreeMiB != 700000 {
+		t.Fatalf("a register lost the disk figure: %v", n.DiskFreeMiB)
+	}
+
+	noop := func(string, time.Time) {}
+	stoppedOn(t, s, "node-a", "t", time.Hour, noop)
+	stoppedOn(t, s, "node-a", "t", time.Hour, noop)
+	stoppedOn(t, s, "node-b", "t", time.Hour, noop)
+	runningOn(t, s, "node-b")
+	counts, err := s.CountStoppedByNode()
+	if err != nil || counts["node-a"] != 2 || counts["node-b"] != 1 || len(counts) != 2 {
+		t.Fatalf("counts=%v err=%v", counts, err)
+	}
+}
+
+func TestMemoryNodeDiskFreeAndStoppedCount(t *testing.T) {
+	testNodeDiskFreeAndStoppedCount(t, NewMemoryStore())
+}
+func TestPostgresNodeDiskFreeAndStoppedCount(t *testing.T) {
+	testNodeDiskFreeAndStoppedCount(t, newPostgresTestStore(t))
+}

@@ -64,21 +64,31 @@ func cmdNodeList(args []string, stdout, stderr io.Writer) int {
 // writeNodeTable prints used/offered per node; "-" means not enforced.
 func writeNodeTable(w io.Writer, nodes []client.Node, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tLAST SEEN\tCERT EXPIRES")
+	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tSTOPPED (DISKS)\tDISK FREE\tLAST SEEN\tCERT EXPIRES")
 	for _, n := range nodes {
 		sched := "yes"
 		if !n.Schedulable {
 			sched = "no: " + n.UnschedulableReason
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			n.ID, n.State, sched,
 			usedOf(float64(n.Allocated.CPUMillis)/1000, float64(n.Allocatable.CPUMillis)/1000, "%.1f"),
 			usedOf(float64(n.Allocated.MemoryMiB), float64(n.Allocatable.MemoryMiB), "%.0f"),
 			usedOf(float64(n.Allocated.Sandboxes), float64(n.Allocatable.Sandboxes), "%.0f"),
+			n.StoppedSandboxes,
+			diskText(n.DiskFreeMiB),
 			sinceText(n.LastSeenAt, now),
 			expiryText(n.CertNotAfter, now))
 	}
 	_ = tw.Flush()
+}
+
+// diskText is the free disk space of a node in GiB, or "-" when it did not report it.
+func diskText(mib *int64) string {
+	if mib == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f GiB", float64(*mib)/1024)
 }
 
 func usedOf(used, offered float64, format string) string {

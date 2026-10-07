@@ -403,7 +403,8 @@ Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs
 | `--workspace /abs/path` | Shares a host directory into the guest via virtiofs, mounted at `/workspace`. | [`why-virtiofs-pty.md`](docs/why-virtiofs-pty.md) |
 | `--local-net` + `asp session local-net up` | Routes the session's traffic through a WireGuard tunnel to your machine. | [`ops-local-net.md`](docs/ops-local-net.md) |
 | `asp auth login` | Fetches and caches an IdP token; the CLI then sends it as Bearer automatically. | [`ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) |
-| `ASP_SANDBOX_IDLE_TIMEOUT` | Stops idle sandboxes on the control plane. | [`control-plane/README.md`](control-plane/README.md) |
+| `ASP_SANDBOX_IDLE_TIMEOUT` | Stops idle sandboxes on the control plane (their disks are kept). | [`control-plane/README.md`](control-plane/README.md) |
+| `asp session stop` / `resume` / `rm` | Stop keeps the disk, resume boots it again on the same node, rm deletes it. `ASP_STOPPED_SANDBOX_TTL` (7 days) bounds how long a stopped one is kept. | [ADR-0012](docs/adr/0012-retained-disks.md) |
 
 ---
 
@@ -421,7 +422,9 @@ Only the most common settings. Full lists live in each component's README.
 | `ASP_SESSION_DIR` | CLI | Where session files live (default `~/.cache/asp/sessions`, mode `0700`). |
 | `LISTEN_ADDR` | CP | API listen address. |
 | `DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
-| `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. |
+| `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. A stop keeps the disk. |
+| `ASP_STOPPED_SANDBOX_TTL` | CP | Delete a sandbox (and its disk) stopped for this long. Default `7d`; `0`/`off` keeps it until deleted. Needs Postgres to mean anything. |
+| `ASP_MAX_STOPPED_PER_TENANT` | CP | Keep at most this many stopped sandboxes per tenant, deleting the oldest. Default: no cap. |
 | `ASP_NODE_BOOTSTRAP_TOKEN` | CP, node | One-time token for node enrollment. |
 | `ASP_CLIENT_CA` | CP | Require node client certificates and bind each node route to the certificate's node. |
 | `--agent-tls-listen` | node | mTLS exec listener for a control plane on another host ([ADR-0011](docs/adr/0011-multi-node.md)). |
@@ -513,7 +516,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0009](docs/adr/0009-agent-sessions.md) | Sessions as the primary use of isolation |
 | [0010](docs/adr/0010-on-demand-local-net.md) | On-demand local network: full tunnel, opt-in |
 | [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes, capacity placement |
-| [0012](docs/adr/0012-retained-disks.md) | Stop is not delete: a sandbox's disk survives a stop (proposed) |
+| [0012](docs/adr/0012-retained-disks.md) | Stop is not delete: a sandbox's disk survives a stop, bounded by a TTL |
 
 Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
 

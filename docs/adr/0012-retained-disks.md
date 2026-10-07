@@ -1,6 +1,6 @@
 # ADR-0012: Parar no es borrar — el disco de una sandbox sobrevive a la parada
 
-- **Estado:** Propuesta (2026-10-07). Se pasa a «Aceptada» en la última PR de [#86](https://github.com/luisgf/agent-sandbox-platform/issues/86), cuando todo esté implementado.
+- **Estado:** Aceptada (2026-10-07). Implementada en [#86](https://github.com/luisgf/agent-sandbox-platform/issues/86): nodo, plano de control y CLI, y retención con visibilidad. Probada en dry-run (smokes), con Postgres real y con tests del reconciler; la prueba con VMs reales en ncc1701d queda para el despliegue.
 - **Fecha:** 2026-10-07
 - **Extiende:** [0009](0009-agent-sessions.md) (el disco del guest es el workspace de la sesión «mientras vive»; esta ADR fija cuándo deja de vivir), [0011](0011-multi-node.md) (una sandbox parada queda fijada a su nodo)
 - **Relacionados:** [`../architecture.md`](../architecture.md), [`../ops-asp-session.md`](../ops-asp-session.md), tarea de calentamiento de sandboxes [#81](https://github.com/luisgf/agent-sandbox-platform/issues/81)
@@ -62,9 +62,9 @@ El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de 
 
 ### 7. Retención y espacio
 
-- `ASP_STOPPED_SANDBOX_TTL` (por defecto **7 días**; `0`/`off` las conserva hasta que se borren), contado desde `stopped_at`.
-- `ASP_MAX_STOPPED_PER_TENANT` (por defecto sin límite): al superarlo se borra la más antigua del tenant, con un aviso en el log.
-- Una guardia de espacio libre en el nodo (`--disk-min-free-mib`) rechaza clonar o reanudar cuando `--disk-dir` está casi lleno.
+- `ASP_STOPPED_SANDBOX_TTL` (por defecto **7 días**; `0`/`off` las conserva hasta que se borren), contado desde `stopped_at`. Un barrido cada `ASP_RETENTION_SWEEP` (1 min) las borra con `stop_reason=retention_expired`.
+- `ASP_MAX_STOPPED_PER_TENANT` (por defecto sin límite): el mismo barrido borra las más antiguas del tenant que pasen del tope (`tenant_cap`), con un aviso en el log. No se aplica en el instante de parar, sino en el siguiente barrido.
+- Una guardia de espacio libre en el nodo (`--disk-min-free-mib`) rechaza clonar o reanudar cuando `--disk-dir` está casi lleno. El nodo informa de su espacio libre en cada heartbeat, y `asp node list` lo muestra junto a cuántas sandboxes paradas guardan un disco en él.
 - Un disco retenido guarda lo que escribió el agente, tokens incluidos, hasta el TTL. Los discos viven en `--disk-dir` (root, `0700`, ficheros `0600`).
 
 ### 8. Postgres es requisito

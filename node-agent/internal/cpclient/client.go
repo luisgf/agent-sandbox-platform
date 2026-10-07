@@ -189,11 +189,28 @@ func (c *Client) Register(ctx context.Context, req RegisterRequest) error {
 	return nil
 }
 
-func (c *Client) Heartbeat(ctx context.Context, nodeID string) error {
+// HeartbeatInfo is what a heartbeat may carry besides "I am alive".
+type HeartbeatInfo struct {
+	// DiskFreeMiB is the free space of --disk-dir, where the disks of stopped
+	// sandboxes stay (ADR-0012). Nil is not reported.
+	DiskFreeMiB *int64 `json:"disk_free_mib,omitempty"`
+}
+
+// Heartbeat tells the control plane the node is alive. The body is omitted when
+// info reports nothing, so a control plane that predates it sees what it always did.
+func (c *Client) Heartbeat(ctx context.Context, nodeID string, info HeartbeatInfo) error {
 	url := fmt.Sprintf("%s/v1/nodes/%s/heartbeat", c.BaseURL, nodeID)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	var body io.Reader
+	if info.DiskFreeMiB != nil {
+		raw, _ := json.Marshal(info)
+		body = bytes.NewReader(raw)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return err
+	}
+	if body != nil {
+		httpReq.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {

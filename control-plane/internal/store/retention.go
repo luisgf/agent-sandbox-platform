@@ -267,3 +267,58 @@ func (m *MemoryStore) SetStoppedAtForTest(id string, at time.Time) {
 		m.sandboxes[id] = sb
 	}
 }
+
+func (m *MemoryStore) SetNodeDiskFree(id string, freeMiB int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return ErrNotFound
+	}
+	n.DiskFreeMiB = &freeMiB
+	m.nodes[id] = n
+	return nil
+}
+
+func (m *MemoryStore) CountStoppedByNode() (map[string]int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := map[string]int64{}
+	for _, sb := range m.sandboxes {
+		if sb.State == SandboxStopped && sb.NodeID != nil && *sb.NodeID != "" {
+			out[*sb.NodeID]++
+		}
+	}
+	return out, nil
+}
+
+func (p *PostgresStore) SetNodeDiskFree(id string, freeMiB int64) error {
+	tag, err := p.pool.Exec(context.Background(), `UPDATE nodes SET disk_free_mib=$2 WHERE id=$1`, id, freeMiB)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresStore) CountStoppedByNode() (map[string]int64, error) {
+	rows, err := p.pool.Query(context.Background(), `
+		SELECT node_id, count(*) FROM sandboxes
+		WHERE state='stopped' AND node_id IS NOT NULL AND node_id<>'' GROUP BY node_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
