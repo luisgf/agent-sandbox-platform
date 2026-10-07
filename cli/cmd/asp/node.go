@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -230,9 +234,57 @@ func cmdNodeEnrollToken(args []string, stdout, stderr io.Writer) int {
 		scope = "node " + tok.NodeID + " only"
 		idFlag = "--node-id=" + tok.NodeID
 	}
-	fmt.Fprintf(stderr, "single use, for %s, valid until %s\nOn the server: node-agent --enroll --enroll-token=<token> %s ...  (or ASP_NODE_ENROLL_TOKEN)\n",
-		scope, tok.ExpiresAt.Local().Format(time.RFC3339), idFlag)
+	fmt.Fprintf(stderr, "single use, for %s, valid until %s\n", scope, tok.ExpiresAt.Local().Format(time.RFC3339))
+	printJoinHint(stderr, g.cpURL, tok.Token, tok.NodeID, idFlag)
 	return 0
+}
+
+// installerURL is where a release's install.sh is.
+const installerURL = "https://github.com/luisgf/agent-sandbox-platform/releases/latest/download/install.sh"
+
+// printJoinHint says how to put a node behind this control plane with the token: the command
+// of the installer, which also takes the fingerprint of the certificate the CLI trusts for the
+// server (ASP_CA_FILE) so the new host can check the one it is shown, and the node-agent flags
+// for a host that is set up by hand.
+func printJoinHint(w io.Writer, serverURL, token, pinnedNode, idFlag string) {
+	fmt.Fprintln(w, "To add the node, on the new host (it needs KVM):")
+	env := "INSTALL_ASP_ROLE=agent INSTALL_ASP_SERVER=" + serverURL + " INSTALL_ASP_TOKEN=" + token
+	if pinnedNode != "" {
+		env += " INSTALL_ASP_NODE_ID=" + pinnedNode
+	}
+	if ca := strings.TrimSpace(os.Getenv("ASP_CA_FILE")); ca != "" {
+		if fp, err := certFingerprintOfFile(ca); err == nil {
+			env += " INSTALL_ASP_CA_SHA256=" + fp
+		}
+	}
+	fmt.Fprintf(w, "  curl -fsSL %s | sudo %s sh\n", installerURL, env)
+	fmt.Fprintf(w, "or by hand: node-agent --enroll --enroll-token=<token> %s --control-plane-url=%s ...  (or ASP_NODE_ENROLL_TOKEN)\n", idFlag, serverURL)
+	if u, err := url.Parse(serverURL); err == nil {
+		switch u.Hostname() {
+		case "127.0.0.1", "localhost", "::1":
+			fmt.Fprintln(w, "note: "+serverURL+" is this host's loopback: another host cannot reach it. Make the control plane listen on an address it can (asp-server --listen 0.0.0.0:8443 --tls-san <name>), and give --control-plane-url that one.")
+		}
+	}
+}
+
+// certFingerprintOfFile is the SHA-256 of the first certificate of a PEM file, in lower-case
+// hex: what `openssl x509 -fingerprint -sha256` prints, without the colons.
+func certFingerprintOfFile(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for {
+		var block *pem.Block
+		block, raw = pem.Decode(raw)
+		if block == nil {
+			return "", fmt.Errorf("%s has no certificate", path)
+		}
+		if block.Type == "CERTIFICATE" {
+			sum := sha256.Sum256(block.Bytes)
+			return hex.EncodeToString(sum[:]), nil
+		}
+	}
 }
 
 // explainCreateError turns placement refusals into something actionable.

@@ -44,6 +44,8 @@ The first release will be 0.1.0. Until then this is what `main` has.
   `agent`) installs a release's packages after checking them against `SHA256SUMS`, writes the
   settings of the `INSTALL_ASP_*` variables into a drop-in under `/etc/asp`, pulls the guest image and
   starts the service; `asp-killall.sh` and `asp-uninstall.sh` take ASP away again.
+- **Joining a node with a private certificate:** the CLI trusts a PEM file named by `ASP_CA_FILE`, reads its key from `ASP_API_KEY_FILE`, and `asp node enroll-token` prints the installer command to add the node, with the
+  fingerprint of the certificate (`INSTALL_ASP_CA_SHA256`): the installer reads the certificate from the server, refuses it if the fingerprint differs, and trusts it.
 - **A configuration file** for each component, with drop-ins like k3s's: `/etc/asp/agent.yaml` and
   `agent.yaml.d/*.yaml` (node-agent), `server.yaml` (control plane), `asp.yaml` (CLI, also
   `~/.config/asp/asp.yaml`). The order is flag, environment, file, default, in all three; an unknown
