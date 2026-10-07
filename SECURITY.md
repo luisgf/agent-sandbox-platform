@@ -37,5 +37,5 @@ Out of scope are the limits the project already documents in [Status and known l
 - Dry-run mode (`FakeVMM`). It exercises the control plane and provides no isolation.
 - nftables in `soft` mode, which tolerates missing privileges by design.
 - Software attestation (`ASP_ATTEST_KEY`). It is not TPM/SEV.
-- Lease fencing through the stub `FenceProvider`. It is not BMC STONITH.
+- Lost-node fencing through a `FenceProvider`: the webhook works, Redfish and IPMI are stubs. It is not BMC STONITH.
 - Vulnerabilities in Cloud Hypervisor, the Linux kernel or other upstream projects. Please report those upstream; if ASP configures them insecurely, that part is in scope here.

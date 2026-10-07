@@ -15,7 +15,7 @@ añadir un protocolo nuevo.
 
 ## Qué ganamos
 
-- Binario **`asp`** (`cli/cmd/asp`): `sandbox create|get|list|exec|delete|run`.
+- Binario **`asp`** (`cli/cmd/asp`): `sandbox create|get|list|exec|stop|start|delete|run`, `session start|exec|status|stop|resume|rm`, `auth`, `node`, `apikey`, `doctor`, `image`, `config`, `version`.
 - **`asp sandbox run --cmd '…'`**: create → poll Get hasta `running` → Exec →
   destroy (salvo `--keep`). Exit code = `exit_code` del guest cuando es posible.
 - Flags/env alineados con el CP: `--control-plane-url` / `ASP_CONTROL_PLANE_URL`, `--api-key` /
@@ -25,7 +25,7 @@ añadir un protocolo nuevo.
   `~/.secrets/asp-keycloak-lab.txt`). Ver
   [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).
 - **Sesión de agente (superficie primaria, [ADR-0009](adr/0009-agent-sessions.md)):**
-  `asp session start|exec|status|stop --name` guarda id + URL en
+  `asp session start|exec|status|stop|resume|rm --name` guarda id + URL en
   `~/.cache/asp/sessions/<nombre>.json` (0600, sin token) para que un harness
   apunte su bash tool a `asp session exec` durante la vida del agente. El exec
   de sesión imprime NDJSON según llega; `--buffered` deja el JSON de una pieza.

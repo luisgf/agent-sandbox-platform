@@ -8,7 +8,7 @@ Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal
 
 | | Detalle |
 |---|---|
-| **Precondiciones** | Go 1.25+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
+| **Precondiciones** | Go 1.26+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
 | **Qué demuestra** | Plano de control + enroll + exec unix + (scripts) identity/egress/reconcile/CLI y reparto entre dos nodos (`smoke-multi-node`). Contrato de APIs y flags. |
 | **Qué NO demuestra** | Aislamiento de hipervisor, bypass-proof nft, AF_VSOCK real, TAP/NAT. Eso es bare-metal. |
 | **Resultado OK** | `curl /healthz` → `{"status":"ok"}`; exec → `exit_code:0`; smokes exit 0; `asp sandbox run` imprime stdout del guest. |

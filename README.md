@@ -219,7 +219,7 @@ Once a [release](CHANGELOG.md) exists, no compiling is needed: `curl -fsSL https
 
 Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI. **It provides no isolation.** For real microVMs see [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
 
-**Requirements:** Go 1.25+, Rust/Cargo. Docker only for Postgres or for building the guest rootfs.
+**Requirements:** Go 1.26+, Rust/Cargo. Docker only for Postgres or for building the guest rootfs.
 
 ### 1. Build and test
 
@@ -462,7 +462,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Fencing | Lost-node failover calls a `FenceProvider` (the webhook works; Redfish and IPMI are stubs). Not real BMC STONITH. |
 | Exec timeouts | Only buffered execs have a time limit (`ASP_BUFFERED_EXEC_TIMEOUT`, 10 minutes by default, the same in the guest). Streams and PTY sessions last as long as the command. See [timeouts](control-plane/README.md#timeouts-hacia-el-node-agent). |
 | Idle timeout | Off by default. Does not delete the local session file. |
-| `--local-net` | Real `ip`/`wg` commands on node and client; needs `wireguard-tools` and `CAP_NET_ADMIN`. End-to-end packet flow not yet lab-tested. |
+| `--local-net` | Real `ip`/`wg` commands on node and client; needs `wireguard-tools` and `CAP_NET_ADMIN`. Tested by hand on a KVM host with two sessions and the client in a network namespace; forwarding/NAT to a real LAN, home DNS and the macOS client end to end are not verified, and nothing of it runs in CI. |
 | Workspace (virtiofs) | Auto-mount ships in newly built guest images; older images need `mount -t virtiofs workspace /workspace`. No KVM test in CI. |
 | Harness integration | A shell wrapper is the integration point; for OpenCode, `integrations/opencode/` adds a plugin, instructions and example configs. |
 | Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |

@@ -37,9 +37,10 @@ ExecStart=/usr/bin/asp-node-agent --config /etc/asp/agent.yaml
 # with it: control-group is what does that, do not change it to process or none.
 KillMode=control-group
 TimeoutStopSec=30
-# Then remove what the dead VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs
-# copies. The VMs that are still alive and have a state record are left alone. The
-# agent does the same when it starts (--reap-leftovers=on).
+# Then remove what the dead VMs held: TAPs, wg-asp-* tunnels, sockets and run
+# directories. The VMs that are still alive and have a state record are left alone, and
+# so are the disks (a stopped sandbox keeps its disk, ADR-0012). The agent does the same
+# when it starts (--reap-leftovers=on).
 ExecStopPost=-/usr/bin/asp-node-agent --config /etc/asp/agent.yaml --reap-only
 Restart=always
 RestartSec=5
