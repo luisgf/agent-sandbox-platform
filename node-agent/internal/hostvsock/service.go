@@ -29,6 +29,7 @@ import (
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/rundir"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/safe"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/mdlayher/vsock"
 )
@@ -208,7 +209,11 @@ func (s *Service) acceptSSHUpstream(ln net.Listener, hostSock, sandboxID string)
 			s.Logger.Warn("host-vsock ssh accept", "error", err)
 			continue
 		}
-		go sshagent.ServeConn(conn, hostSock, sandboxID, s.SSHConfirm, s.Logger)
+		go func() {
+			// The bytes come from the guest: a bug must cost this connection only.
+			defer safe.Recover(s.Logger, "ssh-agent proxy", nil, "sandbox_id", sandboxID)
+			sshagent.ServeConn(conn, hostSock, sandboxID, s.SSHConfirm, s.Logger)
+		}()
 	}
 }
 
