@@ -160,8 +160,8 @@ Cada microVM debería tener **TAP + NAT en el host**. Egress HTTP/DNS deny-by-de
 - **`--tap-auto` / `ASP_TAP_AUTO=1`:** el reconciler crea el TAP (`ip tuntap add` + `link set up` + `addr add <host>/30`) antes de Start y lo borra en Stop. Cada sandbox recibe su propia /30 de `--guest-subnet` (default `10.200.0.0/16`): el TAP lleva la `.1` de esa /30 y el guest la `.2`, que el kernel configura con `ip=` en la cmdline (`CONFIG_IP_PNP`). Si un paso falla (sin `CAP_NET_ADMIN`, o el nombre ya existe) la sandbox pasa a `failed` con el motivo `tap: …` y se borra el TAP a medio crear; la VM no arranca sin red. Solo `--dry-run` tolera el fallo (warning y sigue).
 - Sin `--tap-auto`, prepáralo a mano (sketch abajo) o el create fallará al abrir el device.
 - Allowlist de tenant (`PUT /v1/tenants/{id}/egress`) + check API; **forward proxy HTTP(S)** (`--egress-proxy-listen`) y **DNS sink** (`--egress-dns-sink`) están listos (fase 2b). Guest: `HTTP_PROXY` → su gateway (la IP del TAP en su /30):8888.
-- **nft redirect anti-bypass** (`--nft-egress-redirect`, modo `soft|enforce`) fuerza HTTP(S)+DNS por el proxy/sink (fase 2e, §8e). Tabla `asp_egress`.
-- **Deny-by-default en nft:** con `--nft-egress-redirect`, la tabla `asp_egress` descarta todo lo que el guest manda salvo HTTP(S) y DNS redirigidos al proxy/sink: otros puertos, otros guests, servicios del host y orígenes falsificados. Solo se reenvía el túnel propio de una sesión local-net (`wg-asp-*`).
+- **nft redirect anti-bypass** fuerza HTTP(S)+DNS por el proxy/sink (fase 2e, §8e). Tabla `asp_egress`. **Está activado por defecto en cuanto el nodo tiene `--egress-proxy-listen` y no es `--dry-run`, y su modo por defecto es `enforce`**: un nodo que no puede aplicar las reglas (sin root, sin `nft`) no arranca, en vez de arrancar sin control (antes: `soft`, un aviso y los guests salían por donde el host reenviara). `--egress-nft-redirect=false` lo apaga (el proxy pasa a ser voluntario; el agente lo avisa) y `--nft-egress-mode=soft` vuelve al aviso. El script va dentro del binario: no hay nada que instalar. Cada nodo informa `egress_enforced` al registrarse y `asp node list` lo muestra (`EGRESS`: `enforced` u `off`); `off` significa que la política de egress del tenant no obliga a los guests de ese nodo. Sin `--egress-proxy-listen` un nodo con `--tap-auto` lo avisa en el log.
+- **Deny-by-default en nft:** con el redirect, la tabla `asp_egress` descarta todo lo que el guest manda salvo HTTP(S) y DNS redirigidos al proxy/sink: otros puertos, otros guests, servicios del host y orígenes falsificados. Solo se reenvía el túnel propio de una sesión local-net (`wg-asp-*`).
 - **NAT/MASQUERADE** (`asp_nat`, §3.3) ya no hace falta para el egress público: el proxy sale desde el host. Si lo tienes de antes, el drop de `asp_egress` sigue mandando.
 
 ### 3.2 Sketch: crear TAP + IP host (manual o referencia de `--tap-auto`)
@@ -218,7 +218,7 @@ Esto da **conectividad IP mínima**. No sustituye el proxy deny-default.
 | `--egress-dns-sink :5353` NXDOMAIN non-allowlisted | **Listo** (opcional) |
 | TAP create/delete | **`--tap-auto`** (soft-fail sin perms) |
 | NAT + nftables host | **Ops manual** (esta sección) |
-| nft redirect HTTP+DNS (`asp_egress`) | **Fase 2e** (`--nft-egress-redirect --nft-egress-mode=enforce`) |
+| nft redirect HTTP+DNS (`asp_egress`) | **Fase 2e**; por defecto con `--egress-proxy-listen`, en modo `enforce` (§3.1) |
 
 #### Guest → host TAP proxy
 
@@ -408,7 +408,9 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--pod-daemon-port` | | `26500` — puerto guest vsock para CONNECT |
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check; intent para proxy |
 | `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | p.ej. `:8888` forward proxy HTTP(S) |
-| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | p.ej. `:5353` UDP NXDOMAIN non-allowlisted |
+| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | p.ej. `:5353` UDP NXDOMAIN non-allowlisted. Con el redirect y `--nft-dns-action=redirect` arranca solo en `:5353` si no lo nombras |
+| `--egress-nft-redirect` | `ASP_EGRESS_NFT_REDIRECT` | forzar HTTP(S)+DNS por proxy y sink con nft. Default: activo con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga |
+| `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `enforce` (default: sin reglas el nodo no arranca) \| `soft` (arranca sin forzar el egress; default con `--dry-run`) |
 | `--egress-allow-cidr` | `ASP_EGRESS_ALLOW_CIDRS` | redes privadas (CIDR o dirección, separadas por comas) a las que el proxy puede conectar, además de Internet. Loopback, link-local, el propio nodo y la red de los guests nunca |
 | `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra `asp-{shortid}` en Start/Stop |
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest→CID 2) |
@@ -838,17 +840,21 @@ sudo ./scripts/nftables-egress-redirect.sh apply --mode enforce \
   --guest-subnet 10.200.0.0/16 --proxy-port 8888 \
   --dns-sink-port 5353 --dns-action redirect
 
-# Desde node-agent:
+# Desde node-agent: con el proxy basta; el redirect y el modo `enforce` son el
+# default (y con redirect el DNS sink arranca en :5353 si no lo nombras)
 node-agent ... \
   --egress-proxy-listen=:8888 --egress-dns-sink=:5353 \
-  --nft-egress-redirect --nft-egress-mode=enforce \
   --nft-http-ports=80,443 --guest-subnet=10.200.0.0/16
 
-# SoftFail (CI / sin CAP_NET_ADMIN):
-node-agent ... --nft-egress-redirect --nft-egress-mode=soft
+# SoftFail (CI / sin CAP_NET_ADMIN): el nodo arranca sin forzar el egress
+node-agent ... --nft-egress-mode=soft
+# Sin redirect (el proxy es voluntario; no lo hagas en un nodo con VMs reales):
+node-agent ... --egress-proxy-listen=:8888 --egress-nft-redirect=false
 ```
 
-**Enforce requiere:** root, binario `nft`, iface TAP con el subnet guest, proxy y (si redirect) DNS sink escuchando. Sin eso, usa `soft`.
+**Comprobarlo en un host KVM:** `make smoke-egress-kvm` (root, `ASP_SMOKE_ROOTFS=` con la imagen del guest) levanta el plano de control y el agente en un netns propio, con un «internet» falso detrás de un veth, y comprueba que el guest solo llega a un host permitido por el proxy, con o sin `HTTP_PROXY`, que recibe 403 para el resto y que no alcanza otros puertos; luego repite con `--egress-nft-redirect=false` para ver que la prueba distingue. No toca la red del host.
+
+**Enforce requiere:** root, binario `nft`, iface TAP con el subnet guest, proxy y (si redirect) DNS sink escuchando. Sin eso el nodo no arranca; `--dry-run` usa `soft` por su cuenta porque no tiene VMs ni root. El node-agent informa `egress_enforced=true` solo si el proxy escucha y las reglas están puestas en modo `enforce`.
 
 ### SSH agent auto en guest
 

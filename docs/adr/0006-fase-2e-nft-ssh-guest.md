@@ -101,6 +101,8 @@ node-agent ... \
   --host-vsock --guest-ssh-agent-auto
 ```
 
+**Actualizado 2026-10 (#123):** el redirect pasa a estar **activado por defecto** cuando el nodo tiene `--egress-proxy-listen` y no es `--dry-run`, y su modo por defecto es `enforce`: «deny by default» ya no depende de que el operador ponga dos flags más. `soft` queda para `--dry-run` y para quien lo pida (con aviso: el nodo arranca sin forzar el egress). El script ya no se instala en el host: va embebido en el binario (`ASP_NFT_SCRIPT` nombra uno propio). El nodo informa `egress_enforced` al registrarse (migración 021) y `asp node list` lo muestra. Esto cambia el comportamiento de un nodo con proxy y sin los flags nft: antes arrancaba sin reglas, ahora las aplica o no arranca; quien no quiera el redirect pone `--egress-nft-redirect=false`.
+
 Ejemplo CI/lab (soft):
 
 ```bash

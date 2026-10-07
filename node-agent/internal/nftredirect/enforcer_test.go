@@ -143,6 +143,63 @@ func TestScriptDryRunCLI(t *testing.T) {
 	}
 }
 
+// With no script named, the node-agent applies the copy built into its binary,
+// so a host needs no file installed for enforcement to work; it renders the same
+// ruleset as the script in the repository.
+func TestEmbeddedScriptIsUsedWithoutAPath(t *testing.T) {
+	t.Setenv("ASP_NFT_SCRIPT", "")
+	cfg := Config{GuestSubnet: "10.66.0.0/16", ProxyPort: 8888, DNSSinkPort: 5353, Table: "asp_egress", Mode: ModeEnforce}
+	embedded, err := DryRun(cfg)
+	if err != nil {
+		t.Fatalf("embedded dry-run: %v\n%s", err, embedded)
+	}
+	if !strings.Contains(embedded, "table ip asp_egress") || !strings.Contains(embedded, "redirect to :8888") {
+		t.Fatalf("embedded ruleset:\n%s", embedded)
+	}
+	cfg.ScriptPath = filepath.Join(findRepoRoot(t), "scripts", "nftables-egress-redirect.sh")
+	onDisk, err := DryRun(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk != embedded {
+		t.Fatalf("the script in scripts/ and the embedded one render different rules:\n--- scripts/\n%s\n--- embedded\n%s", onDisk, embedded)
+	}
+}
+
+// A script the operator names and that is not there is an error, not a quiet
+// fall back to another script. In soft mode it is the same warning as any other
+// reason the rules could not be applied, and the caller is told they are not.
+func TestMissingOperatorScript(t *testing.T) {
+	t.Setenv("ASP_NFT_SCRIPT", "")
+	if _, err := ApplyChecked(Config{ScriptPath: "/nonexistent/nft.sh", Mode: ModeEnforce}); err == nil {
+		t.Fatal("enforce with a missing script returned no error")
+	}
+	applied, err := ApplyChecked(Config{ScriptPath: "/nonexistent/nft.sh", Mode: ModeSoft})
+	if err != nil || applied {
+		t.Fatalf("soft with a missing script: applied=%v err=%v", applied, err)
+	}
+	t.Setenv("ASP_NFT_SCRIPT", "/nonexistent/other.sh")
+	if _, err := DryRun(Config{}); err == nil {
+		t.Fatal("ASP_NFT_SCRIPT pointing nowhere was ignored")
+	}
+}
+
+// Soft mode lets a node without root or nft go on, but says the rules are not in
+// place, so the node does not report that it enforces egress.
+func TestApplyCheckedSaysWhenSoftFailDidNotApply(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: the rules would be applied")
+	}
+	t.Setenv("ASP_NFT_SCRIPT", "")
+	applied, err := ApplyChecked(Config{Mode: ModeSoft, ProxyPort: 8888, Table: "asp_unit_test"})
+	if err != nil || applied {
+		t.Fatalf("soft without root: applied=%v err=%v", applied, err)
+	}
+	if applied, err := ApplyChecked(Config{Mode: ModeEnforce, ProxyPort: 8888, Table: "asp_unit_test"}); err == nil || applied {
+		t.Fatalf("enforce without root: applied=%v err=%v", applied, err)
+	}
+}
+
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()

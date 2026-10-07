@@ -114,6 +114,10 @@ type Node struct {
 	AcceptsWork bool `json:"accepts_work"`
 	// LocalNetDial is the host[:port] a laptop dials for this node's local-net tunnels.
 	LocalNetDial string `json:"local_net_dial,omitempty"`
+	// EgressEnforced: the node forces its guests through its egress proxy, with
+	// nft rules applied in enforce mode, so a tenant's egress policy binds them.
+	// Reported by the node on register (021).
+	EgressEnforced bool `json:"egress_enforced"`
 	// AgentInstanceID changes when the node-agent process restarts.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	CertFingerprint string `json:"cert_fingerprint,omitempty"`
@@ -217,6 +221,9 @@ type RegisterNodeInput struct {
 	// AcceptsWork: nil (agents that predate the field) means true.
 	AcceptsWork  *bool  `json:"accepts_work,omitempty"`
 	LocalNetDial string `json:"local_net_dial,omitempty"`
+	// EgressEnforced is true when the node applies its egress proxy and nft
+	// rules in enforce mode. Absent (an older node) means false.
+	EgressEnforced bool `json:"egress_enforced,omitempty"`
 	// AgentInstanceID is random per node-agent process; a new one on register
 	// means the agent restarted and its running sandboxes are orphaned.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`

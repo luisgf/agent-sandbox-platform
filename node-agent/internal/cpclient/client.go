@@ -68,6 +68,9 @@ type RegisterRequest struct {
 	// AgentInstanceID is random per process: a new one tells the control plane
 	// this agent restarted and lost track of its running VMs.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+	// EgressEnforced says that the node forces its guests through the egress proxy
+	// (nft rules applied in enforce mode), so a policy for them means something.
+	EgressEnforced bool `json:"egress_enforced"`
 }
 
 func New(baseURL string, httpClient *http.Client) *Client {

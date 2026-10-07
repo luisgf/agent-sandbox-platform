@@ -68,3 +68,34 @@ func TestMemoryNodeSchedulingAttributes(t *testing.T) {
 func TestPostgresNodeSchedulingAttributes(t *testing.T) {
 	testNodeSchedulingAttributes(t, newPostgresTestStore(t))
 }
+
+// A node says on every register whether it forces its guests through its egress
+// proxy; the control plane keeps the latest answer, an older node (which sends
+// nothing) is not enforcing, and enrolling does not change it.
+func testNodeEgressEnforced(t *testing.T, s Store) {
+	t.Helper()
+	ctx := context.Background()
+	n, err := s.RegisterNode(ctx, RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", EgressEnforced: true})
+	if err != nil || !n.EgressEnforced {
+		t.Fatalf("register enforcing: %+v %v", n, err)
+	}
+	got, err := s.GetNode(ctx, "n1")
+	if err != nil || !got.EgressEnforced {
+		t.Fatalf("stored: %+v %v", got, err)
+	}
+	n, err = s.EnrollNode(ctx, EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-n1"}, EnrollAuth{})
+	if err != nil || !n.EgressEnforced {
+		t.Fatalf("enroll changed it: %+v %v", n, err)
+	}
+	n, err = s.RegisterNode(ctx, RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}) // an older agent, or one that lost the rules
+	if err != nil || n.EgressEnforced {
+		t.Fatalf("register not enforcing: %+v %v", n, err)
+	}
+	nodes, err := s.ListNodes(ctx)
+	if err != nil || len(nodes) == 0 || nodes[0].EgressEnforced {
+		t.Fatalf("list: %+v %v", nodes, err)
+	}
+}
+
+func TestMemoryNodeEgressEnforced(t *testing.T)   { testNodeEgressEnforced(t, NewMemoryStore()) }
+func TestPostgresNodeEgressEnforced(t *testing.T) { testNodeEgressEnforced(t, newPostgresTestStore(t)) }

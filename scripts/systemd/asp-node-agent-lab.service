@@ -30,7 +30,11 @@ Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
 ExecStart=/usr/local/bin/node-agent \
   --control-plane-url=http://127.0.0.1:18112 --node-id=ncc1701d \
   --ch-binary=/usr/local/bin/cloud-hypervisor --ch-socket-dir=/run/asp --disk-dir=/sandbox/disks \
-  --agent-listen=127.0.0.1:9100 --reconcile --reconcile-interval=2s --tap-auto --host-vsock
+  --agent-listen=127.0.0.1:9100 --reconcile --reconcile-interval=2s --tap-auto --host-vsock \
+  --egress-enforce --egress-proxy-listen=:8888 --egress-dns-sink=:5353
+# Guests reach the network only through the proxy and DNS sink, forced with nftables (table
+# asp_egress, built into the binary): with the proxy set the redirect is on in enforce mode,
+# so a node that cannot apply the rules does not start. `asp node list` shows EGRESS enforced.
 # The VMs are children of the agent and a new agent does not adopt them: stop every
 # cloud-hypervisor and virtiofsd together with it (stop, restart, crash). Do not change.
 KillMode=control-group

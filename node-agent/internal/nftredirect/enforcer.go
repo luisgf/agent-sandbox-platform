@@ -3,14 +3,21 @@
 package nftredirect
 
 import (
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// script is the nftables script this binary applies. It is embedded so that the
+// node-agent needs no file on the host and the version that runs is the version
+// that was tested with it; ScriptPath or ASP_NFT_SCRIPT name an operator's own.
+//
+//go:embed nftables-egress-redirect.sh
+var script string
 
 // Mode controls failure behavior when rules cannot be applied.
 type Mode string
@@ -32,7 +39,7 @@ type Config struct {
 	HTTPPorts   string // comma-separated, default "80,443"
 	DNSAction   string // "redirect" | "drop"
 	Table       string // default asp_egress
-	ScriptPath  string // path to scripts/nftables-egress-redirect.sh
+	ScriptPath  string // an operator's own copy of the script; default: the one built into this binary
 	Mode        Mode   // soft | enforce
 	Logger      *slog.Logger
 }
@@ -44,16 +51,15 @@ func (c Config) SoftFail() bool {
 
 // Apply runs the nftables script (apply). Soft mode returns nil on permission errors.
 func Apply(cfg Config) error {
-	cfg = normalize(cfg)
-	script, err := locateScript(cfg)
-	if err != nil {
-		if cfg.SoftFail() {
-			cfg.Logger.Warn("egress-nft-redirect SoftFail", "error", err)
-			return nil
-		}
-		return err
-	}
+	_, err := ApplyChecked(cfg)
+	return err
+}
 
+// ApplyChecked is Apply that also says whether the rules are in place. In soft
+// mode a node that cannot apply them (no root, no nft) goes on without, and a
+// caller that reports enforcement must not count that as applied.
+func ApplyChecked(cfg Config) (applied bool, err error) {
+	cfg = normalize(cfg)
 	args := []string{
 		"apply",
 		"--mode", string(cfg.Mode),
@@ -66,21 +72,26 @@ func Apply(cfg Config) error {
 		"--dns-action", cfg.DNSAction,
 		"--table", cfg.Table,
 	}
-	cmd := exec.Command(script, args...)
-	out, err := cmd.CombinedOutput()
+	out, via, err := run(cfg, args...)
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
+		msg := strings.TrimSpace(out)
 		if msg == "" {
 			msg = err.Error()
 		}
 		if cfg.SoftFail() {
-			cfg.Logger.Warn("egress-nft-redirect SoftFail (need root/nft?)", "error", msg, "script", script, "mode", cfg.Mode)
-			return nil
+			cfg.Logger.Warn("egress-nft-redirect SoftFail (need root/nft?): the guests' egress is NOT enforced", "error", msg, "script", via, "mode", cfg.Mode)
+			return false, nil
 		}
-		return fmt.Errorf("nft redirect enforce: %s", msg)
+		return false, fmt.Errorf("nft redirect enforce: %s", msg)
+	}
+	applied = strings.Contains(out, "applied table")
+	if !applied {
+		// The script exits 0 in soft mode when it cannot apply the rules.
+		cfg.Logger.Warn("egress-nft-redirect SoftFail: the guests' egress is NOT enforced", "output", strings.TrimSpace(out), "script", via, "mode", cfg.Mode)
+		return false, nil
 	}
 	cfg.Logger.Info("egress-nft-redirect applied",
-		"script", script,
+		"script", via,
 		"subnet", cfg.GuestSubnet,
 		"proxy_port", cfg.ProxyPort,
 		"dns_sink_port", cfg.DNSSinkPort,
@@ -88,26 +99,17 @@ func Apply(cfg Config) error {
 		"http_ports", cfg.HTTPPorts,
 		"table", cfg.Table,
 		"mode", cfg.Mode,
-		"output", strings.TrimSpace(string(out)),
+		"output", strings.TrimSpace(out),
 	)
-	return nil
+	return true, nil
 }
 
 // Flush removes the namespaced table (idempotent).
 func Flush(cfg Config) error {
 	cfg = normalize(cfg)
-	script, err := locateScript(cfg)
+	out, _, err := run(cfg, "flush", "--mode", string(cfg.Mode), "--table", cfg.Table)
 	if err != nil {
-		if cfg.SoftFail() {
-			cfg.Logger.Warn("egress-nft-flush SoftFail", "error", err)
-			return nil
-		}
-		return err
-	}
-	cmd := exec.Command(script, "flush", "--mode", string(cfg.Mode), "--table", cfg.Table)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
+		msg := strings.TrimSpace(out)
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -117,18 +119,14 @@ func Flush(cfg Config) error {
 		}
 		return fmt.Errorf("nft flush enforce: %s", msg)
 	}
-	cfg.Logger.Info("egress-nft-redirect flushed", "table", cfg.Table, "output", strings.TrimSpace(string(out)))
+	cfg.Logger.Info("egress-nft-redirect flushed", "table", cfg.Table, "output", strings.TrimSpace(out))
 	return nil
 }
 
 // DryRun returns the nftables ruleset text the script would apply (no root needed).
 func DryRun(cfg Config) (string, error) {
 	cfg = normalize(cfg)
-	script, err := locateScript(cfg)
-	if err != nil {
-		return "", err
-	}
-	args := []string{
+	out, _, err := run(cfg,
 		"dry-run",
 		"--mode", string(cfg.Mode),
 		"--guest-subnet", cfg.GuestSubnet,
@@ -139,10 +137,32 @@ func DryRun(cfg Config) (string, error) {
 		"--http-ports", cfg.HTTPPorts,
 		"--dns-action", cfg.DNSAction,
 		"--table", cfg.Table,
+	)
+	return out, err
+}
+
+// run executes the script with args and returns its combined output and where it
+// ran from: the operator's own copy (cfg.ScriptPath, else ASP_NFT_SCRIPT), else
+// the one embedded in this binary, fed to bash on stdin. An operator's path that
+// does not exist is an error: a node asked to use a script must not quietly run
+// another.
+func run(cfg Config, args ...string) (out, via string, err error) {
+	path := cfg.ScriptPath
+	if path == "" {
+		path = os.Getenv("ASP_NFT_SCRIPT")
 	}
-	cmd := exec.Command(script, args...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	var cmd *exec.Cmd
+	if path != "" {
+		if st, serr := os.Stat(path); serr != nil || st.IsDir() {
+			return "", path, fmt.Errorf("nftables script not found: %s", path)
+		}
+		cmd, via = exec.Command(path, args...), path
+	} else {
+		cmd, via = exec.Command("bash", append([]string{"-s", "--"}, args...)...), "embedded"
+		cmd.Stdin = strings.NewReader(script)
+	}
+	b, err := cmd.CombinedOutput()
+	return string(b), via, err
 }
 
 func normalize(cfg Config) Config {
@@ -192,33 +212,6 @@ func normalize(cfg Config) Config {
 		cfg.Table = getenv("ASP_NFT_TABLE", "asp_egress")
 	}
 	return cfg
-}
-
-func locateScript(cfg Config) (string, error) {
-	if cfg.ScriptPath != "" {
-		if st, err := os.Stat(cfg.ScriptPath); err == nil && !st.IsDir() {
-			return cfg.ScriptPath, nil
-		}
-		return "", fmt.Errorf("nftables script not found: %s", cfg.ScriptPath)
-	}
-	if s := getenv("ASP_NFT_SCRIPT", ""); s != "" {
-		if st, err := os.Stat(s); err == nil && !st.IsDir() {
-			return s, nil
-		}
-	}
-	candidates := []string{
-		"scripts/nftables-egress-redirect.sh",
-		"/usr/local/share/asp/scripts/nftables-egress-redirect.sh",
-	}
-	if root := os.Getenv("ASP_ROOT"); root != "" {
-		candidates = append(candidates, filepath.Join(root, "scripts/nftables-egress-redirect.sh"))
-	}
-	for _, c := range candidates {
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("nftables script not found")
 }
 
 func getenv(k, def string) string {
