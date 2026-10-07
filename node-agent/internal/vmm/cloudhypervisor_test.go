@@ -135,6 +135,9 @@ type fakeCHRunner struct {
 	creates int
 	boots   int
 	deletes int
+	// vmInfoState is what vm.info reports; "" means Running.
+	vmInfoState string
+	procs       []*fakeCHProc
 }
 
 type fakeStart struct {
@@ -215,6 +218,16 @@ func (r *fakeCHRunner) Start(name string, args ...string) (Process, error) {
 	mux.HandleFunc(chPathVMPause, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc(chPathVMInfo, func(w http.ResponseWriter, _ *http.Request) {
+		r.mu.Lock()
+		state := r.vmInfoState
+		r.mu.Unlock()
+		if state == "" {
+			state = "Running"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"` + state + `"}`))
+	})
 
 	srv := &http.Server{Handler: mux}
 	done := make(chan struct{})
@@ -222,7 +235,11 @@ func (r *fakeCHRunner) Start(name string, args ...string) (Process, error) {
 		_ = srv.Serve(ln)
 		close(done)
 	}()
-	return &fakeCHProc{ln: ln, srv: srv, done: done, runner: r}, nil
+	proc := &fakeCHProc{ln: ln, srv: srv, done: done, runner: r}
+	r.mu.Lock()
+	r.procs = append(r.procs, proc)
+	r.mu.Unlock()
+	return proc, nil
 }
 
 func TestPerSandboxSpawnStartStop(t *testing.T) {
@@ -448,5 +465,79 @@ func TestPerSandboxPingInfoNoop(t *testing.T) {
 	}
 	if info["mode"] != "per-sandbox" {
 		t.Fatalf("info=%v", info)
+	}
+}
+
+// WaitShutdown tells a guest that is still up from one that powered off: the VM
+// reports Shutdown, or Cloud Hypervisor exits and its API goes away.
+func TestWaitShutdown(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("/usr/bin/fake-cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	ctx := context.Background()
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := ch.Start(ctx, MicroVMConfig{ID: id, KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if ch.WaitShutdown(ctx, id, 250*time.Millisecond) {
+		t.Fatal("a running guest was reported down")
+	}
+	if time.Since(start) < 200*time.Millisecond {
+		t.Fatalf("returned after %s, before the grace period", time.Since(start))
+	}
+
+	runner.mu.Lock()
+	runner.vmInfoState = "Shutdown"
+	runner.mu.Unlock()
+	if !ch.WaitShutdown(ctx, id, time.Second) {
+		t.Fatal("state Shutdown was not seen")
+	}
+
+	if !ch.WaitShutdown(ctx, "11111111-2222-3333-4444-555555555555", time.Second) {
+		t.Fatal("an unknown sandbox has nothing running")
+	}
+}
+
+// After the guest powers itself off Cloud Hypervisor exits on its own. Stop
+// must then not ask the dead API to delete the VM, and must not fail.
+func TestStopAfterGuestPoweredOff(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("/usr/bin/fake-cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	ctx := context.Background()
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := ch.Start(ctx, MicroVMConfig{ID: id, KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128}); err != nil {
+		t.Fatal(err)
+	}
+	sock := ch.SocketPath(id)
+
+	runner.mu.Lock()
+	proc := runner.procs[0]
+	runner.mu.Unlock()
+	_ = proc.Kill() // the guest powered off: the process is gone and so is its API
+
+	if !ch.WaitShutdown(ctx, id, time.Second) {
+		t.Fatal("an exited Cloud Hypervisor was not seen")
+	}
+	if err := ch.Stop(ctx, id); err != nil {
+		t.Fatalf("stop after poweroff: %v", err)
+	}
+	runner.mu.Lock()
+	deletes := runner.deletes
+	runner.mu.Unlock()
+	if deletes != 0 {
+		t.Fatalf("vm.delete sent %d times to an exited process", deletes)
+	}
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Fatalf("socket not removed: %v", err)
+	}
+	if ch.InstanceCount() != 0 {
+		t.Fatalf("instances=%d", ch.InstanceCount())
 	}
 }

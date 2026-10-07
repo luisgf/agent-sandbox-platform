@@ -100,7 +100,7 @@ Proceso privilegiado por nodo (`node-agent/`). Prepara TAP, aplica nft (soft|enf
 
 ### 4. microVM
 
-Debian mínimo (`images/guest/`). Sin socket del runtime del host, sin `NET_ADMIN`, sin secretos persistentes. NIC virtio restringida + vsock. Cada VM arranca una copia privada del rootfs (`--disk-dir/rootfs-{id}.img`, reflink o copia sparse) que se borra al parar; la imagen base no se escribe nunca.
+Debian mínimo (`images/guest/`). Sin socket del runtime del host, sin `NET_ADMIN`, sin secretos persistentes. NIC virtio restringida + vsock. Cada VM arranca una copia privada del rootfs (`--disk-dir/rootfs-{id}.img`, reflink o copia sparse) que se borra al borrar la sandbox, o al parar si el plano de control no conserva discos ([ADR-0012](adr/0012-retained-disks.md)); la imagen base no se escribe nunca.
 
 ### 5. pod-daemon (Rust)
 
@@ -196,7 +196,7 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 | Nodo sin señales > `ASP_NODE_STALE_AFTER` (90 s) | Sale del reparto y pasa a `offline` |
 | Nodo sin señales > `ASP_NODE_FAILOVER_AFTER` (5 min) o revocado | `FenceProvider` (si tiene sandboxes, una vez por caída); sus sandboxes → `failed` (`node_lost`), `stopping` → `stopped`. No se mueven |
 | El nodo vuelve tras una partición | Vuelve a `ready`; sus sandboxes fallidas ya no están en su conjunto `assigned` y para esas VMs |
-| Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `failed` (`node_agent_restarted`); `requested`/`starting` las arranca el proceso nuevo. Antes de registrarse, el proceso nuevo para y borra las VMs, TAPs, túneles y discos del anterior; la unit systemd (`KillMode=control-group`) ya las para con el agente |
+| Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `failed` (`node_agent_restarted`); `requested`/`starting` las arranca el proceso nuevo. Antes de registrarse, el proceso nuevo para y borra las VMs, TAPs y túneles del anterior, y tras su primer sondeo el GC borra los discos que ninguna sandbox reclama; la unit systemd (`KillMode=control-group`) ya las para con el agente |
 | Reinicio del plano de control | Gracia: el silencio se cuenta desde el arranque del monitor |
 | SoftFail TAP/nft | Log warning; CH puede fallar al abrir TAP; **no** hay frontera de red real |
 | Attest/JWKS caído | Mint OIDC falla cerrado |

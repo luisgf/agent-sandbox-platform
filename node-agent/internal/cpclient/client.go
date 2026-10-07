@@ -279,11 +279,16 @@ type Sandbox struct {
 	LocalNetState string `json:"local_net_state"`
 	// LocalNetClientPublic is the local agent's WG public key once up.
 	LocalNetClientPublic string `json:"local_net_client_public,omitempty"`
+	// BootCount is how many times the sandbox has been started: 1 for the first
+	// boot, more after each resume (ADR-0012). 0 from a control plane that
+	// predates the field, read as a first boot.
+	BootCount int `json:"boot_count,omitempty"`
 }
 
 type workResponse struct {
 	Sandboxes []Sandbox   `json:"sandboxes"`
 	Assigned  *[]string   `json:"assigned"`
+	Retained  *[]string   `json:"retained"`
 	Egress    *WorkEgress `json:"egress"`
 }
 
@@ -319,6 +324,10 @@ type Work struct {
 	// when the control plane predates the field: then nothing may be stopped
 	// for being missing from it.
 	Assigned []string
+	// Retained lists the stopped sandboxes on this node whose disks must stay
+	// (ADR-0012). Nil when the control plane predates the field: then stopping a
+	// sandbox still deletes its disk, as it always did.
+	Retained []string
 	// Egress is nil when the control plane does not send policies (older
 	// version, or it could not read them this time).
 	Egress *WorkEgress
@@ -350,8 +359,15 @@ func (c *Client) ListWork(ctx context.Context, nodeID string) (Work, error) {
 	if out.Assigned != nil {
 		work.Assigned = append([]string{}, *out.Assigned...)
 	}
+	if out.Retained != nil {
+		work.Retained = append([]string{}, *out.Retained...)
+	}
 	return work, nil
 }
+
+// Retains reports whether the control plane keeps the disks of stopped
+// sandboxes: it sent the retained list, even an empty one.
+func (w Work) Retains() bool { return w.Retained != nil }
 
 func (c *Client) Claim(ctx context.Context, sandboxID, nodeID string) (Sandbox, error) {
 	var out Sandbox

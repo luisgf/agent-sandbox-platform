@@ -343,7 +343,9 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--ch-api-socket` | `CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
 | `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` — binario spawneado por sandbox |
 | `--dry-run` | `DRY_RUN=1` | **omitir** en bare-metal real |
-| `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — `rootfs-{sandboxID}.img` por sandbox, borrada al parar |
+| `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — `rootfs-{sandboxID}.img` por sandbox. Parar la conserva si el plano de control manda `retained` ([ADR-0012](adr/0012-retained-disks.md)); borrar la sandbox la borra. Un GC del nodo borra las copias que ninguna sandbox reclama |
+| `--stop-grace` | `ASP_STOP_GRACE` | `15s` — al parar conservando el disco, espera a que el guest se apague solo antes de la parada brusca |
+| `--disk-min-free-mib` | `ASP_DISK_MIN_FREE_MIB` | `-1` (el doble de la imagen base): espacio libre mínimo en `--disk-dir` para clonar o reanudar; `0` no comprueba |
 | `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, borra lo que dejó un node-agent anterior (§5.6); `report` solo lo lista; `off` |
 | `--reap-only` | | hace solo esa limpieza y sale (`ExecStopPost` de la unit) |
 | `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop |
@@ -492,7 +494,7 @@ journalctl -u asp-node-agent -f
 
 Primer arranque: añade `ASP_ENROLL=1` y `ASP_NODE_BOOTSTRAP_TOKEN=…` al env file y quítalos cuando el journal diga `enrolled`; el token no debe quedarse en el nodo. Las líneas del env file mandan sobre las `Environment=` de la unit.
 
-**2. Limpieza al arrancar** (`--reap-leftovers=on`, por defecto). Antes de abrir ningún socket y antes de registrarse, el agente busca lo que dejó un proceso anterior y lo borra. Cubre lo que la unit no evita: un agente lanzado a mano, una unit con `KillMode=process`, o los discos que sobreviven a un reboot.
+**2. Limpieza al arrancar** (`--reap-leftovers=on`, por defecto). Antes de abrir ningún socket y antes de registrarse, el agente busca lo que dejó un proceso anterior y lo borra. Cubre lo que la unit no evita: un agente lanzado a mano o una unit con `KillMode=process`. **Los discos no entran aquí**: una sandbox parada conserva el suyo ([ADR-0012](adr/0012-retained-disks.md)) y el reaper no sabría distinguirlo de un resto. Tras el primer sondeo de `/work`, el reconciler borra las copias de `--disk-dir` que no son de ninguna sandbox (ni asignada, ni retenida, ni en borrado).
 
 | Resto | Cómo lo reconoce |
 |---|---|
@@ -501,11 +503,10 @@ Primer arranque: añade `ASP_ENROLL=1` y `ASP_NODE_BOOTSTRAP_TOKEN=…` al env f
 | Túneles local-net | claves `{id}.key` en `ASP_LOCAL_NET_KEY_DIR` y devices WireGuard `wg-asp-*`. Borra el device, las `ip rule`, la tabla, las reglas FORWARD y las excepciones nft, como al parar la sandbox |
 | TAPs | devices TUN/TAP `asp-{8 hex}` |
 | Sockets y enlaces | `ch-`, `vsock-` (y sus `_26501`/`_26502`), `virtiofs-` y `ssh-agent-{id}.sock` en `--ch-socket-dir` |
-| Discos | `rootfs-{id}.img` en `--disk-dir` |
 
 - Solo toca nombres con un id de sandbox del plano de control (UUID en minúsculas) y con el tipo de fichero que crea el agente. Nunca toca el rootfs base, `--ch-api-socket`, el bridge SSH ni el socket de identidad.
 - Un fallo no para el resto: sale como `host cleanup incomplete` en el log y el agente arranca igual. Cada resto borrado deja una línea `removing leftover of a previous node-agent`.
-- `--reap-leftovers=report` solo lo lista; `off` lo desactiva. Con `--dry-run` solo informa, y no mira TAPs, túneles ni discos del host.
+- `--reap-leftovers=report` solo lo lista; `off` lo desactiva. Con `--dry-run` solo informa, y no mira TAPs ni túneles del host.
 - `--reap-only` hace solo la limpieza y sale (código 0 si todo se borró). Para ver qué queda en un nodo con el servicio parado: `sudo node-agent --reap-only --reap-leftovers=report`, con los mismos `--ch-socket-dir` y `--disk-dir` que el servicio si no son los de por defecto.
 - **Un agente por host.** Mientras vive, el agente mantiene un `flock` sobre `{--ch-socket-dir}/node-agent.lock`. Un segundo agente en ese directorio no arranca (`refusing to start … is held by pid N`), y `--reap-only` tampoco corre. Los TAPs y túneles son de todo el host: dos agentes reales en una misma máquina (solo lab) necesitan directorios de sockets distintos y `--reap-leftovers=off`.
 - Modo shared (`--ch-api-socket`): ese CH no es del agente y no se toca; su VM sigue ahí tras el reinicio (`vm.delete` a mano).

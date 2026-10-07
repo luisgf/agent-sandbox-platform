@@ -93,8 +93,10 @@ type config struct {
 	GuestSSHAgentAuto    bool
 	VirtiofsdBin         string
 	DiskDir              string
-	ReapLeftovers        string // --reap-leftovers: on | report | off
-	ReapOnly             bool   // --reap-only: clean up and exit, without registering
+	StopGrace            time.Duration // --stop-grace
+	DiskMinFreeMiB       int           // --disk-min-free-mib: -1 twice the base image, 0 not checked
+	ReapLeftovers        string        // --reap-leftovers: on | report | off
+	ReapOnly             bool          // --reap-only: clean up and exit, without registering
 }
 
 func main() {
@@ -540,6 +542,8 @@ func main() {
 		if !cfg.DryRun {
 			// Never boot the shared image writable: every VM gets its own copy.
 			rec.DiskDir = cfg.DiskDir
+			rec.StopGrace = cfg.StopGrace
+			rec.MinFreeDiskMiB = diskMinFreeMiB(cfg.DiskMinFreeMiB, rec.RootFSPath)
 		}
 		if hvSvc != nil {
 			rec.GuestHost = hvSvc
@@ -632,9 +636,11 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
 	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
-	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img, deleted on stop); ignored with --dry-run")
+	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")
+	flag.DurationVar(&cfg.StopGrace, "stop-grace", getenvDuration("ASP_STOP_GRACE", 15*time.Second), "a stop asks the guest to power off and waits up to this long for the VM to exit before stopping it hard (0: stop hard at once; ignored with --dry-run)")
+	flag.IntVar(&cfg.DiskMinFreeMiB, "disk-min-free-mib", getenvInt("ASP_DISK_MIN_FREE_MIB", -1), "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")
 	flag.BoolVar(&cfg.DryRun, "dry-run", getenv("DRY_RUN", "") == "1", "use FakeVMM and skip real CH")
-	flag.StringVar(&cfg.ReapLeftovers, "reap-leftovers", getenv("ASP_REAP_LEFTOVERS", reapOn), "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing, rootfs copies in --disk-dir. on | report (log, remove nothing) | off; --dry-run only reports")
+	flag.StringVar(&cfg.ReapLeftovers, "reap-leftovers", getenv("ASP_REAP_LEFTOVERS", reapOn), "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing (not the rootfs copies in --disk-dir: the reconciler removes the ones no sandbox owns). on | report (log, remove nothing) | off; --dry-run only reports")
 	flag.BoolVar(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir")
 	flag.StringVar(&cfg.Endpoint, "endpoint", getenv("NODE_ENDPOINT", ""), "node callback endpoint advertised to control plane")
 	flag.StringVar(&cfg.AgentListen, "agent-listen", getenv("ASP_AGENT_LISTEN", "127.0.0.1:9100"), "loopback listen addr for the exec proxy and operator routes (ssh-agent approve, egress-check); plain HTTP, no authentication")
@@ -1004,4 +1010,18 @@ func guestSSHAgentAutoDefault() bool {
 		return true
 	}
 	return false
+}
+
+// diskMinFreeMiB resolves --disk-min-free-mib: a negative value is twice the
+// base image's size, enough for a clone to grow, or 0 when the image is not
+// there to measure.
+func diskMinFreeMiB(flagValue int, baseImage string) int64 {
+	if flagValue >= 0 {
+		return int64(flagValue)
+	}
+	fi, err := os.Stat(baseImage)
+	if err != nil {
+		return 0
+	}
+	return 2 * (fi.Size() >> 20)
 }

@@ -28,7 +28,9 @@ type ReapConfig struct {
 	// and links are removed: ch-{id}.sock, vsock-{id}.sock and its
 	// {port} hybrid listeners, virtiofs-{id}.sock, ssh-agent-{id}.sock.
 	SocketDir string
-	// DiskDir holds the rootfs copies (rootfs-{id}.img). Empty skips them.
+	// DiskDir holds the rootfs copies (rootfs-{id}.img). Empty skips them. The
+	// node-agent leaves it empty: it keeps the disks of stopped sandboxes
+	// (ADR-0012) and removes the ones nobody owns itself (Reconciler.gcDisks).
 	DiskDir string
 	// Keep are paths never removed even when named like a leftover: the base
 	// rootfs, the shared --ch-api-socket, the bridge and identity sockets.

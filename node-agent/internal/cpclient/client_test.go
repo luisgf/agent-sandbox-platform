@@ -200,3 +200,40 @@ func TestListWorkAssignedSet(t *testing.T) {
 		}
 	}
 }
+
+// The retained list tells the node whether stopping keeps a sandbox's disk. An
+// absent list is a control plane that predates it; an empty one is not.
+func TestListWorkRetainedAndBootCount(t *testing.T) {
+	body := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, srv.Client())
+	for _, tc := range []struct {
+		body     string
+		retained []string
+		retains  bool
+	}{
+		{`{"sandboxes":[],"assigned":[],"retained":["s3"]}`, []string{"s3"}, true},
+		{`{"sandboxes":[],"assigned":[],"retained":[]}`, []string{}, true},
+		{`{"sandboxes":[],"assigned":[]}`, nil, false},
+	} {
+		body = tc.body
+		work, err := c.ListWork(context.Background(), "n1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if work.Retains() != tc.retains || len(work.Retained) != len(tc.retained) {
+			t.Fatalf("%s: retained=%#v retains=%v", tc.body, work.Retained, work.Retains())
+		}
+	}
+	body = `{"sandboxes":[{"id":"s1","state":"requested","boot_count":3},{"id":"s2","state":"requested"}]}`
+	work, err := c.ListWork(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.Sandboxes[0].BootCount != 3 || work.Sandboxes[1].BootCount != 0 {
+		t.Fatalf("boot counts: %+v", work.Sandboxes)
+	}
+}
