@@ -27,6 +27,8 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | PUT/GET | `/v1/tenants/{id}/egress` | Allowlist de egress. Una regla sin `port` vale para 80 y 443; otros puertos piden una regla que los nombre |
 | POST | `/v1/tenants/{id}/egress/check` | Helper de evaluación |
 | POST | `/v1/nodes/enroll` | Bootstrap token o token de enroll → PEMs del cert de nodo. El bootstrap token solo enrola un id sin certificado o un nodo revocado; re-enrolar un nodo vivo pide un token fijado a él (409) |
+| POST / GET | `/v1/api-keys` | Crea una API key (`{"tenant_id","name","scope","ttl"}`; el secreto se devuelve **una vez**) / lista las keys sin secretos, también las revocadas (`?tenant_id=`). API key de plataforma o admin del IdP (el admin, solo keys `tenant` de su tenant) |
+| DELETE / POST | `/v1/api-keys/{id}`, `/v1/api-keys/{id}/rotate` | Revoca la key (la fila queda, marcada) / le da un secreto nuevo, devuelto una vez (el anterior deja de valer al instante) |
 | POST | `/v1/nodes/enroll-tokens` | Token de enroll de un solo uso (admin o API key de plataforma); `node_id` lo fija a un nodo, `ttl_seconds` (1 h por defecto, 7 días máx.) |
 | POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (admin, API key de plataforma o el certificado vigente del propio nodo por mTLS: así lo renuevan los node-agents; el bootstrap token no vale); revoca fingerprint anterior |
 | POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
@@ -47,7 +49,6 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `LISTEN_ADDR` | `:8080` | Bind address |
 | `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
 | `DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas |
-| `ASP_BOOTSTRAP_API_KEY` | unset | Crea la primera API key (ámbito `platform`). Sin ninguna key en el store ni IdP configurado el CP **no arranca** (código 2) |
 | `ASP_INSECURE_OPEN_API` | unset | `1` acepta peticiones sin credencial (solo labs y smokes dry-run; avisa al arrancar). Una credencial incorrecta se rechaza igual. `ASP_REQUIRE_API_KEY` ya no hace nada: la autenticación está siempre activa |
 | `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
 | `ASP_IDP_AUDIENCE` | unset | Audiencia esperada del JWT (`aud`). **Obligatoria con `ASP_IDP_REQUIRED=1`**: sin ella el control plane no arranca (código 2), porque aceptaría el token que el emisor haya dado a cualquier otra aplicación de su realm. Con el IdP opcional solo deja un aviso |
@@ -60,7 +61,7 @@ Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca a
 | `ASP_IDP_ROLE_PREFIX` | `asp-` | Prefijo → rol (`asp-admin`, …) cuando no hay map. Un grupo a secas (`admin`, `operator`) **no** concede rol: con prefijo o con `ASP_IDP_ROLE_MAP` solo cuenta lo que ellos nombran |
 | `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios si el claim lo incluye |
 | `ASP_IDP_EXEC_ANY_GROUP` | `sandbox:exec-any` | Operator puede hacer exec en sandboxes no propias si el claim lo incluye; sin él, solo en las suyas |
-| `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap`: ámbito `platform` (ve todos los tenants) en el tenant `default` |
+| `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap`: ámbito `platform` (ve todos los tenants) en el tenant `default`. Es la primera key: sin ninguna key en el store ni IdP configurado el CP **no arranca** (código 2). Con ella se crean las demás (`asp apikey create`, `POST /v1/api-keys`) y conviene rotarla o revocarla después. Sigue siendo `platform` por defecto porque con ámbito `tenant` no podría crear la key de plataforma de los nodos |
 | `ASP_BOOTSTRAP_API_KEY_SCOPE` / `_TENANT` | `platform` / `default` | `tenant` la confina a `_TENANT`, como cualquier otra key |
 | `ASP_IDP_TENANT_CLAIM` | `tenant_id` | Claim del JWT con el tenant del usuario (string o array de un valor); sin tenant → 401 |
 | `ASP_IDP_DEFAULT_TENANT` | unset | Tenant de los JWT sin ese claim (un solo tenant) |

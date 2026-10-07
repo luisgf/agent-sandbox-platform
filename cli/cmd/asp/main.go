@@ -44,6 +44,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return authCmd(args[1:], stdout, stderr)
 	case "node":
 		return nodeCmd(args[1:], stdout, stderr)
+	case "apikey":
+		return apikeyCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printRootUsage(stderr)
@@ -70,6 +72,9 @@ Usage:
   asp node enroll-token [--node-id ID] [--ttl 1h] [--json]
   asp node fence set <id> --endpoint URL [--token-env NAME | --token-file /abs/path | --token-stdin]
   asp node fence clear <id>
+  asp apikey create --name N [--tenant T] [--scope tenant|platform] [--ttl 30d]
+  asp apikey list [--tenant T] [--json]
+  asp apikey revoke|rotate <id>
   asp version
 
 Global env:

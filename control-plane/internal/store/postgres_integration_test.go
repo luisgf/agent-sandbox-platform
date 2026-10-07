@@ -377,3 +377,9 @@ func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
 		t.Fatalf("a refused transition changed the row: %s", got.State)
 	}
 }
+
+// The same lifecycle on Postgres: unique violations map to ErrConflict, a
+// rotation replaces the secret in place, a revoked key stays listed.
+func TestPostgresAPIKeyLifecycle(t *testing.T) {
+	exerciseAPIKeyLifecycle(t, newPostgresTestStore(t))
+}

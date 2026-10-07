@@ -673,7 +673,7 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 | Control | Acción |
 |---|---|
 | mTLS nodos | `ASP_TLS_*` + `ASP_CLIENT_CA` + node `--mtls`; bootstrap token solo en enroll bootstrap |
-| API keys | siempre exigidas (sin ellas ni IdP el CP no arranca); `ASP_BOOTSTRAP_API_KEY` en secret manager, no en git. `ASP_INSECURE_OPEN_API=1` solo en labs |
+| API keys | siempre exigidas (sin ellas ni IdP el CP no arranca); `ASP_BOOTSTRAP_API_KEY` en secret manager, no en git, solo para crear las demás con `asp apikey create` y rotarla o revocarla después (`asp apikey rotate|revoke`). `ASP_INSECURE_OPEN_API=1` solo en labs |
 | Auto-provision | **`ASP_AUTO_PROVISION=0`** (nunca stub sync en prod) |
 | Egress | `ASP_EGRESS_DENY_DEFAULT=1`; allowlist por tenant; `--egress-enforce`; NAT deny-forward default (§3) |
 | Secretos | CA/keys en `/var/lib/asp/certs` mode `0600`; rotación = fase 2 |

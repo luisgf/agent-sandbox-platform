@@ -204,6 +204,65 @@ func (c *Client) SetNodeCordoned(ctx context.Context, id string, cordoned bool) 
 	return out, err
 }
 
+// APIKey is an API key as the control plane serves it: never its secret,
+// except in the response to create and rotate, once.
+type APIKey struct {
+	ID         string     `json:"id"`
+	TenantID   string     `json:"tenant_id"`
+	Name       string     `json:"name"`
+	Scope      string     `json:"scope"`
+	KeyPrefix  string     `json:"key_prefix"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	Secret     string     `json:"secret,omitempty"`
+}
+
+// CreateAPIKeyInput is what create asks for. Empty fields take the control
+// plane's defaults: the caller's tenant, scope tenant, no expiry.
+type CreateAPIKeyInput struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	Name     string `json:"name"`
+	Scope    string `json:"scope,omitempty"`
+	TTL      string `json:"ttl,omitempty"`
+}
+
+// CreateAPIKey makes a key (platform key or IdP admin). The secret is in the
+// result and nowhere else.
+func (c *Client) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (APIKey, error) {
+	var out APIKey
+	err := c.doJSON(ctx, http.MethodPost, "/v1/api-keys", in, http.StatusCreated, &out)
+	return out, err
+}
+
+// ListAPIKeys lists keys, revoked ones included; tenant "" is every tenant.
+func (c *Client) ListAPIKeys(ctx context.Context, tenant string) ([]APIKey, error) {
+	path := "/v1/api-keys"
+	if tenant != "" {
+		path += "?tenant_id=" + url.QueryEscape(tenant)
+	}
+	var out struct {
+		Keys []APIKey `json:"keys"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, path, nil, http.StatusOK, &out)
+	return out.Keys, err
+}
+
+// RevokeAPIKey stops a key from authenticating.
+func (c *Client) RevokeAPIKey(ctx context.Context, id string) (APIKey, error) {
+	var out APIKey
+	err := c.doJSON(ctx, http.MethodDelete, "/v1/api-keys/"+url.PathEscape(id), nil, http.StatusOK, &out)
+	return out, err
+}
+
+// RotateAPIKey gives a key a new secret; the old one stops working at once.
+func (c *Client) RotateAPIKey(ctx context.Context, id string) (APIKey, error) {
+	var out APIKey
+	err := c.doJSON(ctx, http.MethodPost, "/v1/api-keys/"+url.PathEscape(id)+"/rotate", nil, http.StatusOK, &out)
+	return out, err
+}
+
 // SetNodeFence sets the power-off target the control plane uses when it declares
 // a node lost (admin). token is the credential or a reference the control plane
 // resolves ("env:NAME", "file:/abs/path"). It is never returned by any call.

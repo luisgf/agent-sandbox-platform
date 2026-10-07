@@ -155,6 +155,10 @@ func isUserFacingPath(path string) bool {
 	if path == "/v1/sandboxes" || path == "/v1/nodes" || isNodeAdminPath(path) {
 		return true
 	}
+	// API key management is for IdP admins when the IdP is required.
+	if path == "/v1/api-keys" || strings.HasPrefix(path, "/v1/api-keys/") {
+		return true
+	}
 	if !strings.HasPrefix(path, "/v1/sandboxes/") {
 		return false
 	}
