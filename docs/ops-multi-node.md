@@ -139,6 +139,8 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 
 ## Diagnóstico
 
+Primero, **`asp node doctor <id>`**: el nodo comprueba KVM, hipervisor, imágenes, disco, nftables, reloj y su acceso al plano de control, y dice qué arreglar ([`how-to/troubleshooting.md`](how-to/troubleshooting.md)). En el propio nodo, aunque el agente no arranque: `sudo asp doctor`.
+
 | Síntoma | Causa probable |
 |---|---|
 | `503 no schedulable nodes registered` | Ningún nodo registrado con `--reconcile`, o el agente aún no se ha registrado. |

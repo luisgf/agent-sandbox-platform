@@ -47,6 +47,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return authCmd(args[1:], stdout, stderr)
 	case "node":
 		return nodeCmd(args[1:], stdout, stderr)
+	case "doctor":
+		return cmdDoctor(args[1:], stdout, stderr)
 	case "apikey":
 		return apikeyCmd(args[1:], stdout, stderr)
 	default:
@@ -72,6 +74,8 @@ Usage:
   asp auth login|logout|status [flags]
   asp node list [--json]
   asp node cordon|uncordon <id>
+  asp node doctor <id> [--json]    the node checks itself: KVM, hypervisor, images, disk, nftables, clock...
+  asp doctor [--json] [node-agent flags]   the same on this host, as root, without starting the agent
   asp node enroll-token [--node-id ID] [--ttl 1h] [--json]
   asp node fence set <id> --endpoint URL [--token-env NAME | --token-file /abs/path | --token-stdin]
   asp node fence clear <id>

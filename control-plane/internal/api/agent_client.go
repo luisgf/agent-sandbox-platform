@@ -206,6 +206,13 @@ func (s *Server) agentTarget(ctx context.Context, sb store.Sandbox) (baseURL str
 	if node.RevokedAt != nil {
 		return "", nil, http.StatusConflict, fmt.Sprintf("assigned node %s is revoked", node.ID)
 	}
+	return s.nodeAgentTarget(node)
+}
+
+// nodeAgentTarget is the agent of a node that is known and not revoked, and the
+// client to reach it: mTLS for an https endpoint, the plain client (and the agent
+// token) for a loopback http one.
+func (s *Server) nodeAgentTarget(node store.Node) (baseURL string, client *http.Client, status int, msg string) {
 	baseURL = effectiveAgentEndpoint(node.AgentEndpoint, node.Endpoint)
 	if baseURL == "" || strings.HasPrefix(baseURL, "local://") {
 		return "", nil, http.StatusBadGateway, "node has no agent_endpoint for exec"

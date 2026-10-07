@@ -716,7 +716,7 @@ Kernel guest: `CONFIG_VIRTIO_VSOCKETS`. Host hybrid exec: CH muxer UDS (sin `/de
 
 ## 7. Checklist de verificación
 
-Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`).
+Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`). **La mayor parte de esta lista la hace sola `sudo asp doctor`** (en el nodo, sin arrancar el agente) o `asp node doctor <id>` (al agente en marcha): KVM, hipervisor, virtiofsd, kernel e imagen, disco, TAP, nft, reloj y plano de control, con qué arreglar cada fallo ([`how-to/troubleshooting.md`](how-to/troubleshooting.md)).
 
 1. **KVM**
    - [ ] `kvm-ok` OK

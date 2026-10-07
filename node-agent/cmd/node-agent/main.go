@@ -25,6 +25,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/capacity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/certrenew"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/cpclient"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/doctor"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress/mitm"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/execproxy"
@@ -114,6 +115,8 @@ type config struct {
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
 	ReapOnly             bool          // --reap-only: clean up and exit, without registering
 	PrintMeasurement     bool          // --print-measurement: print what this node would attest and exit
+	Doctor               bool          // --doctor: check this host and this configuration, print the report and exit
+	DoctorJSON           bool          // --doctor-json: the report as JSON
 	GuestKernel          string        // --guest-kernel: the kernel every VM boots
 	GuestRootFS          string        // --guest-rootfs: the base image every sandbox disk is copied from
 	VMConfine            string        // --vm-confine: auto | on | off
@@ -132,6 +135,11 @@ func main() {
 	cfg := loadConfig()
 	if cfg.PrintMeasurement {
 		os.Exit(printMeasurement(cfg, cfg.GuestKernel, cfg.GuestRootFS, os.Stdout, os.Stderr))
+	}
+	if cfg.Doctor {
+		// Before anything is refused for a missing key or a socket directory: the doctor
+		// is for the node that does not start.
+		os.Exit(runDoctor(cfg, cfg.DoctorJSON))
 	}
 	if err := checkNodeKeyLocations(cfg); err != nil {
 		slog.Error("refusing to start", "error", err)
@@ -299,6 +307,10 @@ func main() {
 		EgressEnforce:    cfg.EgressEnforce,
 		DefaultAllowlist: defaultAL,
 		PolicyCache:      policyCache,
+		// The self-checks of the node, for `asp node doctor` through the control plane.
+		Doctor: func(ctx context.Context) any {
+			return doctor.Run(ctx, cfg.NodeID, doctorChecks(cfg, cp), 20*time.Second)
+		},
 	}
 	agentToken, err := agentTokenFor(cfg)
 	if err != nil {
@@ -782,6 +794,8 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.Int(&cfg.DiskMinFreeMiB, "disk-min-free-mib", -1, "refuse to clone or resume a sandbox disk when --disk-dir has less free space (MiB). -1: twice the base image's size; 0: do not check")
 	s.Bool(&cfg.DryRun, "dry-run", false, "use FakeVMM and skip real CH", settings.Legacy("DRY_RUN"))
 	s.String(&cfg.ReapLeftovers, "reap-leftovers", reapOn, "at start, remove what a previous node-agent left on this host: cloud-hypervisor and virtiofsd processes of --ch-socket-dir, its per-sandbox sockets, asp-* TAPs, wg-asp-* tunnels and their routing (not the rootfs copies in --disk-dir: the reconciler removes the ones no sandbox owns). on | report (log, remove nothing) | off; --dry-run only reports")
+	s.Bool(&cfg.Doctor, "doctor", false, "check this host and this configuration (KVM, hypervisor, virtiofsd, guest images, disk, nftables, TAPs, clock, the control plane) and print what is wrong and how to fix it; exit 1 when a check failed", settings.NoEnv())
+	s.Bool(&cfg.DoctorJSON, "doctor-json", false, "with --doctor, print the report as JSON", settings.NoEnv())
 	s.Bool(&cfg.PrintMeasurement, "print-measurement", false, "print the digests of the kernel and base image and the hypervisor version this node attests, as an entry for the control plane's ASP_ATTEST_ALLOWED_IMAGES, and exit", settings.NoEnv())
 	s.Bool(&cfg.ReapOnly, "reap-only", false, "remove those leftovers and exit without registering (systemd ExecStopPost); refused while a node-agent runs with this --ch-socket-dir", settings.NoEnv())
 	s.String(&cfg.Endpoint, "endpoint", "", "node callback endpoint advertised to control plane", settings.Legacy("NODE_ENDPOINT"))

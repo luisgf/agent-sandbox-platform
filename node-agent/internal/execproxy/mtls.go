@@ -23,9 +23,9 @@ const (
 // ErrNoServerAuth: the node certificate predates the server-auth profile.
 var ErrNoServerAuth = errors.New("node certificate cannot serve TLS (no server-auth usage); re-enroll with --enroll or rotate-cert")
 
-// RemoteHandler serves what the control plane needs from another host: exec and
-// exec/stdin. Operator routes (ssh-agent approve, egress-check) stay on the
-// loopback listener only.
+// RemoteHandler serves what the control plane needs from another host: exec,
+// exec/stdin and the node's self-checks. Operator routes (ssh-agent approve,
+// egress-check) stay on the loopback listener only.
 func (s *Server) RemoteHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -34,6 +34,7 @@ func (s *Server) RemoteHandler() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/internal/exec", s.handleExec)
 	mux.HandleFunc("POST /v1/internal/exec/stdin", s.handleExecStdin)
+	mux.HandleFunc("GET /v1/internal/doctor", s.handleDoctor)
 	return mux
 }
 
