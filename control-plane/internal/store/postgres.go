@@ -221,7 +221,8 @@ func (p *PostgresStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error)
 			nodeID = input.NodeID
 		}
 		created, err = scanSandbox(tx.QueryRow(ctx, `
-			UPDATE sandboxes SET state='running', node_id=$2, state_version=state_version+1, updated_at=$3, last_activity_at=$3
+			UPDATE sandboxes SET state='running', node_id=$2, state_version=state_version+1, updated_at=$3, last_activity_at=$3,
+			    booted_at=COALESCE(booted_at, $3)
 			WHERE id=$1
 			RETURNING `+sandboxColumns, id, nodeID, now3))
 		if err != nil {
@@ -399,6 +400,7 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 	sb, err := scanSandbox(tx.QueryRow(ctx, `
 		UPDATE sandboxes s SET state=$2, state_version=s.state_version+1, updated_at=$3,
 		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE s.last_activity_at END,
+		    booted_at=CASE WHEN $2='running' THEN COALESCE(s.booted_at, $3::timestamptz) ELSE s.booted_at END,
 		    stop_reason=CASE WHEN $2='running' THEN '' ELSE s.stop_reason END,
 		    status_detail=CASE
 		      WHEN $2='running' THEN ''
@@ -1303,7 +1305,7 @@ const sandboxColumns = `id, tenant_id, node_id, state, vmm_profile, image_ref,
 	owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
 	local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash,
 	local_net_client_public, local_net_node_public, local_net_listen_port, local_net_node_addr, local_net_client_addr,
-	status_detail, boot_count, stopped_at`
+	status_detail, boot_count, stopped_at, booted_at`
 
 // qualify prefixes every column of a list with alias (for UPDATE … FROM).
 func qualify(cols, alias string) string {
@@ -1332,7 +1334,7 @@ func scanSandbox(row scannable, pre ...any) (Sandbox, error) {
 		&sb.LocalNet, &sb.LocalNetState, &sb.LocalNetAttachedAt, &sb.LocalNetGrantExpiresAt,
 		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic, &sb.LocalNetNodePublic,
 		&sb.LocalNetListenPort, &sb.LocalNetNodeAddr, &sb.LocalNetClientAddr,
-		&sb.StatusDetail, &sb.BootCount, &sb.StoppedAt,
+		&sb.StatusDetail, &sb.BootCount, &sb.StoppedAt, &sb.BootedAt,
 	)...)
 	if err != nil {
 		return Sandbox{}, err

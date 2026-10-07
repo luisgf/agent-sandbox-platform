@@ -110,6 +110,8 @@ type fakeSandbox struct {
 	Detail string  `json:"-"`
 	// BootCount is sent when set: 2 and up is a resume.
 	BootCount int `json:"boot_count,omitempty"`
+	// BootedAt is set by the first running report, as the control plane does.
+	BootedAt *time.Time `json:"booted_at,omitempty"`
 }
 
 func newFakeCP(t *testing.T, ids ...string) *fakeCP {
@@ -210,6 +212,10 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		b := f.boxes[parts[3]]
 		b.State, b.Detail = body.State, body.Detail
+		if body.State == "running" && b.BootedAt == nil {
+			now := time.Now().UTC()
+			b.BootedAt = &now
+		}
 		_ = json.NewEncoder(w).Encode(b)
 	default:
 		http.NotFound(w, r)

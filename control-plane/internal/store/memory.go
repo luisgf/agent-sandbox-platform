@@ -210,6 +210,7 @@ func (m *MemoryStore) provisionStub(id, nodeID string) (Sandbox, error) {
 	sb.UpdatedAt = nowRun
 	sb.LastActivityAt = nowRun
 	sb.StopReason = ""
+	sb.BootedAt = &nowRun
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
 	m.mu.Unlock()
@@ -346,6 +347,9 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		sb.LastActivityAt = now
 		sb.StopReason = ""
 		sb.StatusDetail = ""
+		if sb.BootedAt == nil {
+			sb.BootedAt = &now
+		}
 	case detail != "" && recordsDetail(prev, state):
 		sb.StatusDetail = detail
 	}
@@ -1047,6 +1051,10 @@ func cloneSandbox(sb Sandbox) Sandbox {
 	if sb.StoppedAt != nil {
 		t := *sb.StoppedAt
 		sb.StoppedAt = &t
+	}
+	if sb.BootedAt != nil {
+		t := *sb.BootedAt
+		sb.BootedAt = &t
 	}
 	return sb
 }
