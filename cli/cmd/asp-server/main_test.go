@@ -49,9 +49,7 @@ func TestSettingsFile(t *testing.T) {
 	conf := writeConf(t, dir, "standalone.yaml", "listen: 0.0.0.0:9443\ntls_san: [asp.example, 198.51.100.9]\nno_agent: true\nprofile: lab\n")
 	writeConf(t, dir, "standalone.yaml.d/10-site.yaml", "node_id: from-drop-in\ntls_san: [other.example]\n")
 
-	var seen []string
 	fs, opts, sans := newFlags(nil)
-	_ = seen
 	if err := fs.Parse([]string{"--config", conf, "--profile", "default"}); err != nil {
 		t.Fatal(err)
 	}

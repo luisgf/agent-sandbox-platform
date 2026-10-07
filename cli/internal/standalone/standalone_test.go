@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -206,14 +205,6 @@ func TestNamesForLoopbackWildcardAndOperatorNames(t *testing.T) {
 	}
 	if strings.Join(n.DNS, ",") != "asp.example,box.example,localhost" {
 		t.Errorf("dns %v", n.DNS)
-	}
-	ips := []string{}
-	for _, ip := range n.IPs {
-		ips = append(ips, ip.String())
-	}
-	if strings.Join(ips, ",") != "127.0.0.1,198.51.100.9,::1" && strings.Join(ips, ",") != "127.0.0.1,198.51.100.9" && strings.Join(ips, ",") != "127.0.0.1,198.51.100.9,::1" {
-		// sorted as text: ::1 sorts before the dotted ones
-		t.Logf("ips %v", ips)
 	}
 	hasIP := func(want string) bool {
 		for _, ip := range n.IPs {
@@ -564,8 +555,6 @@ func TestRunStartsTheNodeAfterTheControlPlaneAndStopsItFirst(t *testing.T) {
 		t.Fatal("Run did not return after the stop")
 	}
 	marks := strings.Join(readMarks(t, dir), " ")
-	want := "control-plane;started"
-	_ = want
 	order := []string{"control-plane started", "node-agent started", "node-agent stopped", "control-plane stopped"}
 	text := func() string { b, _ := os.ReadFile(filepath.Join(dir, "marks")); return string(b) }()
 	last := -1
@@ -699,5 +688,4 @@ func TestWaitHealthyWaitsForTheCertificateToBeAnswered(t *testing.T) {
 	if err := waitHealthy(ctx2, p); err != nil {
 		t.Fatalf("a control plane answering over its own certificate: %v", err)
 	}
-	_ = syscall.SIGTERM
 }

@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/envcfg"
+	"github.com/luisgf/agent-sandbox-platform/cli/internal/standalone"
 )
 
 const repoRoot = "../../../"
@@ -98,5 +101,52 @@ func TestPackagedUnit(t *testing.T) {
 	}
 	if strings.Contains(unit, "KillMode=control-group") {
 		t.Error("control-group would stop the control plane and the node at once")
+	}
+}
+
+// A node asp-server starts behaves like the one the node-agent package installs: every setting the
+// package's agent.yaml gives and asp-server gives too has the same value. (They differ only where
+// asp-server decides, from --data-dir; with the default directory those are the same too.)
+func TestTheNodeItStartsIsThePackagedNode(t *testing.T) {
+	file, err := envcfg.LoadFile(repoRoot+"packaging/etc/agent.yaml", true)
+	if err != nil {
+		t.Skipf("packaging/etc/agent.yaml is not here (a checkout of the CLI alone): %v", err)
+	}
+	p := standalone.Prepared{Layout: standalone.Layout{Root: standalone.DefaultDataDir}, LocalURL: "https://127.0.0.1:8443", NodeID: "box", NodeToken: "t"}
+	env := map[string]string{}
+	for _, kv := range standalone.NodeAgentEnv(p, standalone.ProfileDefault, nil) {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	same := func(a, b string) bool {
+		if ba, ok := envcfg.ParseBool(a); ok {
+			bb, ok2 := envcfg.ParseBool(b)
+			return ok2 && ba == bb
+		}
+		return a == b
+	}
+	compared := 0
+	for key, want := range file.Values {
+		got, ok := env["ASP_"+strings.ToUpper(key)]
+		if !ok {
+			continue
+		}
+		compared++
+		if !same(got, want) {
+			t.Errorf("%s: the package says %q and asp-server says %q", key, want, got)
+		}
+	}
+	if compared < 8 {
+		t.Fatalf("only %d settings are in both: are the files read right?", compared)
+	}
+	// And what the package gives every node, asp-server gives too.
+	for _, key := range []string{"mtls", "reconcile", "tap_auto", "host_vsock", "egress_enforce", "egress_proxy_listen", "egress_dns_sink", "ch_socket_dir", "disk_dir", "cert_dir", "local_net_key_dir"} {
+		if _, ok := file.Values[key]; !ok {
+			t.Errorf("agent.yaml no longer gives %s: asp-server's defaults need a look", key)
+			continue
+		}
+		if _, ok := env["ASP_"+strings.ToUpper(key)]; !ok {
+			t.Errorf("agent.yaml gives %s and asp-server does not", key)
+		}
 	}
 }
