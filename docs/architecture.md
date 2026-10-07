@@ -111,10 +111,13 @@ PID de servicio en el guest. Escucha vsock (prod) o unix (dry-run). Expone `Exec
 Estados (`store.SandboxState`):
 
 ```text
-requested → starting → running ⇄ paused → stopping → stopped
-    ↘ stopped (destroy antes del claim)
+requested → starting → running ⇄ paused → stopping → stopped ──resume──▶ requested (mismo nodo, mismo disco)
+    ↘ stopped (parar antes del claim)                        └─ un arranque que falla al reanudar vuelve a stopped
                 ↘ failed (terminal: error de arranque, node_lost, node_agent_restarted)
+cualquier estado ──DELETE──▶ deleting → deleted   (deleted directo si ningún nodo tiene nada: requested, failed)
 ```
+
+`stopped` ya no es final: el disco de la sandbox sigue en su nodo ([ADR-0012](adr/0012-retained-disks.md)). `deleted` sí lo es, y la fila se queda para que sus eventos sobrevivan.
 
 Con `ASP_AUTO_PROVISION=0` (default prod/bare-metal):
 
@@ -124,7 +127,7 @@ Con `ASP_AUTO_PROVISION=0` (default prod/bare-metal):
 4. TAP (si `--tap-auto`) → VMM `Start` → dialer vsock → `POST …/status` `running`.
 5. Attestation opcional: nodo firma `BootStatement`, CP `POST …/attest`.
 6. Heartbeat y sondeo de `/work` mientras corre. Si la sandbox sale del conjunto `assigned` del nodo (o el CP responde 409 a un `status`), el nodo para la VM.
-7. `DELETE /v1/sandboxes/{id}` → `stopping` → VMM Stop + cleanup TAP/sockets → `stopped`. Antes del claim, directamente `stopped`.
+7. `POST /v1/sandboxes/{id}/stop` → `stopping` → el nodo apaga el guest (`sync; systemctl poweroff` por el pod-daemon) y para el VMM → TAP/sockets limpios, **disco conservado** → `stopped`. Antes del claim, directamente `stopped`. El reaper de inactividad hace lo mismo. `POST …/start` (reanudar) → `requested` en el mismo nodo (409 si no puede tomar sandboxes, 503 si no tiene hueco), `boot_count` + 1; el nodo arranca el disco conservado. `DELETE` → `deleting` → el nodo borra la VM y el disco → `deleted`.
 8. Si el nodo se pierde, el monitor la pasa a `failed` (`node_lost`); ver [Fallos y recuperación](#fallos-y-recuperación).
 
 Reintentos idempotentes; el reconciler **reconcilia** estado real vs deseado en lugar de asumir RPC perfectos. `state_version` evita lost updates.
@@ -177,7 +180,7 @@ Tablas / entidades principales (migraciones `001`–`017`):
 
 | Entidad | Campos clave |
 |---|---|
-| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until (sin uso desde 2026-10), **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011; puerto y direcciones del túnel que asigna el nodo, 017) |
+| `sandboxes` | tenant_id, state, node_id, vmm_profile, resources, state_version, node_lease_until (sin uso desde 2026-10), **owner_sub**, **owner_email** (007), last_activity_at, stop_reason (`idle_timeout`, `node_lost`, `node_agent_restarted`, `unscheduled`), workspace_host_path, local_net_* (010–011; puerto y direcciones del túnel que asigna el nodo, 017), **status_detail**, **boot_count**, **stopped_at** (018: estados `deleting` y `deleted`, motivo del último fallo, arranques, cuándo paró; `idx` parcial de las paradas) |
 | `sandbox_events` | journal append-only; **actor_sub** (007) |
 | `nodes` | endpoint, agent_endpoint, state (`ready`/`offline`), last_seen_at, capacity (cpu, mem, max_sandboxes), cordoned, accepts_work, local_net_dial, agent_instance_id (012–013), cert_fingerprint/serial, cert_not_after (016), fence_*, revoked_at |
 | `node_events` | journal de nodos: registro, cordon, `node.offline`/`node.online`, fencing |
@@ -194,7 +197,7 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 | Escenario | Comportamiento |
 |---|---|
 | Nodo sin señales > `ASP_NODE_STALE_AFTER` (90 s) | Sale del reparto y pasa a `offline` |
-| Nodo sin señales > `ASP_NODE_FAILOVER_AFTER` (5 min) o revocado | `FenceProvider` (si tiene sandboxes, una vez por caída); sus sandboxes → `failed` (`node_lost`), `stopping` → `stopped`. No se mueven |
+| Nodo sin señales > `ASP_NODE_FAILOVER_AFTER` (5 min) o revocado | `FenceProvider` (si tiene sandboxes, una vez por caída); sus sandboxes → `failed` (`node_lost`), `stopping` → `stopped`, `deleting` → `deleted` (el disco se fue con el nodo). Las `stopped` siguen `stopped`: su disco vuelve si vuelve el nodo, y si no, la retención las borrará. No se mueven |
 | El nodo vuelve tras una partición | Vuelve a `ready`; sus sandboxes fallidas ya no están en su conjunto `assigned` y para esas VMs |
 | Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `failed` (`node_agent_restarted`); `requested`/`starting` las arranca el proceso nuevo. Antes de registrarse, el proceso nuevo para y borra las VMs, TAPs y túneles del anterior, y tras su primer sondeo el GC borra los discos que ninguna sandbox reclama; la unit systemd (`KillMode=control-group`) ya las para con el agente |
 | Reinicio del plano de control | Gracia: el silencio se cuenta desde el arranque del monitor |
@@ -223,7 +226,7 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 make asp
 ./build/asp session start
 ./build/asp session exec --cmd 'echo hello'
-./build/asp session stop
+./build/asp session stop     # conserva el disco; `resume` lo arranca otra vez, `rm` lo borra
 ```
 
 3. `asp sandbox run` (create → wait `running` → exec → destroy) es la primitiva de CI/un comando, no la integración del bucle. Auth Bearer: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).

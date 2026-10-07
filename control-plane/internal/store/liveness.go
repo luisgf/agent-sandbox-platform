@@ -57,13 +57,17 @@ func (m *MemoryStore) FailNodeSandboxes(nodeID, reason string, silentSince time.
 	var out []Sandbox
 	var lost []lostSandbox
 	for id, sb := range m.sandboxes {
-		if sb.NodeID == nil || *sb.NodeID != nodeID || !OccupiesNode(sb.State) {
+		if sb.NodeID == nil || *sb.NodeID != nodeID || !(OccupiesNode(sb.State) || sb.State == SandboxDeleting) {
 			continue
 		}
 		from := sb.State
 		to := SandboxFailed
-		if from == SandboxStopping {
+		switch from {
+		case SandboxStopping:
 			to = SandboxStopped
+			sb.StoppedAt = &now
+		case SandboxDeleting: // the disk went with the node
+			to = SandboxDeleted
 		}
 		sb.State = to
 		withdrawLocalNetFields(&sb)

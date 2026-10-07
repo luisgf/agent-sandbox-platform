@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
@@ -283,6 +284,17 @@ func (s *Server) ListSandboxes(w http.ResponseWriter, r *http.Request) {
 	}
 	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
 		list = filterSandboxesForList(p, list)
+	}
+	// A deleted sandbox is history: its row stays for the audit trail, but the
+	// list shows it only when asked.
+	if v := strings.TrimSpace(r.URL.Query().Get("include_deleted")); v != "1" && v != "true" {
+		live := make([]store.Sandbox, 0, len(list))
+		for _, sb := range list {
+			if sb.State != store.SandboxDeleted {
+				live = append(live, sb)
+			}
+		}
+		list = live
 	}
 	writeJSON(w, http.StatusOK, listSandboxesResponse{Sandboxes: list})
 }
@@ -1198,11 +1210,16 @@ type statusRequest struct {
 }
 
 type listWorkResponse struct {
-	// Sandboxes need the node's action (claim, start, stop, local-net).
+	// Sandboxes need the node's action (claim, start, stop, delete, local-net).
 	Sandboxes []store.Sandbox `json:"sandboxes"`
 	// Assigned lists every sandbox placed on the node that still holds it; the
 	// node stops any VM it runs that is not listed (failed over, destroyed).
 	Assigned []string `json:"assigned"`
+	// Retained lists the stopped sandboxes on the node: their disks stay
+	// (ADR-0012). Always present, even empty: a node that sees it knows that
+	// stopping keeps disks here, and one that does not is talking to an older
+	// control plane.
+	Retained []string `json:"retained"`
 	// Egress carries the egress policy of every assigned sandbox, so a guest
 	// gets its tenant's policy before its first exec and a change reaches
 	// running sandboxes on the next poll. Absent when the rules could not be
@@ -1280,10 +1297,13 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 	if work.Assigned == nil {
 		work.Assigned = []string{}
 	}
+	if work.Retained == nil {
+		work.Retained = []string{}
+	}
 	if work.Tenants == nil {
 		work.Tenants = map[string]string{}
 	}
-	resp := listWorkResponse{Sandboxes: work.Sandboxes, Assigned: work.Assigned}
+	resp := listWorkResponse{Sandboxes: work.Sandboxes, Assigned: work.Assigned, Retained: work.Retained}
 	if eg, err := s.workEgressFor(work.Tenants); err != nil {
 		slog.Warn("work poll without egress policies: reading the rules failed", "node_id", id, "error", err)
 	} else {
@@ -1385,43 +1405,90 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sb)
 }
 
-// DestroySandbox marks a sandbox stopping (reconciler cleans up) or stopped if never assigned.
-func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
+// sandboxForAction loads the sandbox an owner-facing action (stop, start,
+// delete) acts on and runs the checks they share: it exists, the caller's
+// tenant may see it, and, for an IdP caller, allowed(p, sandbox). The caller
+// has been answered when ok is false.
+func (s *Server) sandboxForAction(w http.ResponseWriter, r *http.Request, forbidden string, allowed func(idp.Principal, store.Sandbox) bool) (store.Sandbox, string, bool) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
-		return
+		return store.Sandbox{}, "", false
 	}
-	actorSub := resolveActorSub(r, "", "")
 	existing, err := s.Store.GetSandbox(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
-			return
+			return store.Sandbox{}, "", false
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return store.Sandbox{}, "", false
 	}
 	if !sandboxVisible(w, r, existing) {
+		return store.Sandbox{}, "", false
+	}
+	if p, ok := IdPPrincipalFromContext(r.Context()); ok && !allowed(p, existing) {
+		forbid(w, forbidden)
+		return store.Sandbox{}, "", false
+	}
+	return existing, resolveActorSub(r, "", ""), true
+}
+
+// writeLifecycleError maps what a stop, resume or delete can fail with.
+func writeLifecycleError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "sandbox not found")
+	case errors.Is(err, store.ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
+	case writePlacementError(w, err):
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// StopSandbox stops a sandbox and keeps its disk (ADR-0012): stopping for its
+// node to power off, or stopped at once if it was never claimed.
+func (s *Server) StopSandbox(w http.ResponseWriter, r *http.Request) {
+	existing, actorSub, ok := s.sandboxForAction(w, r, "forbidden: stop requires owner, admin, or operator with destroy-any", canDestroy)
+	if !ok {
 		return
 	}
-	if p, ok := IdPPrincipalFromContext(r.Context()); ok {
-		if !canDestroy(p, existing) {
-			forbid(w, "forbidden: destroy requires owner, admin, or operator with destroy-any")
-			return
-		}
-	}
-	sb, err := s.Store.MarkSandboxStopping(id, actorSub)
+	sb, err := s.Store.StopSandbox(existing.ID, actorSub)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "sandbox not found")
-			return
-		}
-		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sb)
+}
+
+// StartSandbox resumes a stopped sandbox on the node that holds its disk. It
+// takes node capacity like a create, so it needs both rights.
+func (s *Server) StartSandbox(w http.ResponseWriter, r *http.Request) {
+	existing, actorSub, ok := s.sandboxForAction(w, r,
+		"forbidden: resume requires the owner, an admin, or an operator with destroy-any, and the right to create",
+		func(p idp.Principal, sb store.Sandbox) bool { return canDestroy(p, sb) && canCreate(p) })
+	if !ok {
+		return
+	}
+	sb, err := s.Store.ResumeSandbox(existing.ID, actorSub)
+	if err != nil {
+		writeLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sb)
+}
+
+// DestroySandbox deletes a sandbox and its disk: deleting for its node to
+// finish, or deleted at once if no node holds anything.
+func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
+	existing, actorSub, ok := s.sandboxForAction(w, r, "forbidden: destroy requires owner, admin, or operator with destroy-any", canDestroy)
+	if !ok {
+		return
+	}
+	sb, err := s.Store.DeleteSandbox(existing.ID, actorSub)
+	if err != nil {
+		writeLifecycleError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sb)

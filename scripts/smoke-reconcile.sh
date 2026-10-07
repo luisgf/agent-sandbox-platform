@@ -81,15 +81,20 @@ echo "$GOT" | grep -q smoke-rec-node
 echo "==> boot attestation posted and fresh"
 wait_fresh_attestation http://127.0.0.1:18082 "$SID" || { echo "no fresh attestation"; cat "$NA_LOG"; cat "$CP_LOG"; exit 1; }
 
-echo "==> destroy → stopping → wait stopped"
-curl -sf -X DELETE "http://127.0.0.1:18082/v1/sandboxes/${SID}" | grep -q stopping
-OK=0
-for i in $(seq 1 40); do
-  GOT=$(curl -sf "http://127.0.0.1:18082/v1/sandboxes/${SID}")
-  echo "$GOT" | grep -q '"state":"stopped"' && { OK=1; break; }
-  sleep 0.25
-done
-[[ "$OK" == "1" ]] || { echo "timeout waiting stopped"; echo "$GOT"; cat "$NA_LOG"; exit 1; }
+CP=http://127.0.0.1:18082
+echo "==> stop → stopping → wait stopped (the work poll lists it as retained)"
+curl -sf -X POST "$CP/v1/sandboxes/${SID}/stop" | grep -q stopping
+wait_state "$CP" "$SID" stopped || { cat "$NA_LOG"; exit 1; }
+curl -sf "$CP/v1/nodes/smoke-rec-node/work" | python3 -c 'import json,sys; w=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in w["retained"] and sys.argv[1] not in w["assigned"] else 1)' "$SID" \
+  || { echo "a stopped sandbox must be retained and not assigned"; exit 1; }
+
+echo "==> resume → requested → wait running (boot 2)"
+curl -sf -X POST "$CP/v1/sandboxes/${SID}/start" | grep -q '"boot_count":2'
+wait_state "$CP" "$SID" running || { cat "$NA_LOG"; exit 1; }
+
+echo "==> delete → deleting → wait deleted"
+curl -sf -X DELETE "$CP/v1/sandboxes/${SID}" | grep -q deleting
+wait_state "$CP" "$SID" deleted || { cat "$NA_LOG"; exit 1; }
 
 echo "==> events present"
 curl -sf "http://127.0.0.1:18082/v1/sandboxes/${SID}/events" | grep -q sandbox.claimed

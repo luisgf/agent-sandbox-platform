@@ -84,7 +84,7 @@ func WaitForState(ctx context.Context, get Getter, id, want string, opt Options)
 
 func isTerminalFailure(state, want string) bool {
 	switch state {
-	case "failed", "stopped":
+	case "failed", "stopped", "deleting", "deleted":
 		return state != want
 	default:
 		return false

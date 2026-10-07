@@ -22,6 +22,20 @@ sys.exit(0 if any(n["id"] == node and n.get("schedulable") for n in nodes) else 
   return 1
 }
 
+# wait_state <cp_url> <sandbox_id> <state> [timeout_s]
+# Waits until the control plane reports the sandbox in <state>: the node agent
+# acts on a poll, so a stop, a resume or a delete takes a moment.
+wait_state() {
+  local cp="$1" sb="$2" want="$3" timeout="${4:-15}" i got=""
+  for ((i = 0; i < timeout * 4; i++)); do
+    got=$(curl -fsS "$cp/v1/sandboxes/$sb" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)
+    [[ "$got" == "$want" ]] && return 0
+    sleep 0.25
+  done
+  echo "sandbox $sb never reached $want (last state: ${got:-none})" >&2
+  return 1
+}
+
 # json_field <field> : read one top-level field from JSON on stdin.
 json_field() {
   python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print("" if v is None else v)' "$1"

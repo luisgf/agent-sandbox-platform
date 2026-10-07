@@ -139,8 +139,9 @@ sequenceDiagram
   end
 
   H->>C: asp session stop --name agent
-  C->>CP: DELETE /v1/sandboxes/{id}
-  NA->>VM: stop VM, clean TAP and sockets
+  C->>CP: POST /v1/sandboxes/{id}/stop
+  NA->>VM: guest powers off; TAP and sockets cleaned, disk kept
+  Note over H,VM: later: asp session resume boots it again on the same disk;<br/>asp session rm deletes the sandbox and its disk
 ```
 
 For one-off jobs (CI, ops) there is still the single-shot primitive `asp sandbox run --cmd '…'`, which does create → exec → destroy in one call.
@@ -154,22 +155,30 @@ The control plane stores *desired* state; the node agent reconciles it against w
 ```mermaid
 stateDiagram-v2
   [*] --> requested: POST /v1/sandboxes (placed on a node with room)
-  requested --> stopped: DELETE before any node claims it
-  requested --> starting: the assigned node claims it (lease)
+  requested --> stopped: stop before any node claims it
+  requested --> starting: the assigned node claims it
   starting --> running: VM booted
   starting --> failed: boot / TAP / virtiofsd error
   running --> failed: node lost (node_lost) · agent restarted
   running --> paused
   paused --> running
-  running --> stopping: DELETE · idle timeout
+  running --> stopping: stop · idle timeout
   paused --> stopping
-  stopping --> stopped: VM + TAP cleaned up
-  stopped --> [*]
-  failed --> [*]
+  stopping --> stopped: guest powered off, VM + TAP cleaned up, disk kept
+  stopped --> requested: resume (same node, same disk)
+  starting --> stopped: a resume that could not start
+  running --> deleting: DELETE
+  stopping --> deleting: DELETE
+  stopped --> deleting: DELETE
+  deleting --> deleted: VM and disk removed
+  requested --> deleted: DELETE before any node claims it
+  failed --> deleted: DELETE
+  deleted --> [*]
 ```
 
 - **Placement:** the control plane picks the node at create time from the nodes that can take sandboxes and their free CPU (overcommitted 4x by default), memory and slots; `ASP_SCHED_POLICY=spread|binpack`. When nothing fits, create fails at once with 503 and the reasons; only the chosen node can claim the sandbox. See [`docs/ops-multi-node.md`](docs/ops-multi-node.md).
-- **Idle reaper:** with `ASP_SANDBOX_IDLE_TIMEOUT=2h`, a forgotten sandbox is stopped. Create, reaching `running` and a successful exec count as activity; status calls and heartbeats do not. Off by default.
+- **Stop is not delete** ([ADR-0012](docs/adr/0012-retained-disks.md)): a stop powers the guest off and keeps its disk on the node, so what the agent installed outside `/workspace` is still there after `asp session resume`. Resume is pinned to the node that holds the disk: 409 if that node is cordoned or down, 503 if it is full. `DELETE` (`asp session rm`) removes the VM and the disk. A deleted sandbox stays in the database as `deleted`, hidden from the list unless `?include_deleted=1`, so its events survive.
+- **Idle reaper:** with `ASP_SANDBOX_IDLE_TIMEOUT=2h`, a forgotten sandbox is *stopped*, not deleted: `asp session resume` brings it back. Create, reaching `running` and a successful exec count as activity; status calls and heartbeats do not. Off by default.
 - **Node failure:** a node silent for `ASP_NODE_STALE_AFTER` (90 s) gets no new sandboxes and goes `offline`; after `ASP_NODE_FAILOVER_AFTER` (5 min) it is fenced (if a `FenceProvider` is set) and its sandboxes fail with `node_lost`. They are not moved: the guest disk lives on that server. A node that comes back stops the VMs it no longer owns. See [ADR-0011](docs/adr/0011-multi-node.md).
 
 ---
@@ -243,7 +252,7 @@ export ASP_NODE_BOOTSTRAP_TOKEN=dev-node-bootstrap
 ./build/asp session start --name demo
 ./build/asp session exec  --name demo --cmd 'uname -a'
 ./build/asp session status --name demo
-./build/asp session stop  --name demo
+./build/asp session stop  --name demo     # keeps the disk; `resume` boots it again, `rm` deletes it
 ```
 
 The control plane places the session on a node with room; with the single dry-run node that is `dev-node`. `--node-id` pins a node instead.
@@ -357,10 +366,12 @@ Over ssh, session names and guest directories may only use `A-Z a-z 0-9 _ . / -`
 ### 6. Stop the session
 
 ```bash
-asp session stop --name opencode
+asp session stop   --name opencode    # powers the sandbox off, keeps its disk
+asp session resume --name opencode    # boots it again on that disk
+asp session rm     --name opencode    # deletes the sandbox, its disk and the session file
 ```
 
-If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when enabled). A later `exec` then fails with `idle timeout`; run `asp session start --force --name opencode` to get a new one.
+If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when enabled), which is a stop like any other. A later `exec` then fails with `idle timeout` and says its disk is kept: run `asp session resume --name opencode`. `stop` used to delete; to delete now, use `rm`.
 
 ### What is and is not sandboxed
 
@@ -375,7 +386,7 @@ If you forget, the control plane stops it after `ASP_SANDBOX_IDLE_TIMEOUT` (when
 
 - One session per agent. Two OpenCode instances with different `ASP_SESSION_NAME` values get two independent sandboxes.
 - If no node has room, `session start` fails with `no capacity` and the reason (for example `2 max_sandboxes`). `asp node list` shows what each node has in use.
-- If the session's node is lost, the sandbox fails with `node_lost` and `session status` says so; its disk lived on that server, so run `asp session start --force`.
+- If the session's node is lost, the sandbox fails with `node_lost` and `session status` says so; its disk lived on that server, so run `asp session start --force`. A resume needs the node that holds the disk: it answers 503 if the node is full and 409 if it is cordoned or down.
 - A buffered exec (`--buffered`, `--json`, `asp sandbox run`) is killed after the pod-daemon's `--exec-timeout-secs` (30 s by default in the guest image). A streamed exec, the default of `asp session exec`, has no time limit: it ends when the command exits or when the client goes away, and then the guest kills the command. `--stream-idle-timeout-secs` in the guest image adds an inactivity limit.
 - OpenCode merges stdout and stderr. An `asp` error (`no active session`, 401, network) exits 1 like a failing command; the model tells them apart by the message. Usage errors of the wrapper exit 125 and ssh errors 255.
 - The plugin edits the system prompt through OpenCode's experimental `experimental.chat.system.transform` hook. Pin OpenCode, and after an upgrade check that the model still sees `/workspace` and `Platform: linux`.

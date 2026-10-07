@@ -196,7 +196,7 @@ func TestLateStatusReportIs409(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.MarkSandboxStopping(sb.ID, ""); err != nil { // never claimed → stopped
+	if _, err := mem.StopSandbox(sb.ID, ""); err != nil { // never claimed → stopped
 		t.Fatal(err)
 	}
 	mux := testMux(NewServer(mem))

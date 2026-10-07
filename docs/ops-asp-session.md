@@ -28,11 +28,13 @@ El contrato del agente es **una sesión con nombre**: un JSON local (id + URL de
 | Fichero explícito | `--session-file` o `ASP_SESSION_FILE` sigue eligiendo **un** path y no usa `--name`. Sirve para tests y para migrar el `session.json` viejo. El default ya no es `~/.cache/asp/session.json`. |
 | `asp session exec --name` | Mismo id. Por defecto **stream NDJSON**: stdout/stderr se imprimen al llegar. Exit code del proceso = `exit_code` del evento `exit`. `--cmd '…'` **o** `-- argv…`. `--buffered` o `--json` piden el JSON acumulado de siempre (smokes). Solo un sandbox `running` acepta exec: en `requested`/`starting` el CP responde 409 (`sandbox is starting; wait until it is running`) sin llamar al nodo, y también 409 si el node-agent ya no tiene la VM. |
 | `asp session status --name` | Lee ese fichero y hace `GET`. `--json` opcional. Si no hay fichero, error claro (exit 1). |
-| `asp session stop --name` | `DELETE` + borra ese fichero. 404 (ya destruido) limpia el fichero igual. Otro error HTTP **conserva** el fichero para reintentar. |
+| `asp session stop --name` | `POST …/stop`: el nodo apaga el guest y **conserva el disco** ([ADR-0012](adr/0012-retained-disks.md)). Espera `stopped` (`--no-wait` no espera). **El fichero se queda**: la sesión sigue existiendo, parada. 404 y 409 (failed, deleting) lo explican y no tocan el fichero. |
+| `asp session resume --name` | `POST …/start`: arranca la sandbox parada **en su nodo** con su disco (`boot_count` + 1) y espera `running`. 503 si ese nodo no tiene hueco, 409 si está en cordon, caído o la sandbox no está parada. Un arranque que falla la deja `stopped` con el motivo (`status_detail`); un disco que falta la deja `failed` (`disk_lost`). Si la sesión tenía `--local-net`, el túnel se retiró al parar: `session local-net up` otra vez. |
+| `asp session rm --name` | `DELETE` + borra ese fichero: la sandbox y su disco se van (`deleting` → `deleted`). 404 (ya borrada) limpia el fichero igual. Otro error HTTP **conserva** el fichero para reintentar. Es lo que hacía `stop` antes de ADR-0012. |
 | Auth | Igual que el resto del CLI: Bearer IdP automático (`asp auth` / `ASP_ID_TOKEN` / cache). No se copia al fichero de sesión. |
-| `--force` en start | Si ya hay sesión **con ese nombre**, intenta destruir el sandbox anotado y empieza otro. Sin `--force`, start falla y no crea un segundo sandbox a ciegas. |
+| `--force` en start | Si ya hay sesión **con ese nombre**, **borra** el sandbox anotado (y su disco) y empieza otro. Sin `--force`, start falla y no crea un segundo sandbox a ciegas; el mensaje dice si lo que quieres es `resume` o `rm`. |
 | `--workspace /ruta` | Ruta **absoluta** de un directorio que debe existir en la máquina del CLI y, en el arranque real, en el nodo. Viaja como `workspace_host_path`. Si no está vacío, el node-agent arranca `virtiofsd` y Cloud Hypervisor recibe `fs` con tag `workspace`. Una imagen guest construida con este corte lo monta sola en `/workspace` (`workspace-virtiofs.service`). Una imagen anterior sigue necesitando el `mount` a mano. |
-| `--local` en stop | Borra solo el fichero. El sandbox **sigue vivo** en el CP. Escape de ops, no el camino normal. |
+| `--local` en rm | Borra solo el fichero. El sandbox y su disco **siguen** en el CP. Escape de ops, no el camino normal. |
 
 Dos nombres son dos sandboxes. No comparten disco ni egress.
 
@@ -78,7 +80,9 @@ asp session start --name agente
     ├─ asp session exec --name agente --buffered --cmd '…'
     │     POST sin stream → {"stdout","stderr","exit_code"}
     ├─ asp session status --name agente
-    └─ asp session stop --name agente    DELETE, luego borra el JSON
+    ├─ asp session stop --name agente    el nodo apaga el guest; el disco y el JSON se quedan
+    ├─ asp session resume --name agente  arranca la sandbox parada en su disco, en su nodo
+    └─ asp session rm --name agente      DELETE (VM y disco), luego borra el JSON
 ```
 
 Diagnóstico (ids, transiciones, errores) va a **stderr**. El id de `start`/`stop` y la salida del comando van a **stdout**, para no mezclarlos si el harness captura stdout como resultado del tool. En el camino stream, stdout del guest y el id no se mezclan porque el id solo lo imprime `start`/`stop`.
@@ -116,7 +120,9 @@ asp session exec --name opencode --cmd 'echo hello-from-session'
 asp session exec --name opencode -- echo hello --flag
 
 asp session status --name opencode
-asp session stop --name opencode
+asp session stop --name opencode      # conserva el disco
+asp session resume --name opencode    # lo arranca otra vez
+asp session rm --name opencode        # borra sandbox, disco y JSON
 ```
 
 En el lab Keycloak el tenant de ejemplo de los one-liners existentes es `--tenant=default` (no `tenant-demo`, que es el default del flag). El Bearer se adjunta solo; no hace falta meter el JWT en el wrapper.
@@ -148,9 +154,9 @@ Para forzar el JSON de una pieza (el contrato viejo, el de los smokes): `asp ses
 | `session status`, `GET`, heartbeat del nodo, sondeo de `/work` | No. Si contaran, el reconciler impediría el idle para siempre. |
 | Exec que falla antes del guest (red, 502, stream cortado a medias) | No. |
 
-**Qué hace el reaper.** Pasa el sandbox a `stopping` (el node-agent lo destruye) o a `stopped` si ningún nodo la había reclamado todavía. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.
+**Qué hace el reaper.** **Para** el sandbox: `stopping` (el node-agent apaga el guest y conserva el disco) o `stopped` si ningún nodo la había reclamado todavía. No borra nada: `asp session resume` la trae de vuelta. `stop_reason=idle_timeout`. Evento `sandbox.idle_reaped`.
 
-**Qué ve esta CLI.** `asp session status --name …` imprime `idle_reaped=true` (y `--json` el booleano) y sale **1**. `asp session exec` no llama al exec proxy si el GET ya trae `stop_reason=idle_timeout`. El fichero de ese nombre no se borra solo.
+**Qué ve esta CLI.** `asp session status --name …` imprime `idle_reaped=true` (y `--json` el booleano), dice que el disco se conserva y sale **1**. `asp session exec` no llama al exec proxy si el GET ya trae `stop_reason=idle_timeout`. El fichero de ese nombre no se borra solo.
 
 **Límites.** Un umbral de proceso para todos los sandboxes. Filas ya existentes al aplicar la migración `008` empezaron el reloj en ese momento, no en el `created_at` histórico.
 
@@ -181,17 +187,20 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 | Síntoma | Causa probable |
 |---|---|
 | `no active session` | No hubo `start` de ese `--name`, otro `HOME`, u otro `--session-dir`. |
-| `active session …` en start | Ya hay JSON para ese nombre. `stop --name` o `start --force --name`. |
+| `active session …` en start | Ya hay JSON para ese nombre. `resume --name` si está parada, `rm --name` para borrarla, o `start --force --name`. |
 | `invalid session name` | El nombre tiene `/`, espacios o `..`. |
-| exec HTTP 404 | Alguien borró el sandbox y el JSON sigue. `stop` (limpia en 404) o `start --force`. |
-| `idle timeout` / `idle_reaped=true` | El reaper paró el sandbox. El JSON local sigue. `asp session start --force --name …`. |
+| exec HTTP 404 | Alguien borró el sandbox y el JSON sigue. `rm` (limpia en 404) o `start --force`. |
+| `idle timeout` / `idle_reaped=true` | El reaper paró el sandbox y **conservó su disco**. El JSON local sigue. `asp session resume --name …`. |
+| `sandbox is stopped; its disk is kept` | Alguien paró la sesión. `asp session resume --name …`. |
+| `no capacity on the node that holds the disk` al reanudar (503) | El nodo del disco está lleno. La sandbox sigue parada: reintenta, o libera hueco en ese nodo. No se puede mover el disco a otro. |
+| `disk_lost` al reanudar | Falta el disco en el nodo (alguien lo borró, o el plano de control olvidó la sandbox y el GC del nodo lo recogió). No hay vuelta atrás: `asp session rm` y `start`. |
 | `no capacity: …` en start (503) | Ningún nodo tiene hueco; el mensaje cuenta por qué se descartó cada uno (`max_sandboxes`, `insufficient_memory`, `cordoned`, `stale`…). Reintenta, o que un admin añada nodos o haga `uncordon` (`asp node list`). |
 | `node pin rejected: …` en start (409) | `--node-id` apunta a un nodo desconocido, caído, revocado o en cordon. Quita el pin o revisa ese nodo. |
 | `lost_with_node=true` / `sandbox was lost with its node` | Su nodo dejó de dar señales (`node_lost`) o su node-agent se reinició (`node_agent_restarted`). El disco vivía en ese servidor: `asp session start --force --name …`. |
 | exec 401 | Token caducado o `ASP_IDP_REQUIRED` sin secretos. `asp auth status`. |
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
 | `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. La actividad **no** se refresca. |
-| `state file kept` | `DELETE` falló (no 404). El JSON sigue para reintentar `stop`. |
+| `state file kept` | `DELETE` falló (no 404). El JSON sigue para reintentar `rm`. |
 | El guest no ve `/workspace` | Imagen nueva: `systemctl status workspace-virtiofs` en el guest. Si el tag no estaba, la unidad sale 0 y no hay mount (sandbox sin workspace, o `virtiofsd` no arrancó). Imagen vieja, sin esa unidad: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `VIRTIOFSD_BIN`). |
 | Salida de golpe al final | `--buffered`, `--json`, o un pod-daemon que no habla `?stream=1` (el node-agent emite un burst). |
 

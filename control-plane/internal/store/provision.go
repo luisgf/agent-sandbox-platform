@@ -10,7 +10,7 @@ func AutoProvisionEnabled() bool {
 // ValidAgentStatus reports whether state is allowed on POST .../status.
 func ValidAgentStatus(state SandboxState) bool {
 	switch state {
-	case SandboxStarting, SandboxRunning, SandboxFailed, SandboxStopped:
+	case SandboxStarting, SandboxRunning, SandboxFailed, SandboxStopped, SandboxDeleted:
 		return true
 	default:
 		return false
@@ -20,9 +20,16 @@ func ValidAgentStatus(state SandboxState) bool {
 // ValidAgentTransition reports whether a node may move a sandbox from one state to
 // another. A report that arrives late (after a destroy, a failover or a stop) must
 // not bring the sandbox back: stopped is final, failed only goes to stopped, and
-// stopping only finishes.
+// stopping only finishes. A resume is not a report: the control plane moves
+// stopped to requested itself. deleted is reported only for a sandbox the
+// control plane is deleting, and is final.
 func ValidAgentTransition(from, to SandboxState) bool {
+	if to == SandboxDeleted {
+		return from == SandboxDeleting || from == SandboxDeleted
+	}
 	switch from {
+	case SandboxDeleted, SandboxDeleting:
+		return false
 	case SandboxStopped:
 		return to == SandboxStopped
 	case SandboxFailed:

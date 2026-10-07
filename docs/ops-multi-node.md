@@ -96,7 +96,7 @@ El nodo debe salir como `SCHEDULABLE yes`.
 | `ASP_NODE_STALE_AFTER` | `90s` | Sin señales (heartbeat o sondeo de trabajo) → sale del reparto y pasa a `offline`. |
 | `ASP_NODE_FAILOVER_AFTER` | `5m` | Sin señales → fencing (si hay `ASP_FENCE_PROVIDER` y el nodo tiene sandboxes) y sus sandboxes pasan a `failed` con `node_lost`. `0` u `off` lo desactiva (salvo para nodos revocados). |
 
-- **No hay migración.** El disco del guest vive en su servidor: una sesión perdida se vuelve a abrir (`asp session start --force`). `asp session status` lo explica.
+- **No hay migración.** El disco del guest vive en su servidor: una sesión perdida se vuelve a abrir (`asp session start --force`). `asp session status` lo explica. Por lo mismo, una sandbox **parada** queda fijada al nodo que guarda su disco: `asp session resume` va a ese nodo (503 si está lleno, 409 si está en cordon, caído o revocado) y no hay forma de moverla a otro.
 - **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
 - **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: no aparecen en el conjunto `assigned` de su siguiente sondeo de `/work` y el agente para esas VMs.
 - **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` fallan con `node_agent_restarted` y las que estaban arrancando se arrancan de nuevo. Las VMs tampoco siguen corriendo: la unit las para con el agente (`KillMode=control-group`), y el agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior: VMs, TAPs, túneles y discos ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).

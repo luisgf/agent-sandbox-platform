@@ -29,6 +29,12 @@ type Sandbox struct {
 	LastActivityAt string  `json:"last_activity_at,omitempty"`
 	// StopReason is "idle_timeout" when the control-plane reaper stopped this sandbox.
 	StopReason string `json:"stop_reason,omitempty"`
+	// BootCount is how many times the sandbox has been started; above 1 it was resumed.
+	BootCount int `json:"boot_count,omitempty"`
+	// StoppedAt is when the node reported it stopped (RFC 3339), while it is.
+	StoppedAt string `json:"stopped_at,omitempty"`
+	// StatusDetail is why the last start or resume could not finish.
+	StatusDetail string `json:"status_detail,omitempty"`
 	// WorkspaceHostPath is the host directory stored on the sandbox spec, if any.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 	LocalNet          bool   `json:"local_net"`
@@ -221,11 +227,23 @@ func (c *Client) GetSandbox(ctx context.Context, id string) (Sandbox, error) {
 	return out, err
 }
 
-// ListSandboxes GETs sandboxes, optionally filtered by tenant.
+// ListSandboxes GETs sandboxes, optionally filtered by tenant. Deleted ones are not listed.
 func (c *Client) ListSandboxes(ctx context.Context, tenantID string) ([]Sandbox, error) {
-	path := "/v1/sandboxes"
+	return c.ListSandboxesAll(ctx, tenantID, false)
+}
+
+// ListSandboxesAll is ListSandboxes, with the deleted sandboxes (history) when asked.
+func (c *Client) ListSandboxesAll(ctx context.Context, tenantID string, includeDeleted bool) ([]Sandbox, error) {
+	q := url.Values{}
 	if t := strings.TrimSpace(tenantID); t != "" {
-		path += "?tenant_id=" + url.QueryEscape(t)
+		q.Set("tenant_id", t)
+	}
+	if includeDeleted {
+		q.Set("include_deleted", "1")
+	}
+	path := "/v1/sandboxes"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	var out listSandboxesResponse
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, http.StatusOK, &out); err != nil {
@@ -237,10 +255,24 @@ func (c *Client) ListSandboxes(ctx context.Context, tenantID string) ([]Sandbox,
 	return out.Sandboxes, nil
 }
 
-// DeleteSandbox DELETEs (marks stopping/stopped) a sandbox.
+// DeleteSandbox DELETEs a sandbox: its VM and its disk go (state deleting, then deleted).
 func (c *Client) DeleteSandbox(ctx context.Context, id string) (Sandbox, error) {
 	var out Sandbox
 	err := c.doJSON(ctx, http.MethodDelete, "/v1/sandboxes/"+url.PathEscape(id), nil, http.StatusOK, &out)
+	return out, err
+}
+
+// StopSandbox stops a sandbox and keeps its disk (state stopping, then stopped).
+func (c *Client) StopSandbox(ctx context.Context, id string) (Sandbox, error) {
+	var out Sandbox
+	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/stop", nil, http.StatusOK, &out)
+	return out, err
+}
+
+// StartSandbox resumes a stopped sandbox on its disk, on the node that holds it.
+func (c *Client) StartSandbox(ctx context.Context, id string) (Sandbox, error) {
+	var out Sandbox
+	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/start", nil, http.StatusOK, &out)
 	return out, err
 }
 

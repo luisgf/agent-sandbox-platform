@@ -509,8 +509,8 @@ func TestClaimWorkStatusDestroy(t *testing.T) {
 	}
 	var stopped store.Sandbox
 	_ = json.Unmarshal(rr.Body.Bytes(), &stopped)
-	if stopped.State != store.SandboxStopping {
-		t.Fatalf("want stopping, got %s", stopped.State)
+	if stopped.State != store.SandboxDeleting {
+		t.Fatalf("want deleting, got %s", stopped.State)
 	}
 }
 

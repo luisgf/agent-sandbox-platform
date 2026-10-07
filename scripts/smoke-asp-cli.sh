@@ -89,7 +89,18 @@ echo "$KEEP_ERR" | grep -q 'keeping sandbox'
 SID=$(echo "$KEEP_ERR" | sed -n 's/.*created sandbox \([^ ]*\).*/\1/p' | head -1)
 [[ -n "$SID" ]] || { echo "no sandbox id in: $KEEP_ERR"; exit 1; }
 "$ASP" sandbox get "$SID" --json | grep -q '"state"'
-"$ASP" sandbox delete "$SID" --json | grep -q stopping
+
+echo "==> stop keeps the sandbox, start resumes it, delete ends it (ADR-0012)"
+wait_state "$CP_URL" "$SID" running
+"$ASP" sandbox stop "$SID" --json | grep -q stopping
+wait_state "$CP_URL" "$SID" stopped
+"$ASP" sandbox start "$SID" --json | grep -q requested
+wait_state "$CP_URL" "$SID" running
+[[ "$("$ASP" sandbox get "$SID" --json | json_field boot_count)" == 2 ]] || { echo "boot_count not 2 after a resume"; exit 1; }
+"$ASP" sandbox delete "$SID" --json | grep -q deleting
+wait_state "$CP_URL" "$SID" deleted
+"$ASP" sandbox list --tenant=smoke | { ! grep -q "$SID"; }
+"$ASP" sandbox list --tenant=smoke --all | grep -q "$SID"
 
 echo "==> asp sandbox list"
 "$ASP" sandbox list --tenant=smoke >/dev/null

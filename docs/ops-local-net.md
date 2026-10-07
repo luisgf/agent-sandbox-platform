@@ -68,7 +68,7 @@ Ficheros, todos modo `0600`, al lado del JSON de sesión, **fuera de git**:
 
 El grant en claro no se escribe. El control plane guarda el sha256 y `local_net_grant_expires_at` (10 minutos). Un heartbeat con el grant caducado pasa a `withdrawn`.
 
-`asp session stop` hace detach, borra el iface local si puede, y borra la clave antes del `DELETE` del sandbox. El idle reap (`stop_reason=idle_timeout`) pone la sesión en `stopping` y `withdrawn`; el node-agent **borra** su iface al parar la VM. El reap no corre en el portátil: el iface de allí se quita con `down` o `stop`. Ni el heartbeat ni los bytes del túnel mueven `last_activity_at`.
+`asp session stop` y `asp session rm` hacen detach, borran el iface local si pueden, y borran la clave (el `rm`, antes del `DELETE` del sandbox). El idle reap (`stop_reason=idle_timeout`) pone la sesión en `stopping` y `withdrawn`; el node-agent **borra** su iface al parar la VM. Reanudar una sesión parada no restablece el túnel: `asp session local-net up` otra vez. El reap no corre en el portátil: el iface de allí se quita con `down`, `stop` o `rm`. Ni el heartbeat ni los bytes del túnel mueven `last_activity_at`.
 
 Identidad: `owner_sub` del create. Otro sujeto con JWT no obtiene grant. El guest (`X-ASP-Caller: guest`, o un `local_net` en el exec) recibe 403.
 

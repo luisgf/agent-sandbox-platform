@@ -25,7 +25,7 @@ const (
 	StopReasonIdle = "idle_timeout"
 
 	// IdleReapedMessage is the stable exec/API error. The CLI matches "idle timeout".
-	IdleReapedMessage = "sandbox was stopped after idle timeout (reaped); start a new sandbox (asp session start --force)"
+	IdleReapedMessage = "sandbox was stopped after idle timeout (reaped); its disk is kept: resume it (asp session resume)"
 )
 
 // IdleVerdict is the pure idle decision for one sandbox clock.

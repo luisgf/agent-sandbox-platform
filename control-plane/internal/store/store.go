@@ -33,11 +33,22 @@ type Store interface {
 	// ListNodeWork returns, for one node, the sandboxes that need its action
 	// and the ids of every sandbox assigned to it (see NodeWork).
 	ListNodeWork(nodeID string) (NodeWork, error)
-	// UpdateSandboxStatus sets lifecycle state (starting|running|failed|stopped).
+	// UpdateSandboxStatus sets lifecycle state (starting|running|failed|stopped|deleted).
 	UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error)
-	// MarkSandboxStopping moves an active sandbox to stopping for reconciler cleanup.
-	// actorSub is optional (ADR-0007); empty is OK in lab.
-	MarkSandboxStopping(id, actorSub string) (Sandbox, error)
+	// StopSandbox stops an active sandbox and keeps its disk (ADR-0012):
+	// stopping for its node to power it off, or stopped at once when it was never
+	// claimed. Stopped or stopping already is not an error; failed, deleting and
+	// deleted are ErrConflict. actorSub is optional (ADR-0007).
+	StopSandbox(id, actorSub string) (Sandbox, error)
+	// ResumeSandbox starts a stopped sandbox again on the node that holds its
+	// disk: placement is pinned to it (ErrNoCapacity, ErrNodeUnavailable), then
+	// stopped becomes requested with boot_count + 1. Running, starting or
+	// requested already is not an error; any other state is ErrConflict.
+	ResumeSandbox(id, actorSub string) (Sandbox, error)
+	// DeleteSandbox deletes a sandbox and its disk: deleting for its node to do
+	// it, or deleted at once when no node holds anything (never claimed, failed,
+	// or stopped without a node). Deleting or deleted already is not an error.
+	DeleteSandbox(id, actorSub string) (Sandbox, error)
 
 	// TouchSandboxActivity records a successful exec (or equivalent) as last_activity_at=now.
 	TouchSandboxActivity(id string) error

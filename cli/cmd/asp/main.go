@@ -57,11 +57,13 @@ func printRootUsage(w io.Writer) {
 Usage:
   asp sandbox create [flags]
   asp sandbox get <id>
-  asp sandbox list [--tenant]
+  asp sandbox list [--tenant] [--all]
   asp sandbox exec <id> (--cmd '…' | -- argv…)
-  asp sandbox delete <id>
+  asp sandbox stop <id>        power off, keep the disk
+  asp sandbox start <id>       resume a stopped sandbox on its disk
+  asp sandbox delete <id>      delete the sandbox and its disk
   asp sandbox run (--cmd '…' | -- argv…) [flags]
-  asp session start|exec|status|stop|local-net [--name] [--local-net] [flags]
+  asp session start|exec|status|stop|resume|rm|local-net [--name] [--local-net] [flags]
   asp auth login|logout|status [flags]
   asp node list [--json]
   asp node cordon|uncordon <id>
@@ -87,7 +89,8 @@ Agent one-liner (lab IdP on ncc1701d — see docs/ops-asp-agent-runner.md):
 Reusable shell session (OpenCode bash tool — see docs/ops-asp-session.md):
   asp session start --tenant=default
   asp session exec --cmd 'echo hello'
-  asp session stop
+  asp session stop      # keeps the disk; asp session resume boots it again
+  asp session rm        # deletes the sandbox and its disk
 
 Demo (local dry-run stack — docs/mvp-smoke.md):
   asp sandbox run --node-id=dev-node --cmd 'echo hello'
@@ -180,7 +183,7 @@ func mustClient(g globalFlags, stderr io.Writer) (*client.Client, int) {
 
 func sandboxCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "sandbox subcommand required (create|get|list|exec|delete|run)")
+		fmt.Fprintln(stderr, "sandbox subcommand required (create|get|list|exec|stop|start|delete|run)")
 		return 2
 	}
 	sub := args[0]
@@ -194,6 +197,10 @@ func sandboxCmd(args []string, stdout, stderr io.Writer) int {
 		return cmdList(rest, stdout, stderr)
 	case "exec":
 		return cmdExec(rest, stdout, stderr)
+	case "stop":
+		return cmdStop(rest, stdout, stderr)
+	case "start", "resume":
+		return cmdStart(rest, stdout, stderr)
 	case "delete", "destroy", "rm":
 		return cmdDelete(rest, stdout, stderr)
 	case "run":
@@ -271,6 +278,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
+	all := fs.Bool("all", false, "include deleted sandboxes (history)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -278,7 +286,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	if c == nil {
 		return code
 	}
-	list, err := c.ListSandboxes(context.Background(), g.tenant)
+	list, err := c.ListSandboxesAll(context.Background(), g.tenant, *all)
 	if err != nil {
 		fmt.Fprintf(stderr, "list: %v\n", err)
 		return 1
@@ -294,6 +302,60 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", sb.ID, sb.State, sb.TenantID, node)
 	}
 	return 0
+}
+
+// cmdStop powers a sandbox off and keeps its disk; it does not wait.
+func cmdStop(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("sandbox stop", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(pos) < 1 {
+		fmt.Fprintln(stderr, "usage: asp sandbox stop <id>")
+		return 2
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	sb, err := c.StopSandbox(context.Background(), pos[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "stop: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "asp: stopping sandbox %s state=%s; its disk is kept\n", sb.ID, sb.State)
+	return writeSandbox(stdout, sb, g.jsonOut)
+}
+
+// cmdStart resumes a stopped sandbox on its disk; it does not wait.
+func cmdStart(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("sandbox start", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(pos) < 1 {
+		fmt.Fprintln(stderr, "usage: asp sandbox start <id>")
+		return 2
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	sb, err := c.StartSandbox(context.Background(), pos[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "start: %s\n", explainResumeError(err, "-"))
+		return 1
+	}
+	fmt.Fprintf(stderr, "asp: resuming sandbox %s state=%s boot=%d\n", sb.ID, sb.State, sb.BootCount)
+	return writeSandbox(stdout, sb, g.jsonOut)
 }
 
 func cmdDelete(args []string, stdout, stderr io.Writer) int {
@@ -318,7 +380,7 @@ func cmdDelete(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "delete: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stderr, "asp: deleted sandbox %s state=%s\n", sb.ID, sb.State)
+	fmt.Fprintf(stderr, "asp: deleting sandbox %s state=%s\n", sb.ID, sb.State)
 	return writeSandbox(stdout, sb, g.jsonOut)
 }
 

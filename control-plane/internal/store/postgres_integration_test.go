@@ -362,11 +362,11 @@ func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
 		t.Fatalf("heartbeat: %+v %v", n, err)
 	}
 	check("HeartbeatNode", 1)
-	stopping, err := pg.MarkSandboxStopping(sb.ID, "user:a")
+	stopping, err := pg.StopSandbox(sb.ID, "user:a")
 	if err != nil || stopping.State != SandboxStopping {
 		t.Fatalf("stopping: %+v %v", stopping, err)
 	}
-	check("MarkSandboxStopping", 2)
+	check("StopSandbox", 2)
 
 	// A refused transition reads once to explain itself and changes nothing.
 	if _, err := pg.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "stopping") {
