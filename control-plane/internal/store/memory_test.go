@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -14,7 +15,7 @@ func withAutoProvision(t *testing.T) {
 func TestMemoryStoreCreateGetList(t *testing.T) {
 	withAutoProvision(t)
 	s := NewMemoryStore()
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "tenant-a",
 		ImageRef:  "debian:bookworm-slim",
 		CPUMillis: 1000,
@@ -36,7 +37,7 @@ func TestMemoryStoreCreateGetList(t *testing.T) {
 		t.Fatalf("default vmm_profile: got %q", sb.VMMProfile)
 	}
 
-	got, err := s.GetSandbox(sb.ID)
+	got, err := s.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatalf("GetSandbox: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestMemoryStoreCreateGetList(t *testing.T) {
 		t.Fatalf("unexpected sandbox: %+v", got)
 	}
 
-	_, err = s.CreateSandbox(CreateSandboxInput{
+	_, err = s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "tenant-b",
 		ImageRef:  "img",
 		CPUMillis: 500,
@@ -54,14 +55,14 @@ func TestMemoryStoreCreateGetList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	listA, err := s.ListSandboxes("tenant-a")
+	listA, err := s.ListSandboxes(context.Background(), "tenant-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(listA) != 1 {
 		t.Fatalf("tenant-a list len=%d", len(listA))
 	}
-	all, err := s.ListSandboxes("")
+	all, err := s.ListSandboxes(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestMemoryStoreCreateGetList(t *testing.T) {
 func TestMemoryStoreEventsOnCreate(t *testing.T) {
 	withAutoProvision(t)
 	s := NewMemoryStore()
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "t",
 		ImageRef:  "img",
 		CPUMillis: 100,
@@ -82,7 +83,7 @@ func TestMemoryStoreEventsOnCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := s.ListEvents(sb.ID)
+	ev, err := s.ListEvents(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +101,11 @@ func TestMemoryStoreEventsOnCreate(t *testing.T) {
 
 func TestMemoryStoreValidation(t *testing.T) {
 	s := NewMemoryStore()
-	_, err := s.CreateSandbox(CreateSandboxInput{TenantID: "", ImageRef: "x", CPUMillis: 1, MemoryMiB: 64})
+	_, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "", ImageRef: "x", CPUMillis: 1, MemoryMiB: 64})
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	_, err = s.GetSandbox("missing")
+	_, err = s.GetSandbox(context.Background(), "missing")
 	if err != ErrNotFound {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
@@ -112,7 +113,7 @@ func TestMemoryStoreValidation(t *testing.T) {
 
 func TestMemoryStoreRegisterNode(t *testing.T) {
 	s := NewMemoryStore()
-	n, err := s.RegisterNode(RegisterNodeInput{
+	n, err := s.RegisterNode(context.Background(), RegisterNodeInput{
 		ID:             "node-1",
 		Name:           "dev",
 		Endpoint:       "http://127.0.0.1:9090",
@@ -125,11 +126,11 @@ func TestMemoryStoreRegisterNode(t *testing.T) {
 	if n.State != "ready" {
 		t.Fatalf("state=%s", n.State)
 	}
-	list, err := s.ListNodes()
+	list, err := s.ListNodes(context.Background())
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list=%v err=%v", list, err)
 	}
-	n2, err := s.RegisterNode(RegisterNodeInput{
+	n2, err := s.RegisterNode(context.Background(), RegisterNodeInput{
 		ID:             "node-1",
 		Name:           "dev",
 		Endpoint:       "http://127.0.0.1:9091",
@@ -151,20 +152,20 @@ func TestMemoryStoreAPIKey(t *testing.T) {
 	s := NewMemoryStore()
 	secret := "asp_test_secret_value"
 	hash := HashAPIKeySecret(secret)
-	k, err := s.EnsureAPIKey("default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), hash)
+	k, err := s.EnsureAPIKey(context.Background(), "default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.LookupAPIKeyByHash(hash)
+	got, err := s.LookupAPIKeyByHash(context.Background(), hash)
 	if err != nil || got.ID != k.ID {
 		t.Fatalf("lookup: %+v err=%v", got, err)
 	}
-	n, err := s.CountAPIKeys()
+	n, err := s.CountAPIKeys(context.Background())
 	if err != nil || n != 1 {
 		t.Fatalf("count=%d err=%v", n, err)
 	}
 	// Ensure is idempotent by name
-	k2, err := s.EnsureAPIKey("default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), hash)
+	k2, err := s.EnsureAPIKey(context.Background(), "default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), hash)
 	if err != nil || k2.ID != k.ID {
 		t.Fatalf("ensure again: %+v", k2)
 	}
@@ -180,7 +181,7 @@ func TestMemoryStoreConcurrentCreate(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			_, err := s.CreateSandbox(CreateSandboxInput{
+			_, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 				TenantID:  "t",
 				ImageRef:  "img",
 				CPUMillis: 100,
@@ -196,7 +197,7 @@ func TestMemoryStoreConcurrentCreate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	all, _ := s.ListSandboxes("")
+	all, _ := s.ListSandboxes(context.Background(), "")
 	if len(all) != n {
 		t.Fatalf("want %d sandboxes, got %d", n, len(all))
 	}
@@ -205,7 +206,7 @@ func TestMemoryStoreConcurrentCreate(t *testing.T) {
 func TestMemoryStoreEnrollAndHeartbeat(t *testing.T) {
 	withAutoProvision(t)
 	s := NewMemoryStore()
-	node, err := s.EnrollNode(EnrollNodeInput{
+	node, err := s.EnrollNode(context.Background(), EnrollNodeInput{
 		ID: "n-enroll", Name: "n-enroll",
 		AgentEndpoint: "http://127.0.0.1:9100",
 		CapacityCPU:   1, CapacityMemMiB: 512,
@@ -216,14 +217,14 @@ func TestMemoryStoreEnrollAndHeartbeat(t *testing.T) {
 	if node.CertFingerprint != "abc123fingerprint" || node.CertSerial != "aa" || node.EnrolledAt == nil {
 		t.Fatalf("enroll fields: %+v", node)
 	}
-	hb, err := s.HeartbeatNode("n-enroll")
+	hb, err := s.HeartbeatNode(context.Background(), "n-enroll")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if hb.LastSeenAt == nil {
 		t.Fatal("expected last_seen")
 	}
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64, NodeID: "n-enroll",
 	})
 	if err != nil {
@@ -243,7 +244,7 @@ func newMemoryStoreWithNodes(t *testing.T, ids ...string) *MemoryStore {
 		ids = []string{"test-node"}
 	}
 	for _, id := range ids {
-		if _, err := s.RegisterNode(RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		if _, err := s.RegisterNode(context.Background(), RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -253,13 +254,13 @@ func newMemoryStoreWithNodes(t *testing.T, ids ...string) *MemoryStore {
 func TestMemoryStoreCreateWithoutNodesHasNoCapacity(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := NewMemoryStore()
-	_, err := s.CreateSandbox(CreateSandboxInput{
+	_, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128,
 	})
 	if !errors.Is(err, ErrNoCapacity) || err.Error() != "no schedulable nodes registered" {
 		t.Fatalf("want no capacity, got %v", err)
 	}
-	if list, _ := s.ListSandboxes(""); len(list) != 0 {
+	if list, _ := s.ListSandboxes(context.Background(), ""); len(list) != 0 {
 		t.Fatalf("a refused create must not leave a sandbox: %+v", list)
 	}
 }
@@ -267,14 +268,14 @@ func TestMemoryStoreCreateWithoutNodesHasNoCapacity(t *testing.T) {
 func TestMemoryStorePlacesOnCreate(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := NewMemoryStore()
-	_, err := s.RegisterNode(RegisterNodeInput{
+	_, err := s.RegisterNode(context.Background(), RegisterNodeInput{
 		ID: "n1", Name: "n1", Endpoint: "http://127.0.0.1:9",
 		AgentEndpoint: "http://127.0.0.1:9100", CapacityCPU: 1, CapacityMemMiB: 512,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128,
 	})
 	if err != nil {
@@ -291,7 +292,7 @@ func TestMemoryStorePlacesOnCreate(t *testing.T) {
 func TestMemoryStoreClaimAtomicity(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := newMemoryStoreWithNodes(t, "node-0")
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 128,
 	})
 	if err != nil {
@@ -306,7 +307,7 @@ func TestMemoryStoreClaimAtomicity(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			if got, err := s.ClaimSandbox(sb.ID, "node-0"); err == nil {
+			if got, err := s.ClaimSandbox(context.Background(), sb.ID, "node-0"); err == nil {
 				wins <- *got.NodeID
 			}
 		}()
@@ -320,14 +321,14 @@ func TestMemoryStoreClaimAtomicity(t *testing.T) {
 	if len(winners) != 1 {
 		t.Fatalf("want exactly 1 successful claim, got %d: %v", len(winners), winners)
 	}
-	got, err := s.GetSandbox(sb.ID)
+	got, err := s.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.State != SandboxStarting || got.NodeID == nil || *got.NodeID != "node-0" {
 		t.Fatalf("after claim: %+v", got)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "other"); err == nil {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "other"); err == nil {
 		t.Fatal("expected conflict")
 	}
 }
@@ -335,32 +336,32 @@ func TestMemoryStoreClaimAtomicity(t *testing.T) {
 func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	s := newMemoryStoreWithNodes(t, "n1")
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 1, MemoryMiB: 64, NodeID: "n1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := s.ClaimSandbox(sb.ID, "n1")
+	claimed, err := s.ClaimSandbox(context.Background(), sb.ID, "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if claimed.State != SandboxStarting {
 		t.Fatalf("claim state=%s", claimed.State)
 	}
-	running, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "booted")
+	running, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "booted")
 	if err != nil || running.State != SandboxRunning {
 		t.Fatalf("status running: %+v err=%v", running, err)
 	}
-	stopping, err := s.StopSandbox(sb.ID, "")
+	stopping, err := s.StopSandbox(context.Background(), sb.ID, "")
 	if err != nil || stopping.State != SandboxStopping {
 		t.Fatalf("destroy: %+v err=%v", stopping, err)
 	}
-	stopped, err := s.UpdateSandboxStatus(sb.ID, SandboxStopped, "cleaned")
+	stopped, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxStopped, "cleaned")
 	if err != nil || stopped.State != SandboxStopped {
 		t.Fatalf("stopped: %+v err=%v", stopped, err)
 	}
-	work, err := s.ListNodeWork("n1")
+	work, err := s.ListNodeWork(context.Background(), "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,39 +379,39 @@ func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 
 func TestMemoryStoreRotateAndRevokeCert(t *testing.T) {
 	s := NewMemoryStore()
-	_, err := s.EnrollNode(EnrollNodeInput{
+	_, err := s.EnrollNode(context.Background(), EnrollNodeInput{
 		ID: "n-rot", Name: "n-rot", AgentEndpoint: "http://127.0.0.1:9",
 	}, CertMeta{Fingerprint: "fp-old", Serial: "s1"}, EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	node, err := s.RotateNodeCert("n-rot", CertMeta{Fingerprint: "fp-new", Serial: "s2"})
+	node, err := s.RotateNodeCert(context.Background(), "n-rot", CertMeta{Fingerprint: "fp-new", Serial: "s2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if node.CertFingerprint != "fp-new" || node.CertSerial != "s2" {
 		t.Fatalf("rotate: %+v", node)
 	}
-	revoked, err := s.IsCertRevoked("fp-old")
+	revoked, err := s.IsCertRevoked(context.Background(), "fp-old")
 	if err != nil || !revoked {
 		t.Fatalf("old fp should be revoked: revoked=%v err=%v", revoked, err)
 	}
-	revoked, err = s.IsCertRevoked("fp-new")
+	revoked, err = s.IsCertRevoked(context.Background(), "fp-new")
 	if err != nil || revoked {
 		t.Fatalf("new fp should be live: revoked=%v err=%v", revoked, err)
 	}
-	node, err = s.RevokeNode("n-rot")
+	node, err = s.RevokeNode(context.Background(), "n-rot")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if node.RevokedAt == nil {
 		t.Fatal("expected revoked_at")
 	}
-	revoked, err = s.IsCertRevoked("fp-new")
+	revoked, err = s.IsCertRevoked(context.Background(), "fp-new")
 	if err != nil || !revoked {
 		t.Fatalf("current fp should be revoked after RevokeNode: %v %v", revoked, err)
 	}
-	_, err = s.RotateNodeCert("n-rot", CertMeta{Fingerprint: "fp-x", Serial: "sx"})
+	_, err = s.RotateNodeCert(context.Background(), "n-rot", CertMeta{Fingerprint: "fp-x", Serial: "sx"})
 	if err == nil || !errors.Is(err, ErrConflict) {
 		t.Fatalf("want conflict on revoked node, got %v", err)
 	}
@@ -421,7 +422,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	s := newMemoryStoreWithNodes(t)
 
 	// Lab: empty owner_sub OK
-	sbEmpty, err := s.CreateSandbox(CreateSandboxInput{
+	sbEmpty, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "t-owner",
 		ImageRef:  "img",
 		CPUMillis: 100,
@@ -433,7 +434,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	if sbEmpty.OwnerSub != "" || sbEmpty.OwnerEmail != "" {
 		t.Fatalf("expected empty owner fields, got sub=%q email=%q", sbEmpty.OwnerSub, sbEmpty.OwnerEmail)
 	}
-	evEmpty, err := s.ListEvents(sbEmpty.ID)
+	evEmpty, err := s.ListEvents(context.Background(), sbEmpty.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +443,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	}
 
 	// Persist owner + actor_sub (body actor falls back when only owner set)
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:   "t-owner",
 		ImageRef:   "img",
 		CPUMillis:  100,
@@ -456,14 +457,14 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	if sb.OwnerSub != "user:alice" || sb.OwnerEmail != "alice@example.com" {
 		t.Fatalf("owner fields: %+v", sb)
 	}
-	got, err := s.GetSandbox(sb.ID)
+	got, err := s.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.OwnerSub != "user:alice" || got.OwnerEmail != "alice@example.com" {
 		t.Fatalf("get owner fields: %+v", got)
 	}
-	list, err := s.ListSandboxes("t-owner")
+	list, err := s.ListSandboxes(context.Background(), "t-owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +480,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	if !found {
 		t.Fatal("sandbox missing from list")
 	}
-	ev, err := s.ListEvents(sb.ID)
+	ev, err := s.ListEvents(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +489,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	}
 
 	// Explicit ActorSub wins over owner fallback
-	sb2, err := s.CreateSandbox(CreateSandboxInput{
+	sb2, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "t-owner",
 		ImageRef:  "img",
 		CPUMillis: 100,
@@ -499,17 +500,17 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev2, _ := s.ListEvents(sb2.ID)
+	ev2, _ := s.ListEvents(context.Background(), sb2.ID)
 	if len(ev2) < 1 || ev2[0].ActorSub != "user:carol" {
 		t.Fatalf("explicit actor_sub: %+v", ev2)
 	}
 
 	// Destroy with actor_sub
-	_, err = s.StopSandbox(sb2.ID, "user:carol")
+	_, err = s.StopSandbox(context.Background(), sb2.ID, "user:carol")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev2, _ = s.ListEvents(sb2.ID)
+	ev2, _ = s.ListEvents(context.Background(), sb2.ID)
 	last := ev2[len(ev2)-1]
 	if last.ActorSub != "user:carol" {
 		t.Fatalf("destroy actor_sub=%q event=%+v", last.ActorSub, last)
@@ -518,7 +519,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 
 func TestDeleteFailedSandboxIsDeleted(t *testing.T) {
 	s := newMemoryStoreWithNodes(t)
-	sb, err := s.CreateSandbox(CreateSandboxInput{
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "tenant-a",
 		ImageRef:  "img",
 		CPUMillis: 100,
@@ -527,10 +528,10 @@ func TestDeleteFailedSandboxIsDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxFailed, "virtiofs"); err != nil {
+	if _, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxFailed, "virtiofs"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.DeleteSandbox(sb.ID, "user")
+	out, err := s.DeleteSandbox(context.Background(), sb.ID, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,19 +542,19 @@ func TestDeleteFailedSandboxIsDeleted(t *testing.T) {
 
 func TestRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	s := NewMemoryStore()
-	if _, err := s.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+	if _, err := s.RegisterNode(context.Background(), RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RevokeNode("n1"); err != nil {
+	if _, err := s.RevokeNode(context.Background(), "n1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.HeartbeatNode("n1"); !errors.Is(err, ErrConflict) {
+	if _, err := s.HeartbeatNode(context.Background(), "n1"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("heartbeat after revoke: want ErrConflict, got %v", err)
 	}
-	if _, err := s.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); !errors.Is(err, ErrConflict) {
+	if _, err := s.RegisterNode(context.Background(), RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("register after revoke: want ErrConflict, got %v", err)
 	}
-	n, err := s.GetNode("n1")
+	n, err := s.GetNode(context.Background(), "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,10 +563,10 @@ func TestRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	}
 
 	// A fresh enroll is the way back.
-	if _, err := s.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}, EnrollAuth{}); err != nil {
+	if _, err := s.EnrollNode(context.Background(), EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}, EnrollAuth{}); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.HeartbeatNode("n1"); err != nil || n.State != "ready" {
+	if n, err := s.HeartbeatNode(context.Background(), "n1"); err != nil || n.State != "ready" {
 		t.Fatalf("heartbeat after re-enroll: node=%+v err=%v", n, err)
 	}
 }

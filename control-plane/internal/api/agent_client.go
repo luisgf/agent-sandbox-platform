@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -191,11 +192,11 @@ func effectiveAgentEndpoint(agentEndpoint, endpoint string) string {
 
 // agentTarget resolves the node agent that runs sb and the client to reach it.
 // When status is non-zero the caller writes it with msg.
-func (s *Server) agentTarget(sb store.Sandbox) (baseURL string, client *http.Client, status int, msg string) {
+func (s *Server) agentTarget(ctx context.Context, sb store.Sandbox) (baseURL string, client *http.Client, status int, msg string) {
 	if sb.NodeID == nil || *sb.NodeID == "" {
 		return "", nil, http.StatusConflict, "sandbox has no assigned node"
 	}
-	node, err := s.Store.GetNode(*sb.NodeID)
+	node, err := s.Store.GetNode(ctx, *sb.NodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return "", nil, http.StatusConflict, "assigned node not registered"

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,14 +18,14 @@ type countingStore struct {
 	counts, touches atomic.Int32
 }
 
-func (c *countingStore) CountAPIKeys() (int64, error) {
+func (c *countingStore) CountAPIKeys(ctx context.Context) (int64, error) {
 	c.counts.Add(1)
-	return c.MemoryStore.CountAPIKeys()
+	return c.MemoryStore.CountAPIKeys(ctx)
 }
 
-func (c *countingStore) TouchAPIKey(id string) error {
+func (c *countingStore) TouchAPIKey(ctx context.Context, id string) error {
 	c.touches.Add(1)
-	return c.MemoryStore.TouchAPIKey(id)
+	return c.MemoryStore.TouchAPIKey(ctx, id)
 }
 
 // Authenticated requests cost neither a count(*) (authentication is always on,
@@ -32,7 +33,7 @@ func (c *countingStore) TouchAPIKey(id string) error {
 func TestAuthMiddlewareNeverCountsKeysAndThrottlesTouches(t *testing.T) {
 	cs := &countingStore{MemoryStore: newTestStore(t)}
 	const secret = "key-for-request-path"
-	if _, err := BootstrapAPIKey(cs, secret); err != nil {
+	if _, err := BootstrapAPIKey(context.Background(), cs, secret); err != nil {
 		t.Fatal(err)
 	}
 	h := AuthMiddleware(cs, AuthConfig{})(testMux(NewServer(cs)))

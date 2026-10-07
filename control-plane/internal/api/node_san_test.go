@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -22,7 +23,7 @@ func newSANEnv(t *testing.T) (http.Handler, *Server) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops1", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops1", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)

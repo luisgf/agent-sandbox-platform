@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -89,10 +90,10 @@ func newMTLSExecFixture(t *testing.T) *mtlsExecFixture {
 // sandboxOn registers nodeID at endpoint and returns a sandbox assigned to it.
 func (f *mtlsExecFixture) sandboxOn(nodeID, endpoint string) string {
 	f.t.Helper()
-	if _, err := f.mem.RegisterNode(store.RegisterNodeInput{ID: nodeID, AgentEndpoint: endpoint}); err != nil {
+	if _, err := f.mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: nodeID, AgentEndpoint: endpoint}); err != nil {
 		f.t.Fatal(err)
 	}
-	sb, err := f.mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: nodeID})
+	sb, err := f.mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: nodeID})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -186,7 +187,7 @@ func TestExecRefusesPlainHTTPToAnotherHost(t *testing.T) {
 func TestExecRefusesARevokedNode(t *testing.T) {
 	f := newMTLSExecFixture(t)
 	id := f.sandboxOn("n1", "http://127.0.0.1:9")
-	if _, err := f.mem.RevokeNode("n1"); err != nil {
+	if _, err := f.mem.RevokeNode(context.Background(), "n1"); err != nil {
 		t.Fatal(err)
 	}
 	if rr := f.exec(id); rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "revoked") {

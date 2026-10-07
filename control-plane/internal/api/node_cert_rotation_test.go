@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -21,7 +22,7 @@ func TestNodeRotatesItsOwnCertificate(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	certs := map[string]*x509.Certificate{}
@@ -30,7 +31,7 @@ func TestNodeRotatesItsOwnCertificate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mem.EnrollNode(store.EnrollNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"},
+		if _, err := mem.EnrollNode(context.Background(), store.EnrollNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"},
 			store.CertMeta{Fingerprint: issued.Fingerprint, Serial: issued.Serial, NotAfter: issued.NotAfter}, store.EnrollAuth{}); err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +59,7 @@ func TestNodeRotatesItsOwnCertificate(t *testing.T) {
 		t.Fatalf("no certificate and no token: want 401, got %d %s", rr.Code, rr.Body.String())
 	}
 
-	before, _ := mem.GetNode("node-a")
+	before, _ := mem.GetNode(context.Background(), "node-a")
 	rr := rotate("node-a", certs["node-a"])
 	if rr.Code != http.StatusOK {
 		t.Fatalf("node-a rotating itself: %d %s", rr.Code, rr.Body.String())
@@ -67,11 +68,11 @@ func TestNodeRotatesItsOwnCertificate(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &er); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := mem.GetNode("node-a")
+	after, _ := mem.GetNode(context.Background(), "node-a")
 	if after.CertFingerprint != er.CertFingerprint || after.CertFingerprint == before.CertFingerprint {
 		t.Fatalf("new fingerprint not recorded: before %s after %s response %s", before.CertFingerprint, after.CertFingerprint, er.CertFingerprint)
 	}
-	if revoked, _ := mem.IsCertRevoked(before.CertFingerprint); !revoked {
+	if revoked, _ := mem.IsCertRevoked(context.Background(), before.CertFingerprint); !revoked {
 		t.Fatal("the certificate that was rotated out must be revoked")
 	}
 	if after.CertNotAfter == nil || time.Until(*after.CertNotAfter) < 300*24*time.Hour {

@@ -194,7 +194,7 @@ type keyTouches struct {
 	last map[string]time.Time
 }
 
-func (k *keyTouches) touch(s store.Store, id string) {
+func (k *keyTouches) touch(ctx context.Context, s store.Store, id string) {
 	now := time.Now()
 	k.mu.Lock()
 	if t, ok := k.last[id]; ok && now.Sub(t) < keyTouchEvery {
@@ -206,7 +206,7 @@ func (k *keyTouches) touch(s store.Store, id string) {
 	}
 	k.last[id] = now
 	k.mu.Unlock()
-	_ = s.TouchAPIKey(id)
+	_ = s.TouchAPIKey(ctx, id)
 }
 
 // AuthMiddleware enforces Bearer API keys when required or when any keys exist,
@@ -221,7 +221,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if cfg.RejectRevokedCerts && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 				fp := PeerCertFingerprint(r)
-				revoked, err := s.IsCertRevoked(fp)
+				revoked, err := s.IsCertRevoked(r.Context(), fp)
 				if err != nil {
 					writeError(w, http.StatusInternalServerError, "cert revocation check failed")
 					return
@@ -310,7 +310,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				return
 			}
 			hash := store.HashAPIKeySecret(raw)
-			key, err := s.LookupAPIKeyByHash(hash)
+			key, err := s.LookupAPIKeyByHash(r.Context(), hash)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, "invalid api key")
 				return
@@ -321,7 +321,7 @@ func AuthMiddleware(s store.Store, cfg AuthConfig) func(http.Handler) http.Handl
 				writeError(w, http.StatusForbidden, "node routes need the node's certificate or a platform-scoped api key: a tenant key cannot act as a node")
 				return
 			}
-			touches.touch(s, key.ID)
+			touches.touch(r.Context(), s, key.ID)
 			ctx := context.WithValue(r.Context(), apiKeyContextKey, key)
 			if key.Scope != store.APIKeyScopePlatform {
 				ctx = withCallerTenant(ctx, key.TenantID)
@@ -347,7 +347,7 @@ func bearerToken(h string) string {
 // key, platform-scoped (it sees every tenant) in tenant "default". A lab can
 // make it a tenant key with ASP_BOOTSTRAP_API_KEY_SCOPE=tenant and pick the
 // tenant with ASP_BOOTSTRAP_API_KEY_TENANT.
-func BootstrapAPIKey(s store.Store, secret string) (store.ApiKey, error) {
+func BootstrapAPIKey(ctx context.Context, s store.Store, secret string) (store.ApiKey, error) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return store.ApiKey{}, nil
@@ -360,7 +360,7 @@ func BootstrapAPIKey(s store.Store, secret string) (store.ApiKey, error) {
 	if scope == "" {
 		scope = store.APIKeyScopePlatform
 	}
-	return s.EnsureAPIKey(
+	return s.EnsureAPIKey(ctx,
 		tenant,
 		"bootstrap",
 		scope,

@@ -18,15 +18,15 @@ func lifecycleStore(t *testing.T, s Store, maxSandboxes int, nodes ...string) {
 // runningOn creates a sandbox on node, claims it and reports it running.
 func runningOn(t *testing.T, s Store, node string) Sandbox {
 	t.Helper()
-	sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512,
+	sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512,
 		OwnerSub: "user:a", NodeID: node})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, node); err != nil {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, node); err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "up")
+	out, err := s.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "up")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func runningOn(t *testing.T, s Store, node string) Sandbox {
 
 func report(t *testing.T, s Store, id string, state SandboxState, detail string) Sandbox {
 	t.Helper()
-	out, err := s.UpdateSandboxStatus(id, state, detail)
+	out, err := s.UpdateSandboxStatus(context.Background(), id, state, detail)
 	if err != nil {
 		t.Fatalf("report %s: %v", state, err)
 	}
@@ -44,7 +44,7 @@ func report(t *testing.T, s Store, id string, state SandboxState, detail string)
 
 func sandboxOf(t *testing.T, s Store, id string) Sandbox {
 	t.Helper()
-	sb, err := s.GetSandbox(id)
+	sb, err := s.GetSandbox(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func inWork(w NodeWork, id string) bool {
 
 func workOf(t *testing.T, s Store, node string) NodeWork {
 	t.Helper()
-	w, err := s.ListNodeWork(node)
+	w, err := s.ListNodeWork(context.Background(), node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func testStopThenResume(t *testing.T, s Store) {
 		t.Fatalf("first boot_count=%d", sb.BootCount)
 	}
 
-	stopping, err := s.StopSandbox(sb.ID, "user:a")
+	stopping, err := s.StopSandbox(context.Background(), sb.ID, "user:a")
 	if err != nil || stopping.State != SandboxStopping || stopping.StoppedAt != nil {
 		t.Fatalf("stop: %+v %v", stopping, err)
 	}
@@ -99,10 +99,10 @@ func testStopThenResume(t *testing.T, s Store) {
 	if !contains(w.Assigned, sb.ID) || !inWork(w, sb.ID) || contains(w.Retained, sb.ID) {
 		t.Fatalf("a stopping sandbox is still the node's to stop: %+v", w)
 	}
-	if again, err := s.StopSandbox(sb.ID, "user:a"); err != nil || again.State != SandboxStopping {
+	if again, err := s.StopSandbox(context.Background(), sb.ID, "user:a"); err != nil || again.State != SandboxStopping {
 		t.Fatalf("stopping twice: %+v %v", again, err)
 	}
-	if _, err := s.ResumeSandbox(sb.ID, "user:a"); !errors.Is(err, ErrConflict) {
+	if _, err := s.ResumeSandbox(context.Background(), sb.ID, "user:a"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("resume while stopping: %v", err)
 	}
 
@@ -114,11 +114,11 @@ func testStopThenResume(t *testing.T, s Store) {
 	if contains(w.Assigned, sb.ID) || inWork(w, sb.ID) || !contains(w.Retained, sb.ID) {
 		t.Fatalf("a stopped sandbox is retained and holds nothing: %+v", w)
 	}
-	if again, err := s.StopSandbox(sb.ID, "user:a"); err != nil || again.State != SandboxStopped {
+	if again, err := s.StopSandbox(context.Background(), sb.ID, "user:a"); err != nil || again.State != SandboxStopped {
 		t.Fatalf("stopping a stopped sandbox: %+v %v", again, err)
 	}
 
-	resumed, err := s.ResumeSandbox(sb.ID, "user:a")
+	resumed, err := s.ResumeSandbox(context.Background(), sb.ID, "user:a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func testStopThenResume(t *testing.T, s Store) {
 		t.Fatalf("a resumed sandbox is the node's to start: %+v", w)
 	}
 	var found bool
-	events, _ := s.ListEvents(sb.ID)
+	events, _ := s.ListEvents(context.Background(), sb.ID)
 	for _, e := range events {
 		found = found || e.EventType == "sandbox.resumed"
 	}
@@ -139,14 +139,14 @@ func testStopThenResume(t *testing.T, s Store) {
 		t.Fatalf("no sandbox.resumed event: %+v", events)
 	}
 
-	if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	up := report(t, s, sb.ID, SandboxRunning, "vmm started")
 	if up.BootCount != 2 {
 		t.Fatalf("boot_count=%d after running", up.BootCount)
 	}
-	if again, err := s.ResumeSandbox(sb.ID, "user:a"); err != nil || again.State != SandboxRunning || again.BootCount != 2 {
+	if again, err := s.ResumeSandbox(context.Background(), sb.ID, "user:a"); err != nil || again.State != SandboxRunning || again.BootCount != 2 {
 		t.Fatalf("resuming a running sandbox: %+v %v", again, err)
 	}
 }
@@ -158,40 +158,40 @@ func TestPostgresStopThenResume(t *testing.T) { testStopThenResume(t, newPostgre
 // something to stop can be stopped.
 func testStopPlans(t *testing.T, s Store) {
 	lifecycleStore(t, s, 0, "node-a")
-	unclaimed, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "node-a"})
+	unclaimed, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "node-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.StopSandbox(unclaimed.ID, "")
+	out, err := s.StopSandbox(context.Background(), unclaimed.ID, "")
 	if err != nil || out.State != SandboxStopped || out.StoppedAt == nil {
 		t.Fatalf("stop before the claim: %+v %v", out, err)
 	}
 	// It has a node and never had a VM: resumable, and a resume is a first boot's work.
-	if r, err := s.ResumeSandbox(unclaimed.ID, ""); err != nil || r.State != SandboxRequested {
+	if r, err := s.ResumeSandbox(context.Background(), unclaimed.ID, ""); err != nil || r.State != SandboxRequested {
 		t.Fatalf("resume of a never-started sandbox: %+v %v", r, err)
 	}
 
 	failed := runningOn(t, s, "node-a")
 	report(t, s, failed.ID, SandboxFailed, "boom")
-	if _, err := s.StopSandbox(failed.ID, ""); !errors.Is(err, ErrConflict) {
+	if _, err := s.StopSandbox(context.Background(), failed.ID, ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stopping a failed sandbox: %v", err)
 	}
-	if _, err := s.ResumeSandbox(failed.ID, ""); !errors.Is(err, ErrConflict) {
+	if _, err := s.ResumeSandbox(context.Background(), failed.ID, ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("resuming a failed sandbox: %v", err)
 	}
-	if _, err := s.StopSandbox("ghost", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.StopSandbox(context.Background(), "ghost", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown sandbox: %v", err)
 	}
-	if _, err := s.ResumeSandbox("ghost", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ResumeSandbox(context.Background(), "ghost", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown sandbox: %v", err)
 	}
-	deleted, err := s.DeleteSandbox(failed.ID, "")
+	deleted, err := s.DeleteSandbox(context.Background(), failed.ID, "")
 	if err != nil || deleted.State != SandboxDeleted {
 		t.Fatalf("delete of a failed sandbox: %+v %v", deleted, err)
 	}
 	for name, fn := range map[string]func() error{
-		"stop":   func() error { _, err := s.StopSandbox(deleted.ID, ""); return err },
-		"resume": func() error { _, err := s.ResumeSandbox(deleted.ID, ""); return err },
+		"stop":   func() error { _, err := s.StopSandbox(context.Background(), deleted.ID, ""); return err },
+		"resume": func() error { _, err := s.ResumeSandbox(context.Background(), deleted.ID, ""); return err },
 	} {
 		if err := fn(); !errors.Is(err, ErrConflict) {
 			t.Fatalf("%s of a deleted sandbox: %v", name, err)
@@ -207,14 +207,14 @@ func TestPostgresStopPlans(t *testing.T) { testStopPlans(t, newPostgresTestStore
 func testResumeNeedsRoomOnItsNode(t *testing.T, s Store) {
 	lifecycleStore(t, s, 1, "node-a", "node-b")
 	first := runningOn(t, s, "node-a")
-	if _, err := s.StopSandbox(first.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), first.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	report(t, s, first.ID, SandboxStopped, "")
 
 	// node-a has one slot, and a new sandbox takes it while the first is stopped.
 	second := runningOn(t, s, "node-a")
-	if _, err := s.ResumeSandbox(first.ID, ""); !errors.Is(err, ErrNoCapacity) {
+	if _, err := s.ResumeSandbox(context.Background(), first.ID, ""); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("resume on a full node: %v, want no capacity", err)
 	}
 	if got := sandboxOf(t, s, first.ID); got.State != SandboxStopped || got.BootCount != 1 {
@@ -225,23 +225,23 @@ func testResumeNeedsRoomOnItsNode(t *testing.T, s Store) {
 		t.Fatalf("node=%v", got.NodeID)
 	}
 
-	if _, err := s.StopSandbox(second.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), second.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	report(t, s, second.ID, SandboxStopped, "")
-	if _, err := s.SetNodeCordoned("node-a", true); err != nil {
+	if _, err := s.SetNodeCordoned(context.Background(), "node-a", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResumeSandbox(first.ID, ""); !errors.Is(err, ErrNodeUnavailable) {
+	if _, err := s.ResumeSandbox(context.Background(), first.ID, ""); !errors.Is(err, ErrNodeUnavailable) {
 		t.Fatalf("resume on a cordoned node: %v, want node unavailable", err)
 	}
-	if _, err := s.SetNodeCordoned("node-a", false); err != nil {
+	if _, err := s.SetNodeCordoned(context.Background(), "node-a", false); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := s.ResumeSandbox(first.ID, ""); err != nil || r.State != SandboxRequested {
+	if r, err := s.ResumeSandbox(context.Background(), first.ID, ""); err != nil || r.State != SandboxRequested {
 		t.Fatalf("resume once there is room: %+v %v", r, err)
 	}
-	if _, err := s.ResumeSandbox(second.ID, ""); !errors.Is(err, ErrNoCapacity) {
+	if _, err := s.ResumeSandbox(context.Background(), second.ID, ""); !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("the second resume must not overfill the node: %v", err)
 	}
 }
@@ -259,7 +259,7 @@ func testConcurrentResumesRespectCapacity(t *testing.T, s Store) {
 	var ids []string
 	for i := 0; i < 2; i++ {
 		sb := runningOn(t, s, "node-a")
-		if _, err := s.StopSandbox(sb.ID, ""); err != nil {
+		if _, err := s.StopSandbox(context.Background(), sb.ID, ""); err != nil {
 			t.Fatal(err)
 		}
 		report(t, s, sb.ID, SandboxStopped, "")
@@ -267,14 +267,14 @@ func testConcurrentResumesRespectCapacity(t *testing.T, s Store) {
 	}
 	// Two stopped; fill the node with two others, then free one slot: one resume wins.
 	a, b := runningOn(t, s, "node-a"), runningOn(t, s, "node-a")
-	if _, err := s.StopSandbox(a.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), a.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	report(t, s, a.ID, SandboxStopped, "")
 	_ = b
 	results := make(chan error, len(ids))
 	for _, id := range ids {
-		go func(id string) { _, err := s.ResumeSandbox(id, ""); results <- err }(id)
+		go func(id string) { _, err := s.ResumeSandbox(context.Background(), id, ""); results <- err }(id)
 	}
 	ok, refused := 0, 0
 	for range ids {
@@ -304,7 +304,7 @@ func TestPostgresConcurrentResumesRespectCapacity(t *testing.T) {
 func testDeleteEndsAtDeleted(t *testing.T, s Store) {
 	lifecycleStore(t, s, 0, "node-a")
 	running := runningOn(t, s, "node-a")
-	out, err := s.DeleteSandbox(running.ID, "user:a")
+	out, err := s.DeleteSandbox(context.Background(), running.ID, "user:a")
 	if err != nil || out.State != SandboxDeleting {
 		t.Fatalf("delete of a running sandbox: %+v %v", out, err)
 	}
@@ -314,15 +314,15 @@ func testDeleteEndsAtDeleted(t *testing.T, s Store) {
 	if !inWork(w, running.ID) || !contains(w.Assigned, running.ID) || contains(w.Retained, running.ID) {
 		t.Fatalf("deleting is the node's to do and still holds its capacity: %+v", w)
 	}
-	if usage, _ := s.ListNodeUsage(); usage["node-a"].Sandboxes != 1 {
+	if usage, _ := s.ListNodeUsage(context.Background()); usage["node-a"].Sandboxes != 1 {
 		t.Fatalf("a deleting sandbox does not hold node capacity: %+v", usage)
 	}
-	if again, err := s.DeleteSandbox(running.ID, ""); err != nil || again.State != SandboxDeleting {
+	if again, err := s.DeleteSandbox(context.Background(), running.ID, ""); err != nil || again.State != SandboxDeleting {
 		t.Fatalf("deleting twice: %+v %v", again, err)
 	}
 	// A late report from a start or a stop must not bring it back.
 	for _, st := range []SandboxState{SandboxRunning, SandboxStopped, SandboxFailed, SandboxStarting} {
-		if _, err := s.UpdateSandboxStatus(running.ID, st, ""); !errors.Is(err, ErrConflict) {
+		if _, err := s.UpdateSandboxStatus(context.Background(), running.ID, st, ""); !errors.Is(err, ErrConflict) {
 			t.Fatalf("report %s on a deleting sandbox: %v", st, err)
 		}
 	}
@@ -330,33 +330,33 @@ func testDeleteEndsAtDeleted(t *testing.T, s Store) {
 	if done.State != SandboxDeleted {
 		t.Fatalf("deleted: %+v", done)
 	}
-	if usage, _ := s.ListNodeUsage(); usage["node-a"].Sandboxes != 0 {
+	if usage, _ := s.ListNodeUsage(context.Background()); usage["node-a"].Sandboxes != 0 {
 		t.Fatalf("the capacity of a deleted sandbox is not released: %+v", usage)
 	}
 	w = workOf(t, s, "node-a")
 	if inWork(w, running.ID) || contains(w.Assigned, running.ID) || contains(w.Retained, running.ID) {
 		t.Fatalf("a deleted sandbox is nobody's work: %+v", w)
 	}
-	if again, err := s.UpdateSandboxStatus(running.ID, SandboxDeleted, ""); err != nil || again.State != SandboxDeleted {
+	if again, err := s.UpdateSandboxStatus(context.Background(), running.ID, SandboxDeleted, ""); err != nil || again.State != SandboxDeleted {
 		t.Fatalf("deleted twice: %+v %v", again, err)
 	}
-	if _, err := s.UpdateSandboxStatus(running.ID, SandboxRunning, ""); !errors.Is(err, ErrConflict) {
+	if _, err := s.UpdateSandboxStatus(context.Background(), running.ID, SandboxRunning, ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a deleted sandbox must stay deleted: %v", err)
 	}
-	if got, err := s.GetSandbox(running.ID); err != nil || got.State != SandboxDeleted {
+	if got, err := s.GetSandbox(context.Background(), running.ID); err != nil || got.State != SandboxDeleted {
 		t.Fatalf("the row is kept: %+v %v", got, err)
 	}
-	if events, _ := s.ListEvents(running.ID); len(events) < 4 {
+	if events, _ := s.ListEvents(context.Background(), running.ID); len(events) < 4 {
 		t.Fatalf("the audit trail survives a delete: %d events", len(events))
 	}
 
 	// stopped → deleting (the node holds the disk), and the retention list drops it.
 	other := runningOn(t, s, "node-a")
-	if _, err := s.StopSandbox(other.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), other.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	report(t, s, other.ID, SandboxStopped, "")
-	if out, err := s.DeleteSandbox(other.ID, ""); err != nil || out.State != SandboxDeleting {
+	if out, err := s.DeleteSandbox(context.Background(), other.ID, ""); err != nil || out.State != SandboxDeleting {
 		t.Fatalf("delete of a stopped sandbox: %+v %v", out, err)
 	}
 	if w := workOf(t, s, "node-a"); contains(w.Retained, other.ID) || !inWork(w, other.ID) {
@@ -364,14 +364,14 @@ func testDeleteEndsAtDeleted(t *testing.T, s Store) {
 	}
 
 	// Never claimed: nothing on any node, so deleted at once.
-	unclaimed, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "node-a"})
+	unclaimed, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "node-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := s.DeleteSandbox(unclaimed.ID, ""); err != nil || out.State != SandboxDeleted {
+	if out, err := s.DeleteSandbox(context.Background(), unclaimed.ID, ""); err != nil || out.State != SandboxDeleted {
 		t.Fatalf("delete before the claim: %+v %v", out, err)
 	}
-	if _, err := s.DeleteSandbox("ghost", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.DeleteSandbox(context.Background(), "ghost", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown sandbox: %v", err)
 	}
 }
@@ -429,16 +429,16 @@ func TestValidAgentTransitionWithRetention(t *testing.T) {
 func testStatusDetail(t *testing.T, s Store) {
 	lifecycleStore(t, s, 0, "node-a")
 	sb := runningOn(t, s, "node-a")
-	if _, err := s.StopSandbox(sb.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), sb.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := report(t, s, sb.ID, SandboxStopped, "vmm stopped, disk kept"); got.StatusDetail != "" {
 		t.Fatalf("a plain stop recorded %q", got.StatusDetail)
 	}
-	if _, err := s.ResumeSandbox(sb.ID, ""); err != nil {
+	if _, err := s.ResumeSandbox(context.Background(), sb.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	// The resume could not start: back to stopped, with the reason.
@@ -446,10 +446,10 @@ func testStatusDetail(t *testing.T, s Store) {
 	if back.State != SandboxStopped || back.StatusDetail != "resume failed: vm.boot failed" || back.StoppedAt == nil {
 		t.Fatalf("failed resume: %+v", back)
 	}
-	if again, err := s.ResumeSandbox(sb.ID, ""); err != nil || again.StatusDetail != "" || again.BootCount != 3 {
+	if again, err := s.ResumeSandbox(context.Background(), sb.ID, ""); err != nil || again.StatusDetail != "" || again.BootCount != 3 {
 		t.Fatalf("a new resume starts clean: %+v %v", again, err)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := report(t, s, sb.ID, SandboxFailed, "disk_lost: the retained disk is missing"); got.StatusDetail != "disk_lost: the retained disk is missing" {
@@ -474,11 +474,11 @@ func testVMMExitedReport(t *testing.T, s Store) {
 	if again := report(t, s, sb.ID, SandboxStopped, "vmm stopped, disk kept"); again.StatusDetail != detail || again.StopReason != StopReasonVMMExited {
 		t.Fatalf("a later plain report changed it: %+v", again)
 	}
-	resumed, err := s.ResumeSandbox(sb.ID, "")
+	resumed, err := s.ResumeSandbox(context.Background(), sb.ID, "")
 	if err != nil || resumed.StatusDetail != "" || resumed.StopReason != "" {
 		t.Fatalf("a resume starts clean: %+v %v", resumed, err)
 	}
-	if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+	if _, err := s.ClaimSandbox(context.Background(), sb.ID, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if run := report(t, s, sb.ID, SandboxRunning, "vmm started"); run.StatusDetail != "" || run.StopReason != "" {
@@ -501,7 +501,7 @@ func testIdleReapedSandboxResumes(t *testing.T, s Store, touch func(id string, a
 	lifecycleStore(t, s, 0, "node-a")
 	sb := runningOn(t, s, "node-a")
 	touch(sb.ID, time.Now().Add(-3*time.Hour))
-	reaped, err := s.StopIdleSandboxes(time.Now().UTC(), 2*time.Hour)
+	reaped, err := s.StopIdleSandboxes(context.Background(), time.Now().UTC(), 2*time.Hour)
 	if err != nil || len(reaped) != 1 || reaped[0].State != SandboxStopping || reaped[0].StopReason != StopReasonIdle {
 		t.Fatalf("reaper: %+v %v", reaped, err)
 	}
@@ -509,7 +509,7 @@ func testIdleReapedSandboxResumes(t *testing.T, s Store, touch func(id string, a
 	if stopped.StopReason != StopReasonIdle || stopped.StoppedAt == nil {
 		t.Fatalf("stopped: %+v", stopped)
 	}
-	resumed, err := s.ResumeSandbox(sb.ID, "")
+	resumed, err := s.ResumeSandbox(context.Background(), sb.ID, "")
 	if err != nil || resumed.StopReason != "" || resumed.State != SandboxRequested {
 		t.Fatalf("resume after the reaper: %+v %v", resumed, err)
 	}
@@ -534,11 +534,11 @@ func TestPostgresIdleReapedSandboxResumes(t *testing.T) {
 func testLostNodeEndsDeletes(t *testing.T, s Store, setLastSeen func(string, time.Time)) {
 	lifecycleStore(t, s, 0, "node-a")
 	deleting := runningOn(t, s, "node-a")
-	if _, err := s.DeleteSandbox(deleting.ID, ""); err != nil {
+	if _, err := s.DeleteSandbox(context.Background(), deleting.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	kept := runningOn(t, s, "node-a")
-	if _, err := s.StopSandbox(kept.ID, ""); err != nil {
+	if _, err := s.StopSandbox(context.Background(), kept.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	report(t, s, kept.ID, SandboxStopped, "")
@@ -546,7 +546,7 @@ func testLostNodeEndsDeletes(t *testing.T, s Store, setLastSeen func(string, tim
 
 	now := time.Now().UTC()
 	setLastSeen("node-a", now.Add(-10*time.Minute))
-	if _, err := s.FailNodeSandboxes("node-a", StopReasonNodeLost, now.Add(-5*time.Minute)); err != nil {
+	if _, err := s.FailNodeSandboxes(context.Background(), "node-a", StopReasonNodeLost, now.Add(-5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if got := sandboxOf(t, s, deleting.ID); got.State != SandboxDeleted {
@@ -580,14 +580,14 @@ func TestMemoryListSandboxesNewestFirst(t *testing.T) {
 	lifecycleStore(t, s, 0, "node-a")
 	var ids []string
 	for i := 0; i < 4; i++ {
-		sb, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "node-a"})
+		sb, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "node-a"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids = append([]string{sb.ID}, ids...)
 		time.Sleep(2 * time.Millisecond)
 	}
-	list, _ := s.ListSandboxes("")
+	list, _ := s.ListSandboxes(context.Background(), "")
 	for i, sb := range list {
 		if sb.ID != ids[i] {
 			t.Fatalf("position %d: %s, want %s", i, sb.ID, ids[i])
@@ -601,15 +601,15 @@ func TestMemoryListSandboxesNewestFirst(t *testing.T) {
 func testDeletingHoldsItsSlotUntilDeleted(t *testing.T, s Store) {
 	lifecycleStore(t, s, 1, "node-a")
 	sb := runningOn(t, s, "node-a")
-	if _, err := s.DeleteSandbox(sb.ID, ""); err != nil {
+	if _, err := s.DeleteSandbox(context.Background(), sb.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
+	_, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"})
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("create while the VM is still being removed: %v, want no capacity", err)
 	}
 	report(t, s, sb.ID, SandboxDeleted, "vmm and disk removed")
-	if _, err := s.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"}); err != nil {
+	if _, err := s.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "node-a"}); err != nil {
 		t.Fatalf("create after the node reported deleted: %v", err)
 	}
 }

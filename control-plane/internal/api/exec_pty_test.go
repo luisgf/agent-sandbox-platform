@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -40,7 +41,7 @@ func TestExecPTYAndStdinReachNodeAgent(t *testing.T) {
 
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -95,7 +96,7 @@ func TestExecPTYAndStdinReachNodeAgent(t *testing.T) {
 	if !strings.Contains(stdinBody, "e1") || !strings.Contains(stdinBody, "pwd") || !strings.Contains(stdinBody, sb.ID) {
 		t.Fatalf("forwarded=%s", stdinBody)
 	}
-	got, err := mem.GetSandbox(sb.ID)
+	got, err := mem.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

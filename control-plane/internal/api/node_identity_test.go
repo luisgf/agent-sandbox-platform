@@ -44,7 +44,7 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 	mem := store.NewMemoryStore()
 	f := &identityFixture{t: t, certs: map[string]*x509.Certificate{}}
 	for _, id := range []string{"n1", "n2"} {
-		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 			t.Fatal(err)
 		}
 		issued, err := ca.IssueNodeClient(id, time.Hour)
@@ -57,7 +57,7 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 		}
 		f.certs[id] = cert
 	}
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{
 		TenantID: "t1", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512, NodeID: "n1",
 	})
 	if err != nil {
@@ -195,7 +195,7 @@ func TestNodeRoutesRejectCertificatesThatAreNotNodeCertificates(t *testing.T) {
 // Open lab (no ASP_CLIENT_CA): node routes keep their previous behaviour.
 func TestNodeIdentityNotEnforcedInOpenLab(t *testing.T) {
 	mem := store.NewMemoryStore()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
 	h := AuthMiddleware(mem, AuthConfig{InsecureOpen: true})(testMux(NewServer(mem)))

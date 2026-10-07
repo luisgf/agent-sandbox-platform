@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -93,7 +94,7 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 		t.Fatalf("grant body %s", rr.Body.String())
 	}
 	// Grant must not be stored in the clear.
-	stored, err := mem.GetSandbox(on.ID)
+	stored, err := mem.GetSandbox(context.Background(), on.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,7 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 	}
 
 	// Idle reap also withdraws and does not count as a reason to restore public egress.
-	on2, err := mem.CreateSandbox(store.CreateSandboxInput{
+	on2, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{
 		TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64,
 		LocalNet: boolPtr(true),
 	})
@@ -144,7 +145,7 @@ func TestLocalNetDefaultOffFlagOnGuestAndDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem.SetLastActivityForTest(on2.ID, time.Now().Add(-3*time.Hour))
-	reaped, err := mem.StopIdleSandboxes(time.Now(), time.Hour)
+	reaped, err := mem.StopIdleSandboxes(context.Background(), time.Now(), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ func TestLocalNetGrantCarriesNodeDevice(t *testing.T) {
 	s := &Server{Store: mem}
 	mux := testMux(s)
 	nodePub := "ERERERERERERERERERERERERERERERERERERERERERE="
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{
 		TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64,
 		LocalNet: boolPtr(true),
 	})
@@ -240,14 +241,14 @@ func TestLocalNetGrantDialsTheSandboxNode(t *testing.T) {
 	t.Setenv("ASP_LOCAL_NET_DIAL", "198.51.100.1")
 	mem := store.NewMemoryStore()
 	for id, dial := range map[string]string{"node-a": "203.0.113.10", "node-b": ""} {
-		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100", LocalNetDial: dial}); err != nil {
+		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100", LocalNetDial: dial}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	mux := testMux(NewServer(mem))
 	dialFor := func(node string) any {
 		t.Helper()
-		sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+		sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{
 			TenantID: "t1", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: node, LocalNet: boolPtr(true),
 		})
 		if err != nil {

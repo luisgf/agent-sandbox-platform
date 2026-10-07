@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ func newLifecycleFixture(t *testing.T) (*store.MemoryStore, http.Handler) {
 
 func newPlacedSandbox(t *testing.T, mem *store.MemoryStore) string {
 	t.Helper()
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, OwnerSub: "user:a"})
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, OwnerSub: "user:a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestStopResumeDeleteOverHTTP(t *testing.T) {
 	if code, _, _ := doJSON(t, h, http.MethodPost, "/v1/sandboxes/"+id+"/start"); code != http.StatusConflict {
 		t.Fatalf("resume while stopping: want 409, got %d", code)
 	}
-	if _, err := mem.UpdateSandboxStatus(id, store.SandboxStopped, "vmm stopped, disk kept"); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), id, store.SandboxStopped, "vmm stopped, disk kept"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,16 +81,16 @@ func TestStopResumeDeleteOverHTTP(t *testing.T) {
 func TestResumeRefusalsUsePlacementStatuses(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := store.NewMemoryStore()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
 		t.Fatal(err)
 	}
 	h := testMux(NewServer(mem))
 	first := newPlacedSandbox(t, mem)
 	runSandbox(t, mem, first)
-	if _, err := mem.StopSandbox(first, ""); err != nil {
+	if _, err := mem.StopSandbox(context.Background(), first, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.UpdateSandboxStatus(first, store.SandboxStopped, ""); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), first, store.SandboxStopped, ""); err != nil {
 		t.Fatal(err)
 	}
 	second := newPlacedSandbox(t, mem) // takes the only slot while the first is stopped
@@ -100,14 +101,14 @@ func TestResumeRefusalsUsePlacementStatuses(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") == "" {
 		t.Fatalf("full node: want 503 with Retry-After, got %d %s", rr.Code, rr.Body.String())
 	}
-	if got, _ := mem.GetSandbox(first); got.State != store.SandboxStopped {
+	if got, _ := mem.GetSandbox(context.Background(), first); got.State != store.SandboxStopped {
 		t.Fatalf("state=%s after a refused resume", got.State)
 	}
 
-	if _, err := mem.StopSandbox(second, ""); err != nil { // requested → stopped, frees the slot
+	if _, err := mem.StopSandbox(context.Background(), second, ""); err != nil { // requested → stopped, frees the slot
 		t.Fatal(err)
 	}
-	if _, err := mem.SetNodeCordoned("n1", true); err != nil {
+	if _, err := mem.SetNodeCordoned(context.Background(), "n1", true); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, body := doJSON(t, h, http.MethodPost, "/v1/sandboxes/"+first+"/start"); code != http.StatusConflict {
@@ -121,24 +122,24 @@ func TestExecMessagesNameTheFix(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	stopped := f.sandbox()
 	runSandbox(t, f.mem, stopped)
-	if _, err := f.mem.StopSandbox(stopped, ""); err != nil {
+	if _, err := f.mem.StopSandbox(context.Background(), stopped, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.mem.UpdateSandboxStatus(stopped, store.SandboxStopped, ""); err != nil {
+	if _, err := f.mem.UpdateSandboxStatus(context.Background(), stopped, store.SandboxStopped, ""); err != nil {
 		t.Fatal(err)
 	}
 	deleting := f.sandbox()
 	runSandbox(t, f.mem, deleting)
-	if _, err := f.mem.DeleteSandbox(deleting, ""); err != nil {
+	if _, err := f.mem.DeleteSandbox(context.Background(), deleting, ""); err != nil {
 		t.Fatal(err)
 	}
 	deleted := f.sandbox()
-	if _, err := f.mem.DeleteSandbox(deleted, ""); err != nil { // never claimed: deleted at once
+	if _, err := f.mem.DeleteSandbox(context.Background(), deleted, ""); err != nil { // never claimed: deleted at once
 		t.Fatal(err)
 	}
 	failed := f.sandbox()
 	runSandbox(t, f.mem, failed)
-	if _, err := f.mem.UpdateSandboxStatus(failed, store.SandboxFailed, "tap: denied"); err != nil {
+	if _, err := f.mem.UpdateSandboxStatus(context.Background(), failed, store.SandboxFailed, "tap: denied"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +203,7 @@ func TestListHidesDeletedSandboxes(t *testing.T) {
 	mem, h := newLifecycleFixture(t)
 	keep := newPlacedSandbox(t, mem)
 	gone := newPlacedSandbox(t, mem)
-	if _, err := mem.DeleteSandbox(gone, ""); err != nil {
+	if _, err := mem.DeleteSandbox(context.Background(), gone, ""); err != nil {
 		t.Fatal(err)
 	}
 	list := func(q string) []string {
@@ -249,10 +250,10 @@ func TestWorkCarriesTheRetainedList(t *testing.T) {
 	if got := string(work()["retained"]); got != "[]" {
 		t.Fatalf("retained=%s, want []", got)
 	}
-	if _, err := mem.StopSandbox(id, ""); err != nil {
+	if _, err := mem.StopSandbox(context.Background(), id, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.UpdateSandboxStatus(id, store.SandboxStopped, ""); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), id, store.SandboxStopped, ""); err != nil {
 		t.Fatal(err)
 	}
 	w := work()
@@ -294,7 +295,7 @@ func TestRBACStopResumeDelete(t *testing.T) {
 	if code, body := rbacDo(t, h, alice, http.MethodPost, stop, ""); code != http.StatusOK {
 		t.Fatalf("alice stops her own: %d %s", code, body)
 	}
-	if _, err := mem.UpdateSandboxStatus(sb.ID, store.SandboxStopped, ""); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), sb.ID, store.SandboxStopped, ""); err != nil {
 		t.Fatal(err)
 	}
 	if code, body := rbacDo(t, h, alice, http.MethodPost, start, ""); code != http.StatusOK {
@@ -304,7 +305,7 @@ func TestRBACStopResumeDelete(t *testing.T) {
 	if code, body := rbacDo(t, h, opAny, http.MethodPost, stop, ""); code != http.StatusOK {
 		t.Fatalf("operator with destroy-any stops hers: %d %s", code, body)
 	}
-	if _, err := mem.UpdateSandboxStatus(sb.ID, store.SandboxStopped, ""); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), sb.ID, store.SandboxStopped, ""); err != nil {
 		t.Fatal(err)
 	}
 	if code, body := rbacDo(t, h, admin, http.MethodPost, start, ""); code != http.StatusOK {

@@ -59,6 +59,13 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, migrations embed.F
 		if err != nil {
 			return err
 		}
+		// A migration may take longer than the pool's statement_timeout (an index
+		// on a big table); it keeps the lock_timeout, so one that waits for a lock
+		// fails instead of hanging the start.
+		if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 0`); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("apply %s: %w", name, err)
+		}
 		for i, stmt := range splitSQL(string(body)) {
 			if _, err := tx.Exec(ctx, stmt); err != nil {
 				_ = tx.Rollback(ctx)

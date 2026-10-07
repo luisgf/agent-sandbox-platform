@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,12 +32,12 @@ func TestWorkPollCarriesTheEgressPolicy(t *testing.T) {
 	t.Setenv("ASP_EGRESS_DEFAULT_ALLOW", "")
 	mem := newTestStore(t, "n1")
 	h := testMux(NewServer(mem))
-	running, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 500, MemoryMiB: 256, NodeID: "n1"})
+	running, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t1", ImageRef: "img", CPUMillis: 500, MemoryMiB: 256, NodeID: "n1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runSandbox(t, mem, running.ID) // never executed, needs no action
-	other, err := mem.CreateSandbox(store.CreateSandboxInput{TenantID: "t2", ImageRef: "img", CPUMillis: 500, MemoryMiB: 256, NodeID: "n1"})
+	other, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t2", ImageRef: "img", CPUMillis: 500, MemoryMiB: 256, NodeID: "n1"})
 	if err != nil {
 		t.Fatal(err)
 	}

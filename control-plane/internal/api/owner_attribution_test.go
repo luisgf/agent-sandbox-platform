@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,10 +24,10 @@ func newAttributionEnv(t *testing.T) *attributionEnv {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t, "n1")
-	if _, err := mem.EnsureAPIKey("t1", "svc", store.APIKeyScopeTenant, "asp_tnt1", store.HashAPIKeySecret("tenant-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "t1", "svc", store.APIKeyScopeTenant, "asp_tnt1", store.HashAPIKeySecret("tenant-key")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_plat", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_plat", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	return &attributionEnv{t: t, h: AuthMiddleware(mem, AuthConfig{})(testMux(NewServer(mem)))}

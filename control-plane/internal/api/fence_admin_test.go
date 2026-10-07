@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,10 +25,10 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t, "n1")
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_plat", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_plat", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.EnsureAPIKey("t1", "svc", store.APIKeyScopeTenant, "asp_tnt1", store.HashAPIKeySecret("tenant-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "t1", "svc", store.APIKeyScopeTenant, "asp_tnt1", store.HashAPIKeySecret("tenant-key")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -52,14 +53,14 @@ func TestFenceTargetIsSetByAnAdminAndNeverShown(t *testing.T) {
 			t.Fatalf("%s: status %d, want 403: %s", key, rr.Code, rr.Body.String())
 		}
 	}
-	if n, _ := e.mem.GetNode("n1"); n.FenceEndpoint != "" {
+	if n, _ := e.mem.GetNode(context.Background(), "n1"); n.FenceEndpoint != "" {
 		t.Fatalf("a refused request changed the target: %+v", n)
 	}
 
 	if rr := e.do("PUT", "/v1/nodes/n1/fence", "platform-key", body); rr.Code != http.StatusNoContent {
 		t.Fatalf("platform key: status %d: %s", rr.Code, rr.Body.String())
 	}
-	n, _ := e.mem.GetNode("n1")
+	n, _ := e.mem.GetNode(context.Background(), "n1")
 	if n.FenceEndpoint != "https://bmc.example/redfish" || n.FenceToken != "bmc-password" {
 		t.Fatalf("target not stored: %+v", n)
 	}
@@ -81,7 +82,7 @@ func TestFenceTargetIsSetByAnAdminAndNeverShown(t *testing.T) {
 	if rr := e.do("DELETE", "/v1/nodes/n1/fence", "platform-key", ""); rr.Code != http.StatusNoContent {
 		t.Fatalf("clear: %d %s", rr.Code, rr.Body.String())
 	}
-	n, _ = e.mem.GetNode("n1")
+	n, _ = e.mem.GetNode(context.Background(), "n1")
 	if n.FenceEndpoint != "" || n.FenceToken != "" {
 		t.Fatalf("target not cleared: %+v", n)
 	}
@@ -126,7 +127,7 @@ func TestFenceCredentialReferencesAreResolvedWhenFencing(t *testing.T) {
 	if rr := e.do("PUT", "/v1/nodes/n1/fence", "platform-key", `{"endpoint":"`+hook.URL+`","token":"env:BMC_PW"}`); rr.Code != http.StatusNoContent {
 		t.Fatalf("set: %d %s", rr.Code, rr.Body.String())
 	}
-	n, _ := e.mem.GetNode("n1")
+	n, _ := e.mem.GetNode(context.Background(), "n1")
 	if n.FenceToken != "env:BMC_PW" {
 		t.Fatalf("the reference was replaced by its value in the store: %q", n.FenceToken)
 	}

@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -43,7 +44,7 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("exec-node")
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "exec-node", Name: "exec-node",
 		Endpoint: agent.URL, AgentEndpoint: agent.URL,
 	}); err != nil {
@@ -116,7 +117,7 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 	if !strings.Contains(string(rest), `"exit_code":0`) && !strings.Contains(string(rest), `"exit_code": 0`) {
 		t.Fatalf("rest=%s", rest)
 	}
-	got, err := mem.GetSandbox(sb.ID)
+	got, err := mem.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,7 @@ func TestExecBufferedJSONUnchanged(t *testing.T) {
 	defer agent.Close()
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("n")
-	_, _ = mem.RegisterNode(store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL})
+	_, _ = mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL})
 	srv := NewServer(mem)
 	srv.Client = agent.Client()
 	mux := testMux(srv)

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -75,7 +76,7 @@ func (m *MemoryStore) SetProvisionNodeID(id string) {
 	m.provisionNodeID = id
 }
 
-func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
+func (m *MemoryStore) CreateSandbox(ctx context.Context, input CreateSandboxInput) (Sandbox, error) {
 	if err := prepareCreateSandbox(&input); err != nil {
 		return Sandbox{}, err
 	}
@@ -137,7 +138,7 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 	schedCfg := m.schedCfg
 	m.mu.Unlock()
 
-	_ = m.EmitEvent(EmitEventInput{
+	_ = m.EmitEvent(ctx, EmitEventInput{
 		SandboxID: out.ID,
 		TenantID:  out.TenantID,
 		EventType: "sandbox.created",
@@ -147,7 +148,7 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		Payload:   json.RawMessage(`{}`),
 	})
 	if out.LocalNet {
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: out.ID,
 			TenantID:  out.TenantID,
 			EventType: "sandbox.local_net_requested",
@@ -157,7 +158,7 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		})
 	}
 	if placed {
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: out.ID,
 			TenantID:  out.TenantID,
 			EventType: "sandbox.placed",
@@ -168,12 +169,12 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 
 	if AutoProvisionEnabled() {
 		// Sync provisioner stub: requested → starting → running.
-		return m.provisionStub(out.ID, nodeID)
+		return m.provisionStub(ctx, out.ID, nodeID)
 	}
 	return out, nil
 }
 
-func (m *MemoryStore) provisionStub(id, nodeID string) (Sandbox, error) {
+func (m *MemoryStore) provisionStub(ctx context.Context, id, nodeID string) (Sandbox, error) {
 	m.mu.Lock()
 	sb, ok := m.sandboxes[id]
 	if !ok {
@@ -189,7 +190,7 @@ func (m *MemoryStore) provisionStub(id, nodeID string) (Sandbox, error) {
 	tenantID := sb.TenantID
 	m.mu.Unlock()
 
-	_ = m.EmitEvent(EmitEventInput{
+	_ = m.EmitEvent(ctx, EmitEventInput{
 		SandboxID: id,
 		TenantID:  tenantID,
 		EventType: "sandbox.state_changed",
@@ -215,7 +216,7 @@ func (m *MemoryStore) provisionStub(id, nodeID string) (Sandbox, error) {
 	out := cloneSandbox(sb)
 	m.mu.Unlock()
 
-	_ = m.EmitEvent(EmitEventInput{
+	_ = m.EmitEvent(ctx, EmitEventInput{
 		SandboxID: id,
 		TenantID:  tenantID,
 		EventType: "sandbox.state_changed",
@@ -228,7 +229,7 @@ func (m *MemoryStore) provisionStub(id, nodeID string) (Sandbox, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) GetSandbox(id string) (Sandbox, error) {
+func (m *MemoryStore) GetSandbox(ctx context.Context, id string) (Sandbox, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	sb, ok := m.sandboxes[id]
@@ -238,7 +239,7 @@ func (m *MemoryStore) GetSandbox(id string) (Sandbox, error) {
 	return cloneSandbox(sb), nil
 }
 
-func (m *MemoryStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
+func (m *MemoryStore) ListSandboxes(ctx context.Context, tenantID string) ([]Sandbox, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]Sandbox, 0)
@@ -258,7 +259,7 @@ func (m *MemoryStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
+func (m *MemoryStore) ClaimSandbox(ctx context.Context, id, nodeID string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(nodeID) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id and node_id required", ErrInvalidInput)
 	}
@@ -287,7 +288,7 @@ func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	tenantID := sb.TenantID
 	m.mu.Unlock()
 
-	_ = m.EmitEvent(EmitEventInput{
+	_ = m.EmitEvent(ctx, EmitEventInput{
 		SandboxID: id,
 		TenantID:  tenantID,
 		EventType: "sandbox.claimed",
@@ -299,7 +300,7 @@ func (m *MemoryStore) ClaimSandbox(id, nodeID string) (Sandbox, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) ListNodeWork(nodeID string) (NodeWork, error) {
+func (m *MemoryStore) ListNodeWork(ctx context.Context, nodeID string) (NodeWork, error) {
 	if strings.TrimSpace(nodeID) == "" {
 		return NodeWork{}, fmt.Errorf("%w: node_id required", ErrInvalidInput)
 	}
@@ -316,7 +317,7 @@ func (m *MemoryStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	return work, nil
 }
 
-func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error) {
+func (m *MemoryStore) UpdateSandboxStatus(ctx context.Context, id string, state SandboxState, detail string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -368,7 +369,7 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 	if detail != "" {
 		payload["detail"] = detail
 	}
-	_ = m.EmitEvent(EmitEventInput{
+	_ = m.EmitEvent(ctx, EmitEventInput{
 		SandboxID: id,
 		TenantID:  tenantID,
 		EventType: "sandbox.state_changed",
@@ -380,7 +381,7 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 	return out, nil
 }
 
-func (m *MemoryStore) TouchSandboxActivity(id string) error {
+func (m *MemoryStore) TouchSandboxActivity(ctx context.Context, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -396,7 +397,7 @@ func (m *MemoryStore) TouchSandboxActivity(id string) error {
 	return nil
 }
 
-func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([]Sandbox, error) {
+func (m *MemoryStore) StopIdleSandboxes(ctx context.Context, now time.Time, idleFor time.Duration) ([]Sandbox, error) {
 	if idleFor <= 0 {
 		return nil, nil
 	}
@@ -436,7 +437,7 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 	}
 	m.mu.Unlock()
 	for _, e := range events {
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: e.id,
 			TenantID:  e.tenant,
 			EventType: "sandbox.idle_reaped",
@@ -472,7 +473,7 @@ func (m *MemoryStore) SetLastActivityForTest(id string, at time.Time) {
 	m.sandboxes[id] = sb
 }
 
-func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
+func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput) (Node, error) {
 	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.Name) == "" {
 		return Node{}, fmt.Errorf("%w: id or name required", ErrInvalidInput)
 	}
@@ -520,7 +521,7 @@ func (m *MemoryStore) RegisterNode(input RegisterNodeInput) (Node, error) {
 	defer func() {
 		for _, l := range orphaned {
 			from := string(l.from)
-			_ = m.EmitEvent(EmitEventInput{
+			_ = m.EmitEvent(ctx, EmitEventInput{
 				SandboxID: l.id,
 				TenantID:  l.tenant,
 				EventType: "sandbox.agent_restarted",
@@ -590,7 +591,7 @@ func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time) []l
 	return out
 }
 
-func (m *MemoryStore) CreateEnrollToken(tok EnrollToken) error {
+func (m *MemoryStore) CreateEnrollToken(ctx context.Context, tok EnrollToken) error {
 	if err := validateEnrollToken(tok); err != nil {
 		return err
 	}
@@ -614,7 +615,7 @@ func (m *MemoryStore) CreateEnrollToken(tok EnrollToken) error {
 	return nil
 }
 
-func (m *MemoryStore) CheckEnroll(id string, auth EnrollAuth) error {
+func (m *MemoryStore) CheckEnroll(ctx context.Context, id string, auth EnrollAuth) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, err := m.enrollCheckLocked(id, auth, time.Now().UTC())
@@ -635,7 +636,7 @@ func (m *MemoryStore) enrollCheckLocked(id string, auth EnrollAuth, now time.Tim
 	return tok, enrollAllowed(id, tok, exists && enrolledLive(existing), now)
 }
 
-func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error) {
+func (m *MemoryStore) EnrollNode(ctx context.Context, input EnrollNodeInput, cert CertMeta, auth EnrollAuth) (Node, error) {
 	fp := strings.TrimSpace(cert.Fingerprint)
 	if fp == "" {
 		return Node{}, fmt.Errorf("%w: cert_fingerprint required", ErrInvalidInput)
@@ -712,7 +713,7 @@ func (m *MemoryStore) EnrollNode(input EnrollNodeInput, cert CertMeta, auth Enro
 	return cloneNode(node), nil
 }
 
-func (m *MemoryStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, error) {
+func (m *MemoryStore) RotateNodeCert(ctx context.Context, nodeID string, cert CertMeta) (Node, error) {
 	fp := strings.TrimSpace(cert.Fingerprint)
 	if strings.TrimSpace(nodeID) == "" {
 		return Node{}, fmt.Errorf("%w: node id required", ErrInvalidInput)
@@ -742,7 +743,7 @@ func (m *MemoryStore) RotateNodeCert(nodeID string, cert CertMeta) (Node, error)
 	return cloneNode(n), nil
 }
 
-func (m *MemoryStore) RevokeNode(nodeID string) (Node, error) {
+func (m *MemoryStore) RevokeNode(ctx context.Context, nodeID string) (Node, error) {
 	if strings.TrimSpace(nodeID) == "" {
 		return Node{}, fmt.Errorf("%w: node id required", ErrInvalidInput)
 	}
@@ -763,7 +764,7 @@ func (m *MemoryStore) RevokeNode(nodeID string) (Node, error) {
 	return cloneNode(n), nil
 }
 
-func (m *MemoryStore) IsCertRevoked(fingerprint string) (bool, error) {
+func (m *MemoryStore) IsCertRevoked(ctx context.Context, fingerprint string) (bool, error) {
 	fp := strings.TrimSpace(fingerprint)
 	if fp == "" {
 		return false, nil
@@ -781,7 +782,7 @@ func (m *MemoryStore) IsCertRevoked(fingerprint string) (bool, error) {
 	return false, nil
 }
 
-func (m *MemoryStore) HeartbeatNode(id string) (Node, error) {
+func (m *MemoryStore) HeartbeatNode(ctx context.Context, id string) (Node, error) {
 	if strings.TrimSpace(id) == "" {
 		return Node{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -805,7 +806,7 @@ func (m *MemoryStore) HeartbeatNode(id string) (Node, error) {
 // nodePollWriteEvery throttles last_seen_at writes from work polls (every ~2s per node).
 const nodePollWriteEvery = 5 * time.Second
 
-func (m *MemoryStore) TouchNodePoll(id string, now time.Time) error {
+func (m *MemoryStore) TouchNodePoll(ctx context.Context, id string, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n, ok := m.nodes[id]
@@ -824,7 +825,7 @@ func (m *MemoryStore) TouchNodePoll(id string, now time.Time) error {
 	return nil
 }
 
-func (m *MemoryStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
+func (m *MemoryStore) SetNodeCordoned(ctx context.Context, id string, cordoned bool) (Node, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n, ok := m.nodes[id]
@@ -837,7 +838,7 @@ func (m *MemoryStore) SetNodeCordoned(id string, cordoned bool) (Node, error) {
 	return cloneNode(n), nil
 }
 
-func (m *MemoryStore) SetNodeFence(id, endpoint, token string) (Node, error) {
+func (m *MemoryStore) SetNodeFence(ctx context.Context, id, endpoint, token string) (Node, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n, ok := m.nodes[id]
@@ -854,13 +855,13 @@ func (m *MemoryStore) SetNodeFence(id, endpoint, token string) (Node, error) {
 	return cloneNode(n), nil
 }
 
-func (m *MemoryStore) ListNodeUsage() (map[string]NodeUsage, error) {
+func (m *MemoryStore) ListNodeUsage(ctx context.Context) (map[string]NodeUsage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.nodeUsageLocked(), nil
 }
 
-func (m *MemoryStore) ListNodes() ([]Node, error) {
+func (m *MemoryStore) ListNodes(ctx context.Context) ([]Node, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]Node, 0, len(m.nodes))
@@ -870,7 +871,7 @@ func (m *MemoryStore) ListNodes() ([]Node, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) GetNode(id string) (Node, error) {
+func (m *MemoryStore) GetNode(ctx context.Context, id string) (Node, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	n, ok := m.nodes[id]
@@ -880,7 +881,7 @@ func (m *MemoryStore) GetNode(id string) (Node, error) {
 	return cloneNode(n), nil
 }
 
-func (m *MemoryStore) EmitEvent(input EmitEventInput) error {
+func (m *MemoryStore) EmitEvent(ctx context.Context, input EmitEventInput) error {
 	if strings.TrimSpace(input.SandboxID) == "" || strings.TrimSpace(input.EventType) == "" {
 		return fmt.Errorf("%w: sandbox_id and event_type required", ErrInvalidInput)
 	}
@@ -911,7 +912,7 @@ func (m *MemoryStore) EmitEvent(input EmitEventInput) error {
 	return nil
 }
 
-func (m *MemoryStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
+func (m *MemoryStore) ListEvents(ctx context.Context, sandboxID string) ([]SandboxEvent, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]SandboxEvent, 0)
@@ -928,7 +929,7 @@ func (m *MemoryStore) ListEvents(sandboxID string) ([]SandboxEvent, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
+func (m *MemoryStore) LookupAPIKeyByHash(ctx context.Context, secretHash string) (ApiKey, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	k, ok := m.apiKeys[secretHash]
@@ -941,7 +942,7 @@ func (m *MemoryStore) LookupAPIKeyByHash(secretHash string) (ApiKey, error) {
 	return k, nil
 }
 
-func (m *MemoryStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error) {
+func (m *MemoryStore) EnsureAPIKey(ctx context.Context, tenantID, name, scope, keyPrefix, secretHash string) (ApiKey, error) {
 	if tenantID == "" || name == "" || keyPrefix == "" || secretHash == "" {
 		return ApiKey{}, fmt.Errorf("%w: tenant_id, name, key_prefix, secret_hash required", ErrInvalidInput)
 	}
@@ -974,7 +975,7 @@ func (m *MemoryStore) EnsureAPIKey(tenantID, name, scope, keyPrefix, secretHash 
 	return k, nil
 }
 
-func (m *MemoryStore) CountAPIKeys() (int64, error) {
+func (m *MemoryStore) CountAPIKeys(ctx context.Context) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var n int64
@@ -986,7 +987,7 @@ func (m *MemoryStore) CountAPIKeys() (int64, error) {
 	return n, nil
 }
 
-func (m *MemoryStore) TouchAPIKey(id string) error {
+func (m *MemoryStore) TouchAPIKey(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
@@ -1113,7 +1114,7 @@ func mustJSON(v any) json.RawMessage {
 	return b
 }
 
-func (m *MemoryStore) PutAttestation(input PutAttestationInput) (AttestationRecord, error) {
+func (m *MemoryStore) PutAttestation(ctx context.Context, input PutAttestationInput) (AttestationRecord, error) {
 	if strings.TrimSpace(input.SandboxID) == "" {
 		return AttestationRecord{}, fmt.Errorf("%w: sandbox_id required", ErrInvalidInput)
 	}
@@ -1143,7 +1144,7 @@ func (m *MemoryStore) PutAttestation(input PutAttestationInput) (AttestationReco
 	return rec, nil
 }
 
-func (m *MemoryStore) GetAttestation(sandboxID string) (AttestationRecord, error) {
+func (m *MemoryStore) GetAttestation(ctx context.Context, sandboxID string) (AttestationRecord, error) {
 	if strings.TrimSpace(sandboxID) == "" {
 		return AttestationRecord{}, fmt.Errorf("%w: sandbox_id required", ErrInvalidInput)
 	}
@@ -1160,7 +1161,7 @@ func (m *MemoryStore) GetAttestation(sandboxID string) (AttestationRecord, error
 	return out, nil
 }
 
-func (m *MemoryStore) ListEgressRules(tenantID string) ([]EgressRule, error) {
+func (m *MemoryStore) ListEgressRules(ctx context.Context, tenantID string) ([]EgressRule, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return nil, fmt.Errorf("%w: tenant_id required", ErrInvalidInput)
 	}
@@ -1174,7 +1175,7 @@ func (m *MemoryStore) ListEgressRules(tenantID string) ([]EgressRule, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) ListEgressRulesForTenants(tenantIDs []string) (map[string][]EgressRule, error) {
+func (m *MemoryStore) ListEgressRulesForTenants(ctx context.Context, tenantIDs []string) (map[string][]EgressRule, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make(map[string][]EgressRule, len(tenantIDs))
@@ -1188,7 +1189,7 @@ func (m *MemoryStore) ListEgressRulesForTenants(tenantIDs []string) (map[string]
 	return out, nil
 }
 
-func (m *MemoryStore) PutEgressRules(tenantID string, rules []EgressRule) ([]EgressRule, error) {
+func (m *MemoryStore) PutEgressRules(ctx context.Context, tenantID string, rules []EgressRule) ([]EgressRule, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return nil, fmt.Errorf("%w: tenant_id required", ErrInvalidInput)
 	}
@@ -1241,7 +1242,7 @@ var _ Store = (*MemoryStore)(nil)
 
 // IssueLocalNetGrant mints a one-shot grant for the local agent. The clear
 // value is returned and not stored. State stays pending until HeartbeatLocalNet.
-func (m *MemoryStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl time.Duration) (string, time.Time, error) {
+func (m *MemoryStore) IssueLocalNetGrant(ctx context.Context, id, dial string, now time.Time, ttl time.Duration) (string, time.Time, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", time.Time{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -1278,7 +1279,7 @@ func (m *MemoryStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl tim
 
 // HeartbeatLocalNet marks the tunnel up when the grant matches. It does not
 // move last_activity_at. An expired grant withdraws to blackhole (not public egress).
-func (m *MemoryStore) HeartbeatLocalNet(id, grant, clientPub string, now time.Time) (Sandbox, error) {
+func (m *MemoryStore) HeartbeatLocalNet(ctx context.Context, id, grant, clientPub string, now time.Time) (Sandbox, error) {
 	grant = strings.TrimSpace(grant)
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
@@ -1314,7 +1315,7 @@ func (m *MemoryStore) HeartbeatLocalNet(id, grant, clientPub string, now time.Ti
 		m.sandboxes[id] = sb
 		tenant := sb.TenantID
 		m.mu.Unlock()
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: id,
 			TenantID:  tenant,
 			EventType: "sandbox.local_net_withdrawn",
@@ -1337,7 +1338,7 @@ func (m *MemoryStore) HeartbeatLocalNet(id, grant, clientPub string, now time.Ti
 	out := cloneSandbox(sb)
 	tenant := sb.TenantID
 	m.mu.Unlock()
-	_ = m.EmitEvent(EmitEventInput{
+	_ = m.EmitEvent(ctx, EmitEventInput{
 		SandboxID: id,
 		TenantID:  tenant,
 		EventType: "sandbox.local_net_up",
@@ -1349,7 +1350,7 @@ func (m *MemoryStore) HeartbeatLocalNet(id, grant, clientPub string, now time.Ti
 
 // WithdrawLocalNet drops the tunnel. local_net stays true so egress stays
 // blackholed instead of returning to the node proxy.
-func (m *MemoryStore) WithdrawLocalNet(id string) (Sandbox, error) {
+func (m *MemoryStore) WithdrawLocalNet(ctx context.Context, id string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -1371,7 +1372,7 @@ func (m *MemoryStore) WithdrawLocalNet(id string) (Sandbox, error) {
 	tenant := sb.TenantID
 	m.mu.Unlock()
 	if sb.LocalNet && prev != LocalNetWithdrawn {
-		_ = m.EmitEvent(EmitEventInput{
+		_ = m.EmitEvent(ctx, EmitEventInput{
 			SandboxID: id,
 			TenantID:  tenant,
 			EventType: "sandbox.local_net_withdrawn",
@@ -1384,7 +1385,7 @@ func (m *MemoryStore) WithdrawLocalNet(id string) (Sandbox, error) {
 
 // SetLocalNetNodePublic stores the node device public key. The private key
 // stays on the node. This does not move local_net_state or last_activity_at.
-func (m *MemoryStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
+func (m *MemoryStore) SetLocalNetNodePublic(ctx context.Context, id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}

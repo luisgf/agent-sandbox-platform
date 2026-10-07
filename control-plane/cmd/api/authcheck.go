@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,7 +17,7 @@ import (
 // Authentication is always on. Without a key in the store or an IdP, every
 // request would be refused, which is not a deployment, it is a mistake: better
 // to stop with the three ways out than to answer 401 to everything.
-func checkAuthConfigured(st store.Store, idpOn bool, cfg api.AuthConfig) error {
+func checkAuthConfigured(ctx context.Context, st store.Store, idpOn bool, cfg api.AuthConfig) error {
 	if os.Getenv("ASP_REQUIRE_API_KEY") != "" {
 		slog.Warn("ASP_REQUIRE_API_KEY is no longer used: authentication is always on")
 	}
@@ -25,7 +26,7 @@ func checkAuthConfigured(st store.Store, idpOn bool, cfg api.AuthConfig) error {
 			"Anyone who can reach it can create sandboxes and run commands in them. For a lab or a laptop only")
 		return nil
 	}
-	n, err := st.CountAPIKeys()
+	n, err := st.CountAPIKeys(ctx)
 	if err != nil {
 		return fmt.Errorf("count api keys: %w", err)
 	}

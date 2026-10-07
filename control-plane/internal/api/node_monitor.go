@@ -77,13 +77,21 @@ func (s *Server) RunNodeMonitor(ctx context.Context, cfg NodeMonitorConfig) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s.sweepNodes(ctx, now.UTC(), started, cfg)
+			// One pass is bounded: a database that does not answer, or a fence
+			// target that hangs, costs that pass and not the loop.
+			pass, cancel := context.WithTimeout(ctx, nodeSweepTimeout)
+			s.sweepNodes(pass, now.UTC(), started, cfg)
+			cancel()
 		}
 	}
 }
 
+// nodeSweepTimeout bounds one pass of the node monitor, the fencing of lost nodes
+// included.
+const nodeSweepTimeout = 2 * time.Minute
+
 func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg NodeMonitorConfig) {
-	nodes, err := s.Store.ListNodes()
+	nodes, err := s.Store.ListNodes(ctx)
 	if err != nil {
 		slog.Error("node monitor: list nodes", "error", err)
 		return
@@ -101,7 +109,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 		silent := now.Sub(lastSign)
 
 		if n.RevokedAt == nil && n.State != "offline" && silent > cfg.StaleAfter {
-			changed, err := s.Store.MarkNodeOffline(n.ID, now.Add(-cfg.StaleAfter))
+			changed, err := s.Store.MarkNodeOffline(ctx, n.ID, now.Add(-cfg.StaleAfter))
 			if err != nil {
 				slog.Error("node monitor: mark offline", "node_id", n.ID, "error", err)
 			} else if changed {
@@ -118,7 +126,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 			silentSince = now
 		}
 		if usage == nil {
-			if usage, err = s.Store.ListNodeUsage(); err != nil {
+			if usage, err = s.Store.ListNodeUsage(ctx); err != nil {
 				slog.Error("node monitor: usage", "error", err)
 				usage = map[string]store.NodeUsage{}
 			}
@@ -126,7 +134,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 		if usage[n.ID].Sandboxes > 0 {
 			s.fenceLostNode(ctx, n, lastSign)
 		}
-		failed, err := s.Store.FailNodeSandboxes(n.ID, store.StopReasonNodeLost, silentSince)
+		failed, err := s.Store.FailNodeSandboxes(ctx, n.ID, store.StopReasonNodeLost, silentSince)
 		if err != nil {
 			slog.Error("node monitor: fail sandboxes of a lost node", "node_id", n.ID, "error", err)
 			continue
@@ -138,7 +146,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 	}
 
 	// Rows created before placement at create have no node and never run.
-	if failed, err := s.Store.FailUnassignedRequested(now.Add(-cfg.StaleAfter), store.StopReasonUnscheduled); err != nil {
+	if failed, err := s.Store.FailUnassignedRequested(ctx, now.Add(-cfg.StaleAfter), store.StopReasonUnscheduled); err != nil {
 		slog.Error("node monitor: unassigned sandboxes", "error", err)
 	} else {
 		for _, sb := range failed {
@@ -171,9 +179,9 @@ func (s *Server) fenceLostNode(ctx context.Context, n store.Node, lastSign time.
 	switch {
 	case err != nil:
 		slog.Error("fence of a lost node failed; failing its sandboxes anyway", "node_id", n.ID, "provider", provider, "error", err)
-		_ = s.Store.EmitNodeEvent(n.ID, "node.fence_failed", "node-monitor", map[string]any{"provider": provider, "error": err.Error()})
+		_ = s.Store.EmitNodeEvent(ctx, n.ID, "node.fence_failed", "node-monitor", map[string]any{"provider": provider, "error": err.Error()})
 	case fenced:
 		slog.Warn("fenced a lost node", "node_id", n.ID, "provider", provider)
-		_ = s.Store.EmitNodeEvent(n.ID, "node.fenced", "node-monitor", map[string]any{"provider": provider})
+		_ = s.Store.EmitNodeEvent(ctx, n.ID, "node.fenced", "node-monitor", map[string]any{"provider": provider})
 	}
 }

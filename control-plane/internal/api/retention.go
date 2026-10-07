@@ -47,7 +47,7 @@ func (s *Server) RunRetentionReaper(ctx context.Context, cfg RetentionConfig) {
 	if interval <= 0 {
 		interval = time.Minute
 	}
-	s.sweepRetention(time.Now().UTC(), cfg)
+	s.sweepRetention(ctx, time.Now().UTC(), cfg)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -55,20 +55,22 @@ func (s *Server) RunRetentionReaper(ctx context.Context, cfg RetentionConfig) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.sweepRetention(time.Now().UTC(), cfg)
+			s.sweepRetention(ctx, time.Now().UTC(), cfg)
 		}
 	}
 }
 
-func (s *Server) sweepRetention(now time.Time, cfg RetentionConfig) {
-	if expired, err := s.Store.ExpireStoppedSandboxes(now, cfg.TTL); err != nil {
+func (s *Server) sweepRetention(ctx context.Context, now time.Time, cfg RetentionConfig) {
+	ctx, cancel := context.WithTimeout(ctx, BackgroundDBTimeout)
+	defer cancel()
+	if expired, err := s.Store.ExpireStoppedSandboxes(ctx, now, cfg.TTL); err != nil {
 		slog.Error("retention: expiring stopped sandboxes", "error", err)
 	} else {
 		for _, sb := range expired {
 			slog.Info("stopped sandbox deleted: retention TTL", "id", sb.ID, "tenant", sb.TenantID, "state", sb.State, "ttl", cfg.TTL.String())
 		}
 	}
-	if evicted, err := s.Store.EvictStoppedOverCap(cfg.MaxStoppedPerTenant); err != nil {
+	if evicted, err := s.Store.EvictStoppedOverCap(ctx, cfg.MaxStoppedPerTenant); err != nil {
 		slog.Error("retention: evicting stopped sandboxes over the tenant cap", "error", err)
 	} else {
 		for _, sb := range evicted {

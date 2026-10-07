@@ -8,8 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (p *PostgresStore) MarkNodeOffline(id string, silentSince time.Time) (bool, error) {
-	ctx := context.Background()
+func (p *PostgresStore) MarkNodeOffline(ctx context.Context, id string, silentSince time.Time) (bool, error) {
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -42,8 +41,7 @@ func (p *PostgresStore) MarkNodeOffline(id string, silentSince time.Time) (bool,
 	return true, tx.Commit(ctx)
 }
 
-func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince time.Time) ([]Sandbox, error) {
-	ctx := context.Background()
+func (p *PostgresStore) FailNodeSandboxes(ctx context.Context, nodeID, reason string, silentSince time.Time) ([]Sandbox, error) {
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -104,8 +102,7 @@ func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince tim
 	return lost, nil
 }
 
-func (p *PostgresStore) FailUnassignedRequested(createdBefore time.Time, reason string) ([]Sandbox, error) {
-	ctx := context.Background()
+func (p *PostgresStore) FailUnassignedRequested(ctx context.Context, createdBefore time.Time, reason string) ([]Sandbox, error) {
 	now := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -175,11 +172,11 @@ func (p *PostgresStore) recordNodeOnline(ctx context.Context, id, prevState stri
 		VALUES ($1,'node.online','node-agent','{}'::jsonb)`, id)
 }
 
-func (p *PostgresStore) EmitNodeEvent(nodeID, eventType, actor string, payload map[string]any) error {
+func (p *PostgresStore) EmitNodeEvent(ctx context.Context, nodeID, eventType, actor string, payload map[string]any) error {
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	_, err := p.pool.Exec(context.Background(), `
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO node_events (node_id, event_type, actor, payload)
 		VALUES ($1,$2,$3,$4)`, nodeID, eventType, actor, mustJSON(payload))
 	return err

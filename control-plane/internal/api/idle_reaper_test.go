@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,17 +15,17 @@ import (
 
 func TestExecRejectsIdleReapedSandbox(t *testing.T) {
 	mem := newTestStore(t, "n")
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.UpdateSandboxStatus(sb.ID, store.SandboxRunning, ""); err != nil {
+	if _, err := mem.UpdateSandboxStatus(context.Background(), sb.ID, store.SandboxRunning, ""); err != nil {
 		t.Fatal(err)
 	}
 	mem.SetLastActivityForTest(sb.ID, time.Now().UTC().Add(-3*time.Hour))
-	reaped, err := mem.StopIdleSandboxes(time.Now().UTC(), 2*time.Hour)
+	reaped, err := mem.StopIdleSandboxes(context.Background(), time.Now().UTC(), 2*time.Hour)
 	if err != nil || len(reaped) != 1 {
 		t.Fatalf("reap: %v %+v", err, reaped)
 	}
@@ -49,12 +50,12 @@ func TestExecTouchesActivity(t *testing.T) {
 	defer agent.Close()
 
 	mem := store.NewMemoryStore()
-	if _, err := mem.RegisterNode(store.RegisterNodeInput{
+	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sb, err := mem.CreateSandbox(store.CreateSandboxInput{
+	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{
 		TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, NodeID: "n",
 	})
 	if err != nil {
@@ -80,7 +81,7 @@ func TestExecTouchesActivity(t *testing.T) {
 	if out.ExitCode != 7 {
 		t.Fatalf("exit=%d", out.ExitCode)
 	}
-	got, err := mem.GetSandbox(sb.ID)
+	got, err := mem.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

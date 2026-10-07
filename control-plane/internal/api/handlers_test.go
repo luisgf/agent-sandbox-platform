@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -30,7 +31,7 @@ func newTestStore(t *testing.T, ids ...string) *store.MemoryStore {
 		ids = []string{"test-node"}
 	}
 	for _, id := range ids {
-		if _, err := mem.RegisterNode(store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -41,7 +42,7 @@ func newTestStore(t *testing.T, ids ...string) *store.MemoryStore {
 // booting the VM. Exec only reaches the agent for a running sandbox.
 func runSandbox(t *testing.T, st store.Store, id string) {
 	t.Helper()
-	sb, err := st.GetSandbox(id)
+	sb, err := st.GetSandbox(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,11 +50,11 @@ func runSandbox(t *testing.T, st store.Store, id string) {
 		if sb.NodeID == nil {
 			t.Fatalf("sandbox %s has no node", id)
 		}
-		if _, err := st.ClaimSandbox(id, *sb.NodeID); err != nil {
+		if _, err := st.ClaimSandbox(context.Background(), id, *sb.NodeID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.UpdateSandboxStatus(id, store.SandboxRunning, "test"); err != nil {
+	if _, err := st.UpdateSandboxStatus(context.Background(), id, store.SandboxRunning, "test"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -168,7 +169,7 @@ func TestHeartbeatNode(t *testing.T) {
 	mem := store.NewMemoryStore()
 	srv := NewServer(mem)
 	mux := testMux(srv)
-	_, err := mem.RegisterNode(store.RegisterNodeInput{ID: "hb1", Name: "hb1", Endpoint: "http://127.0.0.1:9"})
+	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "hb1", Name: "hb1", Endpoint: "http://127.0.0.1:9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +217,7 @@ func TestEnrollNode(t *testing.T) {
 	if er.NodeID != "en1" || er.ClientCertPEM == "" || er.ClientKeyPEM == "" || er.CACertPEM == "" {
 		t.Fatalf("incomplete enroll: %+v", er)
 	}
-	node, err := mem.GetNode("en1")
+	node, err := mem.GetNode(context.Background(), "en1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ func TestExecProxiesToAgent(t *testing.T) {
 
 	mem := store.NewMemoryStore()
 	mem.SetProvisionNodeID("exec-node")
-	_, err := mem.RegisterNode(store.RegisterNodeInput{
+	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "exec-node", Name: "exec-node",
 		Endpoint: agent.URL, AgentEndpoint: agent.URL,
 	})
@@ -301,7 +302,7 @@ func TestAuthMiddlewareOptionalOff(t *testing.T) {
 func TestAuthMiddlewareRequire(t *testing.T) {
 	mem := newTestStore(t)
 	secret := "test-key-abc"
-	_, err := BootstrapAPIKey(mem, secret)
+	_, err := BootstrapAPIKey(context.Background(), mem, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +468,7 @@ func TestClaimWorkStatusDestroy(t *testing.T) {
 	srv := NewServer(mem)
 	mux := testMux(srv)
 
-	_, err := mem.RegisterNode(store.RegisterNodeInput{
+	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "n1", Name: "n1", Endpoint: "http://127.0.0.1:9",
 		AgentEndpoint: "http://127.0.0.1:9100",
 	})
@@ -543,7 +544,7 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -597,7 +598,7 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 	if er.CertSerial == "" {
 		t.Fatal("expected cert_serial")
 	}
-	revoked, err := mem.IsCertRevoked(oldFP)
+	revoked, err := mem.IsCertRevoked(context.Background(), oldFP)
 	if err != nil || !revoked {
 		t.Fatalf("old fingerprint should be revoked: %v %v", revoked, err)
 	}
@@ -616,7 +617,7 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 	if node.RevokedAt == nil {
 		t.Fatal("expected revoked_at on node")
 	}
-	revoked, err = mem.IsCertRevoked(er.CertFingerprint)
+	revoked, err = mem.IsCertRevoked(context.Background(), er.CertFingerprint)
 	if err != nil || !revoked {
 		t.Fatalf("current fp revoked after revoke: %v %v", revoked, err)
 	}
@@ -636,13 +637,13 @@ func TestAuthMiddlewareRejectsRevokedCert(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	_, err = mem.EnrollNode(store.EnrollNodeInput{ID: "n-rev", Name: "n-rev"}, store.CertMeta{
+	_, err = mem.EnrollNode(context.Background(), store.EnrollNodeInput{ID: "n-rev", Name: "n-rev"}, store.CertMeta{
 		Fingerprint: issued.Fingerprint, Serial: issued.Serial,
 	}, store.EnrollAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.RevokeNode("n-rev"); err != nil {
+	if _, err := mem.RevokeNode(context.Background(), "n-rev"); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -691,7 +692,7 @@ func TestRotateRefusesTheBootstrapToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	if _, err := mem.EnsureAPIKey("default", "k", store.APIKeyScopePlatform, "asp_test", store.HashAPIKeySecret("not-the-bootstrap")); err != nil {
+	if _, err := mem.EnsureAPIKey(context.Background(), "default", "k", store.APIKeyScopePlatform, "asp_test", store.HashAPIKeySecret("not-the-bootstrap")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -729,10 +730,10 @@ func TestRotateRefusesTheBootstrapToken(t *testing.T) {
 		}
 	}
 	// Nothing changed: the node's certificate is still the one it enrolled with.
-	if revoked, err := mem.IsCertRevoked(enrolled.CertFingerprint); err != nil || revoked {
+	if revoked, err := mem.IsCertRevoked(context.Background(), enrolled.CertFingerprint); err != nil || revoked {
 		t.Fatalf("the refused rotation revoked the node's certificate: %v %v", revoked, err)
 	}
-	n, err := mem.GetNode("rb1")
+	n, err := mem.GetNode(context.Background(), "rb1")
 	if err != nil || n.CertFingerprint != enrolled.CertFingerprint {
 		t.Fatalf("node certificate changed: %+v %v", n, err)
 	}

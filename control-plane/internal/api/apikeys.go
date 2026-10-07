@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -147,7 +148,7 @@ func (s *Server) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().UTC().Add(ttl)
 		expires = &t
 	}
-	existing, err := s.Store.ListAPIKeys(tenant)
+	existing, err := s.Store.ListAPIKeys(r.Context(), tenant)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -165,7 +166,7 @@ func (s *Server) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "generate secret: "+err.Error())
 			return
 		}
-		key, err := s.Store.CreateAPIKey(tenant, req.Name, scope, store.KeyPrefix(secret), store.HashAPIKeySecret(secret), expires)
+		key, err := s.Store.CreateAPIKey(r.Context(), tenant, req.Name, scope, store.KeyPrefix(secret), store.HashAPIKeySecret(secret), expires)
 		if errors.Is(err, store.ErrConflict) {
 			continue
 		}
@@ -199,7 +200,7 @@ func (s *Server) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		tenant = confined
 	}
-	keys, err := s.Store.ListAPIKeys(tenant)
+	keys, err := s.Store.ListAPIKeys(r.Context(), tenant)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -210,7 +211,7 @@ func (s *Server) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 // keyForAdmin loads the key {id}, hiding other tenants' keys from a confined admin.
 func (s *Server) keyForAdmin(w http.ResponseWriter, r *http.Request, confined string) (store.ApiKey, bool) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	k, err := s.Store.GetAPIKey(id)
+	k, err := s.Store.GetAPIKey(r.Context(), id)
 	if err != nil || (confined != "" && k.TenantID != confined) {
 		if err == nil || errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "api key not found")
@@ -232,7 +233,7 @@ func (s *Server) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	revoked, err := s.Store.RevokeAPIKey(k.ID)
+	revoked, err := s.Store.RevokeAPIKey(r.Context(), k.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -257,8 +258,8 @@ func (s *Server) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "generate secret: "+err.Error())
 			return
 		}
-		rotated, err := s.Store.RotateAPIKey(k.ID, store.KeyPrefix(secret), store.HashAPIKeySecret(secret))
-		if errors.Is(err, store.ErrConflict) && rotatedIsRevoked(s.Store, k.ID) {
+		rotated, err := s.Store.RotateAPIKey(r.Context(), k.ID, store.KeyPrefix(secret), store.HashAPIKeySecret(secret))
+		if errors.Is(err, store.ErrConflict) && rotatedIsRevoked(r.Context(), s.Store, k.ID) {
 			writeError(w, http.StatusConflict, "api key is revoked: create a new one")
 			return
 		}
@@ -277,7 +278,7 @@ func (s *Server) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusConflict, "could not find a free key prefix; try again")
 }
 
-func rotatedIsRevoked(st store.Store, id string) bool {
-	k, err := st.GetAPIKey(id)
+func rotatedIsRevoked(ctx context.Context, st store.Store, id string) bool {
+	k, err := st.GetAPIKey(ctx, id)
 	return err == nil && k.RevokedAt != nil
 }

@@ -34,7 +34,7 @@ func checkNewAPIKey(tenantID, name, keyPrefix, secretHash string) error {
 
 // ---- memory store ----
 
-func (m *MemoryStore) CreateAPIKey(tenantID, name, scope, keyPrefix, secretHash string, expiresAt *time.Time) (ApiKey, error) {
+func (m *MemoryStore) CreateAPIKey(ctx context.Context, tenantID, name, scope, keyPrefix, secretHash string, expiresAt *time.Time) (ApiKey, error) {
 	if err := checkNewAPIKey(tenantID, name, keyPrefix, secretHash); err != nil {
 		return ApiKey{}, err
 	}
@@ -60,7 +60,7 @@ func (m *MemoryStore) CreateAPIKey(tenantID, name, scope, keyPrefix, secretHash 
 	return k, nil
 }
 
-func (m *MemoryStore) ListAPIKeys(tenantID string) ([]ApiKey, error) {
+func (m *MemoryStore) ListAPIKeys(ctx context.Context, tenantID string) ([]ApiKey, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]ApiKey, 0, len(m.apiKeys))
@@ -73,7 +73,7 @@ func (m *MemoryStore) ListAPIKeys(tenantID string) ([]ApiKey, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) GetAPIKey(id string) (ApiKey, error) {
+func (m *MemoryStore) GetAPIKey(ctx context.Context, id string) (ApiKey, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, k := range m.apiKeys {
@@ -84,7 +84,7 @@ func (m *MemoryStore) GetAPIKey(id string) (ApiKey, error) {
 	return ApiKey{}, ErrNotFound
 }
 
-func (m *MemoryStore) RevokeAPIKey(id string) (ApiKey, error) {
+func (m *MemoryStore) RevokeAPIKey(ctx context.Context, id string) (ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for hash, k := range m.apiKeys {
@@ -100,7 +100,7 @@ func (m *MemoryStore) RevokeAPIKey(id string) (ApiKey, error) {
 	return ApiKey{}, ErrNotFound
 }
 
-func (m *MemoryStore) RotateAPIKey(id, keyPrefix, secretHash string) (ApiKey, error) {
+func (m *MemoryStore) RotateAPIKey(ctx context.Context, id, keyPrefix, secretHash string) (ApiKey, error) {
 	if keyPrefix == "" || secretHash == "" {
 		return ApiKey{}, fmt.Errorf("%w: key_prefix, secret_hash required", ErrInvalidInput)
 	}
@@ -140,7 +140,7 @@ func sortAPIKeys(keys []ApiKey) {
 
 // ---- postgres store ----
 
-func (p *PostgresStore) CreateAPIKey(tenantID, name, scope, keyPrefix, secretHash string, expiresAt *time.Time) (ApiKey, error) {
+func (p *PostgresStore) CreateAPIKey(ctx context.Context, tenantID, name, scope, keyPrefix, secretHash string, expiresAt *time.Time) (ApiKey, error) {
 	if err := checkNewAPIKey(tenantID, name, keyPrefix, secretHash); err != nil {
 		return ApiKey{}, err
 	}
@@ -148,7 +148,6 @@ func (p *PostgresStore) CreateAPIKey(tenantID, name, scope, keyPrefix, secretHas
 	if err != nil {
 		return ApiKey{}, err
 	}
-	ctx := context.Background()
 	if err := p.ensureTenant(ctx, tenantID); err != nil {
 		return ApiKey{}, err
 	}
@@ -166,8 +165,8 @@ func (p *PostgresStore) CreateAPIKey(tenantID, name, scope, keyPrefix, secretHas
 	return k, nil
 }
 
-func (p *PostgresStore) ListAPIKeys(tenantID string) ([]ApiKey, error) {
-	rows, err := p.pool.Query(context.Background(), `
+func (p *PostgresStore) ListAPIKeys(ctx context.Context, tenantID string) ([]ApiKey, error) {
+	rows, err := p.pool.Query(ctx, `
 		SELECT `+apiKeyColumns+` FROM api_keys
 		WHERE ($1 = '' OR tenant_id = $1)
 		ORDER BY created_at, id`, tenantID)
@@ -186,16 +185,16 @@ func (p *PostgresStore) ListAPIKeys(tenantID string) ([]ApiKey, error) {
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) GetAPIKey(id string) (ApiKey, error) {
-	k, err := scanAPIKey(p.pool.QueryRow(context.Background(), `SELECT `+apiKeyColumns+` FROM api_keys WHERE id=$1`, id))
+func (p *PostgresStore) GetAPIKey(ctx context.Context, id string) (ApiKey, error) {
+	k, err := scanAPIKey(p.pool.QueryRow(ctx, `SELECT `+apiKeyColumns+` FROM api_keys WHERE id=$1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApiKey{}, ErrNotFound
 	}
 	return k, err
 }
 
-func (p *PostgresStore) RevokeAPIKey(id string) (ApiKey, error) {
-	k, err := scanAPIKey(p.pool.QueryRow(context.Background(), `
+func (p *PostgresStore) RevokeAPIKey(ctx context.Context, id string) (ApiKey, error) {
+	k, err := scanAPIKey(p.pool.QueryRow(ctx, `
 		UPDATE api_keys SET revoked_at = COALESCE(revoked_at, $2) WHERE id=$1
 		RETURNING `+apiKeyColumns, id, time.Now().UTC()))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -204,17 +203,16 @@ func (p *PostgresStore) RevokeAPIKey(id string) (ApiKey, error) {
 	return k, err
 }
 
-func (p *PostgresStore) RotateAPIKey(id, keyPrefix, secretHash string) (ApiKey, error) {
+func (p *PostgresStore) RotateAPIKey(ctx context.Context, id, keyPrefix, secretHash string) (ApiKey, error) {
 	if keyPrefix == "" || secretHash == "" {
 		return ApiKey{}, fmt.Errorf("%w: key_prefix, secret_hash required", ErrInvalidInput)
 	}
-	ctx := context.Background()
 	k, err := scanAPIKey(p.pool.QueryRow(ctx, `
 		UPDATE api_keys SET key_prefix=$2, secret_hash=$3
 		WHERE id=$1 AND revoked_at IS NULL
 		RETURNING `+apiKeyColumns, id, keyPrefix, secretHash))
 	if errors.Is(err, pgx.ErrNoRows) {
-		if _, gerr := p.GetAPIKey(id); gerr != nil {
+		if _, gerr := p.GetAPIKey(ctx, id); gerr != nil {
 			return ApiKey{}, gerr // not found
 		}
 		return ApiKey{}, fmt.Errorf("%w: api key %s is revoked", ErrConflict, id)

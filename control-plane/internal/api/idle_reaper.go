@@ -19,7 +19,7 @@ func (s *Server) RunIdleReaper(ctx context.Context, timeout, every time.Duration
 	if every <= 0 {
 		every = time.Minute
 	}
-	s.sweepIdle(timeout)
+	s.sweepIdle(ctx, timeout)
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
@@ -27,13 +27,19 @@ func (s *Server) RunIdleReaper(ctx context.Context, timeout, every time.Duration
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.sweepIdle(timeout)
+			s.sweepIdle(ctx, timeout)
 		}
 	}
 }
 
-func (s *Server) sweepIdle(timeout time.Duration) {
-	stopped, err := s.Store.StopIdleSandboxes(time.Now().UTC(), timeout)
+// BackgroundDBTimeout bounds one pass of the idle reaper and of the retention
+// reaper: a database that does not answer costs that pass, not the loop.
+const BackgroundDBTimeout = 30 * time.Second
+
+func (s *Server) sweepIdle(ctx context.Context, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, BackgroundDBTimeout)
+	defer cancel()
+	stopped, err := s.Store.StopIdleSandboxes(ctx, time.Now().UTC(), timeout)
 	if err != nil {
 		slog.Error("sandbox idle reaper", "error", err)
 		return
@@ -112,8 +118,8 @@ func touchEvery(idleTimeout time.Duration) time.Duration {
 // returned function is called. Idle means "no exec running and none finished for
 // the idle timeout": the reaper must not stop a sandbox in the middle of a
 // command that streams for longer than the timeout.
-func (s *Server) keepActive(sandboxID string) (stop func()) {
-	_ = s.Store.TouchSandboxActivity(sandboxID)
+func (s *Server) keepActive(ctx context.Context, sandboxID string) (stop func()) {
+	_ = s.Store.TouchSandboxActivity(ctx, sandboxID)
 	every := touchEvery(s.IdleTimeout)
 	if every == 0 {
 		return func() {}
@@ -127,8 +133,10 @@ func (s *Server) keepActive(sandboxID string) (stop func()) {
 			select {
 			case <-done:
 				return
+			case <-ctx.Done():
+				return
 			case <-t.C:
-				_ = s.Store.TouchSandboxActivity(sandboxID)
+				_ = s.Store.TouchSandboxActivity(ctx, sandboxID)
 			}
 		}
 	}()

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (p *PostgresStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl time.Duration) (string, time.Time, error) {
+func (p *PostgresStore) IssueLocalNetGrant(ctx context.Context, id, dial string, now time.Time, ttl time.Duration) (string, time.Time, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", time.Time{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -25,7 +25,7 @@ func (p *PostgresStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl t
 		return "", time.Time{}, err
 	}
 	_ = dial
-	sb, err := p.GetSandbox(id)
+	sb, err := p.GetSandbox(ctx, id)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -36,7 +36,6 @@ func (p *PostgresStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl t
 		return "", time.Time{}, fmt.Errorf("%w: sandbox not active", ErrConflict)
 	}
 	exp := now.Add(ttl)
-	ctx := context.Background()
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sandboxes
 		SET local_net_grant_hash=$2, local_net_grant_expires_at=$3, updated_at=$4
@@ -50,7 +49,7 @@ func (p *PostgresStore) IssueLocalNetGrant(id, dial string, now time.Time, ttl t
 	return clear, exp, nil
 }
 
-func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.Time) (Sandbox, error) {
+func (p *PostgresStore) HeartbeatLocalNet(ctx context.Context, id, grant, clientPub string, now time.Time) (Sandbox, error) {
 	grant = strings.TrimSpace(grant)
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
@@ -64,7 +63,7 @@ func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	sb, err := p.GetSandbox(id)
+	sb, err := p.GetSandbox(ctx, id)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -74,14 +73,13 @@ func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.
 	if localNetTerminal(sb.State) {
 		return Sandbox{}, fmt.Errorf("%w: sandbox not active", ErrConflict)
 	}
-	ctx := context.Background()
 	if sb.LocalNetGrantHash == "" || sb.LocalNetGrantExpiresAt == nil || !now.Before(*sb.LocalNetGrantExpiresAt) {
 		_, _ = p.pool.Exec(ctx, `
 			UPDATE sandboxes
 			SET local_net_state='withdrawn', local_net_client_public='',
 			    local_net_grant_hash='', local_net_grant_expires_at=NULL, updated_at=$2
 			WHERE id=$1 AND local_net=true`, id, now)
-		_ = p.EmitEvent(EmitEventInput{
+		_ = p.EmitEvent(ctx, EmitEventInput{
 			SandboxID: id,
 			TenantID:  sb.TenantID,
 			EventType: "sandbox.local_net_withdrawn",
@@ -104,7 +102,7 @@ func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.
 	if err != nil {
 		return Sandbox{}, err
 	}
-	_ = p.EmitEvent(EmitEventInput{
+	_ = p.EmitEvent(ctx, EmitEventInput{
 		SandboxID: id,
 		TenantID:  sb.TenantID,
 		EventType: "sandbox.local_net_up",
@@ -114,11 +112,11 @@ func (p *PostgresStore) HeartbeatLocalNet(id, grant, clientPub string, now time.
 	return up, nil
 }
 
-func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
+func (p *PostgresStore) WithdrawLocalNet(ctx context.Context, id string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
-	sb, err := p.GetSandbox(id)
+	sb, err := p.GetSandbox(ctx, id)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -127,7 +125,6 @@ func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
 	}
 	prev := sb.LocalNetState
 	now := time.Now().UTC()
-	ctx := context.Background()
 	withdrawn, err := scanSandbox(p.pool.QueryRow(ctx, `
 		UPDATE sandboxes
 		SET local_net_state='withdrawn', local_net_client_public='',
@@ -141,7 +138,7 @@ func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
 		return Sandbox{}, err
 	}
 	if prev != LocalNetWithdrawn {
-		_ = p.EmitEvent(EmitEventInput{
+		_ = p.EmitEvent(ctx, EmitEventInput{
 			SandboxID: id,
 			TenantID:  sb.TenantID,
 			EventType: "sandbox.local_net_withdrawn",
@@ -152,7 +149,7 @@ func (p *PostgresStore) WithdrawLocalNet(id string) (Sandbox, error) {
 	return withdrawn, nil
 }
 
-func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
+func (p *PostgresStore) SetLocalNetNodePublic(ctx context.Context, id, publicKey string, tun LocalNetTunnel) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
 	}
@@ -162,7 +159,7 @@ func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNet
 	if err := tun.Validate(); err != nil {
 		return Sandbox{}, err
 	}
-	sb, err := p.GetSandbox(id)
+	sb, err := p.GetSandbox(ctx, id)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -170,7 +167,6 @@ func (p *PostgresStore) SetLocalNetNodePublic(id, publicKey string, tun LocalNet
 		return Sandbox{}, fmt.Errorf("%w: local_net is off", ErrConflict)
 	}
 	now := time.Now().UTC()
-	ctx := context.Background()
 	out, err := scanSandbox(p.pool.QueryRow(ctx, `
 		UPDATE sandboxes
 		SET local_net_node_public=$2, updated_at=$3,

@@ -247,7 +247,7 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	} else {
 		input.ActorSub = resolveActorSub(r, input.ActorSub, input.OwnerSub)
 	}
-	sb, err := s.Store.CreateSandbox(input)
+	sb, err := s.Store.CreateSandbox(r.Context(), input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -296,7 +296,7 @@ func (s *Server) GetSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -335,7 +335,7 @@ func (s *Server) ListSandboxes(w http.ResponseWriter, r *http.Request) {
 		}
 		tenantID = own
 	}
-	list, err := s.Store.ListSandboxes(tenantID)
+	list, err := s.Store.ListSandboxes(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -367,7 +367,7 @@ func (s *Server) ListSandboxEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -385,7 +385,7 @@ func (s *Server) ListSandboxEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	events, err := s.Store.ListEvents(id)
+	events, err := s.Store.ListEvents(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -434,7 +434,7 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 	// Refuse before issuing a certificate. EnrollNode checks again atomically;
 	// if it refuses after all, the certificate is discarded and its private
 	// key never leaves this process.
-	if err := s.Store.CheckEnroll(nodeID, auth); err != nil {
+	if err := s.Store.CheckEnroll(r.Context(), nodeID, auth); err != nil {
 		writeEnrollError(w, nodeID, err)
 		return
 	}
@@ -447,7 +447,7 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "issue cert: "+err.Error())
 		return
 	}
-	node, err := s.Store.EnrollNode(input, store.CertMeta{
+	node, err := s.Store.EnrollNode(r.Context(), input, store.CertMeta{
 		Fingerprint: issued.Fingerprint,
 		Serial:      issued.Serial,
 		NotAfter:    issued.NotAfter,
@@ -493,7 +493,7 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
-	if _, err := s.Store.GetNode(id); err != nil {
+	if _, err := s.Store.GetNode(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
 			return
@@ -510,7 +510,7 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "issue cert: "+err.Error())
 		return
 	}
-	node, err := s.Store.RotateNodeCert(id, store.CertMeta{
+	node, err := s.Store.RotateNodeCert(r.Context(), id, store.CertMeta{
 		Fingerprint: issued.Fingerprint,
 		Serial:      issued.Serial,
 		NotAfter:    issued.NotAfter,
@@ -550,7 +550,7 @@ func (s *Server) RevokeNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "node id required")
 		return
 	}
-	node, err := s.Store.RevokeNode(id)
+	node, err := s.Store.RevokeNode(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -580,7 +580,7 @@ func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	node, err := s.Store.RegisterNode(input)
+	node, err := s.Store.RegisterNode(r.Context(), input)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -624,7 +624,7 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	node, err := s.Store.HeartbeatNode(id)
+	node, err := s.Store.HeartbeatNode(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -638,7 +638,7 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.DiskFreeMiB != nil && *info.DiskFreeMiB >= 0 {
-		if err := s.Store.SetNodeDiskFree(id, *info.DiskFreeMiB); err != nil {
+		if err := s.Store.SetNodeDiskFree(r.Context(), id, *info.DiskFreeMiB); err != nil {
 			slog.Warn("heartbeat: recording the node's free disk space failed", "node_id", id, "error", err)
 		} else {
 			v := *info.DiskFreeMiB
@@ -683,7 +683,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorSub := resolveActorSub(r, req.ActorSub, "")
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -705,7 +705,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
-	agentURL, client, status, msg := s.agentTarget(sb)
+	agentURL, client, status, msg := s.agentTarget(r.Context(), sb)
 	if status != 0 {
 		writeError(w, status, msg)
 		return
@@ -713,10 +713,10 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	// A command that runs longer than the idle timeout is activity the whole time
 	// it runs, not only once it ends: the sandbox is touched now and while the call
 	// to the agent is open (a stream, or a buffered call waiting for its answer).
-	defer s.keepActive(sb.ID)()
+	defer s.keepActive(r.Context(), sb.ID)()
 	stream := wantsExecStream(r)
 	limit := s.execLimit(req.TimeoutSeconds, stream)
-	egressPol := s.effectiveEgress(sb.TenantID)
+	egressPol := s.effectiveEgress(r.Context(), sb.TenantID)
 	payload, _ := json.Marshal(map[string]any{
 		"sandbox_id":       sb.ID,
 		"cmd":              req.Cmd,
@@ -773,7 +773,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 			// Headers may already be flushed. Do not touch activity: the proxy did not finish.
 			return
 		}
-		_ = s.Store.EmitEvent(store.EmitEventInput{
+		_ = s.Store.EmitEvent(r.Context(), store.EmitEventInput{
 			SandboxID: sb.ID,
 			TenantID:  sb.TenantID,
 			EventType: "sandbox.exec",
@@ -781,7 +781,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 			ActorSub:  actorSub,
 			Payload:   mustJSON(map[string]any{"argc": len(req.Cmd), "stream": true, "as_root": req.AsRoot}),
 		})
-		_ = s.Store.TouchSandboxActivity(sb.ID)
+		_ = s.Store.TouchSandboxActivity(r.Context(), sb.ID)
 		return
 	}
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -794,7 +794,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "invalid node-agent exec response")
 		return
 	}
-	_ = s.Store.EmitEvent(store.EmitEventInput{
+	_ = s.Store.EmitEvent(r.Context(), store.EmitEventInput{
 		SandboxID: sb.ID,
 		TenantID:  sb.TenantID,
 		EventType: "sandbox.exec",
@@ -804,7 +804,7 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 	})
 	// Successful exec is activity (including non-zero guest exit). Proxy failures return above.
 	// Streaming exec counts only after the NDJSON body is copied (see above).
-	_ = s.Store.TouchSandboxActivity(sb.ID)
+	_ = s.Store.TouchSandboxActivity(r.Context(), sb.ID)
 	if stream {
 		// Upstream spoke buffered JSON (old node-agent). Re-emit one NDJSON burst
 		// so clients that asked for a stream still see the same event shape.
@@ -832,7 +832,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "exec_id required")
 		return
 	}
-	sb, err := s.Store.GetSandbox(id)
+	sb, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -854,7 +854,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
-	agentURL, client, status, msg := s.agentTarget(sb)
+	agentURL, client, status, msg := s.agentTarget(r.Context(), sb)
 	if status != 0 {
 		writeError(w, status, msg)
 		return
@@ -887,7 +887,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, resp.StatusCode, body)
 		return
 	}
-	_ = s.Store.TouchSandboxActivity(sb.ID)
+	_ = s.Store.TouchSandboxActivity(r.Context(), sb.ID)
 	w.Header().Set("Content-Type", "application/json")
 	if len(bytes.TrimSpace(body)) == 0 {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -1073,7 +1073,7 @@ func (s *Server) GetTenantEgress(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rules, err := s.Store.ListEgressRules(id)
+	rules, err := s.Store.ListEgressRules(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1124,7 +1124,7 @@ func (s *Server) PutTenantEgress(w http.ResponseWriter, r *http.Request) {
 			Enabled:     enabled,
 		})
 	}
-	out, err := s.Store.PutEgressRules(id, rules)
+	out, err := s.Store.PutEgressRules(r.Context(), id, rules)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1164,7 +1164,7 @@ func (s *Server) CheckTenantEgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "host required")
 		return
 	}
-	pol := s.effectiveEgress(id)
+	pol := s.effectiveEgress(r.Context(), id)
 	allowed := evaluateEgress(pol, req.Host, req.Port)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenant_id": id,
@@ -1175,8 +1175,8 @@ func (s *Server) CheckTenantEgress(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) effectiveEgress(tenantID string) store.EgressPolicy {
-	rules, err := s.Store.ListEgressRules(tenantID)
+func (s *Server) effectiveEgress(ctx context.Context, tenantID string) store.EgressPolicy {
+	rules, err := s.Store.ListEgressRules(ctx, tenantID)
 	if err != nil {
 		return store.EffectiveEgress(tenantID, nil)
 	}
@@ -1296,7 +1296,7 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 	_ = req.UserSub
 	_ = req.Act
 
-	sb, err := s.Store.GetSandbox(req.SandboxID)
+	sb, err := s.Store.GetSandbox(r.Context(), req.SandboxID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1311,7 +1311,7 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 	if !sandboxVisible(w, r, sb) {
 		return
 	}
-	attClaim := s.attestationClaim(sb.ID)
+	attClaim := s.attestationClaim(r.Context(), sb.ID)
 	userSub := strings.TrimSpace(sb.OwnerSub) // authoritative; empty OK in lab
 	token, claims, err := s.OIDC.MintWithAttestation(sb.TenantID, sb.ID, req.Aud, req.Nonce, userSub, attClaim)
 	if err != nil {
@@ -1387,7 +1387,7 @@ type workEgressPolicy struct {
 
 // workEgressFor builds the egress block of a work response: one effective
 // policy per tenant present on the node, read in one store call.
-func (s *Server) workEgressFor(tenants map[string]string) (*workEgress, error) {
+func (s *Server) workEgressFor(ctx context.Context, tenants map[string]string) (*workEgress, error) {
 	ids := make([]string, 0, len(tenants))
 	seen := map[string]bool{}
 	for _, t := range tenants {
@@ -1396,7 +1396,7 @@ func (s *Server) workEgressFor(tenants map[string]string) (*workEgress, error) {
 			ids = append(ids, t)
 		}
 	}
-	rules, err := s.Store.ListEgressRulesForTenants(ids)
+	rules, err := s.Store.ListEgressRulesForTenants(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1420,7 +1420,7 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Polling for work is a liveness signal (the heartbeat is only every 30s).
-	if err := s.Store.TouchNodePoll(id, time.Now().UTC()); err != nil {
+	if err := s.Store.TouchNodePoll(r.Context(), id, time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not registered")
 			return
@@ -1428,7 +1428,7 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	work, err := s.Store.ListNodeWork(id)
+	work, err := s.Store.ListNodeWork(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1450,7 +1450,7 @@ func (s *Server) ListNodeWork(w http.ResponseWriter, r *http.Request) {
 		work.Tenants = map[string]string{}
 	}
 	resp := listWorkResponse{Sandboxes: work.Sandboxes, Assigned: work.Assigned, Retained: work.Retained}
-	if eg, err := s.workEgressFor(work.Tenants); err != nil {
+	if eg, err := s.workEgressFor(r.Context(), work.Tenants); err != nil {
 		slog.Warn("work poll without egress policies: reading the rules failed", "node_id", id, "error", err)
 	} else {
 		resp.Egress = eg
@@ -1473,7 +1473,7 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 	if !authorizeNodeID(w, r, nodeID) {
 		return
 	}
-	sb, err := s.Store.ClaimSandbox(id, nodeID)
+	sb, err := s.Store.ClaimSandbox(r.Context(), id, nodeID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1529,7 +1529,7 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := store.SandboxState(strings.TrimSpace(req.State))
-	sb, err := s.Store.UpdateSandboxStatus(id, state, strings.TrimSpace(req.Detail))
+	sb, err := s.Store.UpdateSandboxStatus(r.Context(), id, state, strings.TrimSpace(req.Detail))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1559,7 +1559,7 @@ func (s *Server) sandboxForAction(w http.ResponseWriter, r *http.Request, forbid
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return store.Sandbox{}, "", false
 	}
-	existing, err := s.Store.GetSandbox(id)
+	existing, err := s.Store.GetSandbox(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "sandbox not found")
@@ -1598,7 +1598,7 @@ func (s *Server) StopSandbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sb, err := s.Store.StopSandbox(existing.ID, actorSub)
+	sb, err := s.Store.StopSandbox(r.Context(), existing.ID, actorSub)
 	if err != nil {
 		writeLifecycleError(w, err)
 		return
@@ -1615,7 +1615,7 @@ func (s *Server) StartSandbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sb, err := s.Store.ResumeSandbox(existing.ID, actorSub)
+	sb, err := s.Store.ResumeSandbox(r.Context(), existing.ID, actorSub)
 	if err != nil {
 		writeLifecycleError(w, err)
 		return
@@ -1630,7 +1630,7 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sb, err := s.Store.DeleteSandbox(existing.ID, actorSub)
+	sb, err := s.Store.DeleteSandbox(r.Context(), existing.ID, actorSub)
 	if err != nil {
 		writeLifecycleError(w, err)
 		return

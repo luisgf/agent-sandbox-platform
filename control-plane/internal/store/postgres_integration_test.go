@@ -16,18 +16,26 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
 
-// newPostgresTestStore connects to DATABASE_URL, applies migrations and empties the
-// app tables. Tests using it skip when DATABASE_URL is unset (CI sets it).
-func newPostgresTestStore(t *testing.T) *PostgresStore {
+// postgresTestURL is DATABASE_URL; tests that need a database skip without it.
+func postgresTestURL(t *testing.T) string {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
 	}
+	return dbURL
+}
+
+// newPostgresTestStore connects to DATABASE_URL, applies migrations and empties the
+// app tables. Tests using it skip when DATABASE_URL is unset (CI sets it).
+func newPostgresTestStore(t *testing.T) *PostgresStore {
+	t.Helper()
+	dbURL := postgresTestURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	// The pool the control plane runs with, limits included.
+	pool, err := NewPool(context.Background(), dbURL, DefaultDBTimeouts())
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -54,7 +62,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sb, err := pg.CreateSandbox(CreateSandboxInput{
+	sb, err := pg.CreateSandbox(context.Background(), CreateSandboxInput{
 		TenantID:  "tenant-pg",
 		ImageRef:  "debian:bookworm",
 		CPUMillis: 500,
@@ -66,7 +74,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if sb.State != SandboxRunning {
 		t.Fatalf("state=%s", sb.State)
 	}
-	ev, err := pg.ListEvents(sb.ID)
+	ev, err := pg.ListEvents(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +82,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatalf("events=%d", len(ev))
 	}
 
-	n, err := pg.RegisterNode(RegisterNodeInput{
+	n, err := pg.RegisterNode(context.Background(), RegisterNodeInput{
 		ID: "node-pg", Name: "node-pg", Endpoint: "http://127.0.0.1:9",
 		CapacityCPU: 2, CapacityMemMiB: 4096,
 	})
@@ -86,11 +94,11 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	secret := "integration-bootstrap-key"
-	k, err := pg.EnsureAPIKey("default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), HashAPIKeySecret(secret))
+	k, err := pg.EnsureAPIKey(context.Background(), "default", "bootstrap", APIKeyScopePlatform, KeyPrefix(secret), HashAPIKeySecret(secret))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := pg.LookupAPIKeyByHash(HashAPIKeySecret(secret))
+	got, err := pg.LookupAPIKeyByHash(context.Background(), HashAPIKeySecret(secret))
 	if err != nil || got.ID != k.ID {
 		t.Fatalf("lookup key: %+v err=%v", got, err)
 	}
@@ -98,32 +106,32 @@ func TestPostgresStoreIntegration(t *testing.T) {
 
 func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 	pg := newPostgresTestStore(t)
-	if _, err := pg.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+	if _, err := pg.RegisterNode(context.Background(), RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pg.RevokeNode("n1"); err != nil {
+	if _, err := pg.RevokeNode(context.Background(), "n1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pg.HeartbeatNode("n1"); !errors.Is(err, ErrConflict) {
+	if _, err := pg.HeartbeatNode(context.Background(), "n1"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("heartbeat after revoke: want ErrConflict, got %v", err)
 	}
-	if _, err := pg.HeartbeatNode("missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := pg.HeartbeatNode(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("heartbeat unknown node: want ErrNotFound, got %v", err)
 	}
-	if _, err := pg.RegisterNode(RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); !errors.Is(err, ErrConflict) {
+	if _, err := pg.RegisterNode(context.Background(), RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("register after revoke: want ErrConflict, got %v", err)
 	}
-	n, err := pg.GetNode("n1")
+	n, err := pg.GetNode(context.Background(), "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n.State != "offline" || n.RevokedAt == nil {
 		t.Fatalf("revoked node came back: %+v", n)
 	}
-	if _, err := pg.EnrollNode(EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}, EnrollAuth{}); err != nil {
+	if _, err := pg.EnrollNode(context.Background(), EnrollNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-new"}, EnrollAuth{}); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := pg.HeartbeatNode("n1"); err != nil || n.State != "ready" {
+	if n, err := pg.HeartbeatNode(context.Background(), "n1"); err != nil || n.State != "ready" {
 		t.Fatalf("heartbeat after re-enroll: node=%+v err=%v", n, err)
 	}
 }
@@ -131,26 +139,26 @@ func TestPostgresRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 func TestPostgresAPIKeyScope(t *testing.T) {
 	pg := newPostgresTestStore(t)
 	secret := "scope-" + newID()
-	k, err := pg.EnsureAPIKey("tenant-scope", "scoped", APIKeyScopeTenant, KeyPrefix(secret), HashAPIKeySecret(secret))
+	k, err := pg.EnsureAPIKey(context.Background(), "tenant-scope", "scoped", APIKeyScopeTenant, KeyPrefix(secret), HashAPIKeySecret(secret))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if k.Scope != APIKeyScopeTenant {
 		t.Fatalf("created scope=%q", k.Scope)
 	}
-	got, err := pg.LookupAPIKeyByHash(HashAPIKeySecret(secret))
+	got, err := pg.LookupAPIKeyByHash(context.Background(), HashAPIKeySecret(secret))
 	if err != nil || got.Scope != APIKeyScopeTenant || got.TenantID != "tenant-scope" {
 		t.Fatalf("lookup: %+v %v", got, err)
 	}
 	// EnsureAPIKey promotes the same key to platform scope (the bootstrap key on upgrade).
-	if _, err := pg.EnsureAPIKey("tenant-scope", "scoped", APIKeyScopePlatform, KeyPrefix(secret), HashAPIKeySecret(secret)); err != nil {
+	if _, err := pg.EnsureAPIKey(context.Background(), "tenant-scope", "scoped", APIKeyScopePlatform, KeyPrefix(secret), HashAPIKeySecret(secret)); err != nil {
 		t.Fatal(err)
 	}
-	got, err = pg.LookupAPIKeyByHash(HashAPIKeySecret(secret))
+	got, err = pg.LookupAPIKeyByHash(context.Background(), HashAPIKeySecret(secret))
 	if err != nil || got.Scope != APIKeyScopePlatform {
 		t.Fatalf("after promotion: %+v %v", got, err)
 	}
-	if _, err := pg.EnsureAPIKey("tenant-scope", "bad", "root", "x", "y"); !errors.Is(err, ErrInvalidInput) {
+	if _, err := pg.EnsureAPIKey(context.Background(), "tenant-scope", "bad", "root", "x", "y"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unknown scope: want ErrInvalidInput, got %v", err)
 	}
 }
@@ -162,13 +170,13 @@ func TestPostgresEnrollTokens(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	tokFor := func(raw, nodeID string) EnrollAuth {
 		t.Helper()
-		if err := pg.CreateEnrollToken(EnrollToken{Hash: HashEnrollToken(raw), NodeID: nodeID, ExpiresAt: future, CreatedBy: "test"}); err != nil {
+		if err := pg.CreateEnrollToken(context.Background(), EnrollToken{Hash: HashEnrollToken(raw), NodeID: nodeID, ExpiresAt: future, CreatedBy: "test"}); err != nil {
 			t.Fatal(err)
 		}
 		return EnrollAuth{TokenHash: HashEnrollToken(raw)}
 	}
 	enroll := func(id, fp string, auth EnrollAuth) error {
-		_, err := pg.EnrollNode(EnrollNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: fp}, auth)
+		_, err := pg.EnrollNode(context.Background(), EnrollNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: fp}, auth)
 		return err
 	}
 
@@ -197,7 +205,7 @@ func TestPostgresEnrollTokens(t *testing.T) {
 	if err := enroll("live", "fp-live-2", EnrollAuth{}); !errors.Is(err, ErrNodeEnrolled) {
 		t.Fatalf("bootstrap re-enroll of a live node: want ErrNodeEnrolled, got %v", err)
 	}
-	if err := pg.CheckEnroll("live", EnrollAuth{}); !errors.Is(err, ErrNodeEnrolled) {
+	if err := pg.CheckEnroll(context.Background(), "live", EnrollAuth{}); !errors.Is(err, ErrNodeEnrolled) {
 		t.Fatalf("CheckEnroll: want ErrNodeEnrolled, got %v", err)
 	}
 	if err := enroll("other", "fp-other", tokFor("pin-"+newID(), "live")); !errors.Is(err, ErrEnrollTokenPinned) {
@@ -206,11 +214,11 @@ func TestPostgresEnrollTokens(t *testing.T) {
 	if err := enroll("live", "fp-live-3", tokFor("rekey-"+newID(), "live")); err != nil {
 		t.Fatalf("pinned re-enroll: %v", err)
 	}
-	if revoked, err := pg.IsCertRevoked("fp-live-1"); err != nil || !revoked {
+	if revoked, err := pg.IsCertRevoked(context.Background(), "fp-live-1"); err != nil || !revoked {
 		t.Fatalf("re-keying must revoke the previous certificate: revoked=%v err=%v", revoked, err)
 	}
 	expired := HashEnrollToken("expired-" + newID())
-	if err := pg.CreateEnrollToken(EnrollToken{Hash: expired, ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
+	if err := pg.CreateEnrollToken(context.Background(), EnrollToken{Hash: expired, ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := enroll("late", "fp-late", EnrollAuth{TokenHash: expired}); !errors.Is(err, ErrEnrollTokenInvalid) {
@@ -221,32 +229,32 @@ func TestPostgresEnrollTokens(t *testing.T) {
 func TestPostgresNodeCertNotAfter(t *testing.T) {
 	pg := newPostgresTestStore(t)
 	first := time.Now().Add(365 * 24 * time.Hour).UTC().Truncate(time.Second)
-	if _, err := pg.EnrollNode(EnrollNodeInput{ID: "exp", AgentEndpoint: "http://127.0.0.1:9100"},
+	if _, err := pg.EnrollNode(context.Background(), EnrollNodeInput{ID: "exp", AgentEndpoint: "http://127.0.0.1:9100"},
 		CertMeta{Fingerprint: "fp-exp-1", NotAfter: first}, EnrollAuth{}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := pg.GetNode("exp")
+	n, err := pg.GetNode(context.Background(), "exp")
 	if err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(first) {
 		t.Fatalf("after enroll: cert_not_after=%v err=%v", n.CertNotAfter, err)
 	}
 	second := first.Add(30 * 24 * time.Hour)
-	if _, err := pg.RotateNodeCert("exp", CertMeta{Fingerprint: "fp-exp-2", NotAfter: second}); err != nil {
+	if _, err := pg.RotateNodeCert(context.Background(), "exp", CertMeta{Fingerprint: "fp-exp-2", NotAfter: second}); err != nil {
 		t.Fatal(err)
 	}
-	if n, err = pg.GetNode("exp"); err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(second) {
+	if n, err = pg.GetNode(context.Background(), "exp"); err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(second) {
 		t.Fatalf("after rotate: cert_not_after=%v err=%v", n.CertNotAfter, err)
 	}
 }
 
 func TestPostgresListEgressRulesForTenants(t *testing.T) {
 	pg := newPostgresTestStore(t)
-	if _, err := pg.PutEgressRules("eg-t1", []EgressRule{{HostPattern: "api.github.com", Enabled: true}}); err != nil {
+	if _, err := pg.PutEgressRules(context.Background(), "eg-t1", []EgressRule{{HostPattern: "api.github.com", Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pg.PutEgressRules("eg-t2", []EgressRule{{HostPattern: "a.example", Enabled: true}, {HostPattern: "b.example", Enabled: false}}); err != nil {
+	if _, err := pg.PutEgressRules(context.Background(), "eg-t2", []EgressRule{{HostPattern: "a.example", Enabled: true}, {HostPattern: "b.example", Enabled: false}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := pg.ListEgressRulesForTenants([]string{"eg-t1", "eg-t2", "eg-none"})
+	got, err := pg.ListEgressRulesForTenants(context.Background(), []string{"eg-t1", "eg-t2", "eg-none"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,22 +271,22 @@ func TestPostgresLocalNetNodeTunnel(t *testing.T) {
 	pg := newPostgresTestStore(t)
 	registerPlacementNodes(t, pg, 0, "ln-node")
 	on := true
-	sb, err := pg.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, LocalNet: &on})
+	sb, err := pg.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, LocalNet: &on})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tun := LocalNetTunnel{ListenPort: 50001, NodeAddr: "10.188.4.1/30", ClientAddr: "10.188.4.2/30"}
-	if _, err := pg.SetLocalNetNodePublic(sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", tun); err != nil {
+	if _, err := pg.SetLocalNetNodePublic(context.Background(), sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", tun); err != nil {
 		t.Fatal(err)
 	}
-	got, err := pg.GetSandbox(sb.ID)
+	got, err := pg.GetSandbox(context.Background(), sb.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.LocalNetListenPort != 50001 || got.LocalNetNodeAddr != "10.188.4.1/30" || got.LocalNetClientAddr != "10.188.4.2/30" {
 		t.Fatalf("stored tunnel: %+v", got)
 	}
-	if _, err := pg.SetLocalNetNodePublic(sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", LocalNetTunnel{}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := pg.SetLocalNetNodePublic(context.Background(), sb.ID, "ERERERERERERERERERERERERERERERERERERERERERE=", LocalNetTunnel{}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("missing tunnel parameters: want ErrInvalidInput, got %v", err)
 	}
 }
@@ -334,7 +342,7 @@ func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
 	pg := NewPostgresStore(pool)
 
 	registerPlacementNodes(t, pg, 0, "trace-node")
-	sb, err := pg.CreateSandbox(CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
+	sb, err := pg.CreateSandbox(context.Background(), CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,33 +355,33 @@ func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
 			t.Errorf("%s sent %d statements, want %d:\n%s", what, len(got), want, strings.Join(got, "\n"))
 		}
 	}
-	claimed, err := pg.ClaimSandbox(sb.ID, "trace-node")
+	claimed, err := pg.ClaimSandbox(context.Background(), sb.ID, "trace-node")
 	if err != nil || claimed.State != SandboxStarting || claimed.ID != sb.ID {
 		t.Fatalf("claim: %+v %v", claimed, err)
 	}
 	check("ClaimSandbox", 2)
-	running, err := pg.UpdateSandboxStatus(sb.ID, SandboxRunning, "booted")
+	running, err := pg.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "booted")
 	if err != nil || running.State != SandboxRunning || running.StateVersion != claimed.StateVersion+1 {
 		t.Fatalf("status: %+v %v", running, err)
 	}
 	check("UpdateSandboxStatus", 2)
-	n, err := pg.HeartbeatNode("trace-node")
+	n, err := pg.HeartbeatNode(context.Background(), "trace-node")
 	if err != nil || n.ID != "trace-node" || n.LastSeenAt == nil {
 		t.Fatalf("heartbeat: %+v %v", n, err)
 	}
 	check("HeartbeatNode", 1)
-	stopping, err := pg.StopSandbox(sb.ID, "user:a")
+	stopping, err := pg.StopSandbox(context.Background(), sb.ID, "user:a")
 	if err != nil || stopping.State != SandboxStopping {
 		t.Fatalf("stopping: %+v %v", stopping, err)
 	}
 	check("StopSandbox", 2)
 
 	// A refused transition reads once to explain itself and changes nothing.
-	if _, err := pg.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "stopping") {
+	if _, err := pg.UpdateSandboxStatus(context.Background(), sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "stopping") {
 		t.Fatalf("late running: %v", err)
 	}
 	tr.statements()
-	if got, _ := pg.GetSandbox(sb.ID); got.State != SandboxStopping {
+	if got, _ := pg.GetSandbox(context.Background(), sb.ID); got.State != SandboxStopping {
 		t.Fatalf("a refused transition changed the row: %s", got.State)
 	}
 }
