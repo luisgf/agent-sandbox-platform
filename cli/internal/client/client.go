@@ -82,10 +82,12 @@ func (s Sandbox) IdleReaped() bool {
 	return s.StopReason == StopReasonIdle
 }
 
-// Stop reasons for sandboxes lost with their node (control-plane store).
+// Stop reasons for sandboxes lost with their node (control-plane store), and for
+// one whose VM's process ended on its own.
 const (
 	StopReasonNodeLost       = "node_lost"
 	StopReasonAgentRestarted = "node_agent_restarted"
+	StopReasonVMMExited      = "vmm_exited"
 )
 
 // LostWithNode reports that the sandbox's node was lost or its agent restarted

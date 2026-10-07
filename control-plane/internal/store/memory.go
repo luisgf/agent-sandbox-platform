@@ -350,6 +350,9 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		if sb.BootedAt == nil {
 			sb.BootedAt = &now
 		}
+	case reportsVMMExit(prev, state, detail):
+		sb.StatusDetail = detail
+		sb.StopReason = StopReasonVMMExited
 	case detail != "" && recordsDetail(prev, state):
 		sb.StatusDetail = detail
 	}

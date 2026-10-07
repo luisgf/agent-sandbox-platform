@@ -103,6 +103,8 @@ type fakeCP struct {
 	// unknownNode answers the work poll with 404, as a control plane that lost
 	// this node does.
 	unknownNode bool
+	// failStatus is how many of the next status reports are answered 500.
+	failStatus int
 }
 
 type fakeSandbox struct {
@@ -211,6 +213,11 @@ func (f *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 			Detail string `json:"detail"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if f.failStatus > 0 {
+			f.failStatus--
+			http.Error(w, `{"error":"unavailable"}`, http.StatusInternalServerError)
+			return
+		}
 		cur := f.boxes[parts[3]].State
 		if body.State == "running" && (f.conflict[parts[3]] || cur == "stopping" || cur == "stopped" || cur == "failed") {
 			// Like the control plane's ValidAgentTransition.

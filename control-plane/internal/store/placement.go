@@ -158,6 +158,22 @@ func (w *NodeWork) sortWork() {
 	sort.Strings(w.Retained)
 }
 
+// StopReasonVMMExited is persisted on a sandbox whose VM's process ended on its
+// own (a crash, an OOM kill, a guest that powered itself off) while it ran, and
+// whose node said so. The sandbox is stopped, with its disk, and can be resumed.
+const StopReasonVMMExited = "vmm_exited"
+
+// VMMExitedDetailPrefix starts the detail a node sends for that, followed by how
+// the process ended and how long it had run.
+const VMMExitedDetailPrefix = "vmm_exited:"
+
+// reportsVMMExit: a node moved a sandbox that was running to stopped because
+// its VM ended by itself. The detail is kept, with a reason clients can switch on.
+func reportsVMMExit(prev, to SandboxState, detail string) bool {
+	return to == SandboxStopped && (prev == SandboxRunning || prev == SandboxPaused) &&
+		strings.HasPrefix(detail, VMMExitedDetailPrefix)
+}
+
 // recordsDetail: the detail a node sends is kept for a start that could not
 // finish: failed, or a resume that went back to stopped. A plain stop's detail
 // ("vmm stopped") says nothing worth keeping.

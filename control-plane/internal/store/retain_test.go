@@ -460,6 +460,42 @@ func testStatusDetail(t *testing.T, s Store) {
 func TestMemoryStatusDetail(t *testing.T)   { testStatusDetail(t, NewMemoryStore()) }
 func TestPostgresStatusDetail(t *testing.T) { testStatusDetail(t, newPostgresTestStore(t)) }
 
+// A node that finds the VM's process gone moves a running sandbox to stopped and
+// says why: the detail is kept with a reason clients can switch on, a resume
+// starts clean, and only that report is kept (a plain stop's detail still is not).
+func testVMMExitedReport(t *testing.T, s Store) {
+	lifecycleStore(t, s, 0, "node-a")
+	sb := runningOn(t, s, "node-a")
+	const detail = "vmm_exited: signal: killed after 3m12s"
+	got := report(t, s, sb.ID, SandboxStopped, detail)
+	if got.State != SandboxStopped || got.StatusDetail != detail || got.StopReason != StopReasonVMMExited || got.StoppedAt == nil {
+		t.Fatalf("exit report: %+v", got)
+	}
+	if again := report(t, s, sb.ID, SandboxStopped, "vmm stopped, disk kept"); again.StatusDetail != detail || again.StopReason != StopReasonVMMExited {
+		t.Fatalf("a later plain report changed it: %+v", again)
+	}
+	resumed, err := s.ResumeSandbox(sb.ID, "")
+	if err != nil || resumed.StatusDetail != "" || resumed.StopReason != "" {
+		t.Fatalf("a resume starts clean: %+v %v", resumed, err)
+	}
+	if _, err := s.ClaimSandbox(sb.ID, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	if run := report(t, s, sb.ID, SandboxRunning, "vmm started"); run.StatusDetail != "" || run.StopReason != "" {
+		t.Fatalf("running after the resume: %+v", run)
+	}
+
+	// Anything else that says it is not an exit: a stopped report with that text
+	// from a sandbox that was not running, or a different text.
+	other := runningOn(t, s, "node-a")
+	if got := report(t, s, other.ID, SandboxStopped, "vmm stopped, disk kept"); got.StopReason != "" || got.StatusDetail != "" {
+		t.Fatalf("plain stop: %+v", got)
+	}
+}
+
+func TestMemoryVMMExitedReport(t *testing.T)   { testVMMExitedReport(t, NewMemoryStore()) }
+func TestPostgresVMMExitedReport(t *testing.T) { testVMMExitedReport(t, newPostgresTestStore(t)) }
+
 // The idle reaper stops; the stopped sandbox is resumable.
 func testIdleReapedSandboxResumes(t *testing.T, s Store, touch func(id string, at time.Time)) {
 	lifecycleStore(t, s, 0, "node-a")

@@ -401,10 +401,14 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 		UPDATE sandboxes s SET state=$2, state_version=s.state_version+1, updated_at=$3,
 		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE s.last_activity_at END,
 		    booted_at=CASE WHEN $2='running' THEN COALESCE(s.booted_at, $3::timestamptz) ELSE s.booted_at END,
-		    stop_reason=CASE WHEN $2='running' THEN '' ELSE s.stop_reason END,
+		    stop_reason=CASE
+		      WHEN $2='running' THEN ''
+		      WHEN $2='stopped' AND prev.state IN ('running','paused') AND starts_with($5, 'vmm_exited:') THEN 'vmm_exited'
+		      ELSE s.stop_reason END,
 		    status_detail=CASE
 		      WHEN $2='running' THEN ''
 		      WHEN $5<>'' AND ($2='failed' OR ($2='stopped' AND prev.state IN ('requested','starting'))) THEN $5
+		      WHEN $2='stopped' AND prev.state IN ('running','paused') AND starts_with($5, 'vmm_exited:') THEN $5
 		      ELSE s.status_detail END,
 		    stopped_at=CASE WHEN $2='stopped' THEN $3::timestamptz ELSE s.stopped_at END,
 		    local_net_state=CASE

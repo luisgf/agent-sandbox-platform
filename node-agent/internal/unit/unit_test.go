@@ -18,7 +18,7 @@ func TestArgs(t *testing.T) {
 	}
 	got := spec.Args("/usr/bin/vmm", "--api-socket", "/run/x.sock")
 	want := []string{
-		"--quiet", "--collect", "--wait", "--unit=asp-vm-abc", "--slice=asp-vms.slice",
+		"--collect", "--wait", "--unit=asp-vm-abc", "--slice=asp-vms.slice",
 		"--description=ASP microVM abc",
 		"--property=MemoryMax=1073741824", "--property=CPUQuota=250%", "--property=TasksMax=512",
 		"--property=Nice=5",
@@ -92,6 +92,46 @@ func TestWaitReportsAFailureWithWhatSystemdRunSaid(t *testing.T) {
 	err = p.Wait()
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("Wait: %v", err)
+	}
+}
+
+// systemd-run is not quiet: a service that was killed (the OOM killer included)
+// says so, and Wait carries that, without the bookkeeping lines around it. It is
+// the only record of why the VM's process ended.
+func TestWaitCarriesHowTheServiceEnded(t *testing.T) {
+	l, _ := fakeTools(t)
+	out := `echo 'Running as unit: asp-vm-x.service' >&2
+echo 'Finished with result: oom-kill' >&2
+echo 'Main processes terminated with: code=killed/status=KILL' >&2
+echo 'Service runtime: 3min 12.5s' >&2
+echo 'CPU time consumed: 4.1s' >&2
+echo 'Memory peak: 1.9G' >&2
+exit 1`
+	p, err := l.Start(Spec{Name: "asp-vm-x"}, "/bin/sh", "-c", out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Wait()
+	if err == nil {
+		t.Fatal("a killed service ended without an error")
+	}
+	for _, want := range []string{"exit status 1", "Finished with result: oom-kill", "Main processes terminated with: code=killed/status=KILL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	for _, noise := range []string{"Running as unit", "Service runtime", "CPU time", "Memory peak", "\n"} {
+		if strings.Contains(err.Error(), noise) {
+			t.Errorf("error %q keeps %q", err, noise)
+		}
+	}
+	// A clean end is not an error, whatever systemd-run printed.
+	ok, err := l.Start(Spec{Name: "asp-vm-y"}, "/bin/sh", "-c", "echo 'Finished with result: success' >&2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ok.Wait(); err != nil {
+		t.Fatalf("clean end: %v", err)
 	}
 }
 

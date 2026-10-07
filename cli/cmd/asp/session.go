@@ -535,17 +535,23 @@ func idleReapedText(id, path string) string {
 // stoppedText is for a sandbox someone stopped: nothing is lost, resume it.
 func stoppedText(sb client.Sandbox, path string) string {
 	cause := ""
+	detail := ""
 	switch sb.StopReason {
 	case client.StopReasonAgentRestarted:
 		cause = " when the node agent restarted"
 	case client.StopReasonNodeLost:
 		cause = " when its node stopped responding"
+	case client.StopReasonVMMExited:
+		// The node found the VM's process gone: its detail says how it ended.
+		cause = " because its VM ended on its own"
+		if d := strings.TrimSpace(strings.TrimPrefix(sb.StatusDetail, "vmm_exited:")); d != "" {
+			cause += " (" + d + ")"
+		}
 	}
-	msg := fmt.Sprintf("sandbox %s was stopped%s; its disk is kept on node %s. Session file kept (%s). Run: asp session resume", sb.ID, cause, nodeOf(sb), path)
-	if sb.StatusDetail != "" {
-		msg += fmt.Sprintf(" (the last resume failed: %s)", strings.TrimPrefix(sb.StatusDetail, "resume failed: "))
+	if sb.StopReason != client.StopReasonVMMExited && sb.StatusDetail != "" {
+		detail = fmt.Sprintf(" (the last resume failed: %s)", strings.TrimPrefix(sb.StatusDetail, "resume failed: "))
 	}
-	return msg
+	return fmt.Sprintf("sandbox %s was stopped%s; its disk is kept on node %s. Session file kept (%s). Run: asp session resume%s", sb.ID, cause, nodeOf(sb), path, detail)
 }
 
 func lostWithNodeText(sb client.Sandbox, path string) string {

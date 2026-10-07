@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // FakeVMM records Create/Boot/Delete calls without talking to Cloud Hypervisor.
@@ -15,6 +16,7 @@ type FakeVMM struct {
 	Configs []MicroVMConfig
 	Running map[string]MicroVMConfig
 	Logger  *slog.Logger
+	onExit  func(id string, info ExitInfo)
 }
 
 func NewFakeVMM(logger *slog.Logger) *FakeVMM {
@@ -91,6 +93,27 @@ func (f *FakeVMM) Pause(context.Context, string) error {
 	return nil
 }
 
+// SetExitHandler implements ExitNotifier.
+func (f *FakeVMM) SetExitHandler(fn func(id string, info ExitInfo)) {
+	f.mu.Lock()
+	f.onExit = fn
+	f.mu.Unlock()
+}
+
+// Crash makes the VM of id end on its own, as a Cloud Hypervisor that was killed
+// does: the handler is told, and the VM stays tracked (as running) until Stop.
+// It reports whether id was running.
+func (f *FakeVMM) Crash(id string, err error, lived time.Duration) bool {
+	f.mu.Lock()
+	_, ok := f.Running[id]
+	fn := f.onExit
+	f.mu.Unlock()
+	if ok && fn != nil {
+		fn(id, ExitInfo{Err: err, Lived: lived})
+	}
+	return ok
+}
+
 // RunningConfig returns the config passed to Start for id.
 func (f *FakeVMM) RunningConfig(id string) (MicroVMConfig, bool) {
 	f.mu.Lock()
@@ -107,3 +130,4 @@ func (f *FakeVMM) record(op string) {
 
 var _ MicroVM = (*FakeVMM)(nil)
 var _ VMM = (*FakeVMM)(nil)
+var _ ExitNotifier = (*FakeVMM)(nil)
