@@ -113,6 +113,17 @@ func TestMissingFiles(t *testing.T) {
 	}
 }
 
+// /dev/null names no file, even as a file the operator named: the way a smoke or a test keeps
+// out of the /etc/asp of the host it runs on.
+func TestDevNullIsNoFile(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		f, err := LoadFile(os.DevNull, required)
+		if err != nil || len(f.Values) != 0 || len(f.Paths) != 0 {
+			t.Fatalf("/dev/null (required=%v): %+v %v", required, f, err)
+		}
+	}
+}
+
 func TestBadFiles(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{

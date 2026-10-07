@@ -1,6 +1,11 @@
 # shellcheck shell=bash
 # Helpers shared by the smoke scripts. Source after ROOT is set.
 
+# A smoke runs with the settings it passes and with nothing else: not the /etc/asp or the
+# ~/.config/asp of the host it happens to run on, which the node-agent, the control plane and
+# the CLI read (/dev/null is "no file").
+export ASP_CONFIG=/dev/null
+
 # wait_node_schedulable <cp_url> <node_id> [timeout_s]
 # Creates are refused (503) until a node can take sandboxes, and the agent's
 # /healthz answers before it registers, so wait for the scheduler's view.

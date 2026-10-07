@@ -40,10 +40,11 @@ type File struct {
 
 // LoadFile reads base and the files in base+".d". A base file that does not exist is not
 // an error unless required (a path the operator named). A drop-in directory that does not
-// exist is nothing.
+// exist is nothing. The empty name and /dev/null (as a systemd unit is masked) read no file
+// at all: how a test or a smoke on a host that has a real /etc/asp stays out of it.
 func LoadFile(base string, required bool) (*File, error) {
 	f := &File{Values: map[string]string{}, From: map[string]string{}, Loose: map[string]bool{}}
-	if base == "" {
+	if base == "" || base == os.DevNull {
 		return f, nil
 	}
 	paths := []string{}
