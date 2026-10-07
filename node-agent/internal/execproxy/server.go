@@ -30,6 +30,8 @@ type Server struct {
 	PolicyCache *egress.PolicyCache
 	// SSHApprover optional one-shot SignRequest approvals (POST /v1/internal/ssh-agent/approve).
 	SSHApprover *sshagent.Approver
+	// Doctor runs the node's self-checks (GET /v1/internal/doctor). Nil answers 501.
+	Doctor func(ctx context.Context) any
 }
 
 type egressRuleDTO struct {
@@ -84,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/internal/exec", s.handleExec)
 	mux.HandleFunc("POST /v1/internal/exec/stdin", s.handleExecStdin)
+	mux.HandleFunc("GET /v1/internal/doctor", s.handleDoctor)
 	mux.HandleFunc("POST /v1/internal/egress-check", s.handleEgressCheck)
 	mux.HandleFunc("POST /v1/internal/ssh-agent/approve", s.handleSSHAgentApprove)
 	return mux
@@ -487,4 +490,16 @@ func (s *Server) logExecError(r *http.Request, msg string, err error, attrs ...a
 		return
 	}
 	s.Logger.Error(msg, args...)
+}
+
+// handleDoctor answers with the report of the node's self-checks. It runs the checks
+// (a few seconds at most), so it is read-only on the node apart from a TAP device
+// that is made and removed at once.
+func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
+	if s.Doctor == nil {
+		http.Error(w, `{"error":"this node-agent has no doctor"}`, http.StatusNotImplemented)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.Doctor(r.Context()))
 }

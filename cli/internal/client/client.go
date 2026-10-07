@@ -217,6 +217,40 @@ func (c *Client) ListNodes(ctx context.Context) ([]Node, error) {
 	return out.Nodes, err
 }
 
+// DoctorResult is one check of a node's self-check; the field names are the JSON the
+// node-agent's doctor writes.
+type DoctorResult struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // ok | warn | fail | skip
+	Detail string `json:"detail,omitempty"`
+	Fix    string `json:"fix,omitempty"`
+}
+
+// DoctorReport is what a node says about itself.
+type DoctorReport struct {
+	NodeID  string         `json:"node_id,omitempty"`
+	At      time.Time      `json:"at"`
+	Results []DoctorResult `json:"results"`
+}
+
+// Failed reports whether any check failed.
+func (r DoctorReport) Failed() bool {
+	for _, c := range r.Results {
+		if c.Status == "fail" {
+			return true
+		}
+	}
+	return false
+}
+
+// NodeDoctor asks the node-agent of a node, through the control plane, to run its
+// self-checks (admin, operator or a platform key).
+func (c *Client) NodeDoctor(ctx context.Context, id string) (DoctorReport, error) {
+	var out DoctorReport
+	err := c.doJSON(ctx, http.MethodGet, "/v1/nodes/"+url.PathEscape(id)+"/doctor", nil, http.StatusOK, &out)
+	return out, err
+}
+
 // SetNodeCordoned cordons (no new sandboxes) or uncordons a node (admin).
 func (c *Client) SetNodeCordoned(ctx context.Context, id string, cordoned bool) (Node, error) {
 	action := "uncordon"

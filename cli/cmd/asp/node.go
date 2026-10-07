@@ -17,7 +17,7 @@ import (
 
 func nodeCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "node subcommand required (list|cordon|uncordon|enroll-token|fence)")
+		fmt.Fprintln(stderr, "node subcommand required (list|cordon|uncordon|doctor|enroll-token|fence)")
 		return 2
 	}
 	switch args[0] {
@@ -27,6 +27,8 @@ func nodeCmd(args []string, stdout, stderr io.Writer) int {
 		return cmdNodeCordon(args[1:], stdout, stderr, true)
 	case "uncordon":
 		return cmdNodeCordon(args[1:], stdout, stderr, false)
+	case "doctor":
+		return cmdNodeDoctor(args[1:], stdout, stderr)
 	case "enroll-token":
 		return cmdNodeEnrollToken(args[1:], stdout, stderr)
 	case "fence":
@@ -338,4 +340,69 @@ func cmdNodeFenceClear(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "node %s: fence target cleared\n", pos[0])
 	return 0
+}
+
+// cmdNodeDoctor is asp node doctor <id>: the node-agent of the node runs its
+// self-checks and the control plane brings the report. It is the node judging itself
+// with the settings it runs with. Exit 1 when a check failed.
+func cmdNodeDoctor(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("node doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(stderr, "usage: asp node doctor <node-id> [--json]")
+		return 2
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
+	}
+	// The node runs a dozen probes: more than the default wait.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rep, err := c.NodeDoctor(ctx, rest[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "node doctor: %v\n", err)
+		return 1
+	}
+	if g.jsonOut {
+		if c := writeJSON(stdout, rep); c != 0 {
+			return c
+		}
+	} else {
+		fmt.Fprint(stdout, doctorText(rep))
+	}
+	if rep.Failed() {
+		return 1
+	}
+	return 0
+}
+
+// doctorText renders a report for a terminal: one line per check, the fix under it.
+func doctorText(r client.DoctorReport) string {
+	var b strings.Builder
+	title := "node doctor"
+	if r.NodeID != "" {
+		title += " (" + r.NodeID + ")"
+	}
+	fmt.Fprintln(&b, title)
+	width := 0
+	counts := map[string]int{}
+	for _, c := range r.Results {
+		width = max(width, len(c.Name))
+		counts[c.Status]++
+	}
+	for _, c := range r.Results {
+		fmt.Fprintf(&b, "  %-4s  %-*s  %s\n", c.Status, width, c.Name, c.Detail)
+		if c.Fix != "" && c.Status != "ok" {
+			fmt.Fprintf(&b, "        %-*s  fix: %s\n", width, "", c.Fix)
+		}
+	}
+	fmt.Fprintf(&b, "%d ok, %d warn, %d fail, %d skipped\n", counts["ok"], counts["warn"], counts["fail"], counts["skip"])
+	return b.String()
 }

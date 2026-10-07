@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -190,4 +193,70 @@ func (s *Server) setNodeCordoned(w http.ResponseWriter, r *http.Request, cordone
 	}
 	slog.Info("node cordon changed", "node_id", id, "cordoned", cordoned, "actor_sub", resolveActorSub(r, "", ""))
 	writeJSON(w, http.StatusOK, s.nodeView(n, usage[id], stopped[id], time.Now().UTC()))
+}
+
+// doctorTimeout bounds a node's self-checks: a dozen probes of a few seconds each.
+const doctorTimeout = 90 * time.Second
+
+// NodeDoctor asks the node-agent of a node to run its self-checks (KVM, hypervisor,
+// guest images, disk, nftables, clock, this control plane) and returns its report as
+// the agent made it. It reaches the node the way an exec does, over mTLS or the
+// loopback agent token, so what it finds is what the node would tell an operator at
+// its console. For the callers that may list nodes.
+func (s *Server) NodeDoctor(w http.ResponseWriter, r *http.Request) {
+	if !authorizeNodeView(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	node, err := s.Store.GetNode(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if node.RevokedAt != nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf("node %s is revoked", node.ID))
+		return
+	}
+	baseURL, client, status, msg := s.nodeAgentTarget(node)
+	if status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), doctorTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/internal/doctor", nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.authorizeAgentRequest(req)
+	// The checks take longer than the wait for response headers that bounds the
+	// calls to an agent.
+	resp, err := s.bufferedTwin(client).Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "node-agent unreachable: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "read node-agent doctor response: "+err.Error())
+		return
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented {
+		// An agent from before the doctor has no such route.
+		writeError(w, http.StatusNotImplemented, "this node-agent has no doctor: upgrade it")
+		return
+	}
+	if resp.StatusCode >= 300 {
+		writeAgentError(w, resp.StatusCode, body)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
