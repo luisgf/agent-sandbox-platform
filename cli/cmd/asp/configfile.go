@@ -141,8 +141,21 @@ func loadConfigFiles(c configChoice) error {
 }
 
 // cmdConfig is `asp config show`: where the settings come from.
+// configShowHelp is what -h adds to the usage line.
+const configShowHelp = `
+Shows where each setting comes from: the files, the environment, the defaults.
+  --effective         also list the settings nothing sets, with their defaults
+  --component NAME    asp (the default) shows this command's own settings; server and agent show what the
+                      merged files of the control plane (/etc/asp/server.yaml) or the node-agent
+                      (/etc/asp/agent.yaml) say
+  --config FILE       read this file instead of /etc/asp/asp.yaml and ~/.config/asp/asp.yaml`
+
 func cmdConfig(args []string, c configChoice, stdout, stderr io.Writer) int {
 	usage := "usage: asp config show [--effective] [--component asp|server|agent] [--config FILE]"
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "-help") {
+		fmt.Fprintln(stdout, usage+configShowHelp)
+		return 0
+	}
 	if len(args) == 0 || args[0] != "show" {
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -163,6 +176,9 @@ func cmdConfig(args []string, c configChoice, stdout, stderr io.Writer) int {
 			i++
 		case strings.HasPrefix(a, "--config="):
 			c = configChoice{path: strings.TrimPrefix(a, "--config="), named: true}
+		case a == "-h" || a == "--help" || a == "-help":
+			fmt.Fprintln(stdout, usage+configShowHelp)
+			return 0
 		default:
 			fmt.Fprintf(stderr, "asp config show: unknown argument %q\n%s\n", a, usage)
 			return 2

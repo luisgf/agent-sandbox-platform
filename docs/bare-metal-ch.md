@@ -392,58 +392,7 @@ curl -fsS https://127.0.0.1:8443/healthz --cacert /var/lib/asp/certs/ca.crt
 - Rutas: `GET /api/v1/vmm.ping`, `PUT /api/v1/vm.create`, `PUT /api/v1/vm.boot`, `PUT /api/v1/vm.delete`, `PUT /api/v1/vm.pause`.
 - `--dry-run` sigue usando `FakeVMM` (sin CH).
 
-Flags relevantes (`cmd/node-agent/main.go`):
-
-| Flag | Env | Default / notas |
-|---|---|---|
-| `--ch-socket-dir` | `ASP_CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{sandboxID}.sock`; **default** cuando no dry-run. El agente lo crea con modo `0700` y aprieta uno existente que no sea de sistema (`/run`, `/tmp`…): los sockets de dentro dan autoridad sobre cada sandbox (exec como root en el guest, tokens de identidad, vhost-user de virtiofsd) |
-| `--ch-api-socket` | `ASP_CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
-| `--ch-binary` | `ASP_CH_BINARY` | `cloud-hypervisor` — binario spawneado por sandbox |
-| `--dry-run` | `ASP_DRY_RUN=1` | **omitir** en bare-metal real |
-| `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — `rootfs-{sandboxID}.img` por sandbox. Parar la conserva si el plano de control manda `retained` ([ADR-0012](adr/0012-retained-disks.md)); borrar la sandbox la borra. Un GC del nodo borra las copias que ninguna sandbox reclama |
-| `--stop-grace` | `ASP_STOP_GRACE` | `15s` — al parar conservando el disco, espera a que el guest se apague solo antes de la parada brusca |
-| `--disk-min-free-mib` | `ASP_DISK_MIN_FREE_MIB` | `-1` (el doble de la imagen base): espacio libre mínimo en `--disk-dir` para clonar o reanudar; `0` no comprueba |
-| `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, borra lo que dejó un node-agent anterior (§5.6); `report` solo lo lista; `off` |
-| `--reap-only` | | hace solo esa limpieza y sale (`ExecStopPost` de la unit) |
-| `--print-measurement` | | imprime el SHA-256 del kernel y de la imagen base y la versión del hipervisor como entrada de `ASP_ATTEST_ALLOWED_IMAGES` del control plane, y sale |
-| `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop |
-| `--enroll` | `ASP_ENROLL=1` | + `--bootstrap-token` |
-| `--cert-dir` | `ASP_CERT_DIR` | `/var/lib/asp/node-certs` |
-| `--mtls` | `ASP_MTLS=1` | client certs hacia CP |
-| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local; pide un bearer token (`--agent-token-file`) salvo `/healthz`; fuera de loopback no arranca salvo `--insecure-agent-listen` |
-| `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | secreto de esa API; el nodo lo crea (0600) y el plano de control del mismo host lo lee con el mismo `ASP_AGENT_TOKEN_FILE`. Defecto `/var/lib/asp/agent.token` |
-| `--guest-kernel` / `--guest-rootfs` | `ASP_GUEST_KERNEL` / `ASP_GUEST_ROOTFS` | `/opt/sandbox/vmlinux` y `/opt/sandbox/rootfs.img`. El kernel (un `vmlinux` sin comprimir) que arranca toda VM y la imagen base de la que se copia el disco de cada sandbox (nunca se arranca ella misma). Una prueba con otra imagen (un guest nuevo, un kernel distinto) no necesita tocar `/opt/sandbox`; la lista de imágenes permitidas de la atestación (`--print-measurement`) mide estos mismos ficheros |
-| `--guest-verify` | `ASP_GUEST_VERIFY` | `auto`. Comprueba el kernel y la imagen base contra el `SHA256SUMS` que tengan al lado (`asp image pull` lo instala): `auto` se niega a arrancar desde un fichero que la lista da con otro digest, `on` también desde uno que ninguna lista nombra, `off` no comprueba. La sandbox falla con el motivo; el digest se cachea mientras el fichero no cambia |
-| `--workspace-root` | `ASP_WORKSPACE_ROOTS` | donde puede vivir el workspace de una sandbox: dentro de `<raíz>/<tenant>/` (enlaces resueltos). Defecto `/srv/asp/workspaces` (créalo: `install -d /srv/asp/workspaces/<tenant>`); sin raíz que exista no hay workspaces. `virtiofsd` corre con `--sandbox chroot` si el agente es root (`--virtiofsd-sandbox`) |
-| `--vm-survive-restart` | `ASP_VM_SURVIVE_RESTART` | `true` por defecto: una VM confinada sigue corriendo cuando el agente para o se reinicia, y el proceso siguiente la adopta (§5.6). `=false` ata el servicio de cada VM al del agente, como antes |
-| `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
-| `--vm-unprivileged` | `ASP_VM_UNPRIVILEGED` | `auto` (por defecto), `on` u `off`. Cada `cloud-hypervisor` corre como un usuario sin privilegios propio (`--vm-uid-base` + el CID de la VM), sin capabilities y en una unit que no abre sockets IP ni escribe fuera de sus ficheros (§5.7). `auto` lo hace cuando el host puede (lo comprueba abriendo como ese usuario lo que el VMM necesita) y, si no, deja el VMM como root diciendo por qué; `on` no arranca si no puede. Necesita `--vm-confine`. `virtiofsd` sigue siendo root |
-| `--vm-uid-base` | `ASP_VM_UID_BASE` | primer id de usuario de los VMM: el de la VM con CID `n` corre como esta base más `n` (por defecto `1879048192`, `0x70000000`). Elige un rango que no use ningún usuario, herramienta de contenedores u otro agente del host |
-| `--vm-run-dir` | `ASP_VM_RUN_DIR` | directorio con un subdirectorio por VM (`{id}/`, de su usuario, con sus sockets); 0711. Por defecto `--ch-socket-dir` con `-vm` (`/run/asp-vm`): fuera del directorio de sockets, que es 0700 y privado del agente |
-| `--vm-slice` | `ASP_VM_SLICE` | slice de esos servicios (`asp-vms.slice`) |
-| `--vm-memory-overhead-mib` | `ASP_VM_MEMORY_OVERHEAD_MIB` | memoria que se suma a la del guest en el `MemoryMax` del servicio (por defecto 256) |
-| `--vm-cpu-overhead-percent` | `ASP_VM_CPU_OVERHEAD_PERCENT` | porcentaje de una CPU que se suma a las vCPU en el `CPUQuota` (por defecto 50) |
-| `--vm-tasks-max` | `ASP_VM_TASKS_MAX` | procesos e hilos máximos de un servicio de VM (por defecto 1024) |
-| `--capacity-cpu` / `--capacity-mem-mib` | `ASP_CAPACITY_CPU` / `ASP_CAPACITY_MEM_MIB` | `-1` detecta del host, `0` no limita ([`ops-multi-node.md`](ops-multi-node.md)) |
-| `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
-| `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
-| `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — p.ej. `0.0.0.0:9443`: `exec` con mTLS para un CP en otro host (ver 5.5) |
-| `--endpoint` | `ASP_ENDPOINT` | lo que se anuncia al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen` |
-| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt`, la misma CA que firma los certificados de nodo: avisa si el CP es remoto. Pasa una CA que firme solo el cert del CP ([`ops-multi-node.md`](ops-multi-node.md#las-dos-raíces-de-confianza)) |
-| `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
-| `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix del pod-daemon (**host**, dry-run / fallback) |
-| `--pod-daemon-port` | | `26500` — puerto guest vsock para CONNECT |
-| `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check; intent para proxy |
-| `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | p.ej. `:8888` forward proxy HTTP(S) |
-| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | p.ej. `:5353` UDP NXDOMAIN non-allowlisted. Con el redirect y `--nft-dns-action=redirect` arranca solo en `:5353` si no lo nombras |
-| `--egress-nft-redirect` | `ASP_EGRESS_NFT_REDIRECT` | forzar HTTP(S)+DNS por proxy y sink con nft. Default: activo con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga |
-| `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `enforce` (default: sin reglas el nodo no arranca) \| `soft` (arranca sin forzar el egress; default con `--dry-run`) |
-| `--egress-allow-cidr` | `ASP_EGRESS_ALLOW_CIDRS` | redes privadas (CIDR o dirección, separadas por comas) a las que el proxy puede conectar, además de Internet. Loopback, link-local, el propio nodo y la red de los guests nunca |
-| `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra `asp-{shortid}` en Start/Stop |
-| `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest→CID 2) |
-| `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix `host-vsock-{port}.sock` en vez de AF_VSOCK |
-| `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix bridge + symlinks `ssh-agent-{id}.sock` |
-| `--identity-listen` | `ASP_IDENTITY_LISTEN` | unix/TCP identity sin binding de sandbox: 403 salvo `--insecure-identity-sandbox-header` (lab). Los guests usan `{vsock}_26502` |
+Las opciones del node-agent (todas, con su variable de entorno, valor por defecto y descripción) están en [la referencia de configuración del node-agent](reference/configuration/node-agent.md), que se genera del código. Las que más importan aquí: `--ch-socket-dir` (`/run/asp`, donde van los sockets `ch-{sandboxID}.sock`), `--ch-api-socket` (el modo compartido), `--ch-binary`, `--disk-dir`, `--guest-kernel` y `--guest-rootfs`, `--vm-confine` y `--vm-unprivileged` (§5.6 y §5.7), y las de la red y el egress (§3).
 
 ### 5.2 Arrancar CH (per-sandbox vs shared)
 

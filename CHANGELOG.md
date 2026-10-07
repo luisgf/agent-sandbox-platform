@@ -66,6 +66,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
 - **A SQLite store** for a single host: `ASP_DATABASE_URL=sqlite:///var/lib/asp/server/asp.db` keeps
   the state in one private file (no CGO, no database server). The same parity script, shared store
   tests and API suite run on it, with no server needed, so every test run covers it.
+- **A reference generated from the code.** [`docs/reference/`](docs/reference/configuration.md) lists every
+  setting of the control plane, the node-agent, `asp` and `asp-server`, and every `asp` command with its
+  flags. `make docs` writes it and a test in each module fails when a page is out of date, so the hand-written
+  lists of the READMEs and of `bare-metal-ch.md` are gone. `scripts/check-doc-links.py` checks the relative
+  links of the Markdown files.
 
 ### Changed
 
@@ -103,5 +108,8 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Fixed
 
+- The node-agent's help said `--agent-listen` has no authentication (it takes the bearer token of
+  `--agent-token-file`) and that `--tap-auto` soft-fails (a TAP that cannot be created fails the start).
+  `asp config show -h` prints its help.
 - Many races and leaks around stop, resume, delete and agent restarts; see the pull requests of the
   [design review](https://github.com/luisgf/agent-sandbox-platform/issues/145).

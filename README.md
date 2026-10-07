@@ -20,7 +20,7 @@ ASP is a self-hosted, FOSS sandbox platform for coding agents. An agent harness 
 - [Network and identity](#network-and-identity)
 - [Quickstart (dry-run, no KVM)](#quickstart-dry-run-no-kvm)
 - [Using ASP with OpenCode](#using-asp-with-opencode)
-- [Configuration cheat sheet](#configuration-cheat-sheet)
+- [Configuration](#configuration)
 - [Status and known limits](#status-and-known-limits)
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
@@ -414,39 +414,14 @@ Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs
 
 ---
 
-## Configuration cheat sheet
+## Configuration
 
-Only the most common settings. Full lists live in each component's README.
+Every setting is a flag or an `ASP_*` environment variable, and a key in a YAML file under `/etc/asp` ([the config file](docs/how-to/config-file.md)); the order is flag, environment, file, default. The full lists are generated from the code, so they are never behind it:
 
-| Variable | Used by | Purpose |
-|---|---|---|
-| `ASP_CONTROL_PLANE_URL` | CLI | Control-plane URL (default `http://127.0.0.1:8080`). |
-| `ASP_ID_TOKEN` / `ASP_API_KEY` | CLI | Bearer credential (IdP token preferred; API key for labs without an IdP). |
-| `ASP_TENANT` | CLI | Tenant for create/list/run; empty uses the caller's tenant (token claim or key). |
-| `ASP_IDP_TENANT_CLAIM` / `ASP_IDP_DEFAULT_TENANT` | CP | Where a user's tenant comes from (claim `tenant_id` by default); every request is confined to it. |
-| `ASP_IDP_REQUIRED` | CP | Require a valid IdP token on every user route. (On a node it meant `ASP_MULTI_USER`, and in the CLI `ASP_REQUIRE_TOKEN`: both still work, with a warning.) |
-| `ASP_REQUIRE_TOKEN` | CLI | Fail when no IdP token can be had, instead of calling without one. |
-| `ASP_SESSION_DIR` | CLI | Where session files live (default `~/.cache/asp/sessions`, mode `0700`). |
-| `ASP_LISTEN_ADDR` | CP | API listen address (default `127.0.0.1:8080`). |
-| `ASP_BOOTSTRAP_API_KEY` | CP | Creates the first API key (platform scope). Without a key or an IdP the control plane refuses to start. |
-| `ASP_INSECURE_OPEN_API` | CP | `1` accepts requests with no credential (labs and dry-run only; logged at start). |
-| `ASP_NODE_API_KEY` / `ASP_NODE_API_KEY_FILE` | node-agent | The platform key a node sends to a control plane reached over plain HTTP. |
-| `ASP_DATABASE_URL` | CP | Use Postgres instead of the in-memory store. |
-| `ASP_METRICS_LISTEN`, `ASP_PPROF_LISTEN` (`--metrics-listen`, `--pprof-listen` on the node-agent) | CP, node-agent | Prometheus metrics and Go profiles on a listener of their own; loopback only unless `ASP_INSECURE_OBS_LISTEN=1`. The control plane also serves `GET /metrics` on its API port to a platform key. Names and alerts: [`docs/how-to/monitoring.md`](docs/how-to/monitoring.md). |
-| `ASP_DB_STATEMENT_TIMEOUT`, `ASP_DB_LOCK_TIMEOUT`, `ASP_DB_IDLE_TX_TIMEOUT` | CP | Server-side limits on every Postgres connection (defaults `30s`, `10s`, `60s`; `0` disables). Every store call also carries its request's context, so a client that disconnects ends its queries. |
-| `ASP_SANDBOX_IDLE_TIMEOUT` | CP | Idle stop (e.g. `2h`); off by default. A stop keeps the disk. |
-| `ASP_STOPPED_SANDBOX_TTL` | CP | Delete a sandbox (and its disk) stopped for this long. Default `7d`; `0`/`off` keeps it until deleted. Needs Postgres to mean anything. |
-| `ASP_MAX_STOPPED_PER_TENANT` | CP | Keep at most this many stopped sandboxes per tenant, deleting the oldest. Default: no cap. |
-| `ASP_NODE_BOOTSTRAP_TOKEN` | CP, node | One-time token for node enrollment. |
-| `ASP_CLIENT_CA` | CP | Require node client certificates and bind each node route to the certificate's node. |
-| `--agent-tls-listen` | node | mTLS exec listener for a control plane on another host ([ADR-0011](docs/adr/0011-multi-node.md)). |
-| `ASP_SCHED_POLICY` | CP | `spread` (default) or `binpack`. |
-| `ASP_SCHED_CPU_OVERCOMMIT` | CP | vCPUs per physical core (default `4`); memory is never overcommitted. |
-| `ASP_SCHED_VM_OVERHEAD_MIB` | CP | Memory each microVM costs beyond its `memory_mib` (default `64`), counted in placement. Sandboxes ask for at least 64 MiB. |
-| `--capacity-cpu` / `--capacity-mem-mib` / `--max-sandboxes` | node | What the node offers; detected from the host by default. |
-| `ASP_NODE_STALE_AFTER` / `ASP_NODE_FAILOVER_AFTER` | CP | A silent node leaves placement after `90s`; its sandboxes fail after `5m`. |
+- [control plane](docs/reference/configuration/control-plane.md) · [node-agent](docs/reference/configuration/node-agent.md) · [`asp`](docs/reference/configuration/cli.md) · [`asp-server`](docs/reference/configuration/asp-server.md), and the [commands of `asp`](docs/reference/cli.md);
+- the rules they share (booleans, names that changed): [Configuration](docs/reference/configuration.md).
 
-Reference: [`cli/README.md`](cli/README.md) · [`control-plane/README.md`](control-plane/README.md) · [`node-agent/README.md`](node-agent/README.md) · [`pod-daemon/README.md`](pod-daemon/README.md).
+`asp-control-plane --print-config`, `asp-node-agent --print-config` and `asp config show --effective` print what a component uses and where each value came from. Components: [`cli/README.md`](cli/README.md) · [`control-plane/README.md`](control-plane/README.md) · [`node-agent/README.md`](node-agent/README.md) · [`pod-daemon/README.md`](pod-daemon/README.md).
 
 ---
 

@@ -62,7 +62,7 @@ func newFlags(stderr io.Writer) (*flag.FlagSet, *standalone.Options, *stringList
 	fs.Var(sans, "tls-san", "more names or addresses its TLS certificate must be valid for (comma separated, or repeated)")
 	fs.StringVar(&opts.NodeID, "node-id", "", "the id of the node on this host (default: the host name and -node; a name in the control plane's certificate is refused)")
 	fs.BoolVar(&opts.NoAgent, "no-agent", false, "run the control plane alone, with no node on this host")
-	fs.StringVar(&opts.Profile, "profile", standalone.ProfileDefault, "default, or lab: a node without VMs (--dry-run) for a host with no KVM and for the smokes")
+	fs.StringVar(&opts.Profile, "profile", standalone.ProfileDefault, "the profile: default, or lab, a node without VMs (--dry-run) for a host with no KVM and for the smokes")
 	fs.StringVar(&opts.ControlPlane, "control-plane", "", "the asp-control-plane program (default: beside this one, on the PATH, or where the packages put it)")
 	fs.StringVar(&opts.NodeAgent, "node-agent", "", "the asp-node-agent program (same places)")
 	fs.StringVar(&opts.User, "user", "asp-control-plane", "the account the control plane runs as when this runs as root")

@@ -43,74 +43,11 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default), un
 
 Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca acepta una API key de tenant: los nodos los comparten todos los tenants (403). Con `ASP_IDP_REQUIRED=1` hace falta un token del IdP con rol admin (operador para listar). `rotate-cert` acepta además el certificado vigente del propio nodo (mTLS), para que se renueve; el bootstrap token no vale ni ahí ni en `revoke`, porque lo tienen todos los nodos y con él uno podría quedarse con la identidad de otro. En el lab abierto (sin API keys ni IdP) estas rutas quedan abiertas como el resto, salvo `rotate-cert`, que siempre pide credenciales porque entrega la clave privada de un nodo.
 
-## Variables de entorno
+## Configuración
 
-Todas llevan el prefijo `ASP_`. Un fichero YAML puede darles valor (`/etc/asp/server.yaml` y los `server.yaml.d/*.yaml` que lo acompañan, o el que nombre `--config` / `ASP_CONFIG`): la clave es el nombre sin `ASP_`, en minúsculas (`listen_addr`, `database_url`; un mapa anida: `sched: {policy: binpack}` es `sched_policy`), y el entorno manda sobre el fichero. `asp-control-plane --print-config` imprime cada ajuste con su valor y de dónde viene, sin las credenciales ([el fichero de configuración](../docs/how-to/config-file.md)). Los booleanos se escriben `1`/`true`/`yes`/`on` y `0`/`false`/`no`/`off`; cualquier otra cosa en una variable booleana que se valida al arrancar (`ASP_EGRESS_DEFAULT_ALLOW`) es un error de configuración. Nombres que cambiaron (los antiguos siguen valiendo, con un aviso, hasta que se quiten): `LISTEN_ADDR` → `ASP_LISTEN_ADDR`, `DATABASE_URL` → `ASP_DATABASE_URL` (los tests de Postgres siguen leyendo `DATABASE_URL`), `ASP_EGRESS_DENY_DEFAULT` → `ASP_EGRESS_DEFAULT_ALLOW` con el sentido contrario. `ASP_IDP_REQUIRED` es solo del plano de control: en un nodo se llamaba así lo que ahora es `ASP_MULTI_USER`, y en el CLI lo que ahora es `ASP_REQUIRE_TOKEN`.
+Cada ajuste es una variable de entorno `ASP_*`, o la clave del mismo nombre sin `ASP_` y en minúsculas en `/etc/asp/server.yaml` (prioridad: variable > fichero > valor por defecto). **La lista completa, con valor por defecto y descripción, se genera del código: [configuración del plano de control](../docs/reference/configuration/control-plane.md).** Las reglas comunes a todos los programas (booleanos, nombres que cambiaron, `--print-config`) están en [Configuración](../docs/reference/configuration.md), y el fichero, con ejemplos, en [el fichero de configuración](../docs/how-to/config-file.md).
 
-| Variable | Default | Descripción |
-|---|---|---|
-| `ASP_LISTEN_ADDR` | `:8080` | Bind address |
-| `ASP_SHUTDOWN_TIMEOUT` | `30s` | Al recibir SIGTERM/SIGINT el API deja de aceptar conexiones y espera hasta este tiempo a las peticiones en curso (los exec en streaming incluidos); después cierra las que queden y lo registra con su número. Los bucles de fondo (idle reaper, monitor de nodos, refresco del JWKS) paran y el pool de Postgres se cierra al final. |
-| `ASP_BUFFERED_EXEC_TIMEOUT` | `10m` | Cuánto puede tardar un `exec` sin `?stream=1` (`asp sandbox exec/run`, `session exec --buffered`), también en el guest. Una petición puede pedir menos con `timeout_seconds`. `0`/`off` sin límite. Pasado el límite, 504. Un stream no tiene límite |
-| `ASP_DATABASE_URL` | (unset) | Si está set → PostgresStore + migraciones embebidas. `sqlite:///var/lib/asp/server/asp.db` (o `sqlite:ruta.db`) guarda el estado en un fichero de este host: sin servidor de base de datos, para un único plano de control. El fichero se crea con modo 0600 (guarda hashes de claves y tokens de fence) en un directorio 0700; para copiarlo en caliente, `sqlite3 asp.db ".backup copia.db"` |
-| `ASP_METRICS_LISTEN` | (unset) | `host:puerto` de un listener aparte con `GET /metrics` (Prometheus). Sin autenticación: solo loopback salvo `ASP_INSECURE_OBS_LISTEN=1`. Además, `GET /metrics` en el puerto del API sirve lo mismo a una clave de plataforma o a un admin/operator del IdP. Catálogo: [`docs/how-to/monitoring.md`](../docs/how-to/monitoring.md) |
-| `ASP_PPROF_LISTEN` | (unset) | Igual para los perfiles de Go (`/debug/pprof/`) |
-| `ASP_INSECURE_OBS_LISTEN` | (unset) | `1` deja que `ASP_METRICS_LISTEN` / `ASP_PPROF_LISTEN` escuchen fuera de loopback (sin autenticación) |
-| `ASP_DB_STATEMENT_TIMEOUT` | `30s` | `statement_timeout` de cada conexión del pool: una sentencia que tarda más se cancela en el servidor (`57014`). Una migración lo desactiva para sí misma. `0`/`off` lo quita. Un `?statement_timeout=…` en `ASP_DATABASE_URL` manda sobre este valor. |
-| `ASP_DB_LOCK_TIMEOUT` | `10s` | `lock_timeout`: cuánto espera una sentencia a un bloqueo (incluido el advisory lock de la colocación) antes de fallar con `55P03`. |
-| `ASP_DB_IDLE_TX_TIMEOUT` | `60s` | `idle_in_transaction_session_timeout`: una transacción abierta que nadie usa (un handler que murió a medias) se cierra y libera su conexión y sus bloqueos. |
-| `ASP_INSECURE_OPEN_API` | unset | `1` acepta peticiones sin credencial (solo labs y smokes dry-run; avisa al arrancar). Una credencial incorrecta se rechaza igual. `ASP_REQUIRE_API_KEY` ya no hace nada: la autenticación está siempre activa |
-| `ASP_IDP_ISSUER` | unset | Issuer OIDC corporativo; vacío = IdP off (lab) |
-| `ASP_IDP_AUDIENCE` | unset | Audiencia esperada del JWT (`aud`). **Obligatoria con `ASP_IDP_REQUIRED=1`**: sin ella el control plane no arranca (código 2), porque aceptaría el token que el emisor haya dado a cualquier otra aplicación de su realm. Con el IdP opcional solo deja un aviso |
-| `ASP_IDP_ALLOW_ANY_AUDIENCE` | unset | `1` permite `ASP_IDP_REQUIRED=1` sin `ASP_IDP_AUDIENCE` (solo lab; avisa en el log) |
-| `ASP_IDP_JWKS_URL` | unset | JWKS; si vacío → discovery desde issuer. Se refresca cada 5 min (una clave que el IdP retira deja de validar) y, ante un `kid` desconocido, como mucho una vez cada 30 s |
-| `ASP_IDP_REQUIRE_EXP` | `1` | `0` acepta JWT sin `exp` (no recomendado: no caducarían). `nbf` admite 1 min de desfase de reloj; un `iat` más de 5 min en el futuro se rechaza |
-| `ASP_IDP_REQUIRED` | `0` | `1` exige JWT IdP en create/list/get/exec/destroy/events |
-| `ASP_IDP_ROLE_CLAIM` | `groups` | Claim de grupos/roles para RBAC (fase 3) |
-| `ASP_IDP_ROLE_MAP` | unset | CSV `claim:role` (admin\|operator\|user\|viewer); si set, gana sobre prefijo |
-| `ASP_IDP_ROLE_PREFIX` | `asp-` | Prefijo → rol (`asp-admin`, …) cuando no hay map. Un grupo a secas (`admin`, `operator`) **no** concede rol: con prefijo o con `ASP_IDP_ROLE_MAP` solo cuenta lo que ellos nombran |
-| `ASP_IDP_DESTROY_ANY_GROUP` | `sandbox:destroy-any` | Operator puede destroy no-propios si el claim lo incluye |
-| `ASP_IDP_EXEC_ANY_GROUP` | `sandbox:exec-any` | Operator puede hacer exec en sandboxes no propias si el claim lo incluye; sin él, solo en las suyas |
-| `ASP_BOOTSTRAP_API_KEY` | unset | Key `bootstrap`: ámbito `platform` (ve todos los tenants) en el tenant `default`. Es la primera key: sin ninguna key en el store ni IdP configurado el CP **no arranca** (código 2). Con ella se crean las demás (`asp apikey create`, `POST /v1/api-keys`) y conviene rotarla o revocarla después. Sigue siendo `platform` por defecto porque con ámbito `tenant` no podría crear la key de plataforma de los nodos |
-| `ASP_BOOTSTRAP_API_KEY_SCOPE` / `_TENANT` | `platform` / `default` | `tenant` la confina a `_TENANT`, como cualquier otra key |
-| `ASP_IDP_TENANT_CLAIM` | `tenant_id` | Claim del JWT con el tenant del usuario (string o array de un valor); sin tenant → 401 |
-| `ASP_IDP_DEFAULT_TENANT` | unset | Tenant de los JWT sin ese claim (un solo tenant) |
-| `ASP_DEFAULT_TENANT` | `default` | Tenant de un create sin `tenant_id` de un llamante sin tenant propio (lab abierto, key `platform`) |
-| `ASP_NODE_BOOTSTRAP_TOKEN` | unset | Token para `/v1/nodes/enroll` |
-| `ASP_CA_CERT` / `ASP_CA_KEY` | `/tmp/asp-dev-ca/ca.*` | CA de enrollment |
-| `ASP_ALLOW_TMP_KEYS` | — | `1`: arranca en modo producción aunque alguna clave esté en un directorio temporal (ver abajo) |
-| `ASP_TLS_CERT` / `ASP_TLS_KEY` | unset | TLS servidor. Sus nombres (DNS, IP, CN, comodines) quedan reservados: ningún nodo puede enrolarse con uno de ellos como id ([dos raíces de confianza](../docs/ops-multi-node.md#las-dos-raíces-de-confianza)) |
-| `ASP_CLIENT_CA` | unset | Client CA (register/heartbeat/oidc mint); habilita check de revocación y ata el CN del cert a cada ruta de nodo (403 si es otro nodo) |
-| `ASP_SCHED_POLICY` | `spread` | `spread` o `binpack` ([`ops-multi-node.md`](../docs/ops-multi-node.md)) |
-| `ASP_SCHED_CPU_OVERCOMMIT` | `4` | vCPU por core físico; la memoria no se sobresuscribe |
-| `ASP_SCHED_VM_OVERHEAD_MIB` | `64` | Memoria que cuesta cada microVM además de su `memory_mib` (proceso del VMM, colas virtio); se suma a cada sandbox al comprobar y mostrar la memoria del nodo. Una sandbox pide como mínimo 64 MiB |
-| `ASP_NODE_STALE_AFTER` | `90s` | Sin señales más tiempo → el nodo no recibe sandboxes y pasa a `offline` |
-| `ASP_NODE_MONITOR_INTERVAL` | `15s` | Cada cuánto revisa el monitor la vida de los nodos |
-| `ASP_NODE_FAILOVER_AFTER` | `5m` | Sin señales más tiempo → fencing y sandboxes del nodo → `failed` (`node_lost`); `0`/`off` desactiva (salvo revocados) |
-| `ASP_AGENT_TOKEN_FILE` | `/var/lib/asp/agent.token`, o `$TMPDIR/asp-agent.token` | Secreto del API local del node-agent del mismo host (su `--agent-token-file`): el CP lo manda como bearer en cada `exec` a un agente `http://`. Se relee si cambia. Un agente `https://` (mTLS) no lo recibe. Si el CP no puede leerlo, el agente responde 401 y el `exec` da 502 diciéndolo |
-| `ASP_WORKSPACE_ROOTS` | unset | Raíces de workspace del despliegue (`<raíz>/<tenant>/…`). Con ellas, un `workspace_host_path` fuera da 400 al crear en vez de una sandbox que no arranca. El nodo aplica su propia regla (`--workspace-root`) con los enlaces resueltos; sin esta variable solo decide el nodo |
-| `ASP_INSECURE_AGENT_HTTP` | unset | `1` → permite `agent_endpoint` `http://` fuera de loopback (`exec` sin autenticar; solo lab). Por defecto: `http://` solo en loopback, `https://` con mTLS ([ADR-0011](../docs/adr/0011-multi-node.md)) |
-| `ASP_MTLS_STRICT` | unset | `1` → `RequireAndVerifyClientCert` en listener TLS |
-| `ASP_ENROLL_LISTEN` | `127.0.0.1:8081` | Plaintext enroll-only cuando `ASP_MTLS_STRICT=1` |
-| `ASP_OIDC_KEY` | `/tmp/asp-oidc-key.pem` | PEM RSA de firma actual (auto-create; mint) |
-| `ASP_OIDC_KEY_PREV` | unset | PEM RSA previa (solo JWKS durante rotación) |
-| `ASP_OIDC_ISSUER` | `http://<ASP_LISTEN_ADDR>` (`https` con TLS; sin host o `0.0.0.0`, `127.0.0.1`) | Issuer OIDC. Si otros hosts verifican los tokens contra este control plane, ponla con la URL con la que llegan a él |
-| `ASP_ATTEST_KEY` | `$TMPDIR/asp-attest-key.pem` | PEM ECDSA P-256 de atestación; su clave pública es de confianza (lab de un host: el node-agent usa el mismo fichero) |
-| `ASP_ATTEST_PUB` | — | PEM de clave pública que sustituye a la de `ASP_ATTEST_KEY` para verificar |
-| `ASP_ATTEST_TRUSTED_PUBS` | — | Bundle PEM (`PUBLIC KEY` y/o `CERTIFICATE`) de más claves de confianza. La clave que trae la evidencia (`public_key_pem`) nunca vale; por mTLS vale además la del certificado del nodo que llama |
-| `ASP_ATTEST_MAX_AGE` | `10m` | Freshness para verify + claim OIDC |
-| `ASP_ATTEST_ALLOWED_IMAGES` | — | JSON `{"images":[{"name","kernel","rootfs","vmm"}]}` con las imágenes (SHA-256 del kernel y de la imagen base, y opcionalmente la versión del hipervisor) para las que se acepta evidencia de arranque. Con él, una evidencia de otra imagen o sin digests se rechaza (400) y no genera claim; se relee al cambiar el fichero. Sin él se guardan los digests que declare el nodo. `node-agent --print-measurement` imprime la entrada de un nodo |
-| `ASP_FENCE_PROVIDER` | `noop` | `noop`\|`http_webhook`\|`redfish`\|`ipmi` |
-| `ASP_FENCE_USER` | | Usuario Redfish/IPMI |
-| `ASP_FENCE_PASS` | | Contraseña IPMI/Redfish por defecto si el nodo no tiene token. Un `ipmitool` la recibe por `IPMI_PASSWORD` |
-| `ASP_EGRESS_DEFAULT_ALLOW` | `1` con el store en memoria, `0` con Postgres | Qué puede alcanzar una sandbox cuyo tenant no tiene reglas: `1` todo, `0` nada. `ASP_EGRESS_DENY_DEFAULT` era este mismo ajuste con el sentido contrario; sigue valiendo si este no está, con un aviso |
-| `ASP_AUTO_PROVISION` | unset/false | `1` = stub sync Create→running; default deja `requested` |
-| `ASP_SANDBOX_IDLE_TIMEOUT` | unset = **off** | Parada por inactividad. Duración Go (`2h`, `1h`, `90m`). `0` / `off` / `false` / `disabled` desactiva. El valor recomendado de lab/producción es **2h** (también vale `1h`); no es el default del proceso, para que los smokes cortos no tumben sandboxes. Flag equivalente: `-idle-timeout` / `--idle-timeout` (pisa el env). |
-| `ASP_STOPPED_SANDBOX_TTL` | `7d` | Una sandbox parada más de este tiempo se borra con su disco (`stop_reason=retention_expired`), contado desde `stopped_at`. `7d` o una duración Go (`48h`); `0`/`off` las conserva hasta que se borren ([ADR-0012](../docs/adr/0012-retained-disks.md)) |
-| `ASP_MAX_STOPPED_PER_TENANT` | unset = sin tope | Al superarlo, se borran las sandboxes paradas más antiguas del tenant (`tenant_cap`), con un aviso en el log |
-| `ASP_RETENTION_SWEEP` | `1m` | Cada cuánto corre el barrido de retención |
-| `ASP_SANDBOX_IDLE_SWEEP` | `1m` | Cada cuánto el bucle del CP llama al reaper. No enciende el reaper por sí solo. Mínimo efectivo 1s. |
-
+## Ejecutarlo y probarlo
 
 ```bash
 go test ./...

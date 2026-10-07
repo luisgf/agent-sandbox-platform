@@ -1,4 +1,4 @@
-.PHONY: test test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
+.PHONY: test docs check-docs test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
@@ -14,7 +14,7 @@ GO_MODULES := control-plane node-agent cli images/guest/cmd/vsock-ssh-agent-prox
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
 
 help:
-	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | e2e-kvm | smoke-asp | smoke-asp-auth | asp | build | snapshot | pack | clean"
+	@echo "targets: test | docs | check-docs | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | e2e-kvm | smoke-asp | smoke-asp-auth | asp | build | snapshot | pack | clean"
 
 test: test-go test-rust test-guest-helper
 
@@ -22,6 +22,18 @@ test-go:
 	cd $(ROOT)control-plane && go test -race ./...
 	cd $(ROOT)node-agent && go test -race ./...
 	cd $(ROOT)cli && go test ./...
+
+# The pages under docs/reference are written from the code (settings tables and `asp -h`). A test in
+# each module fails when one is out of date, so `make test` and CI notice a stale page and this
+# fixes it: commit what it changes.
+docs:
+	cd $(ROOT)control-plane && go test ./cmd/api -run ReferenceIsUpToDate -count=1 -update
+	cd $(ROOT)node-agent && go test ./cmd/node-agent -run ReferenceIsUpToDate -count=1 -update
+	cd $(ROOT)cli && go test ./cmd/asp ./cmd/asp-server -run ReferenceIsUpToDate -count=1 -update
+
+# The relative links of every Markdown file: the file exists and so does the heading.
+check-docs:
+	python3 $(ROOT)scripts/check-doc-links.py
 
 # What CI checks besides the tests: gofmt, go vet and staticcheck per module.
 lint:

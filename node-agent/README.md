@@ -2,108 +2,13 @@
 
 Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía HTTP sobre Unix socket, se enrolla/registra en el control plane (mTLS opcional), expone proxy localhost de exec/egress-check hacia `pod-daemon`, identity proxy OIDC, bridge de SSH agent, **host-vsock** guest→host y **TAP auto**.
 
-## Cómo se lee la configuración
+## Configuración
 
-Cada ajuste es una bandera y una variable de entorno con la misma regla (`internal/settings`, y el test `TestEverySettingHasOneNameWithThePrefix` la comprueba):
+Cada ajuste es una opción de la línea de órdenes, una variable de entorno `ASP_*` y una clave del fichero `/etc/asp/agent.yaml`, con una sola regla de nombres (`internal/settings`; el test `TestEverySettingHasOneNameWithThePrefix` la comprueba) y esta prioridad: opción > variable > fichero > valor por defecto. **La lista completa, con valor por defecto y descripción, se genera del código: [configuración del node-agent](../docs/reference/configuration/node-agent.md).** `asp-node-agent -h` imprime las mismas descripciones, y `--print-config` lo que vale cada ajuste en este nodo y de dónde viene. Las reglas comunes a todos los programas (booleanos, nombres que cambiaron) están en [Configuración](../docs/reference/configuration.md), y el fichero, con ejemplos, en [el fichero de configuración](../docs/how-to/config-file.md).
 
-- **la bandera manda sobre la variable, la variable sobre el fichero y el fichero sobre el valor por defecto.** El entorno se lee después de las banderas, así que `-h` nunca muestra un valor (un token) que venga de él. El fichero es `/etc/asp/agent.yaml` (si existe) y los `agent.yaml.d/*.yaml` que lo acompañan, o el que nombre `--config` / `ASP_CONFIG` (que tiene que existir); las claves son los nombres de las banderas con guiones bajos (`control_plane_url`, `egress_proxy_listen`), y una clave que no es un ajuste es un error que dice cuál. `--print-config` imprime cada ajuste con su valor y de dónde viene, sin las credenciales ([el fichero de configuración](../docs/how-to/config-file.md));
-- la variable es `ASP_` + el nombre de la bandera en mayúsculas con guiones bajos (`--control-plane-url` → `ASP_CONTROL_PLANE_URL`). Las pocas que no siguen la regla ya estaban en uso y están listadas con su motivo en el test (`ASP_WORKSPACE_ROOTS` es la misma lista que lee el plano de control);
-- los booleanos se escriben igual en la bandera y en la variable: `1`, `true`, `yes`, `on` / `0`, `false`, `no`, `off`. Cualquier otra cosa es un error que nombra la variable, no un ajuste que no hace nada;
-- `--reap-only` y `--print-measurement` son acciones, no ajustes: solo tienen bandera.
+`--reap-only` y `--print-measurement` son acciones, no ajustes: solo tienen opción.
 
-Nombres que cambiaron. Los antiguos siguen valiendo, con un aviso en el log, hasta que se quiten:
-
-| Antes | Ahora |
-|---|---|
-| `CONTROL_PLANE_URL`, `NODE_ID`, `NODE_ENDPOINT` | `ASP_CONTROL_PLANE_URL`, `ASP_NODE_ID`, `ASP_ENDPOINT` |
-| `CH_SOCKET_DIR`, `CH_API_SOCKET`, `CLOUD_HYPERVISOR_BIN` | `ASP_CH_SOCKET_DIR`, `ASP_CH_API_SOCKET`, `ASP_CH_BINARY` |
-| `VIRTIOFSD_BIN`, `DRY_RUN` | `ASP_VIRTIOFSD_BIN`, `ASP_DRY_RUN` |
-| `--nft-egress-redirect`, `ASP_NFT_EGRESS_REDIRECT` | `--egress-nft-redirect`, `ASP_EGRESS_NFT_REDIRECT` |
-| `ASP_IDP_REQUIRED` en un nodo (significaba «perfil multi-user») | `ASP_MULTI_USER` |
-| `--guest-ssh-agent-auto`, `ASP_GUEST_SSH_AGENT_AUTO` | no hacen nada: solo escribían una línea en el log |
-
-Además: `ASP_SSH_AGENT_CONFIRM=0` ya no pisa un `--ssh-agent-confirm` explícito (la bandera manda), y `ASP_TAP_AUTO=true` y compañía ya cuentan (antes solo valía `1`).
-
-## Flags
-
-| Flag | Env | Default |
-|---|---|---|
-| `--control-plane-url` | `ASP_CONTROL_PLANE_URL` | `http://127.0.0.1:8080` |
-| `--node-id` | `ASP_NODE_ID` | CN del cert enrolado en `--cert-dir`; si no hay, hostname |
-| `--ch-socket-dir` | `ASP_CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{id}.sock` (default per-sandbox spawn) |
-| `--ch-api-socket` | `ASP_CH_API_SOCKET` | vacío — shared/legacy override (sin spawn) |
-| `--ch-binary` | `ASP_CH_BINARY` | `cloud-hypervisor` |
-| `--dry-run` | `ASP_DRY_RUN` | false — usa `FakeVMM` |
-| `--reap-leftovers` | `ASP_REAP_LEFTOVERS` | `on` — al arrancar, antes de registrarse, para y borra lo que dejó un node-agent anterior: `cloud-hypervisor`/`virtiofsd` de `--ch-socket-dir`, sus sockets, TAPs `asp-*`, túneles `wg-asp-*`. No toca las copias de `--disk-dir`: las borra el GC del reconciler (ver `--disk-dir`). `report` solo lo lista; `off`. Con `--dry-run` solo informa ([bare-metal §5.6](../docs/bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)) |
-| `--doctor` | | comprueba este host y esta configuración (KVM, hipervisor, virtiofsd, imágenes del guest, disco, TAP, nftables, reloj, plano de control), imprime qué falla y cómo arreglarlo, y sale con 1 si algo falla; no arranca el agente. `--doctor-json` lo imprime como JSON ([`docs/how-to/troubleshooting.md`](../docs/how-to/troubleshooting.md)). Con el agente en marcha, `asp node doctor <id>` lo pide por el plano de control |
-| `--reap-only` | | hace solo esa limpieza y sale; se niega si corre un agente con ese `--ch-socket-dir` (lock `node-agent.lock`) |
-| `--print-measurement` | | imprime el SHA-256 del kernel y de la imagen base y la versión del hipervisor como entrada de `ASP_ATTEST_ALLOWED_IMAGES` del control plane, y sale |
-| `--enroll` | `ASP_ENROLL=1` | enrollment al arrancar. Si el plano de control responde que el nodo ya está enrolado (409), sigue con el certificado de `--cert-dir` cuando es de este nodo y no ha caducado |
-| `--enroll-token` | `ASP_NODE_ENROLL_TOKEN` | token de enroll de un solo uso (`asp node enroll-token`); uno fijado a este nodo le cambia la clave aunque esté enrolado |
-| `--bootstrap-token` | `ASP_NODE_BOOTSTRAP_TOKEN` | token compartido de labs: enrola un id sin certificado o un nodo revocado, nunca re-enrola uno vivo |
-| `--cert-dir` | `ASP_CERT_DIR` | dir de client certs (`/var/lib/asp/node-certs`; si no se puede escribir, uno temporal) |
-| | `ASP_ALLOW_TMP_KEYS` | `1`: un nodo de producción arranca aunque `--cert-dir`, `ASP_ATTEST_KEY` o `--egress-mitm-ca` estén en un directorio temporal |
-| `--mtls` | `ASP_MTLS=1` | exigir client certs |
-| `--control-plane-ca` | `ASP_CONTROL_PLANE_CA` | CA del cert TLS del CP (enroll y llamadas); por defecto `cert-dir/ca.crt`, la misma CA que firma los certificados de nodo: avisa si el CP es remoto. Pasa una CA que firme solo el cert del CP ([`ops-multi-node.md`](../docs/ops-multi-node.md#las-dos-raíces-de-confianza)) |
-| `--enroll-url` | `ASP_ENROLL_URL` | URL de enroll si no es `--control-plane-url` (`ASP_MTLS_STRICT`) |
-| `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local (exec, egress-check, approve). Pide `Authorization: Bearer <token>` salvo `GET /healthz`; fuera de loopback no arranca |
-| `--api-key-file` | `ASP_NODE_API_KEY_FILE` | Fichero con la API key (ámbito `platform`) que el nodo manda al CP en cada llamada salvo enroll; también `ASP_NODE_API_KEY`. Hace falta con un CP por HTTP plano, donde no hay certificado de cliente: el CP rechaza toda llamada de nodo sin credencial. Con mTLS (`https://` + `ASP_CLIENT_CA`) el certificado basta |
-| `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | Fichero con el secreto de esa API. Se crea (0600) si no existe, con 32 bytes aleatorios. El plano de control del mismo host lee el mismo fichero (`ASP_AGENT_TOKEN_FILE`) y debe poder leerlo: si no corre como root, crea el fichero antes (`install -m 0640 -o root -g <grupo> …`). Defecto `/var/lib/asp/agent.token`, o `$TMPDIR/asp-agent.token` si ese directorio no es escribible (labs sin root; avisa en el log) |
-| `--insecure-agent-listen` | `ASP_INSECURE_AGENT_LISTEN=1` | permite `--agent-listen` fuera de loopback (solo lab) |
-| `--workspace-root` | `ASP_WORKSPACE_ROOTS` | Directorios (separados por comas) bajo los que puede vivir el workspace de una sandbox: debe estar dentro de `<raíz>/<tenant>/`, con los enlaces simbólicos resueltos. El path viene del spec de la sandbox, así que sin esto cualquiera que pueda crear una exportaría los discos y las claves del nodo. Defecto `/srv/asp/workspaces`; si no existe, ninguna sandbox puede tener workspace |
-| `--guest-kernel` / `--guest-rootfs` | `ASP_GUEST_KERNEL` / `ASP_GUEST_ROOTFS` | `/opt/sandbox/vmlinux` y `/opt/sandbox/rootfs.img`. El kernel (un `vmlinux` sin comprimir) que arranca toda VM y la imagen base de la que se copia el disco de cada sandbox (nunca se arranca ella misma). Una prueba con otra imagen (un guest nuevo, un kernel distinto) no necesita tocar `/opt/sandbox`; la lista de imágenes permitidas de la atestación (`--print-measurement`) mide estos mismos ficheros |
-| `--guest-verify` | `ASP_GUEST_VERIFY` | `auto`. Comprueba el kernel y la imagen base contra el `SHA256SUMS` que tengan al lado (`asp image pull` lo instala): `auto` se niega a arrancar desde un fichero que la lista da con otro digest, `on` también desde uno que ninguna lista nombra, `off` no comprueba |
-| `--virtiofsd-sandbox` | `ASP_VIRTIOFSD_SANDBOX` | `--sandbox` de virtiofsd: `chroot` (lo confina al workspace), `namespace` o `none`. Defecto `chroot` si el agente es root, `none` si no |
-| `--vm-survive-restart` | `ASP_VM_SURVIVE_RESTART` | `true` por defecto: una VM confinada sigue corriendo cuando el agente para o se reinicia, y el proceso siguiente la adopta ([ADR-0014](../docs/adr/0014-vms-outlive-the-agent.md)); cada VM en marcha deja un registro en `{--ch-socket-dir}/state/`. `=false` ata el servicio de cada VM al del agente (systemd las para con él), como antes |
-| `--vm-unprivileged` | `ASP_VM_UNPRIVILEGED` | `auto` (por defecto), `on` u `off`. Cada `cloud-hypervisor` corre como un usuario sin privilegios propio (`--vm-uid-base` + CID), sin capabilities y en una unit sin sockets IP ni escritura fuera de sus ficheros ([ADR-0015](../docs/adr/0015-unprivileged-vmm.md)). `auto` cuando el host puede (lo prueba abriendo como ese usuario lo que el VMM necesita), si no como root diciendo por qué; `on` no arranca si no puede. Necesita `--vm-confine`. `virtiofsd` sigue siendo root |
-| `--vm-uid-base` | `ASP_VM_UID_BASE` | primer id de usuario de los VMM; el de la VM con CID `n` corre como base más `n` (`1879048192` por defecto) |
-| `--vm-run-dir` | `ASP_VM_RUN_DIR` | un subdirectorio por VM (de su usuario, con sus sockets), 0711. Por defecto `--ch-socket-dir` + `-vm` (`/run/asp-vm`) |
-| `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
-| `--vm-slice` | `ASP_VM_SLICE` | slice de esos servicios (`asp-vms.slice`) |
-| `--vm-memory-overhead-mib` | `ASP_VM_MEMORY_OVERHEAD_MIB` | memoria que se suma a la del guest en el `MemoryMax` del servicio (por defecto 256) |
-| `--vm-cpu-overhead-percent` | `ASP_VM_CPU_OVERHEAD_PERCENT` | porcentaje de una CPU que se suma a las vCPU en el `CPUQuota` (por defecto 50) |
-| `--vm-tasks-max` | `ASP_VM_TASKS_MAX` | procesos e hilos máximos de un servicio de VM (por defecto 1024) |
-| `--capacity-cpu` | `ASP_CAPACITY_CPU` | `-1` = núcleos del host; `0` = no limita |
-| `--capacity-mem-mib` | `ASP_CAPACITY_MEM_MIB` | `-1` = `MemTotal − max(1 GiB, 10 %)`; `0` = no limita |
-| `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
-| `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | `host[:puerto]` que marca el portátil para local-net en este nodo |
-| `--agent-tls-listen` | `ASP_AGENT_TLS_LISTEN` | vacío — `exec` con mTLS para un CP en otro host (p.ej. `0.0.0.0:9443`); solo acepta el cert del CP |
-| `--endpoint` | `ASP_ENDPOINT` | anunciado al CP; por defecto `https://<hostname>:<puerto>` con `--agent-tls-listen`, si no `http://<agent-listen>` |
-| `--pod-daemon-sock` | `ASP_POD_DAEMON_SOCK` | unix sock de pod-daemon (dry-run / fallback) |
-| `--pod-daemon-port` | | `26500` — puerto guest vsock/TCP para HTTP |
-| `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check denegado |
-| `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | forward proxy HTTP(S) (p.ej. `:8888`). `ASP_EGRESS_MAX_BODY` (8 MiB) limita el body de las peticiones HTTP (413); las respuestas pasan enteras, como por un túnel CONNECT. No reenvía cabeceras hop-by-hop (`Connection`, `Upgrade`, `Keep-Alive`, `Proxy-Authorization`…) |
-| `--egress-allow-cidr` | `ASP_EGRESS_ALLOW_CIDRS` | Redes privadas (CIDR o dirección, separadas por comas) a las que el proxy puede conectar, además de Internet. El proxy comprueba la dirección tras resolver el nombre y nunca marca loopback, link-local, multicast, reservadas, las direcciones del propio nodo ni la red de los guests, diga lo que diga la allowlist; las redes privadas solo si están aquí |
-| `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | UDP DNS sink (p.ej. `:5353`): NXDOMAIN para nombres no permitidos |
-| `--egress-mitm` | `ASP_EGRESS_MITM=1` | CONNECT TLS bump (default off; corp caution) |
-| `--egress-mitm-ca` | `ASP_EGRESS_MITM_CA` | PEM CA MITM (generate/load) |
-| `--ssh-agent-bridge` | `ASP_SSH_AGENT_BRIDGE` | unix sock bridge → `SSH_AUTH_SOCK` / FakeAgent. Solo reenvía listar claves y firmar |
-| `--identity-listen` | `ASP_IDENTITY_LISTEN` | unix `.sock` o TCP para `POST /v1/tokens/oidc`; sin binding de sandbox: 403 salvo `--insecure-identity-sandbox-header` |
-| `--default-sandbox-id` | `ASP_SANDBOX_ID` | sandbox de las peticiones sin `X-ASP-Sandbox-ID` en listeners sin binding; solo con `--insecure-identity-sandbox-header` |
-| `--insecure-identity-sandbox-header` | `ASP_INSECURE_IDENTITY_SANDBOX_HEADER=1` | los listeners de identidad sin binding (`--identity-listen`, host-vsock global) toman la sandbox de `X-ASP-Sandbox-ID`: quien llegue a ellos pide el token de cualquier sandbox (solo lab) |
-| `--reconcile` | `ASP_RECONCILE=1` | poll work / claim / Start-Stop VMM |
-| `--reconcile-interval` | | default `2s` |
-| `--reconcile-workers` | `ASP_RECONCILE_WORKERS` | `4` — sandboxes que el reconciler arranca o para a la vez. Un arranque lento (timeout de CH, copia de un rootfs grande) ya no retrasa al resto; una misma sandbox nunca la llevan dos workers, y un `stopping` que llega durante su arranque se atiende al terminar este. `1` con `--ch-api-socket`. Un pánico en un worker se registra con su traza y termina solo esa tarea: la sandbox queda `failed` (primer arranque), `stopped` con su disco (reanudación o parada) o `deleted`, con `status_detail=panic: …`; el agente y las demás VMs siguen. Lo mismo vale para un sondeo y para las conexiones del agente SSH del guest |
-| `--guest-ready-timeout` | `ASP_GUEST_READY_TIMEOUT` | `120s`. Tiempo máximo que espera un arranque a que el pod-daemon de la VM responda a `/healthz` antes de informar `running`. CH está arriba antes de que el guest arranque (unos 3 s en un host KVM), y `asp sandbox run` hace el exec en cuanto ve `running`. Pasado ese tiempo el arranque **falla**: se para la VM, se registra en el log lo último que el guest escribió en su consola serie (el agente guarda los últimos 32 KiB en memoria, nunca en disco) y se informa `failed` con `status_detail=guest_not_ready: … (console: …)`, y se borra el disco recién copiado; una reanudación vuelve a `stopped` con su disco (`resume failed: guest_not_ready: …`). Antes informaba `running` igualmente, y solo el exec fallaba. `0`: informa en cuanto arranca la VMM. Sin efecto con `--dry-run` |
-| `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra TAP `asp-{shortid}` con su propia /30 de `--guest-subnet`. Si el TAP no se puede crear (permisos, nombre ya en uso) la sandbox pasa a `failed`; solo `--dry-run` sigue sin TAP. La cmdline del guest lleva además su hostname (`asp-{shortid}`), su resolver (el gateway, si el DNS sink es alcanzable) y `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (si hay `--egress-proxy-listen`): `docs/bare-metal-ch.md` §3.4 |
-| `--disk-dir` | `ASP_DISK_DIR` | `/var/lib/asp/disks` — copia privada del rootfs por sandbox (`rootfs-{id}.img`); no aplica con `--dry-run`. **Parar la conserva** si el plano de control manda la lista `retained` en `/work` ([ADR-0012](../docs/adr/0012-retained-disks.md)); borrar la sandbox, un arranque fallido o un plano de control que no la manda (anterior) la borran. Tras un sondeo correcto, como mucho una vez por minuto, el nodo borra las copias que no son de ninguna sandbox: ni asignadas, ni retenidas, ni en borrado, ni en manos de este agente |
-| `--stop-grace` | `ASP_STOP_GRACE` | `15s`. Al parar conservando el disco, el nodo pide al guest `sync; systemctl poweroff --no-block` por el pod-daemon y espera hasta este tiempo a que Cloud Hypervisor salga; si no sale, parada brusca con un aviso. El botón ACPI no sirve con la imagen actual (sin `logind`). `0`: parada brusca; no aplica con `--dry-run` |
-| `--disk-min-free-mib` | `ASP_DISK_MIN_FREE_MIB` | `-1`: el doble del tamaño de la imagen base. Si `--disk-dir` tiene menos espacio libre, no clona ni reanuda una sandbox (`failed`, `disk: N MiB free…`). `0`: no comprueba |
-| `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest CID 2) |
-| `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix bajo este dir en vez de AF_VSOCK |
-| `--ssh-agent-confirm` | `ASP_SSH_AGENT_CONFIRM` | exige approve one-shot con el `sandbox_id` que va a firmar; default on si multi-user/template (`=0` fuerza off) |
-| `--insecure-ssh-agent-global-approvals` | `ASP_INSECURE_SSH_AGENT_GLOBAL_APPROVALS=1` | con confirm, acepta approves sin `sandbox_id`; solo los usan `--ssh-agent-bridge` y el host-vsock global, para el primer guest que firme (solo lab) |
-| `--ssh-agent-sock-template` | `ASP_SSH_AGENT_SOCK_TEMPLATE` | path template por sandbox (`{owner_sub}`/`{sandbox_id}`); missing → FakeAgent |
-| `--multi-user` | `ASP_MULTI_USER` (antes también `ASP_IDP_REQUIRED`, que sigue valiendo con un aviso) | perfil multi-user: confirm default-on |
-| `--metrics-listen` | `ASP_METRICS_LISTEN` | `host:puerto` donde servir `GET /metrics` (Prometheus), p. ej. `127.0.0.1:9102`. Sin autenticación: solo loopback salvo `--insecure-obs-listen`. Apagado por defecto. Catálogo en [`docs/how-to/monitoring.md`](../docs/how-to/monitoring.md) |
-| `--pprof-listen` | `ASP_PPROF_LISTEN` | Igual para `/debug/pprof/` |
-| `--insecure-obs-listen` | `ASP_INSECURE_OBS_LISTEN` | Permite las dos anteriores fuera de loopback (sin autenticación; pon delante un proxy que autentique) |
-| `--egress-nft-redirect` | `ASP_EGRESS_NFT_REDIRECT` | nftables `asp_egress` HTTP+DNS redirect. **Default: activo** con `--egress-proxy-listen` fuera de `--dry-run`; `=false` lo apaga (el proxy es voluntario y el agente lo avisa). Con redirect y `--nft-dns-action=redirect` el DNS sink arranca en `:5353` si no lo nombras. El script va dentro del binario (`ASP_NFT_SCRIPT` nombra uno propio) |
-| `--nft-egress-mode` | `ASP_NFT_EGRESS_MODE` | `enforce` (default: un nodo que no puede aplicar las reglas no arranca) \| `soft` (arranca sin forzar el egress, con aviso; default con `--dry-run`). El nodo informa `egress_enforced=true` al registrarse solo con el proxy escuchando y las reglas puestas en `enforce` |
-| `--nft-http-ports` | `ASP_NFT_HTTP_PORTS` | default `80,443` |
-| `--nft-dns-action` | `ASP_NFT_DNS_ACTION` | `redirect` (default) \| `drop` |
-| `--guest-ssh-agent-auto` | `ASP_GUEST_SSH_AGENT_AUTO` | **obsoleto, sin efecto**: solo escribía una línea en el log. Se acepta, avisa y se quitará |
-| `--guest-subnet` | `ASP_GUEST_SUBNET` | `10.200.0.0/16` — pool de /30 por sandbox (TAP `.1`, guest `.2`) y match de las reglas nft |
+## Ejecutarlo en desarrollo
 
 ```bash
 go test ./...
@@ -119,7 +24,15 @@ go run ./cmd/node-agent \
   --tap-auto
 ```
 
-Política de egress ([ADR-0002](../docs/adr/0002-networking.md)): cada sondeo de `/work` trae la política efectiva del tenant de cada sandbox asignada y su versión. El reconciler la aplica antes del primer arranque (el guest no espera a un exec para tener red) y otra vez cuando cambia la versión, así que un `PUT /v1/tenants/{id}/egress` llega a las sandboxes en marcha en el siguiente sondeo. Sin política todavía, deny-default.
+## Comportamiento
+
+**Trabajadores del reconciler** (`--reconcile-workers`). Un arranque lento (timeout de CH, copia de un rootfs grande) no retrasa al resto. Una misma sandbox nunca la llevan dos trabajadores, y un `stopping` que llega durante su arranque se atiende al terminar este. Un pánico en un trabajador se registra con su traza y termina solo esa tarea: la sandbox queda `failed` (primer arranque), `stopped` con su disco (reanudación o parada) o `deleted`, con `status_detail=panic: …`; el agente y las demás VMs siguen. Lo mismo vale para un sondeo y para las conexiones del agente SSH del guest.
+
+**Un arranque que no llega a estar listo** (`--guest-ready-timeout`). CH está arriba antes de que el guest arranque (unos 3 s en un host KVM) y `asp sandbox run` hace el exec en cuanto ve `running`, así que el agente espera a que el pod-daemon de la VM responda a `/healthz` antes de informar `running`. Pasado el plazo el arranque **falla**: se para la VM, se registra en el log lo último que el guest escribió en su consola serie (el agente guarda los últimos 32 KiB en memoria, nunca en disco), se informa `failed` con `status_detail=guest_not_ready: … (console: …)` y se borra el disco recién copiado. Una reanudación vuelve a `stopped` con su disco (`resume failed: guest_not_ready: …`).
+
+**Parar conservando el disco** (`--stop-grace`). El nodo pide al guest `sync; systemctl poweroff --no-block` por el pod-daemon y espera a que Cloud Hypervisor salga; si no sale a tiempo, parada brusca con un aviso. El botón ACPI no sirve con la imagen actual (no tiene `logind`).
+
+Política de egress ([ADR-0002](../docs/adr/0002-networking.md)): cada sondeo de `/work` trae la política efectiva del tenant de cada sandbox asignada y su versión. El reconciler la aplica antes del primer arranque (el guest no espera a un exec para tener red) y otra vez cuando cambia la versión, así que un `PUT /v1/tenants/{id}/egress` llega a las sandboxes en marcha en el siguiente sondeo. Sin política todavía, deny-default. El proxy no reenvía cabeceras hop-by-hop (`Connection`, `Upgrade`, `Keep-Alive`, `Proxy-Authorization`…) y limita el cuerpo de las peticiones HTTP (`ASP_EGRESS_MAX_BODY`, 413); las respuestas pasan enteras, como por un túnel CONNECT.
 
 Endpoints internos (`--agent-listen`, loopback): `GET /healthz`, `POST /v1/internal/exec`, `POST /v1/internal/egress-check` (`{"host":…, "sandbox_id":…}` evalúa la política que el proxy aplica ahora a esa sandbox), `POST /v1/internal/ssh-agent/approve` (con confirm; `sandbox_id` obligatorio, 400 sin él; body/header `actor_sub` audit; devuelve un `approval_id` de auditoría).
 
