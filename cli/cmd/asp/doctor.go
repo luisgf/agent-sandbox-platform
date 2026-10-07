@@ -11,25 +11,24 @@ import (
 	"strings"
 )
 
-// defaultNodeEnvFile is where the systemd unit of a node keeps its settings.
-const defaultNodeEnvFile = "/etc/asp/node-agent.env"
-
 // cmdDoctor is asp doctor: on a node, as root, check the host and the configuration
 // of the node-agent without starting it. The checks are the node-agent's own (they
 // need what only it knows), so this runs `node-agent --doctor` with the settings of
-// the node: the variables of its env file, then the flags given here. It is the tool
+// the node: the node-agent reads /etc/asp/agent.yaml (and its drop-ins) itself, as it
+// does under systemd, then come the variables of --env-file (for a unit that loads an
+// EnvironmentFile) and the flags given here. It is the tool
 // for a node that does not start; for one that runs, `asp node doctor <id>` asks the
 // running agent, which is exact about its own settings.
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	envFile := fs.String("env-file", defaultNodeEnvFile, "KEY=VALUE settings of the node-agent, as its systemd unit loads them (missing is fine)")
+	envFile := fs.String("env-file", "", "KEY=VALUE settings for the node-agent, for a unit that loads an EnvironmentFile (the node-agent reads /etc/asp/agent.yaml itself)")
 	bin := fs.String("node-agent", "", "the node-agent binary (default: node-agent on PATH, then /usr/local/bin/node-agent)")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: asp doctor [--env-file FILE] [--node-agent PATH] [--json] [node-agent flags...]")
-		fmt.Fprintln(stderr, "Runs the node-agent's host checks with this node's settings. Flags after -- go to the node-agent")
-		fmt.Fprintln(stderr, "(the ones its unit puts in ExecStart: --disk-dir, --ch-socket-dir, --egress-proxy-listen, ...).")
+		fmt.Fprintln(stderr, "usage: asp doctor [--env-file FILE] [--node-agent PATH] [--json] [-- node-agent flags...]")
+		fmt.Fprintln(stderr, "Runs the node-agent's host checks with this node's settings: the node-agent reads /etc/asp/agent.yaml")
+		fmt.Fprintln(stderr, "(and agent.yaml.d/) itself. Flags after -- go to the node-agent (--config FILE, --disk-dir, ...).")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -40,10 +39,12 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "doctor: %v\n", err)
 		return 2
 	}
-	env, err := readEnvFile(*envFile)
-	if err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "doctor: %v\n", err)
-		return 2
+	var env []string
+	if *envFile != "" {
+		if env, err = readEnvFile(*envFile); err != nil {
+			fmt.Fprintf(stderr, "doctor: %v\n", err)
+			return 2
+		}
 	}
 	cmdArgs := append([]string{"--doctor"}, fs.Args()...)
 	if *asJSON {

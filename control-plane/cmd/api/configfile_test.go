@@ -53,20 +53,23 @@ func writeConf(t *testing.T, dir, name, body string) string {
 	return p
 }
 
-// clearSettings unsets every variable the control plane reads for the test, and puts them back.
+// clearSettings unsets every variable the control plane reads for the test, and puts them back,
+// whatever the file layer set in any call of the test.
 func clearSettings(t *testing.T) {
 	t.Helper()
+	was := map[string]string{}
 	for _, s := range settingsTable {
 		if v, ok := os.LookupEnv(s.Env); ok {
-			os.Unsetenv(s.Env)
-			name, val := s.Env, v
-			t.Cleanup(func() { os.Setenv(name, val) })
+			was[s.Env] = v
 		}
+		os.Unsetenv(s.Env)
 	}
-	// What the file layer sets must not leak into the next test.
 	t.Cleanup(func() {
-		for name := range fileSettings.applied {
-			os.Unsetenv(name)
+		for _, s := range settingsTable {
+			os.Unsetenv(s.Env)
+			if v, ok := was[s.Env]; ok {
+				os.Setenv(s.Env, v)
+			}
 		}
 		fileSettings.paths, fileSettings.applied = nil, nil
 	})

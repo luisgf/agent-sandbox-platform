@@ -40,38 +40,100 @@ func variablesInSource(t *testing.T) map[string]bool {
 	return seen
 }
 
-// What the packaged unit and the example env file set must be variables the control
-// plane reads: one that was renamed, or never existed, does nothing, and nothing says so.
-func TestPackagedControlPlaneFilesNameRealVariables(t *testing.T) {
-	known := variablesInSource(t)
-	if len(known) < 40 {
-		t.Fatalf("only %d variables found in the source: is the scan reading it?", len(known))
+func readRepoFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+	if err != nil {
+		t.Skipf("%s is not here (a checkout of the control plane alone): %v", path, err)
 	}
-	name := regexp.MustCompile(`^\s*#?\s*(ASP_[A-Z0-9_]+)=`)
-	envLine := regexp.MustCompile(`^\s*Environment=(ASP_[A-Z0-9_]+)=`)
-	for _, f := range []struct{ path, kind string }{
-		{"packaging/etc/control-plane.env", "env"},
-		{"packaging/systemd/asp-control-plane.service", "unit"},
+	return string(b)
+}
+
+// uncommented turns the example lines (#key: value, no space after the #) of a settings file
+// into settings, and leaves the prose comments as they are.
+func uncommented(src string) string {
+	return regexp.MustCompile(`(?m)^#([a-z][a-z0-9_]*:)`).ReplaceAllString(src, "$1")
+}
+
+// The files the package installs and the lab's are accepted by the control plane, examples
+// included: a key it does not have (a setting that was renamed, or never existed) stops it at
+// its first start.
+func TestPackagedSettingsFilesAreAcceptedByTheControlPlane(t *testing.T) {
+	for _, path := range []string{"packaging/etc/server.yaml", "scripts/systemd/lab/server.yaml"} {
+		src := readRepoFile(t, path)
+		for name, text := range map[string]string{"as installed": src, "with its examples on": uncommented(src)} {
+			clearSettings(t)
+			conf := writeConf(t, t.TempDir(), "server.yaml", text)
+			if err := loadConfigFile([]string{"--config", conf}); err != nil {
+				t.Errorf("%s (%s): %v", path, name, err)
+			}
+		}
+	}
+}
+
+// The keys of the CA, the OIDC key and the attestation key are in the directory the unit makes
+// for them: the unit's StateDirectory and the file are two halves of one setting.
+func TestPackagedStatePathsAreInTheUnitsStateDirectory(t *testing.T) {
+	unit := readRepoFile(t, "packaging/systemd/asp-control-plane.service")
+	m := regexp.MustCompile(`(?m)^StateDirectory=(\S+)$`).FindStringSubmatch(unit)
+	if m == nil {
+		t.Fatal("the unit has no StateDirectory")
+	}
+	dir := "/var/lib/" + m[1] + "/"
+	clearSettings(t)
+	conf := writeConf(t, t.TempDir(), "server.yaml", readRepoFile(t, "packaging/etc/server.yaml"))
+	if err := loadConfigFile([]string{"--config", conf}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ASP_CA_CERT", "ASP_CA_KEY", "ASP_OIDC_KEY", "ASP_ATTEST_KEY"} {
+		if got := os.Getenv(name); !strings.HasPrefix(got, dir) {
+			t.Errorf("%s = %q, want a file under %s (the unit's StateDirectory)", name, got, dir)
+		}
+	}
+}
+
+// The units start the control plane with its file, and set no variable that is a setting: an
+// environment variable beats the file, so one in the unit could not be changed there. (The lab
+// unit keeps its secrets in an EnvironmentFile, outside the repository.)
+func TestControlPlaneUnitsReadTheFileAndSetNoSettings(t *testing.T) {
+	table := map[string]bool{}
+	for _, s := range settingsTable {
+		table[s.Env] = true
+	}
+	envLine := regexp.MustCompile(`(?m)^Environment=(ASP_[A-Z0-9_]+)=`)
+	for _, c := range []struct{ path, exec string }{
+		{"packaging/systemd/asp-control-plane.service", `/usr/bin/asp-control-plane`},
+		{"scripts/systemd/asp-control-plane.service", `\S*/api`},
 	} {
-		b, err := os.ReadFile(filepath.Join("..", "..", "..", f.path))
-		if err != nil {
-			t.Skipf("%s is not here (a checkout of the control plane alone): %v", f.path, err)
+		src := readRepoFile(t, c.path)
+		if !regexp.MustCompile(`(?m)^ExecStart=` + c.exec + ` --config /etc/asp/server\.yaml$`).MatchString(src) {
+			t.Errorf("%s: ExecStart does not run the control plane with --config /etc/asp/server.yaml", c.path)
 		}
-		n := 0
-		for _, line := range strings.Split(string(b), "\n") {
-			re := name
-			if f.kind == "unit" {
-				re = envLine
-			}
-			if m := re.FindStringSubmatch(line); m != nil {
-				n++
-				if !known[m[1]] {
-					t.Errorf("%s sets %s, which the control plane does not read", f.path, m[1])
-				}
+		for _, m := range envLine.FindAllStringSubmatch(src, -1) {
+			if table[m[1]] {
+				t.Errorf("%s sets %s, a setting: it belongs in the YAML file (the environment would beat it)", c.path, m[1])
 			}
 		}
-		if n == 0 {
-			t.Errorf("%s: no variable found: is the file read right?", f.path)
-		}
+	}
+}
+
+// What the installer writes into server.yaml.d is accepted by the control plane.
+func TestInstallerServerDropInsNameRealSettings(t *testing.T) {
+	script := readRepoFile(t, "scripts/install.sh")
+	start, end := strings.Index(script, "if has_role server; then"), strings.Index(script, "if has_role agent; then")
+	if start < 0 || end < start {
+		t.Fatal("the installer's server section is not where it was")
+	}
+	body := strings.Builder{}
+	for _, m := range regexp.MustCompile(`(?m)^([a-z][a-z0-9_]*): `).FindAllStringSubmatch(script[start:end], -1) {
+		body.WriteString(m[1] + ": x\n")
+	}
+	if body.Len() == 0 {
+		t.Fatal("no setting found in the installer's server section: is it read right?")
+	}
+	clearSettings(t)
+	conf := writeConf(t, t.TempDir(), "10-install.yaml", body.String())
+	if err := loadConfigFile([]string{"--config", conf}); err != nil {
+		t.Errorf("the installer writes a key the control plane does not have: %v", err)
 	}
 }
