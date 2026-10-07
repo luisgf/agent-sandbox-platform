@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -180,9 +179,8 @@ func (s *Server) HeartbeatLocalNet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	body, ok := readBody(w, r, maxBodyBytes)
+	if !ok {
 		return
 	}
 	keys, err := jsonObjectKeys(body)
@@ -293,9 +291,8 @@ func (s *Server) RegisterLocalNetNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	body, ok := readBody(w, r, maxBodyBytes)
+	if !ok {
 		return
 	}
 	keys, err := jsonObjectKeys(body)

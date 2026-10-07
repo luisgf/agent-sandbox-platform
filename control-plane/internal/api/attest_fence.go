@@ -39,8 +39,7 @@ func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req attestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Statement.SandboxID) == "" {
@@ -169,8 +168,7 @@ func (s *Server) VerifyAttestation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req verifyAttestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
 	ev := req.Evidence

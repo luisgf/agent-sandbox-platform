@@ -134,9 +134,8 @@ type execResponse struct {
 // a forged body owner_sub that disagrees is rejected. Token email fills owner_email when present.
 // Phase 3: create requires admin or operator role from IdP groups/roles claims.
 func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	body, ok := readBody(w, r, maxBodyBytes)
+	if !ok {
 		return
 	}
 	keys, err := jsonObjectKeys(body)
@@ -346,8 +345,7 @@ func (s *Server) EnrollNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input store.EnrollNodeInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxSmallBodyBytes, &input) {
 		return
 	}
 	if err := ValidateAgentEndpoint(effectiveAgentEndpoint(input.AgentEndpoint, input.Endpoint), s.allowInsecureAgentHTTP()); err != nil {
@@ -500,8 +498,7 @@ func (s *Server) RevokeNode(w http.ResponseWriter, r *http.Request) {
 // RegisterNode records a node-agent registration.
 func (s *Server) RegisterNode(w http.ResponseWriter, r *http.Request) {
 	var input store.RegisterNodeInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxSmallBodyBytes, &input) {
 		return
 	}
 	// With mTLS a node registers only itself; otherwise it could re-point another
@@ -550,8 +547,12 @@ func (s *Server) HeartbeatNode(w http.ResponseWriter, r *http.Request) {
 	}
 	// The body is optional: a node that predates it sends none.
 	var info heartbeatRequest
-	if body, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(body)) > 0 {
-		if err := json.Unmarshal(body, &info); err != nil {
+	hbBody, ok := readBody(w, r, maxHeartbeatBytes)
+	if !ok {
+		return
+	}
+	if len(bytes.TrimSpace(hbBody)) > 0 {
+		if err := json.Unmarshal(hbBody, &info); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
@@ -587,9 +588,8 @@ func (s *Server) Exec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	body, ok := readBody(w, r, maxBodyBytes)
+	if !ok {
 		return
 	}
 	keys, err := jsonObjectKeys(body)
@@ -736,8 +736,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req execStdinRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxBodyBytes, &req) {
 		return
 	}
 	if strings.TrimSpace(req.ExecID) == "" {
@@ -993,8 +992,7 @@ func (s *Server) PutTenantEgress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var req putEgressRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxBodyBytes, &req) {
 		return
 	}
 	rules := make([]store.EgressRule, 0, len(req.Rules))
@@ -1042,8 +1040,7 @@ func (s *Server) CheckTenantEgress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var req egressCheckRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxBodyBytes, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Host) == "" {
@@ -1156,8 +1153,7 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req oidcTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
 	if strings.TrimSpace(req.SandboxID) == "" {
@@ -1342,8 +1338,7 @@ func (s *Server) ClaimSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req claimRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, maxSmallBodyBytes, &req) {
 		return
 	}
 	nodeID := actingNodeID(r, req.NodeID)
@@ -1384,9 +1379,8 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sandbox id required")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	body, ok := readBody(w, r, maxBodyBytes)
+	if !ok {
 		return
 	}
 	keys, err := jsonObjectKeys(body)
