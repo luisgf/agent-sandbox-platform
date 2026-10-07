@@ -24,7 +24,7 @@ UP_PID=$!
 
 echo "==> proxy smoke binary"
 (cd "$ROOT/node-agent" && go build -o "$WORKDIR/proxy" ./cmd/egress-proxy-smoke)
-"$WORKDIR/proxy" -listen 127.0.0.1:18888 -allow 127.0.0.1 >"$WORKDIR/proxy.log" 2>&1 &
+"$WORKDIR/proxy" -listen 127.0.0.1:18888 -allow 127.0.0.1:18099 -allow-loopback >"$WORKDIR/proxy.log" 2>&1 &
 PROXY_PID=$!
 for i in $(seq 1 50); do
   if curl -sf -o /dev/null -x http://127.0.0.1:18888 http://127.0.0.1:18099/ 2>/dev/null; then break; fi

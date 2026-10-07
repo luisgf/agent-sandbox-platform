@@ -110,7 +110,12 @@ func (a *Allowlist) CheckHostPort(host string, port int) error {
 			continue
 		}
 		if r.Port == nil {
-			return nil
+			// A rule without a port is for the web. Any port would let a
+			// `github.com` rule through to every service the host runs.
+			if port <= 0 || port == 80 || port == 443 {
+				return nil
+			}
+			continue
 		}
 		if port <= 0 || *r.Port == port {
 			return nil

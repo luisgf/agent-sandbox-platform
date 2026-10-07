@@ -239,6 +239,10 @@ Allowlist efectiva (deny-by-default). El proxy y el DNS sink identifican el sand
 
 `X-ASP-Allowlist-JSON` y `X-ASP-Sandbox-ID` se borran de la petición reenviada y no cambian la decisión.
 
+**Destinos que el proxy nunca marca.** La allowlist es del tenant y nombra hosts, pero un nombre puede resolver a cualquier cosa, también al propio nodo. El proxy corre en el netns del host, así que sin más un guest podría apuntar un nombre suyo a `127.0.0.1` y usarlo para llegar al API local del node-agent (exec sin autenticar en `:9100`), a los metadatos de la nube (`169.254.169.254`) o a la LAN del nodo. Por eso, tras resolver el nombre y sobre la dirección a la que va a conectar, el proxy rechaza (**403**, audit `destination_blocked`) loopback, link-local, no especificadas, multicast, rangos reservados, las direcciones del propio nodo y la red de los guests (`--guest-subnet`), aunque la allowlist del tenant diga que sí. Las redes privadas (RFC 1918, ULA, CGNAT) tampoco, salvo las que el operador abra con `--egress-allow-cidr` (p. ej. `--egress-allow-cidr=10.50.0.0/16` para un mirror interno); un tenant no puede abrirlas.
+
+**Puertos.** Una regla sin `port` vale para 80 y 443; cualquier otro puerto necesita una regla que lo nombre (`{"host_pattern":"git.example.com","port":22}`). Una regla sin puerto dejaba pasar `CONNECT host:22`, `:5432`… a todo lo que el host sirviera.
+
 Deny → HTTP **403**. El proxy se arranca con `--egress-proxy-listen` (recomendado junto a `--egress-enforce`). Hardening: rate-limit token-bucket por host/sandbox, límite del body de las peticiones (`ASP_EGRESS_MAX_BODY`, 413; las respuestas no se cortan), deny de schemes no-HTTP, audit JSON. MITM CONNECT bump **off** por defecto; solo con `--egress-mitm` / `ASP_EGRESS_MITM=1` + `--egress-mitm-ca` (corp caution).
 
 #### DNS
@@ -396,6 +400,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check; intent para proxy |
 | `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | p.ej. `:8888` forward proxy HTTP(S) |
 | `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | p.ej. `:5353` UDP NXDOMAIN non-allowlisted |
+| `--egress-allow-cidr` | `ASP_EGRESS_ALLOW_CIDRS` | redes privadas (CIDR o dirección, separadas por comas) a las que el proxy puede conectar, además de Internet. Loopback, link-local, el propio nodo y la red de los guests nunca |
 | `--tap-auto` | `ASP_TAP_AUTO=1` | crea/borra `asp-{shortid}` en Start/Stop |
 | `--host-vsock` | `ASP_HOST_VSOCK=1` | AF_VSOCK 26501 SSH + 26502 identity (guest→CID 2) |
 | `--host-vsock-dir` | `ASP_HOST_VSOCK_DIR` | lab: unix `host-vsock-{port}.sock` en vez de AF_VSOCK |

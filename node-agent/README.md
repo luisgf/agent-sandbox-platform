@@ -34,6 +34,7 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--pod-daemon-port` | | `26500` — puerto guest vsock/TCP para HTTP |
 | `--egress-enforce` | `ASP_EGRESS_ENFORCE=1` | 403 en egress-check denegado |
 | `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | forward proxy HTTP(S) (p.ej. `:8888`). `ASP_EGRESS_MAX_BODY` (8 MiB) limita el body de las peticiones HTTP (413); las respuestas pasan enteras, como por un túnel CONNECT. No reenvía cabeceras hop-by-hop (`Connection`, `Upgrade`, `Keep-Alive`, `Proxy-Authorization`…) |
+| `--egress-allow-cidr` | `ASP_EGRESS_ALLOW_CIDRS` | Redes privadas (CIDR o dirección, separadas por comas) a las que el proxy puede conectar, además de Internet. El proxy comprueba la dirección tras resolver el nombre y nunca marca loopback, link-local, multicast, reservadas, las direcciones del propio nodo ni la red de los guests, diga lo que diga la allowlist; las redes privadas solo si están aquí |
 | `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | UDP DNS sink (p.ej. `:5353`): NXDOMAIN para nombres no permitidos |
 | `--egress-mitm` | `ASP_EGRESS_MITM=1` | CONNECT TLS bump (default off; corp caution) |
 | `--egress-mitm-ca` | `ASP_EGRESS_MITM_CA` | PEM CA MITM (generate/load) |

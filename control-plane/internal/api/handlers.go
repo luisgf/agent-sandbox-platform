@@ -1123,7 +1123,18 @@ func evaluateEgress(pol store.EgressPolicy, host string, port int) bool {
 		if !match {
 			continue
 		}
-		if r.Port == nil || port <= 0 || *r.Port == port {
+		if port <= 0 {
+			return true // the caller does not know the port (a DNS lookup)
+		}
+		if r.Port == nil {
+			// A rule without a port is for the web: 80 and 443. Keep this
+			// in step with the node's egress allowlist.
+			if port == 80 || port == 443 {
+				return true
+			}
+			continue
+		}
+		if *r.Port == port {
 			return true
 		}
 	}

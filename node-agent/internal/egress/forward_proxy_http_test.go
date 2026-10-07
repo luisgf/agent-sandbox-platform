@@ -22,7 +22,7 @@ func TestForwardProxyStreamsResponsesLargerThanTheBodyLimit(t *testing.T) {
 		_, _ = w.Write(payload)
 	}))
 	defer upstream.Close()
-	p := &ForwardProxy{Default: NewAllowlist("127.0.0.1"), Enforce: true, MaxBodyBytes: 1024}
+	p := &ForwardProxy{Guard: testGuard, Default: allowServer(t, upstream.URL), Enforce: true, MaxBodyBytes: 1024}
 	proxy := httptest.NewServer(p)
 	defer proxy.Close()
 	proxyURL, _ := url.Parse(proxy.URL)
@@ -56,7 +56,7 @@ func TestForwardProxyStripsHopByHopHeaders(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
-	p := &ForwardProxy{Default: NewAllowlist("127.0.0.1"), Enforce: true}
+	p := &ForwardProxy{Guard: testGuard, Default: allowServer(t, upstream.URL), Enforce: true}
 
 	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/", nil)
 	req.Header.Set("Connection", "keep-alive, X-Foo")
@@ -104,7 +104,7 @@ func TestForwardProxyRejectsOversizedRequestBody(t *testing.T) {
 		mu.Unlock()
 	}))
 	defer upstream.Close()
-	p := &ForwardProxy{Default: NewAllowlist("127.0.0.1"), Enforce: true, MaxBodyBytes: 16}
+	p := &ForwardProxy{Guard: testGuard, Default: allowServer(t, upstream.URL), Enforce: true, MaxBodyBytes: 16}
 
 	req := httptest.NewRequest(http.MethodPost, upstream.URL+"/", strings.NewReader(strings.Repeat("b", 100)))
 	rr := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestForwardProxyKeepsRequestContentLength(t *testing.T) {
 		ch <- got{r.ContentLength, r.TransferEncoding, string(b)}
 	}))
 	defer upstream.Close()
-	p := &ForwardProxy{Default: NewAllowlist("127.0.0.1"), Enforce: true}
+	p := &ForwardProxy{Guard: testGuard, Default: allowServer(t, upstream.URL), Enforce: true}
 
 	req := httptest.NewRequest(http.MethodPost, upstream.URL+"/", strings.NewReader("hello"))
 	rr := httptest.NewRecorder()

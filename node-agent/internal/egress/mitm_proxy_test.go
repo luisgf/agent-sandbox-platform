@@ -44,6 +44,7 @@ func TestForwardProxyMITMCONNECT(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &ForwardProxy{
+		Guard:   testGuard,
 		Default: NewAllowlist("127.0.0.1"),
 		Enforce: true,
 		MITM:    ca,
