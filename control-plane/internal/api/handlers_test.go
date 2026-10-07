@@ -385,6 +385,27 @@ func TestTenantEgressPutGetCheck(t *testing.T) {
 		t.Fatalf("check=%v", chk)
 	}
 
+	// A rule without a port is for the web: 80 and 443, not every port.
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"host":"api.github.com","port":443}`, true},
+		{`{"host":"api.github.com","port":80}`, true},
+		{`{"host":"api.github.com","port":22}`, false},
+		{`{"host":"api.github.com","port":9100}`, false},
+		{`{"host":"api.example.com","port":443}`, true},
+		{`{"host":"api.example.com","port":80}`, false},
+	} {
+		req = httptest.NewRequest(http.MethodPost, "/v1/tenants/t1/egress/check", bytes.NewBufferString(tc.body))
+		rr = httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		_ = json.Unmarshal(rr.Body.Bytes(), &chk)
+		if chk["allowed"] != tc.want {
+			t.Fatalf("%s: allowed=%v, want %v", tc.body, chk["allowed"], tc.want)
+		}
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/v1/tenants/t1/egress/check",
 		bytes.NewBufferString(`{"host":"evil.com"}`))
 	rr = httptest.NewRecorder()

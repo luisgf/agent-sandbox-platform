@@ -75,6 +75,7 @@ type config struct {
 	EgressProxyListen    string
 	EgressDNSSink        string
 	EgressMITMCA         string
+	EgressAllowCIDRs     string // --egress-allow-cidr: private destinations the proxy may reach
 	EgressMITM           bool
 	SSHAgentConfirm      bool
 	SSHGlobalApprovals   bool   // --insecure-ssh-agent-global-approvals: unscoped approvals for listeners without a sandbox (lab)
@@ -269,12 +270,18 @@ func main() {
 		if !cfg.EgressEnforce {
 			slog.Warn("egress proxy listen set but --egress-enforce is off; proxy will still deny non-allowlisted")
 		}
+		guard, err := egressGuard(cfg)
+		if err != nil {
+			slog.Error("egress destination guard", "error", err)
+			os.Exit(2)
+		}
 		fp := &egress.ForwardProxy{
 			Default:   defaultAL,
 			Cache:     policyCache,
 			Logger:    slog.Default(),
 			Enforce:   true, // proxy always deny-by-default when listening
 			RateLimit: egress.NewTokenBucket(egress.DefaultRate, egress.DefaultBurst),
+			Guard:     guard,
 		}
 		if cfg.EgressMITM {
 			_ = os.Setenv("ASP_EGRESS_MITM", "1")
@@ -665,6 +672,7 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.EgressEnforce, "egress-enforce", getenv("ASP_EGRESS_ENFORCE", "") == "1", "return 403 on /v1/internal/egress-check denials; required intent for --egress-proxy-listen")
 	flag.StringVar(&cfg.EgressProxyListen, "egress-proxy-listen", os.Getenv("ASP_EGRESS_PROXY_LISTEN"), "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
 	flag.StringVar(&cfg.EgressDNSSink, "egress-dns-sink", os.Getenv("ASP_EGRESS_DNS_SINK"), "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names")
+	flag.StringVar(&cfg.EgressAllowCIDRs, "egress-allow-cidr", os.Getenv("ASP_EGRESS_ALLOW_CIDRS"), "comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows")
 	flag.StringVar(&cfg.EgressMITMCA, "egress-mitm-ca", os.Getenv("ASP_EGRESS_MITM_CA"), "optional path to MITM CA PEM (generate/load); used only with --egress-mitm / ASP_EGRESS_MITM=1")
 	flag.BoolVar(&cfg.EgressMITM, "egress-mitm", getenv("ASP_EGRESS_MITM", "") == "1", "ENABLE CONNECT TLS bump (corp caution; default off)")
 	flag.StringVar(&cfg.SSHAgentBridge, "ssh-agent-bridge", os.Getenv("ASP_SSH_AGENT_BRIDGE"), "unix socket path for SSH agent bridge (proxies SSH_AUTH_SOCK or FakeAgent)")
@@ -1036,4 +1044,22 @@ func diskMinFreeMiB(flagValue int, baseImage string) int64 {
 		return 0
 	}
 	return 2 * (fi.Size() >> 20)
+}
+
+// egressGuard builds the destination guard of the egress proxy: the operator's
+// private allow list, and the guests' own network as never reachable.
+func egressGuard(cfg config) (*egress.DialGuard, error) {
+	allow, err := egress.ParseCIDRs(cfg.EgressAllowCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("--egress-allow-cidr: %w", err)
+	}
+	g := &egress.DialGuard{AllowCIDRs: allow}
+	if sub := strings.TrimSpace(cfg.GuestSubnet); sub != "" {
+		p, err := netip.ParsePrefix(sub)
+		if err != nil {
+			return nil, fmt.Errorf("--guest-subnet: %w", err)
+		}
+		g.Never = append(g.Never, p.Masked())
+	}
+	return g, nil
 }

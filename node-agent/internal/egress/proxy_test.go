@@ -74,6 +74,43 @@ func TestAllowlistPort(t *testing.T) {
 	}
 }
 
+// A rule without a port is for the web (80 and 443); any other port needs a
+// rule that names it. A caller that does not know the port (a DNS lookup)
+// matches on the host alone.
+func TestAllowlistRuleWithoutPortMeansWebPorts(t *testing.T) {
+	p22, p5000 := 22, 5000
+	a := NewAllowlistFromPolicy("deny-default", []Rule{
+		{HostPattern: "github.com"},
+		{HostPattern: "*.example.com"},
+		{HostPattern: "registry.example.org", Port: &p5000},
+		{HostPattern: "git.example.org", Port: &p22},
+		{HostPattern: "git.example.org"},
+	})
+	for _, tc := range []struct {
+		host string
+		port int
+		want bool
+	}{
+		{"github.com", 443, true},
+		{"github.com", 80, true},
+		{"github.com", 0, true},
+		{"github.com", 22, false},
+		{"github.com", 9100, false},
+		{"api.example.com", 8443, false},
+		{"api.example.com", 443, true},
+		{"registry.example.org", 5000, true},
+		{"registry.example.org", 443, false},
+		// Both rules apply to a host: the one naming the port opens it.
+		{"git.example.org", 22, true},
+		{"git.example.org", 443, true},
+		{"git.example.org", 25, false},
+	} {
+		if got := a.CheckHostPort(tc.host, tc.port) == nil; got != tc.want {
+			t.Errorf("%s:%d allowed=%v, want %v", tc.host, tc.port, got, tc.want)
+		}
+	}
+}
+
 func TestAllowAllMode(t *testing.T) {
 	a := NewAllowlistFromPolicy("allow-all", nil)
 	if err := a.Check("anything.example"); err != nil {
@@ -103,7 +140,7 @@ func TestParseAllowlistJSON(t *testing.T) {
 
 func TestForwardProxyAllowDeny(t *testing.T) {
 	al := NewAllowlist("allowed.test")
-	p := &ForwardProxy{Default: al, Enforce: true}
+	p := &ForwardProxy{Guard: testGuard, Default: al, Enforce: true}
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodConnect, "blocked.test:443", nil)
@@ -124,7 +161,8 @@ func TestForwardProxyAllowDeny(t *testing.T) {
 	}))
 
 	p2 := &ForwardProxy{
-		Default: NewAllowlist("127.0.0.1"),
+		Guard:   testGuard,
+		Default: allowServer(t, ln.Addr().String()),
 		Enforce: true,
 	}
 	url := "http://" + ln.Addr().String() + "/hello"
@@ -150,6 +188,7 @@ func TestForwardProxyAllowDeny(t *testing.T) {
 // change the decision, or the guest could allow every host.
 func TestForwardProxyIgnoresGuestAllowlistHeader(t *testing.T) {
 	p := &ForwardProxy{
+		Guard:   testGuard,
 		Default: NewAllowlistFromPolicy("deny-default", nil),
 		Enforce: true,
 	}
@@ -198,7 +237,7 @@ func TestForwardProxySandboxWithoutPolicyDenies(t *testing.T) {
 	c.Bind("sb-a", netip.MustParsePrefix("10.200.0.0/30"))
 	c.Bind("sb-b", netip.MustParsePrefix("10.200.0.4/30"))
 	c.Set("sb-a", NewAllowlistFromPolicy("allow-all", nil))
-	p := &ForwardProxy{Default: NewAllowlistFromPolicy("allow-all", nil), Cache: c, Enforce: true}
+	p := &ForwardProxy{Guard: testGuard, Default: NewAllowlistFromPolicy("allow-all", nil), Cache: c, Enforce: true}
 
 	req := httptest.NewRequest(http.MethodGet, "http://evil.example/", nil)
 	req.RemoteAddr = "10.200.0.6:40000"
@@ -228,7 +267,7 @@ func TestDNSSinkUsesSourceSandboxPolicy(t *testing.T) {
 }
 
 func TestForwardProxyDenyNonHTTPScheme(t *testing.T) {
-	p := &ForwardProxy{Default: NewAllowlist("evil"), Enforce: true}
+	p := &ForwardProxy{Guard: testGuard, Default: NewAllowlist("evil"), Enforce: true}
 	req := httptest.NewRequest(http.MethodGet, "ftp://evil/", nil)
 	rr := httptest.NewRecorder()
 	p.ServeHTTP(rr, req)
@@ -247,7 +286,8 @@ func TestForwardProxyRateLimit(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	p := &ForwardProxy{
-		Default:   NewAllowlist("127.0.0.1"),
+		Guard:     testGuard,
+		Default:   allowServer(t, ln.Addr().String()),
 		Enforce:   true,
 		RateLimit: NewTokenBucket(1, 1),
 	}
@@ -274,7 +314,7 @@ func TestForwardProxyWithoutMITM(t *testing.T) {
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("plain"))
 	}))
-	p := &ForwardProxy{Default: NewAllowlist("127.0.0.1"), Enforce: true}
+	p := &ForwardProxy{Guard: testGuard, Default: allowServer(t, ln.Addr().String()), Enforce: true}
 	url := "http://" + ln.Addr().String() + "/"
 	rr := httptest.NewRecorder()
 	p.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, url, nil))

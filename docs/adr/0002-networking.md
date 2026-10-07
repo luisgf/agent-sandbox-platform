@@ -94,6 +94,10 @@ Subnet por defecto del sketch: **`10.200.0.0/16`** (con `--tap-auto`, una /30 po
 - NAT (`asp_nat`) sigue siendo **ops manual** en bare-metal; `--tap-auto` no configura MASQUERADE solo.
 - No exponer microVMs directamente a Internet (sin DNAT de entrada).
 
+## Enmiendas
+
+- **2026-10 (#98):** el proxy comprobaba solo el nombre contra la allowlist y marcaba lo que resolviera. Ahora comprueba la dirección a la que va a conectar, tras resolver, y nunca marca loopback, link-local, multicast, reservadas, las direcciones del nodo ni la red de los guests; las redes privadas solo las abre el operador (`--egress-allow-cidr`). Una regla sin puerto vale para 80 y 443, no para todos.
+
 ## Referencias cruzadas
 
 - Hardening nft 2d/2e: ADR-0005, ADR-0006

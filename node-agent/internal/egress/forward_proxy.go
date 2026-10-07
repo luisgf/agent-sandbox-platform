@@ -60,12 +60,28 @@ type ForwardProxy struct {
 	MaxBodyBytes int64
 	// MITM enables CONNECT TLS bump when non-nil and ASP_EGRESS_MITM=1.
 	MITM *mitm.CA
+	// Guard limits which addresses the proxy connects to. Nil: the default,
+	// which refuses loopback, link-local, private and the node's own addresses.
+	Guard *DialGuard
+
+	guardOnce sync.Once
+	defGuard  *DialGuard
 
 	envOnce sync.Once
 	envAL   *Allowlist
 
 	clientOnce sync.Once
 	client     *http.Client
+}
+
+// guard returns the destination guard in force: the configured one, or the
+// default, which allows no private destination.
+func (p *ForwardProxy) guard() *DialGuard {
+	if p.Guard != nil {
+		return p.Guard
+	}
+	p.guardOnce.Do(func() { p.defGuard = &DialGuard{} })
+	return p.defGuard
 }
 
 // upstreamClient is shared by every plain-HTTP request so connections to
@@ -75,7 +91,10 @@ type ForwardProxy struct {
 func (p *ForwardProxy) upstreamClient() *http.Client {
 	p.clientOnce.Do(func() {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.DialContext = (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+		// Every connection goes through the guard, and none through a proxy the
+		// node-agent's own environment might name.
+		tr.DialContext = p.guard().DialContext
+		tr.Proxy = nil
 		tr.TLSHandshakeTimeout = 10 * time.Second
 		tr.ResponseHeaderTimeout = 30 * time.Second
 		p.client = &http.Client{
@@ -290,9 +309,14 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request, al 
 	if err != nil {
 		return
 	}
-	serverConn, err := net.DialTimeout("tcp", dest, 15*time.Second)
+	serverConn, err := p.guard().DialContext(r.Context(), "tcp", dest)
 	if err != nil {
-		_, _ = bufrw.WriteString("HTTP/1.1 502 Bad Gateway\r\n\r\n")
+		status := "502 Bad Gateway"
+		if errors.Is(err, ErrDestinationBlocked) {
+			p.audit("deny", map[string]any{"host": host, "port": port, "reason": "destination_blocked", "error": err.Error(), "sandbox_id": sandbox})
+			status = "403 Forbidden"
+		}
+		_, _ = bufrw.WriteString("HTTP/1.1 " + status + "\r\n\r\n")
 		_ = bufrw.Flush()
 		_ = clientConn.Close()
 		return
@@ -331,8 +355,11 @@ func (p *ForwardProxy) handleCONNECTMITM(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	dest := net.JoinHostPort(host, itoa(port))
-	rawUp, err := net.DialTimeout("tcp", dest, 15*time.Second)
+	rawUp, err := p.guard().DialContext(r.Context(), "tcp", dest)
 	if err != nil {
+		if errors.Is(err, ErrDestinationBlocked) {
+			p.audit("deny", map[string]any{"host": host, "port": port, "reason": "destination_blocked", "error": err.Error(), "sandbox_id": sandbox})
+		}
 		_ = tlsClient.Close()
 		return
 	}
@@ -421,6 +448,11 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request, al *Al
 		if errors.As(err, &tooLarge) || strings.Contains(err.Error(), "http: request body too large") {
 			p.audit("deny", map[string]any{"reason": "body_too_large", "host": host, "sandbox_id": sandbox})
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if errors.Is(err, ErrDestinationBlocked) {
+			p.audit("deny", map[string]any{"host": host, "port": port, "reason": "destination_blocked", "error": err.Error(), "sandbox_id": sandbox})
+			http.Error(w, "destination not allowed", http.StatusForbidden)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
