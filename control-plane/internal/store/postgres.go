@@ -798,8 +798,8 @@ func (p *PostgresStore) EnrollNode(ctx context.Context, input EnrollNodeInput, c
 			INSERT INTO nodes (
 				id, name, endpoint, agent_endpoint, state, vmm_profiles,
 				capacity_cpu, capacity_mem_mib, cert_fingerprint, cert_serial, enrolled_at,
-				last_seen_at, created_at, updated_at, cert_not_after
-			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10,$11)
+				last_seen_at, created_at, updated_at, cert_not_after, accepts_work
+			) VALUES ($1,$2,$3,$4,'ready',$5,$6,$7,$8,$9,$10,$10,$10,$10,$11,false)
 			ON CONFLICT (id) DO NOTHING
 			RETURNING `+nodeColumns,
 			id, name, input.Endpoint, agentEndpoint, profiles,

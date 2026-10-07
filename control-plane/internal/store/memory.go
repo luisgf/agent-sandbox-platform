@@ -698,15 +698,19 @@ func (m *MemoryStore) EnrollNode(ctx context.Context, input EnrollNodeInput, cer
 	enrolled := now
 	seen := now
 	node := Node{
-		ID:              id,
-		Name:            name,
-		Endpoint:        input.Endpoint,
-		AgentEndpoint:   agentEndpoint,
-		State:           "ready",
-		VMMProfiles:     append([]string(nil), profiles...),
-		CapacityCPU:     input.CapacityCPU,
-		CapacityMemMiB:  input.CapacityMemMiB,
-		AcceptsWork:     true,
+		ID:             id,
+		Name:           name,
+		Endpoint:       input.Endpoint,
+		AgentEndpoint:  agentEndpoint,
+		State:          "ready",
+		VMMProfiles:    append([]string(nil), profiles...),
+		CapacityCPU:    input.CapacityCPU,
+		CapacityMemMiB: input.CapacityMemMiB,
+		// A node that has enrolled has not said how many sandboxes it takes, or whether it
+		// takes any (that is its register): it takes none until then. Otherwise, in the
+		// moment between the two, it looks like a node without limits and the spread
+		// puts the next sandboxes on it.
+		AcceptsWork:     false,
 		CertFingerprint: fp,
 		CertSerial:      strings.TrimSpace(cert.Serial),
 		CertNotAfter:    cert.notAfterPtr(),

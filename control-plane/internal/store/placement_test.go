@@ -414,3 +414,56 @@ func TestCreateRejectsGuestsBelowTheMinimumMemory(t *testing.T) {
 		t.Fatalf("memory_mib 64: %v", err)
 	}
 }
+
+// A node that has enrolled and not registered yet has not said how many sandboxes it
+// takes: it looks like a node without limits and the spread would put the next
+// sandboxes on it, only for the register that follows to say it takes two. It takes
+// none until it registers.
+func testEnrolledNodeTakesNothingUntilItRegisters(t *testing.T, s Store) {
+	t.Helper()
+	ctx := context.Background()
+	t.Setenv("ASP_AUTO_PROVISION", "0")
+	create := func() (Sandbox, error) {
+		return s.CreateSandbox(ctx, CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 1000, MemoryMiB: 512})
+	}
+	registerPlacementNodes(t, s, 2, "node-a")
+	if _, err := s.EnrollNode(ctx, EnrollNodeInput{ID: "node-b", AgentEndpoint: "http://127.0.0.1:9101"}, CertMeta{Fingerprint: "fp-b"}, EnrollAuth{}); err != nil {
+		t.Fatal(err)
+	}
+	// Two sandboxes in a row: both on the node that has registered, even though
+	// the one that has not looks emptier.
+	for i := 0; i < 2; i++ {
+		sb, err := create()
+		if err != nil || *sb.NodeID != "node-a" {
+			t.Fatalf("sandbox %d: %+v %v (node-b has not registered)", i, sb, err)
+		}
+	}
+	// With node-a full, the enrolled node still takes nothing, and says why.
+	_, err := create()
+	var nc *sched.NoCapacityError
+	if !errors.As(err, &nc) || nc.Reasons[sched.ReasonNotAcceptingWork] != 1 || nc.Reasons[sched.ReasonMaxSandboxes] != 1 {
+		t.Fatalf("with node-a full: %v", err)
+	}
+	// Its register opens it; enrolling again after a revoke does not close it.
+	if _, err := s.RegisterNode(ctx, RegisterNodeInput{ID: "node-b", AgentEndpoint: "http://127.0.0.1:9101", MaxSandboxes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if sb, err := create(); err != nil || *sb.NodeID != "node-b" {
+		t.Fatalf("after register: %+v %v", sb, err)
+	}
+	if _, err := s.RevokeNode(ctx, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.EnrollNode(ctx, EnrollNodeInput{ID: "node-b", AgentEndpoint: "http://127.0.0.1:9101"}, CertMeta{Fingerprint: "fp-b2"}, EnrollAuth{})
+	if err != nil || !n.AcceptsWork {
+		t.Fatalf("enrolling again closed a registered node: %+v %v", n, err)
+	}
+}
+
+func TestMemoryEnrolledNodeTakesNothingUntilItRegisters(t *testing.T) {
+	testEnrolledNodeTakesNothingUntilItRegisters(t, NewMemoryStore())
+}
+
+func TestPostgresEnrolledNodeTakesNothingUntilItRegisters(t *testing.T) {
+	testEnrolledNodeTakesNothingUntilItRegisters(t, newPostgresTestStore(t))
+}

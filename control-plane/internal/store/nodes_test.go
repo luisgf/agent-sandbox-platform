@@ -41,7 +41,8 @@ func testNodeSchedulingAttributes(t *testing.T, s Store) {
 		}
 	}
 
-	// Enroll does not carry scheduling attributes: re-enroll keeps them, a new node accepts work.
+	// Enroll does not carry scheduling attributes: re-enroll keeps them. A new node takes
+	// no work until it registers: only then does the control plane know its slots.
 	if _, err := s.RegisterNode(context.Background(), RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 5, LocalNetDial: "198.51.100.7:51820"}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func testNodeSchedulingAttributes(t *testing.T, s Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !n.AcceptsWork || n.Cordoned || n.MaxSandboxes != 0 {
+	if n.AcceptsWork || n.Cordoned || n.MaxSandboxes != 0 {
 		t.Fatalf("new enrolled node defaults: %+v", n)
 	}
 }

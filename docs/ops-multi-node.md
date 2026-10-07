@@ -95,7 +95,7 @@ Después, desde un puesto con rol admin u operador:
 asp node list
 ```
 
-El nodo debe salir como `SCHEDULABLE yes`. `STOPPED (DISKS)` cuenta las sandboxes paradas que guardan su disco en ese nodo (no usan CPU ni memoria, solo disco) y `DISK FREE` es el espacio libre de su `--disk-dir`, que el nodo informa en cada heartbeat: si baja de lo que piden las guardas (`--disk-min-free-mib`), ese nodo deja de clonar y reanudar sandboxes.
+El nodo debe salir como `SCHEDULABLE yes`. Un nodo recién enrolado no recibe sandboxes hasta que el agente se registra (unos segundos después del enroll): hasta entonces el plano de control no sabe cuántas admite, y `asp node list` lo muestra como no planificable (`not_accepting_work`). `STOPPED (DISKS)` cuenta las sandboxes paradas que guardan su disco en ese nodo (no usan CPU ni memoria, solo disco) y `DISK FREE` es el espacio libre de su `--disk-dir`, que el nodo informa en cada heartbeat: si baja de lo que piden las guardas (`--disk-min-free-mib`), ese nodo deja de clonar y reanudar sandboxes.
 
 **Firewall:**
 
