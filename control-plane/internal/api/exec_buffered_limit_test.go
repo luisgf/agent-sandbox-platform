@@ -38,7 +38,7 @@ func TestExecLimit(t *testing.T) {
 	if DefaultBufferedExecTimeout != 10*time.Minute {
 		t.Fatalf("the default is %v", DefaultBufferedExecTimeout)
 	}
-	if NewServer(store.NewMemoryStore()).BufferedExecTimeout != DefaultBufferedExecTimeout {
+	if NewServer(newBackend(t)).BufferedExecTimeout != DefaultBufferedExecTimeout {
 		t.Fatal("NewServer does not use the default")
 	}
 }
@@ -76,7 +76,7 @@ func newBufferedEnv(t *testing.T, serverCap time.Duration) *bufferedEnv {
 		_, _ = w.Write([]byte(`{"stdout":"ok","stderr":"","exit_code":0}`))
 	}))
 	t.Cleanup(agent.Close)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("n")
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestBufferedExecIsNotCutByTheResponseHeaderTimeout(t *testing.T) {
 		_, _ = w.Write([]byte(`{"stdout":"done","stderr":"","exit_code":0}`))
 	}))
 	defer agent.Close()
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("n")
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)

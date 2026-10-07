@@ -56,7 +56,7 @@ func TestTheReaperSparesASandboxWithAnOpenStream(t *testing.T) {
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("n")
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestTheReaperSparesASandboxWithAnOpenStream(t *testing.T) {
 
 // With no idle timeout (reaper off) exec does not start a toucher.
 func TestKeepActiveWithoutAReaperOnlyTouchesOnce(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("n")
 	srv := NewServer(mem)
 	stop := srv.keepActive(context.Background(), "no-such-sandbox") // an unknown sandbox is not an error

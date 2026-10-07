@@ -42,7 +42,7 @@ func TestExecStreamProxiesNDJSONBeforeUpstreamFinishes(t *testing.T) {
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("exec-node")
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "exec-node", Name: "exec-node",
@@ -135,7 +135,7 @@ func TestExecBufferedJSONUnchanged(t *testing.T) {
 		_, _ = w.Write([]byte(`{"stdout":"full\n","stderr":"","exit_code":0}`))
 	}))
 	defer agent.Close()
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("n")
 	_, _ = mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL})
 	srv := NewServer(mem)

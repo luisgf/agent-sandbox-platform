@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -16,18 +15,18 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
 
-// postgresTestURL is DATABASE_URL; tests that need a database skip without it.
+// postgresTestURL is the database this binary created on the DATABASE_URL server
+// (see TestMain); tests that need a database skip without it.
 func postgresTestURL(t *testing.T) string {
 	t.Helper()
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
+	if testDatabaseURL == "" {
 		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
 	}
-	return dbURL
+	return testDatabaseURL
 }
 
-// newPostgresTestStore connects to DATABASE_URL, applies migrations and empties the
-// app tables. Tests using it skip when DATABASE_URL is unset (CI sets it).
+// newPostgresTestStore connects to the test database, applies migrations and empties
+// the app tables. Tests using it skip when DATABASE_URL is unset (CI sets it).
 func newPostgresTestStore(t *testing.T) *PostgresStore {
 	t.Helper()
 	dbURL := postgresTestURL(t)
@@ -328,7 +327,7 @@ func (c *countingTracer) statements() []string {
 func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	newPostgresTestStore(t) // migrate and truncate
-	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	cfg, err := pgxpool.ParseConfig(postgresTestURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

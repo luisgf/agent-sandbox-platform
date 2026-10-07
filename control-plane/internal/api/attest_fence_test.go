@@ -25,7 +25,7 @@ func TestAttestStoreGetVerifyAndOIDCClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	att := attest.NewSoftwareAttestorFromKey(key)
-	st := store.NewMemoryStore()
+	st := newBackend(t)
 	srv := NewServer(st)
 	srv.Attestor = att
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)

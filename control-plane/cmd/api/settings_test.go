@@ -27,6 +27,11 @@ func captureWarnings(t *testing.T) *[]string {
 	return &msgs
 }
 
+// testSupportDir is the package the tests of the store and the API share to get a
+// Postgres database. It reads DATABASE_URL, the name Postgres tooling and CI give the
+// server, and the control plane never imports it.
+const testSupportDir = "pgtest"
+
 // Every variable the control plane reads has the ASP_ prefix, whatever the file
 // that reads it: LISTEN_ADDR and DATABASE_URL did not, and a new one that does not
 // fails here. The names that are not ours are listed.
@@ -40,6 +45,9 @@ func TestNoVariableIsReadWithoutThePrefix(t *testing.T) {
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.IsDir() && d.Name() == testSupportDir {
+			return filepath.SkipDir
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
@@ -88,6 +96,9 @@ func TestNoVariableIsReadWithoutThePrefix(t *testing.T) {
 	// They are checked below: every string constant that is used as a variable name.
 	consts := map[string]string{}
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() && d.Name() == testSupportDir {
+			return filepath.SkipDir
+		}
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err
 		}

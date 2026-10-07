@@ -89,7 +89,7 @@ func TestIdPCreateSetsOwnerFromToken(t *testing.T) {
 func TestIdPRejectsForgedOwnerSub(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -107,7 +107,7 @@ func TestIdPRejectsForgedOwnerSub(t *testing.T) {
 func TestIdPInvalidTokenUnauthorized(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	_, _, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	h := AuthMiddleware(mem, AuthConfig{IdP: v})(testMux(srv))
 
@@ -167,7 +167,7 @@ func TestIdPOffKeepsLabBodyOwner(t *testing.T) {
 }
 
 func TestIdPDoesNotBreakNodeWorkWithAPlatformKey(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	_, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 		ID: "n1", Name: "n1", AgentEndpoint: "http://127.0.0.1:9",

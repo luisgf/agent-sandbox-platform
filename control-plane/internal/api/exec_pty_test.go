@@ -39,7 +39,7 @@ func TestExecPTYAndStdinReachNodeAgent(t *testing.T) {
 	}))
 	defer agent.Close()
 
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mem.SetProvisionNodeID("n")
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n", Name: "n", Endpoint: agent.URL, AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)

@@ -16,7 +16,7 @@ import (
 type keyEnv struct {
 	t   *testing.T
 	h   http.Handler
-	mem *store.MemoryStore
+	mem *backend
 }
 
 func newKeyEnv(t *testing.T) *keyEnv {

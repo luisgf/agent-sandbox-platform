@@ -23,14 +23,14 @@ func doJSON(t *testing.T, h http.Handler, method, path string) (int, store.Sandb
 	return rr.Code, sb, rr.Body.String()
 }
 
-func newLifecycleFixture(t *testing.T) (*store.MemoryStore, http.Handler) {
+func newLifecycleFixture(t *testing.T) (*backend, http.Handler) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t, "n1")
 	return mem, testMux(NewServer(mem))
 }
 
-func newPlacedSandbox(t *testing.T, mem *store.MemoryStore) string {
+func newPlacedSandbox(t *testing.T, mem *backend) string {
 	t.Helper()
 	sb, err := mem.CreateSandbox(context.Background(), store.CreateSandboxInput{TenantID: "t", ImageRef: "img", CPUMillis: 100, MemoryMiB: 64, OwnerSub: "user:a"})
 	if err != nil {
@@ -80,7 +80,7 @@ func TestStopResumeDeleteOverHTTP(t *testing.T) {
 // node is full, 409 when it cannot take sandboxes at all. The sandbox stays stopped.
 func TestResumeRefusalsUsePlacementStatuses(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100", MaxSandboxes: 1}); err != nil {
 		t.Fatal(err)
 	}

@@ -185,8 +185,14 @@ Flujo: cliente → control-plane `POST /v1/sandboxes/{id}/exec` → node-agent `
 (cd node-agent && go test ./...)
 (cd pod-daemon && cargo test && cargo check)
 
-# Integración Postgres (los tests la saltan si no hay DATABASE_URL; el API usa ASP_DATABASE_URL):
+# Contra Postgres. DATABASE_URL apunta a un servidor (el rol necesita CREATEDB; el API usa
+# ASP_DATABASE_URL). Los tests del store y de la API crean cada uno su propia base y la borran
+# al terminar, así que los paquetes no se pisan aunque corran a la vez. Los de la API corren
+# dos veces, en memoria y en Postgres, y TestPostgresParityWithMemory juega un mismo guion contra
+# las dos implementaciones de Store y exige las mismas respuestas y los mismos errores:
 (cd control-plane && DATABASE_URL="$ASP_DATABASE_URL" go test ./... -count=1)
+# Solo la pasada de Postgres de la API (más rápido al iterar):
+(cd control-plane && DATABASE_URL="$ASP_DATABASE_URL" ASP_TEST_STORE=postgres go test ./internal/api -count=1)
 
 # Smoke e2e dry-run:
 ./scripts/smoke-enroll-exec.sh

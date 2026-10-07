@@ -23,6 +23,10 @@ func errNodeRevoked(id string) error {
 
 // Store is the persistence boundary for the control plane.
 // MemoryStore is the default; PostgresStore is used when ASP_DATABASE_URL is set.
+//
+// The two are one contract, and parity_test.go holds them to it: it plays a script
+// with a step for every method below against both and requires the same results and
+// the same class of error. A method added here needs a step there.
 type Store interface {
 	CreateSandbox(ctx context.Context, input CreateSandboxInput) (Sandbox, error)
 	GetSandbox(ctx context.Context, id string) (Sandbox, error)

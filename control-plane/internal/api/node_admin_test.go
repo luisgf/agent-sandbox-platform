@@ -15,14 +15,14 @@ import (
 // GET /v1/nodes.
 var nodeAdminRoutes = []string{"/rotate-cert", "/revoke", "/cordon", "/uncordon", ""}
 
-func nodeAdminServer(t *testing.T, cfg AuthConfig) (http.Handler, *store.MemoryStore) {
+func nodeAdminServer(t *testing.T, cfg AuthConfig) (http.Handler, *backend) {
 	t.Helper()
 	t.Setenv("ASP_NODE_BOOTSTRAP_TOKEN", "boot-secret")
 	ca, err := pki.GenerateCA("test", pki.DefaultNodeTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	srv := NewServer(mem)
 	srv.CA = ca
 	return AuthMiddleware(mem, cfg)(testMux(srv)), mem
@@ -30,7 +30,7 @@ func nodeAdminServer(t *testing.T, cfg AuthConfig) (http.Handler, *store.MemoryS
 
 // callNodeRoute registers a fresh node and calls one admin route on it, so
 // one call's revoke never changes what the next one sees.
-func callNodeRoute(t *testing.T, h http.Handler, mem *store.MemoryStore, node, suffix, token string) *httptest.ResponseRecorder {
+func callNodeRoute(t *testing.T, h http.Handler, mem *backend, node, suffix, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: node, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)

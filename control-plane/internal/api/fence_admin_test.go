@@ -17,7 +17,7 @@ import (
 type fenceEnv struct {
 	t   *testing.T
 	h   http.Handler
-	mem *store.MemoryStore
+	mem *backend
 	srv *Server
 }
 

@@ -103,7 +103,7 @@ func TestNodeDoctorErrors(t *testing.T) {
 func TestNodeDoctorHasTheSameCallersAsTheNodeList(t *testing.T) {
 	key, kid, v := testIdP(t)
 	agent, calls := agentWithDoctor(t, http.StatusOK, doctorReport)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: agent.URL}); err != nil {
 		t.Fatal(err)
 	}

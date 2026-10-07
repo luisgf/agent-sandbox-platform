@@ -566,6 +566,9 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		if existing.RevokedAt != nil {
 			return Node{}, errNodeRevoked(id)
 		}
+		if m.nodeNameTakenLocked(id, name) {
+			return Node{}, errNodeNameTaken(name)
+		}
 		if node.AgentInstanceID == "" {
 			node.AgentInstanceID = existing.AgentInstanceID
 		}
@@ -589,8 +592,22 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		m.nodes[id] = node
 		return cloneNode(node), nil
 	}
+	if m.nodeNameTakenLocked(id, name) {
+		return Node{}, errNodeNameTaken(name)
+	}
 	m.nodes[id] = node
 	return cloneNode(node), nil
+}
+
+// nodeNameTakenLocked reports whether a node other than id has the name (names are
+// unique, as the nodes table enforces). Caller holds m.mu.
+func (m *MemoryStore) nodeNameTakenLocked(id, name string) bool {
+	for other, n := range m.nodes {
+		if other != id && n.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // failRestartOrphansLocked fails the sandboxes a restarted agent lost track of: not
@@ -724,6 +741,11 @@ func (m *MemoryStore) EnrollNode(ctx context.Context, input EnrollNodeInput, cer
 	tok, err := m.enrollCheckLocked(id, auth, now)
 	if err != nil {
 		return Node{}, err
+	}
+	// Before the token is spent: an enrollment that fails keeps it (the Postgres
+	// transaction rolls back).
+	if m.nodeNameTakenLocked(id, name) {
+		return Node{}, errNodeNameTaken(name)
 	}
 	if tok != nil {
 		tok.UsedAt = &now
@@ -934,6 +956,9 @@ func (m *MemoryStore) EmitEvent(ctx context.Context, input EmitEventInput) error
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.sandboxes[input.SandboxID]; !ok {
+		return ErrNotFound
+	}
 	m.nextEvt++
 	m.events = append(m.events, SandboxEvent{
 		ID:        m.nextEvt,
@@ -991,15 +1016,34 @@ func (m *MemoryStore) EnsureAPIKey(ctx context.Context, tenantID, name, scope, k
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var oldHash string
+	var existing ApiKey
+	found := false
 	for hash, k := range m.apiKeys {
 		if k.TenantID == tenantID && k.Name == name {
-			delete(m.apiKeys, hash)
-			k.SecretHash = secretHash
-			k.KeyPrefix = keyPrefix
-			k.Scope = scope
-			m.apiKeys[secretHash] = k
-			return k, nil
+			oldHash, existing, found = hash, k, true
+			continue
 		}
+		if k.KeyPrefix == keyPrefix {
+			return ApiKey{}, errKeyPrefixTaken(keyPrefix)
+		}
+	}
+	if other, taken := m.apiKeys[secretHash]; taken && !(found && other.ID == existing.ID) {
+		return ApiKey{}, errKeySecretTaken()
+	}
+	if found {
+		// The same key again is returned as it is, revoked or not: a revocation holds
+		// across a restart that ensures the same secret. A new secret (or prefix or
+		// scope) is the operator's decision to have the key, and brings it back.
+		if existing.SecretHash != secretHash || existing.KeyPrefix != keyPrefix || existing.Scope != scope {
+			delete(m.apiKeys, oldHash)
+			existing.SecretHash = secretHash
+			existing.KeyPrefix = keyPrefix
+			existing.Scope = scope
+			existing.RevokedAt = nil
+			m.apiKeys[secretHash] = existing
+		}
+		return existing, nil
 	}
 	k := ApiKey{
 		ID:         newID(),
@@ -1254,6 +1298,7 @@ func (m *MemoryStore) PutEgressRules(ctx context.Context, tenantID string, rules
 		// Default enabled=true when omitted in JSON is handled by caller; here trust Enabled field.
 		cleaned = append(cleaned, nr)
 	}
+	sortEgressRules(cleaned)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.egress[tenantID] = cleaned
@@ -1262,6 +1307,24 @@ func (m *MemoryStore) PutEgressRules(ctx context.Context, tenantID string, rules
 		out = append(out, cloneEgressRule(r))
 	}
 	return out, nil
+}
+
+// sortEgressRules puts rules in the order Postgres lists them: by host pattern in
+// byte order, then by port, rules for any port first.
+func sortEgressRules(rules []EgressRule) {
+	sort.SliceStable(rules, func(i, j int) bool {
+		if rules[i].HostPattern != rules[j].HostPattern {
+			return rules[i].HostPattern < rules[j].HostPattern
+		}
+		pi, pj := -1, -1
+		if rules[i].Port != nil {
+			pi = *rules[i].Port
+		}
+		if rules[j].Port != nil {
+			pj = *rules[j].Port
+		}
+		return pi < pj
+	})
 }
 
 func cloneEgressRule(r EgressRule) EgressRule {

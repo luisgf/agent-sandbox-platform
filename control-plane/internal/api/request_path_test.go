@@ -14,24 +14,24 @@ import (
 )
 
 type countingStore struct {
-	*store.MemoryStore
+	store.Store
 	counts, touches atomic.Int32
 }
 
 func (c *countingStore) CountAPIKeys(ctx context.Context) (int64, error) {
 	c.counts.Add(1)
-	return c.MemoryStore.CountAPIKeys(ctx)
+	return c.Store.CountAPIKeys(ctx)
 }
 
 func (c *countingStore) TouchAPIKey(ctx context.Context, id string) error {
 	c.touches.Add(1)
-	return c.MemoryStore.TouchAPIKey(ctx, id)
+	return c.Store.TouchAPIKey(ctx, id)
 }
 
 // Authenticated requests cost neither a count(*) (authentication is always on,
 // so there is nothing to count) nor an UPDATE each.
 func TestAuthMiddlewareNeverCountsKeysAndThrottlesTouches(t *testing.T) {
-	cs := &countingStore{MemoryStore: newTestStore(t)}
+	cs := &countingStore{Store: newTestStore(t)}
 	const secret = "key-for-request-path"
 	if _, err := BootstrapAPIKey(context.Background(), cs, secret); err != nil {
 		t.Fatal(err)

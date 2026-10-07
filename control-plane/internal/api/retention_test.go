@@ -42,7 +42,7 @@ func TestRetentionConfigFromEnv(t *testing.T) {
 	}
 }
 
-func stoppedFor(t *testing.T, mem *store.MemoryStore, ago time.Duration) string {
+func stoppedFor(t *testing.T, mem *backend, ago time.Duration) string {
 	t.Helper()
 	id := newPlacedSandbox(t, mem)
 	runSandbox(t, mem, id)

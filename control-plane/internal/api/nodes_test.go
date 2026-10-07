@@ -14,7 +14,7 @@ import (
 )
 
 func TestRevokedNodeCannotHeartbeatOrRegister(t *testing.T) {
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: "n1", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestEnrollIssuesServerCertificateForTheNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(store.NewMemoryStore())
+	srv := NewServer(newBackend(t))
 	srv.CA = ca
 	mux := testMux(srv)
 
@@ -83,7 +83,7 @@ func TestEnrollIssuesServerCertificateForTheNode(t *testing.T) {
 
 func TestCreateExplainsPlacementRefusals(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	mux := testMux(NewServer(mem))
 	create := func(body string) *httptest.ResponseRecorder {
 		rr := httptest.NewRecorder()
@@ -120,7 +120,7 @@ func TestCreateExplainsPlacementRefusals(t *testing.T) {
 }
 
 func TestWorkPollForUnknownNodeIs404(t *testing.T) {
-	mux := testMux(NewServer(store.NewMemoryStore()))
+	mux := testMux(NewServer(newBackend(t)))
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/nodes/ghost/work", nil))
 	if rr.Code != http.StatusNotFound {
@@ -131,7 +131,7 @@ func TestWorkPollForUnknownNodeIs404(t *testing.T) {
 func TestNodeListShowsAllocationAndCordonNeedsAdmin(t *testing.T) {
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	key, kid, v := testIdP(t)
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	for _, id := range []string{"node-b", "node-a"} {
 		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{
 			ID: id, AgentEndpoint: "http://127.0.0.1:9100", CapacityCPU: 2, CapacityMemMiB: 4096, MaxSandboxes: 4,
@@ -215,7 +215,7 @@ func TestLateStatusReportIs409(t *testing.T) {
 // shows it: that is what tells an operator whether a tenant's egress policy binds
 // the guests on that server.
 func TestNodeListShowsEgressEnforcement(t *testing.T) {
-	mux := testMux(NewServer(store.NewMemoryStore()))
+	mux := testMux(NewServer(newBackend(t)))
 	for _, body := range []string{
 		`{"id":"enforcing","agent_endpoint":"http://127.0.0.1:9100","egress_enforced":true}`,
 		`{"id":"open","agent_endpoint":"http://127.0.0.1:9101"}`, // an agent that predates the field

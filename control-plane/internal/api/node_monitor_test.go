@@ -16,7 +16,7 @@ import (
 var monCfg = NodeMonitorConfig{Interval: 15 * time.Second, StaleAfter: 90 * time.Second, FailoverAfter: 5 * time.Minute}
 
 // monitorFixture: nodes n1 and n2 with one running sandbox each.
-func monitorFixture(t *testing.T) (*store.MemoryStore, *Server, map[string]string) {
+func monitorFixture(t *testing.T) (*backend, *Server, map[string]string) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
 	mem := newTestStore(t, "n1", "n2")
@@ -37,7 +37,7 @@ func monitorFixture(t *testing.T) (*store.MemoryStore, *Server, map[string]strin
 	return mem, NewServer(mem), ids
 }
 
-func state(t *testing.T, mem *store.MemoryStore, id string) store.Sandbox {
+func state(t *testing.T, mem *backend, id string) store.Sandbox {
 	t.Helper()
 	sb, err := mem.GetSandbox(context.Background(), id)
 	if err != nil {
@@ -160,7 +160,7 @@ func TestNodeMonitorFencesALostNodeOncePerOutage(t *testing.T) {
 	defer webhook.Close()
 
 	t.Setenv("ASP_AUTO_PROVISION", "0")
-	mem := store.NewMemoryStore()
+	mem := newBackend(t)
 	for _, id := range []string{"busy", "idle"} {
 		if _, err := mem.RegisterNode(context.Background(), store.RegisterNodeInput{ID: id, AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
 			t.Fatal(err)
