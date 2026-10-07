@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostproc"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
 )
 
 // ErrNotFound means the virtiofsd binary is not on PATH (or the configured
@@ -30,6 +31,10 @@ type Config struct {
 	// SharedDir, so a link inside it cannot lead out; "namespace" does the same
 	// with namespaces; "none" (the default here) does not.
 	Sandbox string
+	// Launcher, when set, runs the daemon as the transient systemd service Unit
+	// describes (its own cgroup and limits) instead of as a child of this process.
+	Launcher *unit.Launcher
+	Unit     unit.Spec
 }
 
 // Sandbox modes of virtiofsd.
@@ -76,6 +81,18 @@ func SocketPathOf(argv []string) (string, bool) {
 	return hostproc.FlagValue(argv, "--socket-path")
 }
 
+// childProc is a daemon that is a child of this process.
+type childProc struct{ cmd *exec.Cmd }
+
+func (c childProc) Wait() error { return c.cmd.Wait() }
+
+func (c childProc) Kill() error {
+	if c.cmd.Process == nil {
+		return nil
+	}
+	return c.cmd.Process.Kill()
+}
+
 // Start launches virtiofsd and waits until the socket exists.
 // The returned function kills the daemon and removes the socket, and the pid
 // file once the daemon has exited. It is safe to call more than once.
@@ -107,21 +124,34 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 	if !ValidSandbox(cfg.Sandbox) {
 		return nil, fmt.Errorf("virtiofs: unknown sandbox mode %q (none, chroot or namespace)", cfg.Sandbox)
 	}
-	cmd := exec.Command(path, DaemonArgs(cfg.SocketPath, cfg.SharedDir, cfg.Sandbox)...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("virtiofs: start %s: %w", path, err)
+	// proc is the daemon: a child of this process, or a transient unit.
+	var proc interface {
+		Wait() error
+		Kill() error
+	}
+	daemonArgs := DaemonArgs(cfg.SocketPath, cfg.SharedDir, cfg.Sandbox)
+	if cfg.Launcher != nil {
+		p, err := cfg.Launcher.Start(cfg.Unit, path, daemonArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("virtiofs: start %s: %w", path, err)
+		}
+		proc = p
+	} else {
+		cmd := exec.Command(path, daemonArgs...)
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("virtiofs: start %s: %w", path, err)
+		}
+		proc = childProc{cmd}
 	}
 	var waitErr error
 	exited := make(chan struct{})
-	go func() { waitErr = cmd.Wait(); close(exited) }()
+	go func() { waitErr = proc.Wait(); close(exited) }()
 	pidFile := cfg.SocketPath + PIDFileSuffix
 
 	stop := func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
+		_ = proc.Kill()
 		select {
 		case <-exited:
 			// virtiofsd holds a lock on its pid file while it runs.

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
 )
 
 func TestDaemonArgsRustCLI(t *testing.T) {
@@ -115,5 +117,51 @@ func TestDaemonArgsSandboxModes(t *testing.T) {
 	_, err := Start(context.Background(), Config{Binary: "true", SocketPath: t.TempDir() + "/v.sock", SharedDir: t.TempDir(), Sandbox: "pivot"})
 	if err == nil || !strings.Contains(err.Error(), "unknown sandbox mode") {
 		t.Fatalf("Start with an unknown mode: %v", err)
+	}
+}
+
+// With a Launcher the daemon runs through systemd-run, in the unit the Config
+// names, and stop kills that unit rather than a child.
+func TestStartInATransientUnit(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "virtiofs-sb.sock")
+	run := filepath.Join(dir, "systemd-run")
+	ctl := filepath.Join(dir, "systemctl")
+	write := func(path, body string) {
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// systemd-run records its arguments and runs the command after "--", as the
+	// unit would; systemctl records that it was asked to kill and does it.
+	write(run, "#!/bin/sh\necho \"$@\" > \""+dir+"/run.log\"\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n")
+	write(ctl, "#!/bin/sh\necho \"$@\" >> \""+dir+"/ctl.log\"\n[ \"$1\" = kill ] && kill -9 \"$(cat \""+sock+".pid\")\"\nexit 0\n")
+
+	stop, err := Start(context.Background(), Config{
+		Binary:     fakeVirtiofsd(t, `: > "$sock"; exec sleep 30`),
+		SocketPath: sock,
+		SharedDir:  t.TempDir(),
+		Sandbox:    SandboxChroot,
+		Launcher:   &unit.Launcher{SystemdRun: run, Systemctl: ctl},
+		Unit:       unit.Spec{Name: "asp-vm-sb-fs", Slice: "asp-vms.slice", MemoryMax: 512 << 20, TasksMax: 256},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, _ := os.ReadFile(filepath.Join(dir, "run.log"))
+	for _, want := range []string{"--unit=asp-vm-sb-fs", "--slice=asp-vms.slice", "--property=MemoryMax=536870912", "--property=TasksMax=256", "--sandbox chroot", "--socket-path " + sock} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("systemd-run saw %q, lacks %q", log, want)
+		}
+	}
+	stop()
+	got, _ := os.ReadFile(filepath.Join(dir, "ctl.log"))
+	if !strings.Contains(string(got), "kill --signal=SIGKILL --kill-whom=all asp-vm-sb-fs.service") {
+		t.Fatalf("stop did not kill the unit: %q", got)
+	}
+	for _, p := range []string{sock, sock + PIDFileSuffix} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s is still there after stop (%v)", p, err)
+		}
 	}
 }

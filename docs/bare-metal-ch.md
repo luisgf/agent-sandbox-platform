@@ -391,6 +391,11 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--agent-listen` | `ASP_AGENT_LISTEN` | `127.0.0.1:9100` — API local; pide un bearer token (`--agent-token-file`) salvo `/healthz`; fuera de loopback no arranca salvo `--insecure-agent-listen` |
 | `--agent-token-file` | `ASP_AGENT_TOKEN_FILE` | secreto de esa API; el nodo lo crea (0600) y el plano de control del mismo host lo lee con el mismo `ASP_AGENT_TOKEN_FILE`. Defecto `/var/lib/asp/agent.token` |
 | `--workspace-root` | `ASP_WORKSPACE_ROOTS` | donde puede vivir el workspace de una sandbox: dentro de `<raíz>/<tenant>/` (enlaces resueltos). Defecto `/srv/asp/workspaces` (créalo: `install -d /srv/asp/workspaces/<tenant>`); sin raíz que exista no hay workspaces. `virtiofsd` corre con `--sandbox chroot` si el agente es root (`--virtiofsd-sandbox`) |
+| `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
+| `--vm-slice` | `ASP_VM_SLICE` | slice de esos servicios (`asp-vms.slice`) |
+| `--vm-memory-overhead-mib` | `ASP_VM_MEMORY_OVERHEAD_MIB` | memoria que se suma a la del guest en el `MemoryMax` del servicio (por defecto 256) |
+| `--vm-cpu-overhead-percent` | `ASP_VM_CPU_OVERHEAD_PERCENT` | porcentaje de una CPU que se suma a las vCPU en el `CPUQuota` (por defecto 50) |
+| `--vm-tasks-max` | `ASP_VM_TASKS_MAX` | procesos e hilos máximos de un servicio de VM (por defecto 1024) |
 | `--capacity-cpu` / `--capacity-mem-mib` | `ASP_CAPACITY_CPU` / `ASP_CAPACITY_MEM_MIB` | `-1` detecta del host, `0` no limita ([`ops-multi-node.md`](ops-multi-node.md)) |
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
 | `--local-net-dial` | `ASP_LOCAL_NET_DIAL` | dirección que marca el portátil para local-net en este nodo |
@@ -520,6 +525,17 @@ node-agent \
 El node-agent guarda sus VMs solo en memoria y un proceso nuevo no las adopta: al registrarse con otro `agent_instance_id`, el plano de control falla sus sandboxes `running`/`paused` con `node_agent_restarted` ([ADR-0011](adr/0011-multi-node.md)). Lo que dejara el proceso anterior en el host ya no es de nadie. Dos defensas:
 
 **1. La unit** [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service), con `KillMode=control-group`: al parar o reiniciar el servicio, y si el agente muere, systemd mata con él todos sus `cloud-hypervisor` y `virtiofsd`. Después, `ExecStopPost=-node-agent --reap-only` borra lo que tenían.
+
+**Con confinamiento (`--vm-confine`, por defecto en un host con systemd y root)** cada VMM y cada `virtiofsd` corren en un servicio transitorio propio, así que ya no están en el cgroup del agente y `KillMode` no los alcanza. Lo sustituye el propio servicio de la VM: nace con `BindsTo=asp-node-agent.service`, de modo que systemd lo para cuando el agente para o muere (misma garantía: ninguna VM queda corriendo para nadie), con `TimeoutStopSec=15`. `ExecStopPost=--reap-only` sigue limpiando lo demás. Un agente lanzado a mano (no es un servicio) no ata sus VMs a nada: el siguiente arranque las limpia, como antes.
+
+```bash
+systemctl list-units 'asp-vm-*'               # una VM = asp-vm-<id>.service (y -fs si tiene workspace)
+systemd-cgls /asp.slice                         # su cgroup, bajo asp-vms.slice
+systemctl show asp-vm-<id> -p MemoryMax -p CPUQuotaPerSecUSec -p TasksMax
+journalctl -u asp-vm-<id>                       # la salida de cloud-hypervisor, que antes se perdía
+```
+
+`MemoryMax` es la memoria de la VM más `--vm-memory-overhead-mib`; `CPUQuota`, sus vCPU más `--vm-cpu-overhead-percent`. Una VM que sobrepase su `MemoryMax` la mata el kernel: la sandbox falla, el resto del host no lo nota. El VMM arranca además con `--seccomp true` explícito (es su valor por defecto; así un cambio de ese defecto no apaga el filtro).
 
 ```bash
 sudo install -m 0755 build/node-agent /usr/local/bin/node-agent
