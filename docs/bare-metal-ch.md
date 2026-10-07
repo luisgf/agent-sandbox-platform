@@ -370,7 +370,7 @@ Flags relevantes (`cmd/node-agent/main.go`):
 
 | Flag | Env | Default / notas |
 |---|---|---|
-| `--ch-socket-dir` | `CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{sandboxID}.sock`; **default** cuando no dry-run |
+| `--ch-socket-dir` | `CH_SOCKET_DIR` | `/run/asp` — sockets `ch-{sandboxID}.sock`; **default** cuando no dry-run. El agente lo crea con modo `0700` y aprieta uno existente que no sea de sistema (`/run`, `/tmp`…): los sockets de dentro dan autoridad sobre cada sandbox (exec como root en el guest, tokens de identidad, vhost-user de virtiofsd) |
 | `--ch-api-socket` | `CH_API_SOCKET` | vacío — si set, override shared/legacy (sin spawn) |
 | `--ch-binary` | `CLOUD_HYPERVISOR_BIN` | `cloud-hypervisor` — binario spawneado por sandbox |
 | `--dry-run` | `DRY_RUN=1` | **omitir** en bare-metal real |
@@ -409,7 +409,7 @@ Un proceso CH = **una** VM (modelo OpenAPI de CH).
 **Default — el node-agent spawnea por sandbox** (no hace falta systemd de CH). Los CH son hijos del agente: córrelo con la unit de §5.6 para que un reinicio no los deje huérfanos.
 
 ```bash
-sudo install -d -m 0750 /run/asp
+sudo install -d -m 0700 /run/asp   # solo root; el agente también lo deja así al arrancar
 # El reconciler, al Start, ejecuta:
 #   cloud-hypervisor --api-socket /run/asp/ch-{sandboxID}.sock
 # y diala Ping → CreateVM → Boot. En Stop: Delete → kill → rm socket.

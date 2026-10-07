@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/rundir"
 )
 
 // LockSocketDir takes the agent lock of a socket dir without waiting. A real
@@ -19,7 +21,7 @@ import (
 // The kernel drops the lock when the holder exits, however it exits, and Go
 // opens files close-on-exec, so cloud-hypervisor children never inherit it.
 func LockSocketDir(dir string) (*SocketDirLock, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := rundir.Ensure(dir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, lockFileName)

@@ -170,7 +170,22 @@ func closeHybrid(h *sandboxHybrid) {
 
 func listenUnix(path string) (net.Listener, error) {
 	_ = os.Remove(path)
-	return net.Listen("unix", path)
+	return listenPrivate(path)
+}
+
+// listenPrivate listens on a unix socket only its owner can connect to. The
+// directory is already private; this keeps the socket private if an operator
+// loosens it.
+func listenPrivate(path string) (net.Listener, error) {
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 func (s *Service) closeAllHybridsLocked() {
