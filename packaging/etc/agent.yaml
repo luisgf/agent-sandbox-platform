@@ -1,0 +1,48 @@
+# Settings of the ASP node-agent, as the asp-node-agent package installs them: the unit runs
+# `asp-node-agent --config /etc/asp/agent.yaml`. Mode 0600: it can hold the enroll token.
+#
+# A key is the name of a flag with underscores (--egress-proxy-listen is egress_proxy_listen);
+# a map nests, so `egress: {proxy_listen: ":8888"}` is the same key. The files in
+# /etc/asp/agent.yaml.d/*.yaml are read after this one, in name order, and win over it: put
+# what is yours there and this file stays the package's. A flag or an environment variable
+# beats all of them. `asp-node-agent --print-config` shows what is in effect and where each
+# value came from, `asp-node-agent -h` lists the settings, `sudo asp doctor` checks the host.
+#
+# What every node needs (KVM, the egress proxy, mutual TLS):
+ch_socket_dir: /run/asp
+disk_dir: /var/lib/asp/disks
+local_net_key_dir: /var/lib/asp/local-net
+cert_dir: /var/lib/asp/node-certs
+mtls: true
+reconcile: true
+tap_auto: true
+host_vsock: true
+# Guests reach the network only through the node's forward proxy and DNS sink, forced with
+# nftables (table asp_egress; the script is built into the binary). With the proxy set the
+# redirect is on and in enforce mode: a node that cannot apply the rules (no root, no nft)
+# does not start instead of running guests without egress control. `asp node list` shows
+# EGRESS enforced once it registered. Docs: docs/bare-metal-ch.md section 3.
+egress_enforce: true
+egress_proxy_listen: ":8888"
+egress_dns_sink: ":5353"
+
+# What differs between nodes goes in a drop-in (the installer writes 10-install.yaml); these
+# are the usual ones.
+#
+# The control plane this node joins, and the certificate that signed its TLS:
+#control_plane_url: https://cp.example.corp:8443
+#control_plane_ca: /etc/asp/cp-ca.pem
+#
+# How the control plane reaches this node (mutual TLS):
+#agent_tls_listen: 0.0.0.0:9443
+#endpoint: https://node1.example.corp:9443
+#
+# First start only: enroll, then remove both lines once the journal says "enrolled" (the token
+# must not stay in a file). Get a token on the control plane with
+# `asp node enroll-token --node-id node1`.
+#enroll: true
+#enroll_token: ""
+#
+# The guest kernel and image every sandbox boots (these are the defaults):
+#guest_kernel: /opt/sandbox/vmlinux
+#guest_rootfs: /opt/sandbox/rootfs.img

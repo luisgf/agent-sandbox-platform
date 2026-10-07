@@ -1,0 +1,20 @@
+# Settings of the node-agent of the lab host (ncc1701d), for scripts/systemd/asp-node-agent-lab.service:
+# the control plane runs on the same host over plain HTTP on loopback, with no mTLS and no
+# enrollment. Install it as /etc/asp/agent.yaml (mode 0600). These were the flags of ExecStart;
+# `node-agent --config /etc/asp/agent.yaml --print-config` shows them with their sources.
+control_plane_url: http://127.0.0.1:18112
+node_id: ncc1701d
+ch_binary: /usr/local/bin/cloud-hypervisor
+ch_socket_dir: /run/asp
+disk_dir: /sandbox/disks
+agent_listen: 127.0.0.1:9100
+reconcile: true
+reconcile_interval: 2s
+tap_auto: true
+host_vsock: true
+# Guests reach the network only through the proxy and DNS sink, forced with nftables (table
+# asp_egress, built into the binary): with the proxy set the redirect is on in enforce mode,
+# so a node that cannot apply the rules does not start. `asp node list` shows EGRESS enforced.
+egress_enforce: true
+egress_proxy_listen: ":8888"
+egress_dns_sink: ":5353"

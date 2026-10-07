@@ -1,0 +1,22 @@
+# Settings of the control plane of the lab host (ncc1701d), for scripts/systemd/asp-control-plane.service.
+# Install it as /etc/asp/server.yaml (the unit's user reads it; it holds no secret: those stay in
+# the EnvironmentFile under ~/.secrets, which beats this file). These were the Environment= lines
+# of the unit; `build/api --config /etc/asp/server.yaml --print-config` shows them with their sources.
+listen_addr: 127.0.0.1:18112
+oidc_issuer: http://127.0.0.1:18112
+# Authentication is always on. The first key comes from ASP_BOOTSTRAP_API_KEY (in the env file) and
+# the node-agent sends it (ASP_NODE_API_KEY_FILE) because there is no client certificate over plain HTTP.
+# Stop sandboxes idle for 2h (successful exec / create / start). 0 or off disables.
+# Process default is off so unit tests and short smokes do not reap; this lab unit opts in.
+sandbox_idle_timeout: 2h
+# Key material must survive a reboot. ASP_IDP_REQUIRED=1 (in the env file) puts the control plane in
+# production mode, which refuses keys in /tmp and exits 2. systemd creates /var/lib/asp-control-plane
+# for User=, and missing keys are created there. When upgrading from /tmp keys, copy
+# /tmp/asp-dev-ca/ca.crt, /tmp/asp-dev-ca/ca.key, /tmp/asp-oidc-key.pem and /tmp/asp-attest-key.pem
+# there first: otherwise node certificates stop verifying and tokens change kid. A node-agent on this
+# host without mTLS signs attestations with the same key: run it with
+# ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem.
+ca_cert: /var/lib/asp-control-plane/ca.crt
+ca_key: /var/lib/asp-control-plane/ca.key
+oidc_key: /var/lib/asp-control-plane/oidc-key.pem
+attest_key: /var/lib/asp-control-plane/attest-key.pem

@@ -5,8 +5,10 @@
 # Install (on the node):
 #   sudo install -o root -g root -m 0755 build/node-agent /usr/local/bin/node-agent
 #       (root-owned and outside the build directory: the unit runs as root)
+#   sudo install -d -m 0700 /etc/asp
+#   sudo install -m 0600 scripts/systemd/lab/agent.yaml /etc/asp/agent.yaml
 #   sudo cp scripts/systemd/asp-node-agent-lab.service /etc/systemd/system/asp-node-agent.service
-#   # adjust --node-id, --disk-dir and ASP_ATTEST_KEY if they differ on your host
+#   # adjust node_id and disk_dir in the YAML, and ASP_ATTEST_KEY below, if they differ on your host
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now asp-node-agent.service
 # Replacing a running agent does not stop its VMs (they run in asp-vm-<id>.service units and the
@@ -27,12 +29,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# The settings are in /etc/asp/agent.yaml (scripts/systemd/lab/agent.yaml). A path that is only an
+# environment variable of the node-agent stays here.
 Environment=ASP_ATTEST_KEY=/var/lib/asp-control-plane/attest-key.pem
-ExecStart=/usr/local/bin/node-agent \
-  --control-plane-url=http://127.0.0.1:18112 --node-id=ncc1701d \
-  --ch-binary=/usr/local/bin/cloud-hypervisor --ch-socket-dir=/run/asp --disk-dir=/sandbox/disks \
-  --agent-listen=127.0.0.1:9100 --reconcile --reconcile-interval=2s --tap-auto --host-vsock \
-  --egress-enforce --egress-proxy-listen=:8888 --egress-dns-sink=:5353
+ExecStart=/usr/local/bin/node-agent --config /etc/asp/agent.yaml
 # Guests reach the network only through the proxy and DNS sink, forced with nftables (table
 # asp_egress, built into the binary): with the proxy set the redirect is on in enforce mode,
 # so a node that cannot apply the rules does not start. `asp node list` shows EGRESS enforced.
@@ -46,7 +46,7 @@ TimeoutStopSec=30
 # Then remove what dead VMs held (TAPs, tunnels, sockets); VMs still alive and recorded are left
 # alone. Sandbox disks stay: a stopped sandbox keeps its disk (ADR-0012) and the agent's disk GC
 # decides about the rest.
-ExecStopPost=-/usr/local/bin/node-agent --reap-only --ch-socket-dir=/run/asp
+ExecStopPost=-/usr/local/bin/node-agent --config /etc/asp/agent.yaml --reap-only
 Restart=always
 RestartSec=5
 

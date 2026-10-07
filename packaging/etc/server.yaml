@@ -1,0 +1,40 @@
+# Settings of the ASP control plane, as the asp-control-plane package installs them: the unit
+# runs `asp-control-plane --config /etc/asp/server.yaml`. Mode 0640, group asp-control-plane: the
+# service reads it itself, and it can hold secrets, so nobody else may.
+#
+# A key is a variable without its ASP_ prefix, in lower case (ASP_LISTEN_ADDR is listen_addr);
+# a map nests, so `sched: {policy: binpack}` is sched_policy. The files in
+# /etc/asp/server.yaml.d/*.yaml are read after this one, in name order, and win over it: put what
+# is yours there and this file stays the package's. An environment variable beats all of them.
+# `asp-control-plane --print-config` shows what is in effect and where each value came from;
+# every setting is described in control-plane/README.md.
+#
+# What must survive a reboot, in the unit's StateDirectory: the CA that signs the nodes'
+# certificates, the OIDC key and the attestation key. In production mode (a database, TLS or an
+# IdP) the control plane refuses keys in /tmp; the ones that are missing are created here.
+ca_cert: /var/lib/asp-control-plane/ca.crt
+ca_key: /var/lib/asp-control-plane/ca.key
+oidc_key: /var/lib/asp-control-plane/oidc-key.pem
+attest_key: /var/lib/asp-control-plane/attest-key.pem
+
+# What a first start needs goes in a drop-in (the installer writes 10-install.yaml); these are
+# the usual ones.
+#
+# Where to listen. The default is the loopback; nodes on other hosts need an address they can
+# reach, and then TLS:
+#listen_addr: 0.0.0.0:8443
+#tls_cert: /etc/asp/tls.crt
+#tls_key: /etc/asp/tls.key
+#
+# Postgres keeps sandboxes, nodes and keys across a restart; without it the store is in memory
+# and a restart forgets them (stopped sandboxes keep their disks on the nodes until a node
+# notices):
+#database_url: postgres://asp:CHANGE-ME@127.0.0.1:5432/asp?sslmode=disable
+#
+# The first API key, with the scope of every tenant, for `asp` and for nodes that have no client
+# certificate yet. Pick a long random one: openssl rand -hex 24
+#bootstrap_api_key: ""
+#
+# Shared secret a node enrolls with the first time (or issue single-use tokens with
+# `asp node enroll-token`, which is better):
+#node_bootstrap_token: ""
