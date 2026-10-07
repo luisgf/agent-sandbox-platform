@@ -88,10 +88,22 @@ const (
 	StopReasonAgentRestarted = "node_agent_restarted"
 )
 
-// LostWithNode reports that the sandbox's node was lost or its agent restarted:
-// the guest disk lived on that server, so the sandbox cannot come back.
+// LostWithNode reports that the sandbox's node was lost or its agent restarted
+// and that it did not come out of it stopped: a failed sandbox has no disk to come
+// back to. A stopped one (the VM died, the disk is kept) is not lost: it can be
+// resumed, see StoppedByNodeEvent.
 func (s Sandbox) LostWithNode() bool {
+	if s.State == "stopped" || s.State == "stopping" {
+		return false
+	}
 	return s.StopReason == StopReasonNodeLost || s.StopReason == StopReasonAgentRestarted
+}
+
+// StoppedByNodeEvent reports a stopped sandbox whose VM ended because its node
+// was lost or its agent restarted. Its disk is kept on the node.
+func (s Sandbox) StoppedByNodeEvent() bool {
+	return (s.State == "stopped" || s.State == "stopping") &&
+		(s.StopReason == StopReasonNodeLost || s.StopReason == StopReasonAgentRestarted)
 }
 
 // CreateInput is POST /v1/sandboxes body.

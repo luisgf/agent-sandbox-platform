@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -147,8 +148,10 @@ func TestPostgresNodeLoss(t *testing.T) {
 	})
 }
 
-// A new agent process id on register: running and paused sandboxes are gone with
-// the old process; stopping finishes; requested and starting are booted again.
+// A new agent process id on register: the VM of a running or paused sandbox is
+// gone with the old process but its disk is intact, so the sandbox becomes
+// stopped (retained, resumable); stopping finishes; requested and starting are
+// booted again.
 func testAgentRestartOrphans(t *testing.T, s Store) {
 	t.Helper()
 	t.Setenv("ASP_AUTO_PROVISION", "0")
@@ -195,7 +198,7 @@ func testAgentRestartOrphans(t *testing.T, s Store) {
 	register("i2") // the agent restarted
 	want := map[string]SandboxState{
 		requested.ID: SandboxRequested, starting.ID: SandboxStarting,
-		running.ID: SandboxFailed, stopping.ID: SandboxStopped,
+		running.ID: SandboxStopped, stopping.ID: SandboxStopped,
 	}
 	for id, st := range want {
 		got, _ := s.GetSandbox(id)
@@ -203,8 +206,31 @@ func testAgentRestartOrphans(t *testing.T, s Store) {
 			t.Errorf("%s: %s, want %s", id, got.State, st)
 		}
 	}
-	if got, _ := s.GetSandbox(running.ID); got.StopReason != StopReasonAgentRestarted {
-		t.Fatalf("stop_reason = %q", got.StopReason)
+	got, _ := s.GetSandbox(running.ID)
+	if got.StopReason != StopReasonAgentRestarted || got.StoppedAt == nil {
+		t.Fatalf("stop_reason = %q stopped_at = %v", got.StopReason, got.StoppedAt)
+	}
+	// The node keeps the disk of what it lost track of: it is in the retained list
+	// (a failed sandbox would be in neither list and the node's GC would remove
+	// its disk), and it can be resumed.
+	work, err := s.ListNodeWork("node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{running.ID, stopping.ID} {
+		if !slices.Contains(work.Retained, id) {
+			t.Errorf("%s is not in the retained list %v", id, work.Retained)
+		}
+		if slices.Contains(work.Assigned, id) {
+			t.Errorf("%s is stopped yet assigned", id)
+		}
+	}
+	resumed, err := s.ResumeSandbox(running.ID, "")
+	if err != nil {
+		t.Fatalf("resume of a sandbox orphaned by a restart: %v", err)
+	}
+	if resumed.State != SandboxRequested || resumed.BootCount < 2 {
+		t.Fatalf("resumed: state=%s boot_count=%d", resumed.State, resumed.BootCount)
 	}
 	if n, _ := s.GetNode("node-a"); n.AgentInstanceID != "i2" {
 		t.Fatalf("agent_instance_id = %q", n.AgentInstanceID)

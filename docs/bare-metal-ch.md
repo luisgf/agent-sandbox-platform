@@ -522,7 +522,7 @@ node-agent \
 
 ### 5.6 Servicio systemd y reinicios del agente
 
-El node-agent guarda sus VMs solo en memoria y un proceso nuevo no las adopta: al registrarse con otro `agent_instance_id`, el plano de control falla sus sandboxes `running`/`paused` con `node_agent_restarted` ([ADR-0011](adr/0011-multi-node.md)). Lo que dejara el proceso anterior en el host ya no es de nadie. Dos defensas:
+El node-agent guarda sus VMs solo en memoria y un proceso nuevo no las adopta: al registrarse con otro `agent_instance_id`, el plano de control pasa sus sandboxes `running`/`paused` a `stopped` con `stop_reason=node_agent_restarted`: la VM murió con el proceso, pero su disco sigue en el nodo y se conserva (`asp session resume` la arranca de nuevo; [ADR-0011](adr/0011-multi-node.md), [ADR-0012](adr/0012-retained-disks.md)). Lo que dejara el proceso anterior en el host ya no es de nadie. Dos defensas:
 
 **1. La unit** [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service), con `KillMode=control-group`: al parar o reiniciar el servicio, y si el agente muere, systemd mata con él todos sus `cloud-hypervisor` y `virtiofsd`. Después, `ExecStopPost=-node-agent --reap-only` borra lo que tenían.
 

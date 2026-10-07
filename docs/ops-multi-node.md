@@ -120,14 +120,14 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 - **No hay migración.** El disco del guest vive en su servidor: una sesión perdida se vuelve a abrir (`asp session start --force`). `asp session status` lo explica. Por lo mismo, una sandbox **parada** queda fijada al nodo que guarda su disco: `asp session resume` va a ese nodo (503 si está lleno, 409 si está en cordon, caído o revocado) y no hay forma de moverla a otro.
 - **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
 - **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: no aparecen en el conjunto `assigned` de su siguiente sondeo de `/work` y el agente para esas VMs.
-- **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` fallan con `node_agent_restarted` y las que estaban arrancando se arrancan de nuevo. Las VMs tampoco siguen corriendo: la unit las para con el agente (`KillMode=control-group`), y el agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior: VMs, TAPs, túneles y discos ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
+- **Si el node-agent se reinicia**, no recupera sus VMs: las sandboxes `running` pasan a `stopped` con `node_agent_restarted` (su disco se conserva: `asp session resume`) y las que estaban arrancando se arrancan de nuevo. Las VMs tampoco siguen corriendo: la unit las para con el agente (`KillMode=control-group`), y el agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior: VMs, TAPs, túneles y discos ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
 
 ## Mantenimiento
 
 - **Sacar un nodo del reparto:** `asp node cordon node2`. Las sandboxes que ya corren siguen ahí; no se colocan nuevas.
 - **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor. Las **paradas** no cuentan en `SANDBOXES` pero siguen fijadas a ese nodo (`STOPPED (DISKS)`): no se pueden reanudar mientras esté en cordon, y se borran solas al pasar `ASP_STOPPED_SANDBOX_TTL` (7 días); para vaciarlo antes, `asp session rm` / `asp sandbox delete`.
 - **Volver al reparto:** `asp node uncordon node2`.
-- **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
+- **Actualizar o reiniciar el node-agent detiene todas las VMs del nodo**: el proceso nuevo no las adopta. Sus sandboxes quedan `stopped` con el disco intacto y se reanudan con `asp session resume`, pero lo que corría se interrumpe: haz `cordon`, drena, y después `systemctl restart asp-node-agent`.
 - **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`, con un admin del IdP o una API key de plataforma. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
 - **Certificados de nodo:** caducan al año y el node-agent los renueva solo, con un tercio de vida por delante, si habla mTLS con un control plane `https://` que tenga `ASP_CLIENT_CA`. La columna `CERT EXPIRES` de `asp node list` muestra cuánto queda; menos de 30 días significa que la renovación está fallando (mira el log del agente). Sin mTLS no hay renovación automática: usa `rotate-cert` o un token fijado al nodo antes de que caduque.
 - **Quién administra nodos:** listar, cordon, uncordon, revoke y rotate-cert piden un admin del IdP (operador basta para listar) o una API key de plataforma. Una API key de tenant recibe 403.
@@ -146,7 +146,7 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 | `403 client certificate is for node …` | El agente usa un `--node-id` distinto del CN de su certificado. Quita `--node-id` o re-enrola. |
 | El agente no arranca: `node certificate cannot serve TLS` | Certificado anterior a ADR-0011. Re-enrola con `--enroll` o `rotate-cert`. |
 | `sandbox was lost with its node` | El nodo llevaba más de `ASP_NODE_FAILOVER_AFTER` sin señales (o fue revocado). Abre una sesión nueva. |
-| `stop_reason=node_agent_restarted` | El node-agent se reinició: no adopta VMs, y las suyas se pararon con él. Abre una sesión nueva. |
+| `stop_reason=node_agent_restarted` | El node-agent se reinició: no adopta VMs, y las suyas se pararon con él. La sandbox queda `stopped` con su disco: `asp session resume`. |
 | El agente no arranca: `refusing to start … node-agent.lock is held by pid N` | Ya corre otro node-agent con ese `--ch-socket-dir` (p. ej. el servicio, si lo lanzaste a mano). |
 | `self-fencing` en el log del agente | El plano de control ya no le asigna esa sandbox (failover o destroy); el agente paró la VM. Esperado tras una partición. |
 

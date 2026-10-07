@@ -3,7 +3,7 @@
 # cordon, 503 with reasons when full, uncordon, 409 for an unknown pin, a node
 # frozen like a partition (its sandboxes fail as node_lost, and once back it
 # stops them because they left its assigned set) and an agent restart (its
-# running sandboxes fail as node_agent_restarted). Liveness thresholds are seconds here.
+# running sandboxes stop as node_agent_restarted and can be resumed). Liveness thresholds are seconds here.
 # Each node offers 2 sandbox slots. Honours DATABASE_URL (node ids are unique
 # per run so leftover rows do not count as usage).
 set -euo pipefail
@@ -201,7 +201,7 @@ for s in "$s2" "$s3"; do
   grep self-fencing "$WORKDIR/na-b.log" | grep -q "$s" || fail "$NODE_B did not stop $s after coming back"
 done
 
-echo "==> 9. restart the agent of $NODE_A: its running sandboxes fail as node_agent_restarted"
+echo "==> 9. restart the agent of $NODE_A: its running sandboxes stop as node_agent_restarted, disks kept"
 { kill -9 "$NA_A" && wait "$NA_A"; } 2>/dev/null || true
 start_node "$NODE_A" 19110 "$WORKDIR/na-a2.log"
 NA_A=$!
@@ -210,11 +210,17 @@ for _ in $(seq 1 80); do
   sleep 0.25
 done
 for s in "$s1" "$s5"; do
-  [[ "$(field_of "$s" state)/$(field_of "$s" stop_reason)" == failed/node_agent_restarted ]] || fail "$s: $(field_of "$s" state)/$(field_of "$s" stop_reason)"
+  [[ "$(field_of "$s" state)/$(field_of "$s" stop_reason)" == stopped/node_agent_restarted ]] || fail "$s: $(field_of "$s" state)/$(field_of "$s" stop_reason)"
 done
 wait_node_schedulable "$CP" "$NODE_A" || fail "$NODE_A not schedulable after restart"
 read -r c6 s6 <<<"$(create)"; [[ "$c6" == 201 ]] || fail "s6 after restart: $c6 $s6"
 [[ "$(node_of "$s6")" == "$NODE_A" ]] || fail "s6 went to $(node_of "$s6"), want $NODE_A"
 wait_running "$s6"
+# The VM of $s1 died with the agent but the sandbox kept its disk and its node:
+# it resumes there (one slot of two is free: $s6 holds the other).
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CP/v1/sandboxes/$s1/start")
+[[ "$code" == 200 || "$code" == 202 ]] || fail "resume of $s1 after the restart: $code"
+wait_running "$s1"
+[[ "$(node_of "$s1")" == "$NODE_A" ]] || fail "$s1 resumed on $(node_of "$s1"), want $NODE_A"
 
 echo "OK smoke-multi-node"

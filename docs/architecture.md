@@ -113,7 +113,7 @@ Estados (`store.SandboxState`):
 ```text
 requested → starting → running ⇄ paused → stopping → stopped ──resume──▶ requested (mismo nodo, mismo disco)
     ↘ stopped (parar antes del claim)                        └─ un arranque que falla al reanudar vuelve a stopped
-                ↘ failed (terminal: error de arranque, node_lost, node_agent_restarted)
+                ↘ failed (terminal: error de arranque, node_lost)
 cualquier estado ──DELETE──▶ deleting → deleted   (deleted directo si ningún nodo tiene nada: requested, failed)
 ```
 
@@ -199,7 +199,7 @@ Stores: `PostgresStore` si `DATABASE_URL`; si no, `MemoryStore` (lab; se pierde 
 | Nodo sin señales > `ASP_NODE_STALE_AFTER` (90 s) | Sale del reparto y pasa a `offline` |
 | Nodo sin señales > `ASP_NODE_FAILOVER_AFTER` (5 min) o revocado | `FenceProvider` (si tiene sandboxes, una vez por caída); sus sandboxes → `failed` (`node_lost`), `stopping` → `stopped`, `deleting` → `deleted` (el disco se fue con el nodo). Las `stopped` siguen `stopped`: su disco vuelve si vuelve el nodo, y si no, la retención las borrará. No se mueven |
 | El nodo vuelve tras una partición | Vuelve a `ready`; sus sandboxes fallidas ya no están en su conjunto `assigned` y para esas VMs |
-| Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `failed` (`node_agent_restarted`); `requested`/`starting` las arranca el proceso nuevo. Antes de registrarse, el proceso nuevo para y borra las VMs, TAPs y túneles del anterior, y tras su primer sondeo el GC borra los discos que ninguna sandbox reclama; la unit systemd (`KillMode=control-group`) ya las para con el agente |
+| Node-agent reinicia | `agent_instance_id` nuevo: sus `running`/`paused` → `stopped` (`node_agent_restarted`): la VM murió, el disco sigue ahí y se puede reanudar; `requested`/`starting` las arranca el proceso nuevo. Antes de registrarse, el proceso nuevo para y borra las VMs, TAPs y túneles del anterior, y tras su primer sondeo el GC borra los discos que ninguna sandbox reclama; la unit systemd (`KillMode=control-group`) ya las para con el agente |
 | Reinicio del plano de control | Gracia: el silencio se cuenta desde el arranque del monitor |
 | SoftFail TAP/nft | Log warning; CH puede fallar al abrir TAP; **no** hay frontera de red real |
 | Attest/JWKS caído | Mint OIDC falla cerrado |

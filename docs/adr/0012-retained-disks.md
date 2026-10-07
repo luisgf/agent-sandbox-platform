@@ -39,7 +39,7 @@ Se añaden `deleting` y `deleted`; `stopped` deja de ser final.
 requested → starting → running → stopping → stopped ──start──▶ requested
     ↘ stopped (parar antes del claim)            ↘ deleting → deleted
   cualquier estado salvo deleted ──DELETE──▶ deleting (si hay VM o disco en un nodo) | deleted (si no)
-  failed (terminal: error de arranque, node_lost, node_agent_restarted) ──DELETE──▶ deleted
+  failed (terminal: error de arranque, node_lost) ──DELETE──▶ deleted
 ```
 
 - Un informe tardío del nodo no puede resucitar nada: de un nodo, `stopped` solo admite `stopped`; `deleting` solo admite `deleted` o `failed`; `deleted` es final; `deleted` solo se acepta viniendo de `deleting`.
@@ -96,7 +96,8 @@ La retención solo significa algo si el plano de control recuerda las sandboxes 
 
 ### Límites honestos
 
-- Un reinicio del node-agent sigue dejando sus sandboxes `running` en `failed` (`node_agent_restarted`), y el GC borra sus discos. Recuperarlas como `stopped` es una mejora posterior.
+- **Actualizado 2026-10 (#110):** un reinicio del node-agent deja de perder el disco: sus sandboxes `running`/`paused` pasan a `stopped` (`node_agent_restarted`, con `stopped_at` ahora) en vez de `failed`, así que entran en la lista `retained` del nodo y su GC no las toca; `asp session resume` las arranca sobre su disco. La VM y lo que corría en ella sí se pierden (el agente no las adopta todavía).
+- `node_lost` sigue dejando las que corrían en `failed`: si el servidor vuelve, su GC borra esos discos.
 - Un fallo de energía deja el ext4 con el diario por reproducir; ext4 lo reproduce al montar y se pueden perder las últimas escrituras.
 - No hay borrado seguro: borrar un disco es `unlink`.
 - No se pueden cambiar CPU ni memoria al reanudar, ni mover un disco a otro nodo.
