@@ -73,6 +73,16 @@ El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de 
 
 La retención solo significa algo si el plano de control recuerda las sandboxes paradas tras reiniciarse. Con el store en memoria un reinicio las olvida y el GC del nodo borra sus discos. El store en memoria queda para tests y smokes; el plano de control avisa al arrancar si lo usa con un TTL activo. ncc1701d pasa a Postgres (guía en [`../bare-metal-ch.md`](../bare-metal-ch.md) § 4.1).
 
+### 9. Una VM que muere sola (#118)
+
+El proceso de Cloud Hypervisor puede acabar sin que nadie lo pida: lo mata el OOM killer, falla, o el propio guest se apaga (`poweroff`). Antes el plano de control seguía creyendo la sandbox `running`: el `exec` fallaba y la capacidad seguía ocupada por una VM que ya no existía. Ahora el nodo espera cada proceso (`vmm.ExitNotifier`; con `--vm-confine` el proceso es `systemd-run --wait`, que ya no es silencioso: dice `Finished with result: signal/oom-kill/exit-code` y eso llega al error) y, en el siguiente sondeo, **informa `stopped`** con `status_detail=vmm_exited: <cómo acabó> after <cuánto vivió>`, que el plano de control guarda con `stop_reason=vmm_exited`.
+
+- **Se conserva el disco**, como en cualquier parada: el guest vio un corte de corriente y ext4 reproduce su diario al montar. La sandbox se puede reanudar (`asp session resume`); es lo único que importa al usuario.
+- **El informe va antes de liberar.** Si el plano de control no responde, el nodo conserva el manejador y el registro de la salida y repite en el sondeo siguiente; liberar primero dejaría una sandbox `running` sin nada detrás. Un 409 (el plano de control ya la paró, la borró o la dio por perdida) libera sin más.
+- **Una VM que muere mientras arranca** corta la espera del guest en el acto y falla el arranque con la causa (`vmm_exited: … (console: …)`), no tras `--guest-ready-timeout` con `guest_not_ready`; un primer arranque queda `failed` y una reanudación vuelve a `stopped` con su disco.
+- Una VM que Stop acaba no es una caída: el vigilante solo avisa de los procesos que siguen registrados, y una parada o un borrado que ya estaban en marcha limpian el registro de la salida.
+- La causa es la que dice systemd (`Finished with result: …`, `Main processes terminated with: code=killed, status=9/KILL`), que es todo lo que queda de una unit con `--collect`; si fue memoria, el detalle está en `journalctl -k`. Medido en ncc1701d con un `kill -9` del proceso de una VM: `stopped` en el sondeo siguiente, `vmm_exited: exit status 255: Finished with result: signal; …`, disco intacto, reanudada con sus datos; y con un `poweroff` dentro del guest, `the guest powered off after 15s`.
+
 ## Alternativas consideradas
 
 1. **Solo una imagen «dev» con las herramientas ya instaladas.** Reduce lo que hay que reinstalar y es barata, pero no conserva el estado del propio agente (cachés, compilaciones, su home). Se hace aparte; no sustituye esto.

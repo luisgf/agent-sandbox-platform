@@ -34,9 +34,11 @@ type Spec struct {
 
 // Args is the systemd-run command line that runs name args... as a service of
 // its own and waits for it to end: systemd-run exits with the service, but the
-// service does not end with systemd-run.
+// service does not end with systemd-run. It is not quiet: when the service ends,
+// systemd-run says how ("Finished with result: signal", "oom-kill"...), and with
+// --collect that is the only record left of it (see Process.Wait).
 func (s Spec) Args(name string, args ...string) []string {
-	a := []string{"--quiet", "--collect", "--wait", "--unit=" + s.Name}
+	a := []string{"--collect", "--wait", "--unit=" + s.Name}
 	if s.Slice != "" {
 		a = append(a, "--slice="+s.Slice)
 	}
@@ -117,15 +119,46 @@ type Process struct {
 func (p *Process) Unit() string { return p.unit }
 
 // Wait blocks until the service ends. It returns systemd-run's error, which
-// carries the service's exit status, with what systemd-run printed.
+// carries the service's exit status, with what systemd-run said about the end of
+// the service (cause).
 func (p *Process) Wait() error {
 	err := p.cmd.Wait()
 	if err != nil {
-		if msg := strings.TrimSpace(p.stderr.String()); msg != "" {
+		if msg := cause(p.stderr.String()); msg != "" {
 			return fmt.Errorf("%w: %s", err, msg)
 		}
 	}
 	return err
+}
+
+// bookkeeping are the lines systemd-run prints around the end of a service that
+// say nothing about why it ended.
+var bookkeeping = []string{
+	"Running as unit:", "Service runtime:", "CPU time consumed:", "Memory peak:",
+	"Memory swap peak:", "IO bytes read:", "IO bytes written:", "IP traffic received:",
+	"IP traffic sent:", "Control group:",
+}
+
+// cause is what systemd-run printed, one line each joined by "; ", without the
+// bookkeeping. What is left is how the service ended ("Finished with result:
+// oom-kill", "Main processes terminated with: code=killed/status=KILL") or why
+// it could not start.
+func cause(output string) string {
+	var keep []string
+lines:
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, b := range bookkeeping {
+			if strings.HasPrefix(line, b) {
+				continue lines
+			}
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "; ")
 }
 
 // Kill sends SIGKILL to every process of the unit. A unit that is already gone

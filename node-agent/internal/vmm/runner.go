@@ -1,7 +1,9 @@
 package vmm
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -40,7 +42,11 @@ func (p *execProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
 	}
-	return p.cmd.Process.Kill()
+	// A process that already ended (it is reaped by Wait) is what Kill wanted.
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
 }
 
 func (p *execProcess) Pid() int {

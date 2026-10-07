@@ -61,12 +61,18 @@ type CloudHypervisor struct {
 
 	mu        sync.Mutex
 	instances map[string]*chInstance
+	// onExit is told when a Cloud Hypervisor process ends that Stop did not end.
+	onExit func(id string, info ExitInfo)
 }
 
 type chInstance struct {
 	socketPath string
 	proc       Process
 	client     *http.Client
+	// done is closed when proc.Wait returned (watch is its only caller). bootedAt
+	// is when the VM was booted.
+	done     chan struct{}
+	bootedAt time.Time
 	// exited is set once WaitShutdown saw the API go away: the process ended on
 	// its own after the guest powered off, so Stop has no VM left to delete.
 	exited bool
@@ -467,9 +473,12 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 		return err
 	}
 
+	inst := &chInstance{socketPath: sock, proc: proc, client: client, console: console, serialSocket: config.SerialSocket,
+		done: make(chan struct{}), bootedAt: time.Now()}
 	c.mu.Lock()
-	c.instances[config.ID] = &chInstance{socketPath: sock, proc: proc, client: client, console: console, serialSocket: config.SerialSocket}
+	c.instances[config.ID] = inst
 	c.mu.Unlock()
+	go c.watch(config.ID, inst)
 	c.logger().Info("CH spawned", "sandbox_id", config.ID, "socket", sock, "pid", proc.Pid())
 	return nil
 }
@@ -526,8 +535,10 @@ func (c *CloudHypervisor) Stop(ctx context.Context, id string) error {
 func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 	c.mu.Lock()
 	inst, ok := c.instances[id]
+	gone := false
 	if ok {
 		delete(c.instances, id)
+		gone = inst.exited
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -536,7 +547,7 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 	}
 
 	var errs []error
-	if !inst.exited {
+	if !gone {
 		if err := c.deleteWith(ctx, inst.client); err != nil {
 			errs = append(errs, fmt.Errorf("vm.delete: %w", err))
 		}
@@ -546,13 +557,8 @@ func (c *CloudHypervisor) stopPerSandbox(ctx context.Context, id string) error {
 		if err := inst.proc.Kill(); err != nil {
 			errs = append(errs, fmt.Errorf("kill: %w", err))
 		}
-		done := make(chan struct{})
-		go func() {
-			_ = inst.proc.Wait()
-			close(done)
-		}()
 		select {
-		case <-done:
+		case <-inst.done:
 		case <-time.After(3 * time.Second):
 			exited = false
 			errs = append(errs, fmt.Errorf("process wait timed out"))
@@ -741,4 +747,51 @@ func (c *CloudHypervisor) ConsoleTail(id string, max int) string {
 		return ""
 	}
 	return inst.console.Tail(max)
+}
+
+// ExitInfo says how a Cloud Hypervisor process ended and how long it ran.
+type ExitInfo struct {
+	// Err is what waiting for the process returned: nil for a clean exit, else
+	// the exit status or the signal that killed it (OOM kill included).
+	Err error
+	// Lived is how long it ran since the VM booted.
+	Lived time.Duration
+}
+
+// ExitNotifier is implemented by VMMs that tell when a VM's process ended on its
+// own: a crash, an OOM kill, a guest that powered itself off.
+type ExitNotifier interface {
+	// SetExitHandler registers fn, called once for each process that exits
+	// without Stop having asked it to. It runs on its own goroutine.
+	SetExitHandler(fn func(id string, info ExitInfo))
+}
+
+// SetExitHandler implements ExitNotifier.
+func (c *CloudHypervisor) SetExitHandler(fn func(id string, info ExitInfo)) {
+	c.mu.Lock()
+	c.onExit = fn
+	c.mu.Unlock()
+}
+
+// watch waits for the process of one instance, the only caller of its Wait. When
+// it ends while the instance is still tracked, nothing asked it to: the handler
+// is told. Stop removes the instance before it kills the process, so a process
+// that Stop ended is never reported.
+func (c *CloudHypervisor) watch(id string, inst *chInstance) {
+	err := inst.proc.Wait()
+	close(inst.done)
+	c.mu.Lock()
+	// The API is gone with the process: a later Stop has no VM left to delete.
+	inst.exited = true
+	tracked := c.instances[id] == inst
+	fn := c.onExit
+	c.mu.Unlock()
+	if !tracked {
+		return
+	}
+	info := ExitInfo{Err: err, Lived: time.Since(inst.bootedAt)}
+	c.logger().Warn("cloud-hypervisor exited on its own", "sandbox_id", id, "lived", info.Lived.Round(time.Millisecond), "error", err)
+	if fn != nil {
+		fn(id, info)
+	}
 }

@@ -161,3 +161,27 @@ func TestSessionStartForceDeletesOnTheSessionsControlPlane(t *testing.T) {
 			code, oldDeletes.Load(), oldCreates.Load(), newDeletes.Load(), newCreates.Load(), stderr.String())
 	}
 }
+
+// A sandbox whose VM's process ended while it ran (a crash, an OOM kill, the
+// guest powering itself off) is stopped, not lost: the text says how it ended and
+// that the disk is kept, and does not call it a failed resume.
+func TestStoppedTextSaysTheVMEndedOnItsOwn(t *testing.T) {
+	node := "node-b"
+	sb := client.Sandbox{ID: "sb-1", State: "stopped", NodeID: &node, StopReason: client.StopReasonVMMExited,
+		StatusDetail: "vmm_exited: signal: killed after 3m12s"}
+	got := stoppedText(sb, "/f")
+	for _, want := range []string{
+		"was stopped because its VM ended on its own (signal: killed after 3m12s)",
+		"its disk is kept on node node-b", "asp session resume",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("text %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "last resume failed") || strings.Contains(got, "vmm_exited") {
+		t.Errorf("text %q reads like a failed resume or leaks the raw prefix", got)
+	}
+	if sb.LostWithNode() || sb.StoppedByNodeEvent() {
+		t.Error("an exited VM is not a node event")
+	}
+}

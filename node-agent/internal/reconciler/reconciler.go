@@ -174,6 +174,9 @@ type Reconciler struct {
 
 	mu      sync.Mutex
 	handles map[string]Handle
+	// exits holds the VMs whose process ended on its own, until they are reported
+	// and released (mu). See exit.go.
+	exits map[string]vmm.ExitInfo
 	// retains: the last poll carried the retained list, so stopping keeps a
 	// sandbox's disk (mu). lastDiskGC is the last disk sweep (mu).
 	retains    bool
@@ -220,7 +223,7 @@ func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Lo
 	if every <= 0 {
 		every = 2 * time.Second
 	}
-	return &Reconciler{
+	r := &Reconciler{
 		CP:         cp,
 		NodeID:     nodeID,
 		Engine:     engine,
@@ -234,6 +237,12 @@ func New(cp *cpclient.Client, nodeID string, engine vmm.MicroVM, logger *slog.Lo
 		nextCID:    3,
 		LocalNet:   localnet.NewMemory(),
 	}
+	// A VMM that tells when a VM's process ended by itself (vmm.ExitNotifier)
+	// is heard, so a crashed VM is reported instead of staying "running".
+	if n, ok := engine.(vmm.ExitNotifier); ok {
+		n.SetExitHandler(r.onVMMExit)
+	}
+	return r
 }
 
 // unknownNodeEvery rate-limits OnUnknownNode.
@@ -331,8 +340,12 @@ func (r *Reconciler) poll(ctx context.Context) {
 	r.mu.Lock()
 	r.retains = work.Retains()
 	r.mu.Unlock()
+	exited := r.reportExited(ctx, work)
 	for _, sb := range work.Sandboxes {
 		sb := sb
+		if exited[sb.ID] {
+			continue
+		}
 		switch sb.State {
 		case "requested", "starting", "running":
 			if sb.State == "running" && !sb.LocalNet {
@@ -604,7 +617,14 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		// report the start failed. A first boot is failed and loses its fresh disk;
 		// a resume goes back to stopped with its disk, as for any failed resume.
 		console := r.consoleTail(sb.ID)
-		err := fmt.Errorf("guest_not_ready: the guest did not answer within %s%s", r.GuestReadyTimeout, lastConsoleLine(console))
+		var err error
+		if info, dead := r.exitOf(sb.ID); dead {
+			// The VM's process ended while it was waited for: say so, not that
+			// the guest was slow.
+			err = errors.New(exitDetail(info) + lastConsoleLine(console))
+		} else {
+			err = fmt.Errorf("guest_not_ready: the guest did not answer within %s%s", r.GuestReadyTimeout, lastConsoleLine(console))
+		}
 		r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: resumed})
 		r.failStart(ctx, sb, err)
 		return fmt.Errorf("start: %w", err)
@@ -718,6 +738,7 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string, opts teardown
 	if had {
 		delete(r.handles, id)
 	}
+	delete(r.exits, id)
 	r.mu.Unlock()
 
 	if had && opts.graceful {
@@ -964,7 +985,9 @@ func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) bool {
 			r.Logger.Info("guest answering", "sandbox_id", sandboxID, "after", time.Since(start).Round(time.Millisecond))
 			return true
 		}
-		if ctx.Err() != nil || !time.Now().Before(deadline) {
+		// A VM whose process ended will never answer: stop waiting for it.
+		_, dead := r.exitOf(sandboxID)
+		if dead || ctx.Err() != nil || !time.Now().Before(deadline) {
 			break
 		}
 		select {

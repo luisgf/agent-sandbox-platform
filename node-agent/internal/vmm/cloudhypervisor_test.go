@@ -3,6 +3,7 @@ package vmm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -161,6 +162,17 @@ type fakeCHProc struct {
 	done     chan struct{}
 	runner   *fakeCHRunner
 	stubborn bool
+	mu       sync.Mutex
+	waitErr  error
+}
+
+// crash ends the process the way a kill or a fault does: its API goes away and
+// Wait returns err.
+func (p *fakeCHProc) crash(err error) {
+	p.mu.Lock()
+	p.waitErr = err
+	p.mu.Unlock()
+	_ = p.exit()
 }
 
 func (p *fakeCHProc) Pid() int { return 4242 }
@@ -180,7 +192,9 @@ func (p *fakeCHProc) exit() error {
 
 func (p *fakeCHProc) Wait() error {
 	<-p.done
-	return nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waitErr
 }
 
 // apiSocketArg is the --api-socket that Start passes to cloud-hypervisor.
@@ -689,5 +703,162 @@ func TestStartWithoutASerialSocketLeavesTheConsoleAlone(t *testing.T) {
 	defer func() { _ = ch.Stop(context.Background(), "sb-2") }()
 	if len(fake.created) != 1 || fake.created[0].Serial != nil || fake.created[0].Console != nil {
 		t.Fatalf("vm.create: %+v", fake.created)
+	}
+}
+
+// shortTemp is a temp directory with a short path: unix socket paths are limited
+// to 104 bytes on macOS and a sandbox ID alone takes 45.
+func shortTemp(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// exits collects what the exit handler is told.
+type exits struct {
+	mu  sync.Mutex
+	got map[string][]ExitInfo
+	ch  chan string
+}
+
+func newExits() *exits { return &exits{got: map[string][]ExitInfo{}, ch: make(chan string, 8)} }
+
+func (e *exits) handle(id string, info ExitInfo) {
+	e.mu.Lock()
+	e.got[id] = append(e.got[id], info)
+	e.mu.Unlock()
+	e.ch <- id
+}
+
+func (e *exits) count(id string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.got[id])
+}
+
+// A Cloud Hypervisor that dies while its VM runs (killed, out of memory, a
+// fault) is reported with how it ended and how long it lived, and exactly once:
+// without that a sandbox stays "running" in the control plane with nothing behind
+// it. Stop afterwards must not ask the dead API to delete anything.
+func TestExitHandlerHearsAProcessThatDiedByItself(t *testing.T) {
+	dir := shortTemp(t)
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("/usr/bin/fake-cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	got := newExits()
+	ch.SetExitHandler(got.handle)
+	ctx := context.Background()
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := ch.Start(ctx, MicroVMConfig{ID: id, KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128}); err != nil {
+		t.Fatal(err)
+	}
+	if got.count(id) != 0 {
+		t.Fatal("a running VM was reported as exited")
+	}
+	time.Sleep(20 * time.Millisecond)
+	runner.mu.Lock()
+	proc := runner.procs[0]
+	runner.mu.Unlock()
+	boom := errors.New("signal: killed")
+	proc.crash(boom)
+
+	select {
+	case who := <-got.ch:
+		if who != id {
+			t.Fatalf("reported %q, want %q", who, id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a process that died by itself was never reported")
+	}
+	info := got.got[id][0]
+	if !errors.Is(info.Err, boom) || info.Lived < 20*time.Millisecond {
+		t.Fatalf("info=%+v", info)
+	}
+	// Still tracked until Stop, so the reconciler can read the console and release it.
+	if ch.InstanceCount() != 1 {
+		t.Fatalf("instances=%d", ch.InstanceCount())
+	}
+	if err := ch.Stop(ctx, id); err != nil {
+		t.Fatalf("stop after the process died: %v", err)
+	}
+	runner.mu.Lock()
+	deletes := runner.deletes
+	runner.mu.Unlock()
+	if deletes != 0 {
+		t.Fatalf("vm.delete sent %d times to a dead process", deletes)
+	}
+	if ch.InstanceCount() != 0 || got.count(id) != 1 {
+		t.Fatalf("instances=%d reports=%d", ch.InstanceCount(), got.count(id))
+	}
+}
+
+// A process that Stop ended is not a surprise: nothing is reported, so a stop
+// the control plane asked for is never mistaken for a crash.
+func TestExitHandlerDoesNotHearAProcessStopEnded(t *testing.T) {
+	dir := shortTemp(t)
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("/usr/bin/fake-cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	got := newExits()
+	ch.SetExitHandler(got.handle)
+	ctx := context.Background()
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := ch.Start(ctx, MicroVMConfig{ID: id, KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.Stop(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case who := <-got.ch:
+		t.Fatalf("a stopped VM %q was reported as exited", who)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// Every process has its own watcher, and a Cloud Hypervisor without a handler
+// still ends cleanly.
+func TestExitWatchersAreIndependent(t *testing.T) {
+	dir := shortTemp(t)
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("/usr/bin/fake-cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	ctx := context.Background()
+	a, b := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "11111111-2222-3333-4444-555555555555"
+	for _, id := range []string{a, b} {
+		if err := ch.Start(ctx, MicroVMConfig{ID: id, KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner.mu.Lock()
+	first := runner.procs[0]
+	runner.mu.Unlock()
+	first.crash(nil) // no handler yet: logged only
+
+	got := newExits()
+	ch.SetExitHandler(got.handle)
+	runner.mu.Lock()
+	second := runner.procs[1]
+	runner.mu.Unlock()
+	second.crash(errors.New("exit status 1"))
+	select {
+	case who := <-got.ch:
+		if who != b {
+			t.Fatalf("reported %q, want the second VM", who)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the second process was never reported")
+	}
+	for _, id := range []string{a, b} {
+		if err := ch.Stop(ctx, id); err != nil {
+			t.Fatalf("stop %s: %v", id, err)
+		}
 	}
 }
