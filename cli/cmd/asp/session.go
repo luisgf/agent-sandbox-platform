@@ -144,7 +144,8 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 	node := fs.String("node-id", "", "pin to this node (default: the scheduler picks one with room)")
 	vmm := fs.String("vmm-profile", "cloud-hypervisor", "vmm_profile")
 	workspace := fs.String("workspace", "", "absolute host directory to export with virtiofsd (guest image mounts tag workspace on /workspace; older images need mount -t virtiofs)")
-	force := fs.Bool("force", false, "delete any sandbox recorded in the session file (with its disk), then start a new one")
+	force := fs.Bool("force", false, "delete any sandbox recorded in the session file (with its disk), then start a new one; refuses a stopped sandbox whose disk is kept unless --yes")
+	yes := fs.Bool("yes", false, "with --force, delete a stopped sandbox even though its disk is kept (asp session resume would get it back)")
 	localNet := fs.Bool("local-net", false, "send this session's default route through a tunnel the local agent opens (default off)")
 	localAllow := fs.String("local-net-allow", "", "rejected in v1 (no per-CIDR config)")
 	if err := fs.Parse(args); err != nil {
@@ -180,13 +181,25 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	c, code := mustClient(g, stderr)
-	if c == nil {
-		return code
-	}
 	ctx := context.Background()
 	if loadErr == nil && *force {
-		if err := destroyRecorded(ctx, c, existing, stderr); err != nil {
+		// The recorded sandbox lives on the control plane the session file names,
+		// whatever ASP_CP_URL says now (unless --cp-url was given).
+		gOld := g
+		if !cpURLWasSet(fs) && existing.CPURL != "" {
+			gOld.cpURL = existing.CPURL
+		}
+		cOld, code := mustClient(gOld, stderr)
+		if cOld == nil {
+			return code
+		}
+		if !*yes {
+			if live, err := cOld.GetSandbox(ctx, existing.SandboxID); err == nil && live.State == "stopped" {
+				fmt.Fprintf(stderr, "session start: --force would delete sandbox %s, which is stopped with its disk kept on node %s. Run asp session resume to get it back, or pass --yes to delete it and start a new one\n", existing.SandboxID, nodeOf(live))
+				return 1
+			}
+		}
+		if err := destroyRecorded(ctx, cOld, existing, stderr); err != nil {
 			fmt.Fprintf(stderr, "session start: --force destroy %s: %v\n", existing.SandboxID, err)
 			return 1
 		}
@@ -194,6 +207,10 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "session start: clear %s: %v\n", path, err)
 			return 1
 		}
+	}
+	c, code := mustClient(g, stderr)
+	if c == nil {
+		return code
 	}
 
 	var lnPtr *bool
@@ -510,7 +527,14 @@ func idleReapedText(id, path string) string {
 
 // stoppedText is for a sandbox someone stopped: nothing is lost, resume it.
 func stoppedText(sb client.Sandbox, path string) string {
-	msg := fmt.Sprintf("sandbox %s is stopped; its disk is kept on node %s. Session file kept (%s). Run: asp session resume", sb.ID, nodeOf(sb), path)
+	cause := ""
+	switch sb.StopReason {
+	case client.StopReasonAgentRestarted:
+		cause = " when the node agent restarted"
+	case client.StopReasonNodeLost:
+		cause = " when its node stopped responding"
+	}
+	msg := fmt.Sprintf("sandbox %s was stopped%s; its disk is kept on node %s. Session file kept (%s). Run: asp session resume", sb.ID, cause, nodeOf(sb), path)
 	if sb.StatusDetail != "" {
 		msg += fmt.Sprintf(" (the last resume failed: %s)", strings.TrimPrefix(sb.StatusDetail, "resume failed: "))
 	}

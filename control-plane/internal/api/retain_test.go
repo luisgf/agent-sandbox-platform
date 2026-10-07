@@ -165,9 +165,28 @@ func TestExecIdleReapedMessageSaysResume(t *testing.T) {
 	if msg := execBlock(sb); !strings.Contains(msg, "idle timeout") || !strings.Contains(msg, "asp session resume") {
 		t.Fatalf("message=%q", msg)
 	}
-	lost := store.Sandbox{State: store.SandboxStopped, StopReason: store.StopReasonNodeLost}
-	if msg := execBlock(lost); msg != store.NodeLostMessage {
-		t.Fatalf("message=%q", msg)
+	// A stopped sandbox keeps its disk: the advice is to resume it, never to start
+	// a new one with --force, which would delete the disk that survived.
+	node := "ncc1701d"
+	for reason, want := range map[string]string{
+		store.StopReasonNodeLost:       "node stopped responding",
+		store.StopReasonAgentRestarted: "node agent restarted",
+	} {
+		msg := execBlock(store.Sandbox{State: store.SandboxStopped, StopReason: reason, NodeID: &node})
+		if !strings.Contains(msg, want) || !strings.Contains(msg, "disk is kept on node ncc1701d") ||
+			!strings.Contains(msg, "asp session resume") || strings.Contains(msg, "--force") {
+			t.Fatalf("%s: message=%q", reason, msg)
+		}
+	}
+	// A failed one lost its disk with the node: the old advice stands.
+	for _, reason := range []string{store.StopReasonNodeLost, store.StopReasonAgentRestarted} {
+		if msg := execBlock(store.Sandbox{State: store.SandboxFailed, StopReason: reason}); msg != store.NodeLostMessage {
+			t.Fatalf("failed/%s: message=%q", reason, msg)
+		}
+	}
+	// stopping is on its way to stopped.
+	if msg := execBlock(store.Sandbox{State: store.SandboxStopping, StopReason: store.StopReasonNodeLost}); strings.Contains(msg, "--force") {
+		t.Fatalf("stopping: message=%q", msg)
 	}
 	if msg := execBlock(store.Sandbox{State: store.SandboxStopped, StatusDetail: "vm.boot failed"}); !strings.Contains(msg, "last resume failed: vm.boot failed") {
 		t.Fatalf("message=%q", msg)

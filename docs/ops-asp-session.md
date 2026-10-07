@@ -196,7 +196,8 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 | `disk_lost` al reanudar | Falta el disco en el nodo (alguien lo borró, o el plano de control olvidó la sandbox y el GC del nodo lo recogió). No hay vuelta atrás: `asp session rm` y `start`. |
 | `no capacity: …` en start (503) | Ningún nodo tiene hueco; el mensaje cuenta por qué se descartó cada uno (`max_sandboxes`, `insufficient_memory`, `cordoned`, `stale`…). Reintenta, o que un admin añada nodos o haga `uncordon` (`asp node list`). |
 | `node pin rejected: …` en start (409) | `--node-id` apunta a un nodo desconocido, caído, revocado o en cordon. Quita el pin o revisa ese nodo. |
-| `lost_with_node=true` / `sandbox was lost with its node` | Su nodo dejó de dar señales (`node_lost`) o su node-agent se reinició (`node_agent_restarted`). El disco vivía en ese servidor: `asp session start --force --name …`. |
+| `lost_with_node=true` / `sandbox was lost with its node` | Estaba `failed` porque su nodo dejó de dar señales (`node_lost`): el disco vivía en ese servidor, `asp session start --force --name …`. |
+| `was stopped when the node agent restarted` / `…when its node stopped responding` | Es una sandbox `stopped` (`node_agent_restarted`, o `node_lost` si se estaba parando): su VM murió pero **el disco se conserva** en el nodo. `asp session resume` (cuando el nodo vuelva, si es `node_lost`). `start --force` la borraría: pide `--yes` a propósito. |
 | exec 401 | Token caducado o `ASP_IDP_REQUIRED` sin secretos. `asp auth status`. |
 | stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
 | `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. La actividad **no** se refresca. |

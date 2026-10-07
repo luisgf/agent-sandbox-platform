@@ -56,7 +56,7 @@ func execBlock(sb store.Sandbox) string {
 	case store.SandboxStopping, store.SandboxStopped:
 		switch {
 		case lost:
-			return store.NodeLostMessage
+			return store.LostAdvice(sb.State, sb.StopReason, nodeIDOf(sb))
 		case sb.StopReason == store.StopReasonIdle:
 			return store.IdleReapedMessage
 		case sb.State == store.SandboxStopped:
@@ -69,7 +69,7 @@ func execBlock(sb store.Sandbox) string {
 		return "sandbox is stopping"
 	case store.SandboxFailed:
 		if lost {
-			return store.NodeLostMessage
+			return store.LostAdvice(sb.State, sb.StopReason, nodeIDOf(sb))
 		}
 		if sb.StatusDetail != "" {
 			return "sandbox failed: " + sb.StatusDetail
@@ -81,4 +81,11 @@ func execBlock(sb store.Sandbox) string {
 		return "sandbox was deleted"
 	}
 	return "sandbox is " + string(sb.State)
+}
+
+func nodeIDOf(sb store.Sandbox) string {
+	if sb.NodeID == nil {
+		return ""
+	}
+	return *sb.NodeID
 }

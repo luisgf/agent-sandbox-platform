@@ -13,8 +13,31 @@ const (
 	StopReasonUnscheduled    = "unscheduled"
 	StopReasonAgentRestarted = "node_agent_restarted"
 
+	// NodeLostMessage is the advice for a failed sandbox whose disk went with its
+	// node. A stopped one keeps its disk: see LostAdvice.
 	NodeLostMessage = "sandbox was lost with its node; start a new sandbox (asp session start --force)"
 )
+
+// LostAdvice is what to tell the caller of a sandbox whose node was lost or whose
+// agent restarted, by what became of it. A failed sandbox has no disk to come
+// back to; a stopped one (its VM died with the agent, or a stop was under way)
+// has its disk kept on its node and can be resumed, so sending it to
+// "start --force" would delete the very thing that survived.
+func LostAdvice(state SandboxState, reason, nodeID string) string {
+	if state != SandboxStopped && state != SandboxStopping {
+		return NodeLostMessage
+	}
+	node := "its node"
+	if nodeID != "" {
+		node = "node " + nodeID
+	}
+	if reason == StopReasonNodeLost {
+		return "sandbox was stopped when its node stopped responding; its disk is kept on " + node +
+			": resume it once the node is back (asp session resume), or delete it (asp session rm)"
+	}
+	return "sandbox was stopped when the node agent restarted; its disk is kept on " + node +
+		": resume it (asp session resume), or delete it (asp session rm)"
+}
 
 // nodeLost: revoked, or not seen since silentSince.
 func nodeLost(n Node, silentSince time.Time) bool {
@@ -132,14 +155,15 @@ func agentRestarted(prev, next string) bool {
 	return prev != "" && next != "" && prev != next
 }
 
-// restartOrphanTarget is where a sandbox goes when its agent restarted: running
-// and paused VMs are gone with the old process; stopping finishes as stopped;
-// requested and starting are left for the new process to (re)boot.
+// restartOrphanTarget is where a sandbox goes when its agent restarted: the VM of
+// a running or paused one is gone with the old process, but its disk is intact on
+// the node, so it becomes stopped and can be resumed (a failed sandbox would be
+// in neither list /work sends, and the node's disk GC would remove its disk);
+// stopping finishes as stopped; requested and starting are left for the new
+// process to (re)boot, a resume included, since it reuses the retained disk.
 func restartOrphanTarget(state SandboxState) (SandboxState, bool) {
 	switch state {
-	case SandboxRunning, SandboxPaused:
-		return SandboxFailed, true
-	case SandboxStopping:
+	case SandboxRunning, SandboxPaused, SandboxStopping:
 		return SandboxStopped, true
 	}
 	return "", false

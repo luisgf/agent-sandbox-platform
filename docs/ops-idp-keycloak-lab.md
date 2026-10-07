@@ -233,8 +233,8 @@ journalctl -u asp-node-agent -f
 ```
 
 - **Orden y reintentos.** `After=asp-control-plane.service`, sin `Wants=` a propósito: arrancar o reiniciar el agente no levanta un plano de control que alguien paró, y reiniciar el plano de control no toca al agente ni a sus VMs. Si el plano de control aún no responde (al arrancar el servidor espera a su contenedor de Postgres), el agente sale al no poder registrarse y systemd lo reintenta cada 5 s sin tope (`StartLimitIntervalSec=0`). `RequiresMountsFor=/sandbox` evita crear `/sandbox/disks` en el disco raíz si `/sandbox` no está montado.
-- **Actualizar el binario detiene todas las VMs** (`KillMode=control-group`): las sandboxes que corren pasan a `failed` (`node_agent_restarted`) y sus discos los recoge el GC; las paradas conservan el suyo. Haz `cordon`, drena, y entonces `sudo install -o root -g root -m 0755 <nuevo> /usr/local/bin/node-agent && sudo systemctl restart asp-node-agent`.
-- **Tras reiniciar el servidor** vuelven solos Docker, `asp-postgres`, el plano de control y el agente; las sesiones que corrían quedan `failed` (`node_agent_restarted`) y las paradas se pueden reanudar.
+- **Actualizar el binario detiene todas las VMs** (`KillMode=control-group`): las sandboxes que corren pasan a `stopped` (`node_agent_restarted`) con su disco, igual que las paradas: `asp session resume` las arranca de nuevo, y lo que instalaron fuera de `/workspace` sigue ahí. Haz `cordon`, drena, y entonces `sudo install -o root -g root -m 0755 <nuevo> /usr/local/bin/node-agent && sudo systemctl restart asp-node-agent`.
+- **Tras reiniciar el servidor** vuelven solos Docker, `asp-postgres`, el plano de control y el agente; las sesiones que corrían quedan `stopped` (`node_agent_restarted`) y, como las paradas, se pueden reanudar con su disco.
 - **Si el agente muere** (`kill -9`), systemd lo reinicia y la limpieza (`--reap-only`) corre antes; el plano de control ve un `agent_instance_id` nuevo.
 
 ### Alternativas y consecuencias
