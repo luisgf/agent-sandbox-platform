@@ -111,6 +111,10 @@ func reapConfig(cfg config, report bool) reconciler.ReapConfig {
 		// The host-wide TAP and WireGuard devices of a real agent next to a
 		// dry-run one are not its leftovers.
 		rc.SysClassNet = "/sys/class/net"
+		// The directories of VMs that ran as users of their own, and their disks
+		// (made root's again, not removed).
+		rc.RunDir = vmRunDir(cfg)
+		rc.ReclaimDisks = cfg.DiskDir
 		// No rc.DiskDir: a stopped sandbox's disk is kept (ADR-0012), and the
 		// reaper cannot tell it from a leftover. The reconciler removes the disks
 		// the control plane does not list, after its first poll.

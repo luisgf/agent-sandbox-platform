@@ -54,7 +54,11 @@ type Handle struct {
 	Serial    string // the socket its console is served on
 	FSUnit    string // the service virtiofsd runs in, when there is a workspace
 	FSSocket  string // the socket virtiofsd serves
-	stopFS    func() // stops virtiofsd when a workspace was mounted
+	// UID is the user the VMM runs as, and RunDir its directory, when VMMs run as
+	// users of their own (identity.go). Zero and "" for a VMM that runs as root.
+	UID    uint32
+	RunDir string
+	stopFS func() // stops virtiofsd when a workspace was mounted
 }
 
 // Reconciler polls control-plane work, claims sandboxes, and starts/stops VMs.
@@ -95,6 +99,9 @@ type Reconciler struct {
 	GuestSubnet netip.Prefix
 	// Metrics counts starts, stops and exits. Nil counts nothing.
 	Metrics *Metrics
+	// Chown changes the owner of a file the VMM of a VM needs to open (tests). Nil
+	// is os.Lchown.
+	Chown func(path string, uid, gid int) error
 	// StateDir is where a record of each running VM is kept, so that an agent
 	// started after this one takes it over (Adopt). Empty: VMs are not recorded
 	// and none survives the agent.
@@ -524,6 +531,17 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 	defer func() { r.Metrics.recordStart(kind, startedAt, retErr) }()
 
 	cfg := r.vmConfig(sb)
+	// releaseVM undoes vmConfig on a failed start: the CID, and the directory the
+	// VMM would have worked in.
+	releaseVM := func() {
+		r.releaseCID(cfg.VsockCID)
+		r.removeRunDir(cfg.RunDir)
+	}
+	if err := r.prepareRunDir(cfg); err != nil {
+		releaseVM()
+		r.failStart(ctx, sb, err)
+		return err
+	}
 
 	// Each TAP gets its own /30. A shared prefix would send every guest's
 	// replies to one TAP and leave the proxy unable to tell sandboxes apart.
@@ -531,15 +549,19 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 	if r.TapAuto {
 		n, gnet, err := r.allocSlot()
 		if err != nil {
-			r.releaseCID(cfg.VsockCID)
+			releaseVM()
 			r.failStart(ctx, sb, fmt.Errorf("guest net: %w", err))
 			return fmt.Errorf("guest net: %w", err)
 		}
 		slot = n
 		cfg.Cmdline += " " + guestNetArgs(sb.ID, gnet, r.GuestDNS, r.GuestProxyPort)
-		if err := r.tapMgr().CreateWithCIDR(cfg.TapDevice, gnet.HostCIDR()); err != nil {
+		var tapOwner *uint32
+		if uid, ok := r.vmUID(cfg.VsockCID); ok {
+			tapOwner = &uid
+		}
+		if err := r.tapMgr().CreateOwned(cfg.TapDevice, gnet.HostCIDR(), tapOwner); err != nil {
 			r.releaseSlot(slot)
-			r.releaseCID(cfg.VsockCID)
+			releaseVM()
 			r.failStart(ctx, sb, fmt.Errorf("tap: %w", err))
 			return fmt.Errorf("tap create: %w", err)
 		}
@@ -565,20 +587,21 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 
 	// Hybrid guest→host acceptors before VMM start so CH can connect as soon
 	// as the guest dials CID 2. Distinct paths from the muxer UDS itself.
-	if err := r.attachGuestHost(sb.ID, cfg.VsockPath); err != nil {
+	vmUID, _ := r.vmUID(cfg.VsockCID)
+	if err := r.attachGuestHost(sb.ID, cfg.VsockPath, vmUID); err != nil {
 		if r.SSHRegistry != nil {
 			r.SSHRegistry.Unset(sb.ID)
 		}
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
-		r.releaseCID(cfg.VsockCID)
+		releaseVM()
 		releaseNet()
 		r.failStart(ctx, sb, fmt.Errorf("guest-host: %w", err))
 		return fmt.Errorf("guest-host attach: %w", err)
 	}
 
-	fsSock, stopFS, err := r.startWorkspace(ctx, sb)
+	fsSock, stopFS, err := r.startWorkspace(ctx, sb, cfg)
 	if err != nil {
 		r.detachGuestHost(sb.ID)
 		if r.SSHRegistry != nil {
@@ -587,7 +610,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
-		r.releaseCID(cfg.VsockCID)
+		releaseVM()
 		releaseNet()
 		r.failStart(ctx, sb, err)
 		return fmt.Errorf("workspace: %w", err)
@@ -602,7 +625,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
-		r.releaseCID(cfg.VsockCID)
+		releaseVM()
 		releaseNet()
 		r.failStart(ctx, sb, fmt.Errorf("local-net: %w", err))
 		return fmt.Errorf("local-net: %w", err)
@@ -615,11 +638,15 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 		if rootfs != "" {
 			cfg.RootFSPath = rootfs
 		}
-		err = r.Engine.Start(ctx, cfg)
+		if err = r.giveDisk(rootfs, cfg.VsockCID); err == nil {
+			err = r.Engine.Start(ctx, cfg)
+		}
 	}
 	if err != nil {
 		if !resumed {
 			r.removeRootFS(rootfs) // a retained disk survives a failed resume
+		} else if uid, ok := r.vmUID(cfg.VsockCID); ok {
+			r.takeBackDisk(rootfs, uid)
 		}
 		_ = r.localApplier().Clear(sb.ID)
 		r.mu.Lock()
@@ -632,7 +659,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 		if r.TapAuto {
 			_ = r.tapMgr().Delete(cfg.TapDevice)
 		}
-		r.releaseCID(cfg.VsockCID)
+		releaseVM()
 		releaseNet()
 		r.failStart(ctx, sb, err)
 		return fmt.Errorf("vmm start: %w", err)
@@ -644,6 +671,9 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (re
 		TenantID: sb.TenantID, OwnerSub: sb.OwnerSub, StartedAt: time.Now().UTC(), Serial: cfg.SerialSocket}
 	if cfg.WorkspaceFSSocket != "" && r.Confine != nil && r.FSLauncher == nil {
 		h.FSUnit, h.FSSocket = vmm.FSUnitName(sb.ID), cfg.WorkspaceFSSocket
+	}
+	if uid, ok := r.vmUID(cfg.VsockCID); ok {
+		h.UID, h.RunDir = uid, cfg.RunDir
 	}
 	r.mu.Lock()
 	r.handles[sb.ID] = h
@@ -824,7 +854,10 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string, opts teardown
 		}
 		if !opts.keepDisk {
 			r.removeRootFS(h.RootFS)
+		} else {
+			r.takeBackDisk(h.RootFS, h.UID)
 		}
+		r.removeRunDir(h.RunDir)
 		if r.TapAuto && h.TapName != "" {
 			if err := r.tapMgr().Delete(h.TapName); err != nil {
 				r.Logger.Warn("tap delete", "tap", h.TapName, "error", err)
@@ -1071,6 +1104,26 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 		mem = 64
 	}
 	cid := r.allocCID()
+	if u := r.unprivileged(); u != nil {
+		// The VMM's sockets live in a directory of its own, in which it is the only
+		// user who can create or open anything (prepareRunDir makes it).
+		dir := u.Dir(sb.ID)
+		return vmm.MicroVMConfig{
+			ID:           sb.ID,
+			KernelPath:   r.KernelPath,
+			RootFSPath:   r.RootFSPath,
+			Cmdline:      "console=ttyS0 root=/dev/vda reboot=k panic=1",
+			CPUs:         cpus,
+			MemoryMiB:    mem,
+			TapDevice:    tap.DeviceName(sb.ID),
+			VsockCID:     cid,
+			VsockPath:    filepath.Join(dir, vmm.RunVsockSocket),
+			SerialSocket: filepath.Join(dir, vmm.RunSerialSocket),
+			RunDir:       dir,
+
+			WorkspaceHostPath: strings.TrimSpace(sb.WorkspaceHostPath),
+		}
+	}
 	vsockDir := r.VsockDir
 	if vsockDir == "" {
 		vsockDir = "/run/asp"
@@ -1103,7 +1156,7 @@ func (r *Reconciler) vmConfig(sb cpclient.Sandbox) vmm.MicroVMConfig {
 // sandboxes without a workspace still boot (and FakeVMM smokes stay green).
 // A non-empty path fails the start when virtiofsd is missing or the directory
 // is not on this node: we do not pretend the guest can see it.
-func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (string, func(), error) {
+func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox, vm vmm.MicroVMConfig) (string, func(), error) {
 	host := strings.TrimSpace(sb.WorkspaceHostPath)
 	if host == "" {
 		return "", nil, nil
@@ -1114,14 +1167,20 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 	if err != nil {
 		return "", nil, err
 	}
-	vsockDir := r.VsockDir
-	if vsockDir == "" {
-		vsockDir = "/run/asp"
+	sock := ""
+	if vm.RunDir != "" {
+		// The VMM runs as a user of its own: virtiofsd's socket is in its directory.
+		sock = filepath.Join(vm.RunDir, vmm.RunFSSocket)
+	} else {
+		vsockDir := r.VsockDir
+		if vsockDir == "" {
+			vsockDir = "/run/asp"
+		}
+		if err := rundir.Ensure(vsockDir); err != nil {
+			return "", nil, fmt.Errorf("workspace socket dir: %w", err)
+		}
+		sock = filepath.Join(vsockDir, virtiofsName(sb.ID))
 	}
-	if err := rundir.Ensure(vsockDir); err != nil {
-		return "", nil, fmt.Errorf("workspace socket dir: %w", err)
-	}
-	sock := filepath.Join(vsockDir, virtiofsName(sb.ID))
 	var stop func()
 	if r.FSLauncher != nil {
 		stop, err = r.FSLauncher(ctx, sb.ID, host, sock)
@@ -1141,6 +1200,12 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 	if err != nil {
 		if errors.Is(err, virtiofs.ErrNotFound) {
 			return "", nil, fmt.Errorf("workspace set but virtiofsd is not installed on this node: %w", err)
+		}
+		return "", nil, err
+	}
+	if err := r.giveFSSocket(sock, vm.VsockCID); err != nil {
+		if stop != nil {
+			stop()
 		}
 		return "", nil, err
 	}
@@ -1281,7 +1346,9 @@ func (r *Reconciler) releaseSlot(n int) {
 	r.freeSlot = append(r.freeSlot, n)
 }
 
-func (r *Reconciler) attachGuestHost(sandboxID, muxerPath string) error {
+// attachGuestHost opens the acceptors for the guest's connections to the host. A
+// VMM that runs as user uid (not 0) connects to them, so they are handed to it.
+func (r *Reconciler) attachGuestHost(sandboxID, muxerPath string, uid uint32) error {
 	if r.GuestHost == nil || muxerPath == "" {
 		return nil
 	}
@@ -1289,7 +1356,14 @@ func (r *Reconciler) attachGuestHost(sandboxID, muxerPath string) error {
 	if r.PodDaemonUnix != "" {
 		return nil
 	}
-	return r.GuestHost.AttachSandbox(sandboxID, muxerPath)
+	if err := r.GuestHost.AttachSandbox(sandboxID, muxerPath); err != nil {
+		return err
+	}
+	if err := r.giveGuestHostSockets(muxerPath, uid); err != nil {
+		r.GuestHost.DetachSandbox(sandboxID)
+		return err
+	}
+	return nil
 }
 
 func (r *Reconciler) detachGuestHost(sandboxID string) {

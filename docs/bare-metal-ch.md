@@ -10,7 +10,7 @@ Smoke dry-run (sin KVM): [`mvp-smoke.md`](mvp-smoke.md). Arquitectura: [`archite
 
 | | |
 |---|---|
-| **Precondiciones** | CPU con VT-x/AMD-V, `/dev/kvm` usable, usuario en grupo `kvm` (y `netdev` si crea TAP), binario `cloud-hypervisor`, `vmlinux` + `rootfs.img` en `/opt/sandbox/`, CAP_NET_ADMIN o root para TAP/nft enforce, CP alcanzable (TLS/mTLS). |
+| **Precondiciones** | CPU con VT-x/AMD-V, `/dev/kvm` usable, usuario en grupo `kvm` (y `netdev` si crea TAP), binario `cloud-hypervisor`, `vmlinux` + `rootfs.img` en `/opt/sandbox/`, CAP_NET_ADMIN o root para TAP/nft enforce, `setpriv` (util-linux ≥ 2.31) y kernel/binario legibles por todos para el VMM sin privilegios (§5.7), CP alcanzable (TLS/mTLS). |
 | **Resultado OK** | Sandbox `requested`→`running` vía reconciler; `asp sandbox exec` o `POST …/exec` devuelve stdout; guest tiene `SSH_AUTH_SOCK`; egress no allowlisted → 403; con nft enforce, dial directo 80/443/DNS no bypasea el proxy. |
 | **Fallos típicos** | Sin KVM → CH aborta (usa dry-run); sin `--tap-auto` ni TAP manual → `vm.create` falla al abrir device; SoftFail nft → logs warn pero **no** hay frontera; un TAP que no se puede crear deja la sandbox en `failed`; `ASP_AUTO_PROVISION=1` → `running` mentiroso sin VMM; rootfs viejo sin `vsock-ssh-agent-proxy` → sin `SSH_AUTH_SOCK`; nft enforce sin `nft`/root → node-agent no arranca el redirect. |
 
@@ -409,6 +409,9 @@ Flags relevantes (`cmd/node-agent/main.go`):
 | `--workspace-root` | `ASP_WORKSPACE_ROOTS` | donde puede vivir el workspace de una sandbox: dentro de `<raíz>/<tenant>/` (enlaces resueltos). Defecto `/srv/asp/workspaces` (créalo: `install -d /srv/asp/workspaces/<tenant>`); sin raíz que exista no hay workspaces. `virtiofsd` corre con `--sandbox chroot` si el agente es root (`--virtiofsd-sandbox`) |
 | `--vm-survive-restart` | `ASP_VM_SURVIVE_RESTART` | `true` por defecto: una VM confinada sigue corriendo cuando el agente para o se reinicia, y el proceso siguiente la adopta (§5.6). `=false` ata el servicio de cada VM al del agente, como antes |
 | `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
+| `--vm-unprivileged` | `ASP_VM_UNPRIVILEGED` | `auto` (por defecto), `on` u `off`. Cada `cloud-hypervisor` corre como un usuario sin privilegios propio (`--vm-uid-base` + el CID de la VM), sin capabilities y en una unit que no abre sockets IP ni escribe fuera de sus ficheros (§5.7). `auto` lo hace cuando el host puede (lo comprueba abriendo como ese usuario lo que el VMM necesita) y, si no, deja el VMM como root diciendo por qué; `on` no arranca si no puede. Necesita `--vm-confine`. `virtiofsd` sigue siendo root |
+| `--vm-uid-base` | `ASP_VM_UID_BASE` | primer id de usuario de los VMM: el de la VM con CID `n` corre como esta base más `n` (por defecto `1879048192`, `0x70000000`). Elige un rango que no use ningún usuario, herramienta de contenedores u otro agente del host |
+| `--vm-run-dir` | `ASP_VM_RUN_DIR` | directorio con un subdirectorio por VM (`{id}/`, de su usuario, con sus sockets); 0711. Por defecto `--ch-socket-dir` con `-vm` (`/run/asp-vm`): fuera del directorio de sockets, que es 0700 y privado del agente |
 | `--vm-slice` | `ASP_VM_SLICE` | slice de esos servicios (`asp-vms.slice`) |
 | `--vm-memory-overhead-mib` | `ASP_VM_MEMORY_OVERHEAD_MIB` | memoria que se suma a la del guest en el `MemoryMax` del servicio (por defecto 256) |
 | `--vm-cpu-overhead-percent` | `ASP_VM_CPU_OVERHEAD_PERCENT` | porcentaje de una CPU que se suma a las vCPU en el `CPUQuota` (por defecto 50) |
@@ -586,8 +589,10 @@ Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`,
 
 | Resto | Cómo lo reconoce |
 |---|---|
-| Procesos `cloud-hypervisor` | argv `--api-socket {--ch-socket-dir}/ch-{id}.sock`. SIGTERM, 5 s, SIGKILL. **No** los de una VM viva con registro (§5.6, se adopta) |
-| Procesos `virtiofsd` | argv `--socket-path {--ch-socket-dir}/virtiofs-{id}.sock` |
+| Procesos `cloud-hypervisor` | argv `--api-socket {--ch-socket-dir}/ch-{id}.sock` o `{--vm-run-dir}/{id}/api.sock`. SIGTERM, 5 s, SIGKILL. **No** los de una VM viva con registro (§5.6, se adopta) |
+| Procesos `virtiofsd` | argv `--socket-path {--ch-socket-dir}/virtiofs-{id}.sock` o `{--vm-run-dir}/{id}/virtiofs.sock` |
+| Directorios de VMM sin privilegios | `{--vm-run-dir}/{id}/` (§5.7), con todo lo que el VMM dejó dentro. Se quedan si su proceso sigue vivo tras SIGKILL |
+| Discos de un usuario de VMM | `{--disk-dir}/rootfs-{id}.img` cuyo dueño no es root (el agente murió con la VM en marcha): se devuelven a root. No se borra ninguno |
 | Túneles local-net | claves `{id}.key` en `ASP_LOCAL_NET_KEY_DIR` y devices WireGuard `wg-asp-*`. Borra el device, las `ip rule`, la tabla, las reglas FORWARD y las excepciones nft, como al parar la sandbox |
 | TAPs | devices TUN/TAP `asp-{8 hex}` |
 | Sockets y enlaces | `ch-`, `vsock-` (y sus `_26501`/`_26502`), `virtiofs-` y `ssh-agent-{id}.sock` en `--ch-socket-dir` |
@@ -600,6 +605,43 @@ Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`,
 - **Un agente por host.** Mientras vive, el agente mantiene un `flock` sobre `{--ch-socket-dir}/node-agent.lock`. Un segundo agente en ese directorio no arranca (`refusing to start … is held by pid N`), y `--reap-only` tampoco corre. Los TAPs y túneles son de todo el host: dos agentes reales en una misma máquina (solo lab) necesitan directorios de sockets distintos y `--reap-leftovers=off`.
 - Modo shared (`--ch-api-socket`): ese CH no es del agente y no se toca; su VM sigue ahí tras el reinicio (`vm.delete` a mano).
 - **Actualizar el agente ya no detiene sus VMs** (confinadas): el proceso nuevo las adopta. Sin confinamiento, o con `--vm-survive-restart=false`, sí: haz `asp node cordon` y drena antes de `systemctl restart` ([`ops-multi-node.md`](ops-multi-node.md)).
+
+### 5.7 El VMM sin privilegios (un usuario por VM)
+
+([ADR-0015](adr/0015-unprivileged-vmm.md).) El VMM es el proceso más expuesto del nodo a un guest hostil: emula sus discos, su red, su vsock y su virtio-fs con lo que el guest escribe en las colas. Con confinamiento (§5.6) **corre como un usuario sin privilegios propio**, no como root:
+
+| | |
+|---|---|
+| Usuario y grupo | `--vm-uid-base` + el CID de la VM (`1879048192` + CID por defecto), grupo del mismo número. Más el grupo que es dueño de `/dev/kvm` (`kvm`), si el dispositivo no es de todos |
+| Privilegios | ninguna capability (`CapEff`, `CapBnd`, `CapAmb` a cero) y `no_new_privs`: nada que ejecute puede recuperarlas. Lo hace `setpriv`, dentro de la unit `asp-vm-<id>` |
+| Seccomp | el del propio Cloud Hypervisor (`--seccomp true`) |
+| La unit no puede | abrir sockets IP (`RestrictAddressFamilies=AF_UNIX`, `IPAddressDeny=any`: su red es el TAP, y habla con el agente y con `virtiofsd` por sockets unix), escribir fuera de su directorio y su disco (`ProtectSystem=strict`, `ReadWritePaths=`), cambiar de namespace, de personalidad o de clase de planificación, escribir un fichero mayor que su disco (`LimitFSIZE`: un disco raw no crece) ni volcar un core |
+| Ficheros suyos | `{--vm-run-dir}/{id}/` (0700): sus sockets (API, vsock y los `_26501`/`_26502` que abre el agente, consola, `virtiofsd`); su disco (`chown` al arrancar, de vuelta a root al parar, fallar el arranque o morir el VMM); el TAP (`ip tuntap add … user <uid>`) |
+| Todo lo demás | ni el directorio de sockets del agente (0700, root), ni el directorio ni el disco de otra VM, ni las claves, ni los tokens |
+
+`virtiofsd` **sigue siendo root**, en `--sandbox chroot` sobre el workspace: tiene que leer y escribir los ficheros como el dueño que sea cada uno, y un demonio sin privilegios solo puede actuar como él mismo. Es el límite conocido de este modelo (ADR-0015).
+
+**Comprobarlo en un host KVM:** `make smoke-vmm-user-kvm` (root, `ASP_SMOKE_ROOTFS=` con la imagen del guest) arranca dos sandboxes y comprueba usuario, capabilities, unit, ficheros entregados, que el usuario de una no toca nada de la otra, parar/reanudar, reinicio del agente (adopción), un VMM que muere y borrar. Usa sus propios directorios, puertos y subred, y solo para sus unidades `asp-vm-*`.
+
+```bash
+ps -eo user:14,pid,args | grep '[c]loud-hypervisor --api'      # un usuario numérico por VM, no root
+sudo grep -E '^(Uid|Cap(Eff|Bnd)|NoNewPrivs|Seccomp):' /proc/$(systemctl show -p MainPID --value asp-vm-<id>)/status
+systemctl show asp-vm-<id> -p IPAddressDeny -p RestrictAddressFamilies -p ProtectSystem -p ReadWritePaths
+ip -d link show asp-<id8> | grep -o 'user [0-9]*'              # el TAP es de ese usuario
+sudo ls -ln /run/asp-vm /run/asp-vm/<id>                       # /run/asp-vm: 0711; la de la VM: de su usuario
+```
+
+**Requisitos del host.** `setpriv` (util-linux 2.31 o posterior), un rango de ids libre, y que ese usuario llegue a lo que el VMM abre: el kernel y el binario `cloud-hypervisor` legibles y ejecutables por todos (`o+r`, `o+x` y `o+x` en cada directorio por encima), `/dev/kvm` (su grupo) y `/dev/net/tun`. Al arrancar, el agente crea `--vm-run-dir` y deja `--disk-dir` en 0711 (se pasa por ellos, no se listan ni se escriben) y **lo prueba abriendo cada cosa como ese usuario**. Si algo falla, `auto` deja los VMM como root con un `WARN` que dice qué y cómo arreglarlo; `on` no arranca; `off` lo desactiva (el comportamiento anterior).
+
+**Lo que no hay.** Landlock: `--landlock` de Cloud Hypervisor v53 exige la configuración de la VM en la línea de comandos y no se combina con el flujo por la API REST del agente. Los VMM sin confinamiento (`--vm-confine=off`, sin systemd, `--ch-api-socket`) siguen como root. Las VMs que arrancó un agente anterior siguen como root hasta que paran; el agente nuevo las adopta igual (§5.6).
+
+| Síntoma al arrancar el agente | Causa | Arreglo |
+|---|---|---|
+| `microVMs run as root: … a VM's user cannot read the kernel` | el kernel o un directorio por encima no es legible por todos | `chmod o+r` el kernel y `o+x` en sus directorios |
+| `… cannot open /dev/kvm` | el dispositivo no es de un grupo que se pueda sumar, o no es 0666 | `ls -l /dev/kvm`: el grupo del dispositivo se suma solo si es el dueño; si es `root:root 0600`, `chmod 0660` y un grupo `kvm` |
+| `… cannot run /usr/local/bin/cloud-hypervisor` | el binario o un directorio por encima no es ejecutable por todos | `chmod o+rx` |
+| `… setpriv … is not installed` | falta util-linux, o es anterior a 2.31 | instalar/actualizar `util-linux` |
+| `cannot run microVMs as unprivileged users` (con `--vm-unprivileged=on`) | cualquiera de las de arriba | la misma causa, ahora fatal |
 
 ## 6. Imagen guest y dataplane exec
 

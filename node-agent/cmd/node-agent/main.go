@@ -118,6 +118,9 @@ type config struct {
 	GuestRootFS          string        // --guest-rootfs: the base image every sandbox disk is copied from
 	VMConfine            string        // --vm-confine: auto | on | off
 	VMSurviveRestart     bool          // --vm-survive-restart: confined VMs keep running when the agent restarts
+	VMUnprivileged       string        // --vm-unprivileged: auto | on | off
+	VMUIDBase            uint          // --vm-uid-base: the first user id of the VMs
+	VMRunDir             string        // --vm-run-dir: parent of the per-VM directories
 	AdoptedSandboxes     []string      // the VMs of a previous agent process this one took over; sent on register
 	VMSlice              string        // --vm-slice
 	VMMemoryOverheadMiB  int           // --vm-memory-overhead-mib
@@ -243,9 +246,17 @@ func main() {
 			slog.Error("--vm-confine", "error", err)
 			os.Exit(2)
 		}
+		if vmConfine != nil {
+			vmConfine.Unprivileged, err = vmUnprivileged(cfg, vmConfine, hostVMUserProbes())
+			if err != nil {
+				slog.Error("--vm-unprivileged", "error", err)
+				os.Exit(2)
+			}
+		}
 		ch.Confine = vmConfine
 		engine = ch
-		slog.Info("using Cloud Hypervisor per-sandbox spawn", "socket_dir", cfg.CHSocketDir, "binary", cfg.VMMBinary, "confined", vmConfine != nil)
+		slog.Info("using Cloud Hypervisor per-sandbox spawn", "socket_dir", cfg.CHSocketDir, "binary", cfg.VMMBinary,
+			"confined", vmConfine != nil, "unprivileged", vmConfine != nil && vmConfine.Unprivileged != nil)
 	}
 
 	var podClient *poddaemon.Client
@@ -774,6 +785,9 @@ func loadConfig() config {
 		surviveDefault = v.value
 	}
 	flag.BoolVar(&cfg.VMSurviveRestart, "vm-survive-restart", surviveDefault, "a confined microVM keeps running when the agent stops or restarts, and the next agent process takes it over (default). =false binds each VM's service to the agent's, so systemd stops the VMs with it, as before")
+	flag.StringVar(&cfg.VMUnprivileged, "vm-unprivileged", getenv("ASP_VM_UNPRIVILEGED", "auto"), "run each microVM's Cloud Hypervisor as an unprivileged user of its own, with no capabilities and a service that cannot open IP sockets or write outside its own files: auto (when this host can), on (refuse to start if it cannot) or off (root, as before). Needs --vm-confine; virtiofsd stays root (--virtiofsd-sandbox)")
+	flag.UintVar(&cfg.VMUIDBase, "vm-uid-base", uint(getenvInt("ASP_VM_UID_BASE", int(vmm.DefaultUIDBase))), "first user id of the microVMs: the one with guest CID n runs as this plus n. Pick a range that no user, container tool or other agent uses")
+	flag.StringVar(&cfg.VMRunDir, "vm-run-dir", getenv("ASP_VM_RUN_DIR", ""), "directory with one subdirectory per microVM, owned by the VM's user, where its VMM keeps its sockets; mode 0711. Default: --ch-socket-dir with -vm appended (/run/asp-vm)")
 	flag.StringVar(&cfg.VMSlice, "vm-slice", getenv("ASP_VM_SLICE", vmm.DefaultSlice), "systemd slice of the microVM services")
 	flag.IntVar(&cfg.VMMemoryOverheadMiB, "vm-memory-overhead-mib", getenvInt("ASP_VM_MEMORY_OVERHEAD_MIB", vmm.DefaultMemoryOverheadMiB), "memory added to the guest's for the VMM's own use, in the unit's MemoryMax")
 	flag.IntVar(&cfg.VMCPUOverheadPercent, "vm-cpu-overhead-percent", getenvInt("ASP_VM_CPU_OVERHEAD_PERCENT", vmm.DefaultCPUOverheadPercent), "percent of one CPU added to the guest's vCPUs for the VMM's own threads, in the unit's CPUQuota")

@@ -74,17 +74,17 @@ func TestAdoptTakesOverARunningVM(t *testing.T) {
 	got := newExits()
 	ch.SetExitHandler(got.handle)
 	ctx := context.Background()
-	if err := ch.Alive(ctx, adoptID); err != nil {
+	if err := ch.Alive(ctx, adoptID, ""); err != nil {
 		t.Fatalf("Alive: %v", err)
 	}
 	booted := time.Now().Add(-time.Hour)
-	if err := ch.Adopt(ctx, adoptID, booted, ""); err != nil {
+	if err := ch.Adopt(ctx, adoptID, AdoptedVM{BootedAt: booted}); err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
 	if ch.InstanceCount() != 1 {
 		t.Fatalf("instances=%d", ch.InstanceCount())
 	}
-	if err := ch.Adopt(ctx, adoptID, booted, ""); err == nil {
+	if err := ch.Adopt(ctx, adoptID, AdoptedVM{BootedAt: booted}); err == nil {
 		t.Fatal("the same VM was adopted twice")
 	}
 
@@ -108,7 +108,7 @@ func TestAdoptedVMIsStoppedThroughItsService(t *testing.T) {
 	rig := newAdoptRig(t)
 	ch := rig.ch()
 	ctx := context.Background()
-	if err := ch.Adopt(ctx, adoptID, time.Now(), ""); err != nil {
+	if err := ch.Adopt(ctx, adoptID, AdoptedVM{BootedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ch.Stop(ctx, adoptID); err != nil {
@@ -133,14 +133,14 @@ func TestAliveSaysWhyAVMCannotBeAdopted(t *testing.T) {
 	t.Run("service not active", func(t *testing.T) {
 		rig := newAdoptRig(t)
 		_ = os.Remove(filepath.Join(rig.dir, "active"))
-		if err := rig.ch().Alive(ctx, adoptID); err == nil || !strings.Contains(err.Error(), "not active") {
+		if err := rig.ch().Alive(ctx, adoptID, ""); err == nil || !strings.Contains(err.Error(), "not active") {
 			t.Fatalf("err=%v", err)
 		}
 	})
 	t.Run("API gone", func(t *testing.T) {
 		rig := newAdoptRig(t)
 		_ = rig.proc.exit()
-		if err := rig.ch().Alive(ctx, adoptID); err == nil || !strings.Contains(err.Error(), "API does not answer") {
+		if err := rig.ch().Alive(ctx, adoptID, ""); err == nil || !strings.Contains(err.Error(), "API does not answer") {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -149,7 +149,7 @@ func TestAliveSaysWhyAVMCannotBeAdopted(t *testing.T) {
 		rig.runner.mu.Lock()
 		rig.runner.vmInfoState = "Shutdown"
 		rig.runner.mu.Unlock()
-		if err := rig.ch().Alive(ctx, adoptID); err == nil || !strings.Contains(err.Error(), "Shutdown") {
+		if err := rig.ch().Alive(ctx, adoptID, ""); err == nil || !strings.Contains(err.Error(), "Shutdown") {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -158,7 +158,7 @@ func TestAliveSaysWhyAVMCannotBeAdopted(t *testing.T) {
 		rig.runner.mu.Lock()
 		rig.runner.vmInfoState = "Paused"
 		rig.runner.mu.Unlock()
-		if err := rig.ch().Alive(ctx, adoptID); err != nil {
+		if err := rig.ch().Alive(ctx, adoptID, ""); err != nil {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -166,13 +166,13 @@ func TestAliveSaysWhyAVMCannotBeAdopted(t *testing.T) {
 		rig := newAdoptRig(t)
 		ch := rig.ch()
 		ch.Confine = nil
-		if err := ch.Alive(ctx, adoptID); err == nil || !strings.Contains(err.Error(), "children of the agent") {
+		if err := ch.Alive(ctx, adoptID, ""); err == nil || !strings.Contains(err.Error(), "children of the agent") {
 			t.Fatalf("err=%v", err)
 		}
 	})
 	t.Run("shared mode", func(t *testing.T) {
 		rig := newAdoptRig(t)
-		if err := NewCloudHypervisor("cloud-hypervisor", filepath.Join(rig.dir, "x.sock")).Alive(ctx, adoptID); err == nil {
+		if err := NewCloudHypervisor("cloud-hypervisor", filepath.Join(rig.dir, "x.sock")).Alive(ctx, adoptID, ""); err == nil {
 			t.Fatal("a shared Cloud Hypervisor can be adopted")
 		}
 	})

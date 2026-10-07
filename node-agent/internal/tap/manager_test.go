@@ -193,3 +193,26 @@ func TestCreateRefusesAnExistingDevice(t *testing.T) {
 		t.Fatalf("SoftFail: err=%v calls=%v", err, r.calls)
 	}
 }
+
+// A TAP made for a VMM that runs as a user of its own belongs to that user: it
+// attaches without privileges, and nobody else can.
+func TestCreateOwnedLetsThatUserAttach(t *testing.T) {
+	rec := &RecordingRunner{}
+	m := &Manager{Runner: rec, SysClassNet: t.TempDir()}
+	owner := uint32(1879048199)
+	if err := m.CreateOwned("asp-owned001", "10.200.0.1/30", &owner); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Calls) != 3 || rec.Calls[0] != "ip tuntap add dev asp-owned001 mode tap user 1879048199" {
+		t.Fatalf("calls=%v", rec.Calls)
+	}
+	// Without an owner it is root's, as before.
+	rec2 := &RecordingRunner{}
+	m2 := &Manager{Runner: rec2, SysClassNet: t.TempDir()}
+	if err := m2.CreateWithCIDR("asp-plain001", "10.200.0.5/30"); err != nil {
+		t.Fatal(err)
+	}
+	if rec2.Calls[0] != "ip tuntap add dev asp-plain001 mode tap" {
+		t.Fatalf("calls=%v", rec2.Calls)
+	}
+}

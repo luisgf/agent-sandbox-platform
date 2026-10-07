@@ -50,6 +50,47 @@ func Ensure(dir string) error {
 	return os.Chmod(dir, Mode)
 }
 
+// SearchableMode is the mode of a directory that every user may pass through but
+// not list or write: the parent of the directories VMMs running as users of their
+// own work in.
+const SearchableMode = 0o711
+
+// EnsureSearchable creates dir, and its parents, and makes it 0711: a user that
+// knows a name inside it can reach that, nobody can list it or add to it. A VMM
+// running as an unprivileged user needs this on every directory above the files
+// the agent hands it (its own directory, its disk), while the entries themselves
+// stay readable only by their owner. A directory that is not ours to change
+// (owned by another user, a system directory) is left alone and must already let
+// everyone through.
+func EnsureSearchable(dir string) error {
+	dir = filepath.Clean(dir)
+	if err := os.MkdirAll(dir, SearchableMode); err != nil {
+		return err
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	perm := fi.Mode().Perm()
+	ours := true
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
+		ours = false
+	}
+	if !ours || shared(dir) || perm&0o002 != 0 || fi.Mode()&os.ModeSticky != 0 {
+		if perm&0o001 == 0 {
+			return fmt.Errorf("%s cannot be searched by the VMM users (mode %o) and is not ours to change", dir, perm)
+		}
+		return nil
+	}
+	if perm == SearchableMode {
+		return nil
+	}
+	return os.Chmod(dir, SearchableMode)
+}
+
 // shared reports whether dir is a directory other programs rely on.
 func shared(dir string) bool {
 	for _, d := range []string{

@@ -36,6 +36,8 @@ ExecStart=/usr/local/bin/node-agent \
 # Guests reach the network only through the proxy and DNS sink, forced with nftables (table
 # asp_egress, built into the binary): with the proxy set the redirect is on in enforce mode,
 # so a node that cannot apply the rules does not start. `asp node list` shows EGRESS enforced.
+# Each Cloud Hypervisor runs as an unprivileged user of its own (--vm-unprivileged=auto, ADR-0015),
+# in a unit that opens no IP sockets; virtiofsd stays root, chrooted into the workspace.
 # Each VM runs in a unit of its own, not bound to the agent: a restart or a crash of the agent
 # leaves them running and the new one adopts them (--vm-survive-restart, ADR-0014). Whatever
 # is still a child of the agent dies with it, so keep control-group.

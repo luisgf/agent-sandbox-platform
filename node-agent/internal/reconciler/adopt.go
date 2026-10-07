@@ -35,17 +35,30 @@ type vmState struct {
 	TenantID  string `json:"tenant_id,omitempty"`
 	OwnerSub  string `json:"owner_sub,omitempty"`
 
-	CID        uint32    `json:"cid"`
-	VsockPath  string    `json:"vsock_path"`
-	TapName    string    `json:"tap_name,omitempty"`
-	Slot       int       `json:"slot"`
-	SSHSock    string    `json:"ssh_sock,omitempty"`
-	RootFS     string    `json:"rootfs,omitempty"`
-	BaseDigest string    `json:"base_digest,omitempty"`
-	Serial     string    `json:"serial_socket,omitempty"`
-	FSUnit     string    `json:"fs_unit,omitempty"`
-	FSSocket   string    `json:"fs_socket,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
+	CID        uint32 `json:"cid"`
+	VsockPath  string `json:"vsock_path"`
+	TapName    string `json:"tap_name,omitempty"`
+	Slot       int    `json:"slot"`
+	SSHSock    string `json:"ssh_sock,omitempty"`
+	RootFS     string `json:"rootfs,omitempty"`
+	BaseDigest string `json:"base_digest,omitempty"`
+	Serial     string `json:"serial_socket,omitempty"`
+	FSUnit     string `json:"fs_unit,omitempty"`
+	FSSocket   string `json:"fs_socket,omitempty"`
+	// UID and RunDir are the user the VMM runs as and its directory, when it does
+	// not run as root (identity.go). Absent for a VM that runs as root.
+	UID       uint32    `json:"uid,omitempty"`
+	RunDir    string    `json:"run_dir,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// apiSocket is where the VMM of the record serves its API when that is not the
+// node's socket directory ("" then).
+func (st vmState) apiSocket() string {
+	if st.RunDir == "" {
+		return ""
+	}
+	return filepath.Join(st.RunDir, vmm.RunAPISocket)
 }
 
 func (r *Reconciler) statePath(id string) string { return filepath.Join(r.StateDir, id+".json") }
@@ -62,7 +75,7 @@ func (r *Reconciler) saveState(id string, h Handle) {
 		Version: stateVersion, SandboxID: id, TenantID: h.TenantID, OwnerSub: h.OwnerSub,
 		CID: h.CID, VsockPath: h.VsockPath, TapName: h.TapName, Slot: h.Slot, SSHSock: h.SSHSock,
 		RootFS: h.RootFS, BaseDigest: h.BaseDigest, Serial: h.Serial, FSUnit: h.FSUnit, FSSocket: h.FSSocket,
-		StartedAt: h.StartedAt,
+		UID: h.UID, RunDir: h.RunDir, StartedAt: h.StartedAt,
 	}
 	if err := writeState(r.statePath(id), st); err != nil {
 		r.Logger.Warn("could not record the VM; it will not survive a restart of the agent", "sandbox_id", id, "error", err)
@@ -136,7 +149,7 @@ func readStates(dir string) (states []vmState, bad []string, err error) {
 // AdoptableIDs are the sandboxes in stateDir whose VM is still alive according to
 // alive (nil error). The host cleanup spares what they hold (Reap's Adopt); the
 // reconciler takes them over after it (Adopt).
-func AdoptableIDs(ctx context.Context, stateDir string, alive func(context.Context, string) error, log *slog.Logger) []string {
+func AdoptableIDs(ctx context.Context, stateDir string, alive func(ctx context.Context, id, apiSocket string) error, log *slog.Logger) []string {
 	if stateDir == "" || alive == nil {
 		return nil
 	}
@@ -150,7 +163,7 @@ func AdoptableIDs(ctx context.Context, stateDir string, alive func(context.Conte
 	}
 	var ids []string
 	for _, st := range states {
-		if err := alive(ctx, st.SandboxID); err != nil {
+		if err := alive(ctx, st.SandboxID, st.apiSocket()); err != nil {
 			log.Info("a VM of a previous agent is not running any more; it is cleaned up", "sandbox_id", st.SandboxID, "reason", err.Error())
 			continue
 		}
@@ -184,7 +197,7 @@ func (r *Reconciler) Adopt(ctx context.Context) []string {
 	}
 	var adopted []string
 	for _, st := range states {
-		if err := adopter.Adopt(ctx, st.SandboxID, st.StartedAt, st.Serial); err != nil {
+		if err := adopter.Adopt(ctx, st.SandboxID, vmm.AdoptedVM{APISocket: st.apiSocket(), SerialSocket: st.Serial, BootedAt: st.StartedAt}); err != nil {
 			r.Logger.Warn("a VM of a previous agent could not be adopted", "sandbox_id", st.SandboxID, "error", err)
 			r.Metrics.adopt("stale")
 			r.removeState(st.SandboxID)
@@ -206,6 +219,7 @@ func (r *Reconciler) take(st vmState) {
 		CID: st.CID, VsockPath: st.VsockPath, TapName: st.TapName, SSHSock: st.SSHSock, Slot: st.Slot,
 		RootFS: st.RootFS, BaseDigest: st.BaseDigest, TenantID: st.TenantID, OwnerSub: st.OwnerSub,
 		StartedAt: st.StartedAt, Serial: st.Serial, FSUnit: st.FSUnit, FSSocket: st.FSSocket,
+		UID: st.UID, RunDir: st.RunDir,
 	}
 	if st.FSUnit != "" && r.Confine != nil {
 		stop, err := virtiofs.Adopt(virtiofs.Config{Launcher: &r.Confine.Launcher, Unit: r.Confine.FSSpec(st.SandboxID), SocketPath: st.FSSocket})
@@ -229,7 +243,7 @@ func (r *Reconciler) take(st vmState) {
 	if r.SSHRegistry != nil {
 		r.SSHRegistry.Bind(st.SandboxID, st.OwnerSub)
 	}
-	if err := r.attachGuestHost(st.SandboxID, st.VsockPath); err != nil {
+	if err := r.attachGuestHost(st.SandboxID, st.VsockPath, st.UID); err != nil {
 		r.Logger.Warn("the guest-to-host acceptors of an adopted VM could not be attached", "sandbox_id", st.SandboxID, "error", err)
 	}
 	if link := r.linkSSHAgent(st.SandboxID); link != "" {
