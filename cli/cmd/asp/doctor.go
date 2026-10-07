@@ -62,8 +62,13 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// installedNodeAgent is where the packages and the install steps put the node-agent.
-var installedNodeAgent = "/usr/local/bin/node-agent"
+// The places the node-agent is installed: the package puts it in /usr/bin as
+// asp-node-agent; a build copied by hand (docs/bare-metal-ch.md) is node-agent in
+// /usr/local/bin.
+var (
+	installedNodeAgent = "/usr/local/bin/node-agent"
+	packagedNodeAgent  = "/usr/bin/asp-node-agent"
+)
 
 // findNodeAgent is the node-agent to run: the one named, else on PATH, else where the
 // packages put it.
@@ -71,11 +76,15 @@ func findNodeAgent(named string) (string, error) {
 	if named != "" {
 		return named, nil
 	}
-	if p, err := exec.LookPath("node-agent"); err == nil {
-		return p, nil
+	for _, name := range []string{"asp-node-agent", "node-agent"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
 	}
-	if _, err := os.Stat(installedNodeAgent); err == nil {
-		return installedNodeAgent, nil
+	for _, p := range []string{packagedNodeAgent, installedNodeAgent} {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
 	}
 	return "", fmt.Errorf("node-agent not found: it runs the checks. Install it, or name it with --node-agent")
 }

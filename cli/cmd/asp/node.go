@@ -69,13 +69,13 @@ func cmdNodeList(args []string, stdout, stderr io.Writer) int {
 // writeNodeTable prints used/offered per node; "-" means not enforced.
 func writeNodeTable(w io.Writer, nodes []client.Node, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tEGRESS\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tSTOPPED (DISKS)\tDISK FREE\tLAST SEEN\tCERT EXPIRES")
+	fmt.Fprintln(tw, "NODE\tSTATE\tSCHEDULABLE\tEGRESS\tCPU (cores)\tMEMORY (MiB)\tSANDBOXES\tSTOPPED (DISKS)\tDISK FREE\tLAST SEEN\tVERSION\tCERT EXPIRES")
 	for _, n := range nodes {
 		sched := "yes"
 		if !n.Schedulable {
 			sched = "no: " + n.UnschedulableReason
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			n.ID, n.State, sched, egressText(n.EgressEnforced),
 			usedOf(float64(n.Allocated.CPUMillis)/1000, float64(n.Allocatable.CPUMillis)/1000, "%.1f"),
 			usedOf(float64(n.Allocated.MemoryMiB), float64(n.Allocatable.MemoryMiB), "%.0f"),
@@ -83,9 +83,18 @@ func writeNodeTable(w io.Writer, nodes []client.Node, now time.Time) {
 			n.StoppedSandboxes,
 			diskText(n.DiskFreeMiB),
 			sinceText(n.LastSeenAt, now),
+			versionText(n.AgentVersion),
 			expiryText(n.CertNotAfter, now))
 	}
 	_ = tw.Flush()
+}
+
+// versionText is the node-agent's build, or "-" for an agent that does not say.
+func versionText(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
 }
 
 // egressText says whether a node forces its guests through the egress proxy.

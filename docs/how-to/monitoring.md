@@ -43,6 +43,8 @@ scrape_configs:
 | `asp_node_up` | gauge | `node` | 1 si el nodo dio señales de vida dentro de la ventana y no está revocado. |
 | `asp_node_schedulable` | gauge | `node` | 1 si el planificador pondría una sandbox ahí. |
 | `asp_node_cordoned`, `asp_node_egress_enforced` | gauge | `node` | 1 si está acordonado / si fuerza el egress de sus guests. |
+| `asp_node_agent_info` | gauge | `node`, `version` | Siempre 1, con la versión del node-agent como la dijo al registrarse (no sale para un agente que no la dice). Para seguir una actualización: `count by (version) (asp_node_agent_info)`. |
+| `asp_build_info` | gauge | `version`, `commit`, `go_version` | Siempre 1: la versión de este control plane. |
 | `asp_node_sandboxes`, `asp_node_stopped_sandboxes` | gauge | `node` | Sandboxes que ocupan capacidad / paradas con su disco en el nodo. |
 | `asp_node_allocated_cpu_millis`, `asp_node_allocated_memory_mib` | gauge | `node` | Lo asignado. |
 | `asp_node_last_seen_age_seconds` | gauge | `node` | Segundos desde la última señal de vida. |
@@ -68,6 +70,7 @@ scrape_configs:
 | `asp_agent_poll_failures_total` | contador | | Sondeos al plano de control que fallaron. |
 | `asp_agent_vms_adopted_total` | contador | `result` | VMs que un proceso anterior del agente dejó corriendo: `ok` (adoptadas) o `stale` (ya no vivían o no se pudieron adoptar; se limpian). |
 | `asp_agent_egress_enforced` | gauge | | 1 si el nodo fuerza el egress de sus guests (proxy + reglas nft en `enforce`). |
+| `asp_agent_build_info` | gauge | `version`, `commit`, `go_version` | Siempre 1: la versión de este node-agent. |
 | `asp_agent_egress_requests_total` | contador | `decision`, `reason`, `tenant` | Decisiones del proxy: `allow` (`http` o `connect`) o `deny` (`allowlist`, `destination_blocked`, `rate_limited`…), por tenant de la sandbox; `none` para un origen que no es sandbox. |
 | `asp_agent_egress_bytes_total` | contador | `direction` | Bytes que acarrea el proxy: `to_upstream` desde el guest, `from_upstream` de vuelta. |
 | `asp_agent_egress_dns_queries_total` | contador | `decision`, `tenant` | Consultas del DNS sink: `allow`, `deny` (NXDOMAIN), `error`, `unsupported`. |

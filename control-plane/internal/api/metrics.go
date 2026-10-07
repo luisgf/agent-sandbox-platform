@@ -144,6 +144,11 @@ func (s *Server) nodeCollector() []metrics.Sample {
 		if n.LastSeenAt != nil {
 			add("asp_node_last_seen_age_seconds", "Seconds since the node last showed a sign of life.", n, now.Sub(*n.LastSeenAt).Seconds())
 		}
+		if n.AgentVersion != "" {
+			out = append(out, metrics.Sample{Name: "asp_node_agent_info", Type: "gauge", Value: 1,
+				Help:   "1 per node, labelled with the version of its node-agent.",
+				Labels: []metrics.Label{{Name: "node", Value: n.ID}, {Name: "version", Value: n.AgentVersion}}})
+		}
 		if n.DiskFreeMiB != nil {
 			add("asp_node_disk_free_bytes", "Free space of the node's disk directory, as it last reported it.", n, float64(*n.DiskFreeMiB)*1024*1024)
 		}

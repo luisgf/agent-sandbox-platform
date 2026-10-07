@@ -52,8 +52,11 @@ type Node struct {
 	FenceConfigured bool `json:"fence_configured"`
 	// EgressEnforced: the node forces its guests through its egress proxy, so a
 	// tenant's egress policy binds them.
-	EgressEnforced bool       `json:"egress_enforced"`
-	AcceptsWork    bool       `json:"accepts_work"`
+	EgressEnforced bool `json:"egress_enforced"`
+	AcceptsWork    bool `json:"accepts_work"`
+	// AgentVersion is the build of the node-agent, as it said on its last register;
+	// empty for an agent that predates the field.
+	AgentVersion   string     `json:"agent_version,omitempty"`
 	CapacityCPU    int        `json:"capacity_cpu"`
 	CapacityMemMiB int        `json:"capacity_mem_mib"`
 	MaxSandboxes   int        `json:"max_sandboxes"`

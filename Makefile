@@ -1,13 +1,20 @@
-.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm smoke-proxy smoke-asp smoke-asp-auth asp build pack clean help
+.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
-ASP_BIN ?= $(ROOT)build/asp
+BUILD_DIR := $(ROOT)build
+ASP_BIN ?= $(BUILD_DIR)/asp
+# Stamped into the binaries by a release build (make build VERSION=0.1.0); empty keeps
+# "dev", and a plain go build still records the commit it was built from.
+VERSION ?=
+MODULE_PATH := github.com/luisgf/agent-sandbox-platform
+# ldflags for a module: -s -w, and the version when there is one.
+ldflags = -s -w $(if $(VERSION),-X $(MODULE_PATH)/$(1)/internal/version.Version=$(VERSION))
 GO_MODULES := control-plane node-agent cli images/guest/cmd/vsock-ssh-agent-proxy
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
 
 help:
-	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | smoke-asp | smoke-asp-auth | asp | build | pack | clean"
+	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | smoke-asp | smoke-asp-auth | asp | build | snapshot | pack | clean"
 
 test: test-go test-rust test-guest-helper
 
@@ -56,15 +63,30 @@ smoke-asp:
 smoke-asp-auth:
 	$(ROOT)scripts/smoke-asp-auth-lab.sh
 
-asp build:
-	mkdir -p $(ROOT)build
-	cd $(ROOT)cli && go build -o $(ASP_BIN) ./cmd/asp
+asp:
+	mkdir -p $(BUILD_DIR)
+	cd $(ROOT)cli && go build -trimpath -ldflags "$(call ldflags,cli)" -o $(ASP_BIN) ./cmd/asp
 	@echo "built: $(ASP_BIN)"
+
+# Every binary of a host: the CLI, the control plane (build/api, the name the lab unit
+# runs), the node-agent and, with cargo, the guest's pod-daemon. A release is built by
+# goreleaser instead (make snapshot shows it).
+build: asp
+	cd $(ROOT)control-plane && go build -trimpath -ldflags "$(call ldflags,control-plane)" -o $(BUILD_DIR)/api ./cmd/api
+	cd $(ROOT)node-agent && go build -trimpath -ldflags "$(call ldflags,node-agent)" -o $(BUILD_DIR)/node-agent ./cmd/node-agent
+	@echo "built: $(BUILD_DIR)/api $(BUILD_DIR)/node-agent"
+	@if command -v cargo >/dev/null 2>&1; then \
+	  cd $(ROOT)pod-daemon && cargo build --release && cp target/release/pod-daemon $(BUILD_DIR)/pod-daemon && echo "built: $(BUILD_DIR)/pod-daemon"; \
+	else echo "cargo not found: pod-daemon not built (it runs in the guest image)"; fi
+
+# What a release would contain, built in dist/ and published nowhere (needs goreleaser).
+snapshot:
+	cd $(ROOT) && goreleaser release --snapshot --clean --skip=publish,docker,sbom,sign
 
 pack:
 	ASP_RELEASE_TGZ=$(RELEASE_TGZ) $(ROOT)scripts/pack-release.sh
 
 clean:
 	rm -f $(RELEASE_TGZ)
-	rm -rf $(ROOT)build
+	rm -rf $(ROOT)build $(ROOT)dist
 	cd $(ROOT)pod-daemon && cargo clean || true

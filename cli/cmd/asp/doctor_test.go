@@ -136,10 +136,41 @@ func TestDoctorRunsTheNodeAgentWithTheNodesSettings(t *testing.T) {
 	// No node-agent to run: say so, exit 2.
 	stderr.Reset()
 	t.Setenv("PATH", filepath.Join(dir, "nowhere"))
-	old := installedNodeAgent
+	old, oldPackaged := installedNodeAgent, packagedNodeAgent
 	installedNodeAgent = filepath.Join(dir, "absent")
-	t.Cleanup(func() { installedNodeAgent = old })
+	packagedNodeAgent = filepath.Join(dir, "absent-either")
+	t.Cleanup(func() { installedNodeAgent, packagedNodeAgent = old, oldPackaged })
 	if code := run([]string{"doctor", "--env-file", filepath.Join(dir, "none")}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "node-agent not found") {
 		t.Fatalf("no binary: %d %q", code, stderr.String())
+	}
+}
+
+func TestFindNodeAgentPrefersPathThenThePackage(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir) // nothing named node-agent on it yet
+	old, oldPackaged := installedNodeAgent, packagedNodeAgent
+	t.Cleanup(func() { installedNodeAgent, packagedNodeAgent = old, oldPackaged })
+	installedNodeAgent = filepath.Join(dir, "by-hand")
+	packagedNodeAgent = filepath.Join(dir, "packaged")
+	if _, err := findNodeAgent(""); err == nil {
+		t.Fatal("no node-agent anywhere: want an error")
+	}
+	for _, p := range []string{installedNodeAgent, packagedNodeAgent} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := findNodeAgent(""); got != packagedNodeAgent {
+		t.Errorf("both installed: want the package's %s, got %s", packagedNodeAgent, got)
+	}
+	onPath := filepath.Join(dir, "asp-node-agent")
+	if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := findNodeAgent(""); got != onPath {
+		t.Errorf("one on PATH: want %s, got %s", onPath, got)
+	}
+	if got, _ := findNodeAgent("/elsewhere/na"); got != "/elsewhere/na" {
+		t.Errorf("a named one wins: got %s", got)
 	}
 }

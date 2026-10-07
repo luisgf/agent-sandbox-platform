@@ -34,7 +34,7 @@ func paritySteps() []step {
 		return w.s.RegisterNode(bg, RegisterNodeInput{
 			ID: "n1", Name: "node one", Endpoint: "10.0.0.1:9100", AgentEndpoint: "http://127.0.0.1:9101",
 			VMMProfiles: []string{"cloud-hypervisor"}, CapacityCPU: 8, CapacityMemMiB: 16384, MaxSandboxes: 4,
-			LocalNetDial: "n1.example:51820", EgressEnforced: true, AgentInstanceID: "inst-1",
+			LocalNetDial: "n1.example:51820", EgressEnforced: true, AgentInstanceID: "inst-1", AgentVersion: "0.1.0",
 		})
 	})
 	add("RegisterNode", "n2, only an id and an endpoint", func(w *world) (any, error) {
@@ -55,7 +55,7 @@ func paritySteps() []step {
 	add("RegisterNode", "n1 again with other values", func(w *world) (any, error) {
 		return w.s.RegisterNode(bg, RegisterNodeInput{
 			ID: "n1", Name: "node one", Endpoint: "10.0.0.1:9100", AgentEndpoint: "http://127.0.0.1:9101",
-			CapacityCPU: 6, CapacityMemMiB: 8192, LocalNetDial: "n1b.example:51820", AgentInstanceID: "inst-1",
+			CapacityCPU: 6, CapacityMemMiB: 8192, LocalNetDial: "n1b.example:51820", AgentInstanceID: "inst-1", AgentVersion: "0.2.0",
 		})
 	})
 	add("RegisterNode", "a name another node has", func(w *world) (any, error) {

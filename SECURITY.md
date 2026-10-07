@@ -19,7 +19,7 @@ This is a small project maintained on a best-effort basis. You will get a reply 
 
 ## Supported versions
 
-There are no releases yet. Only the `main` branch is supported, and fixes land there.
+The latest release and the `main` branch are supported, and a fix lands on `main` first. There are no releases yet (the first will be 0.1.0, see [CHANGELOG.md](CHANGELOG.md)), so today only `main` is.
 
 ## Scope
 

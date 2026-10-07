@@ -1,0 +1,193 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+#
+# A release is a tag: `git tag v0.1.0 && git push origin v0.1.0` runs the release
+# workflow, which runs goreleaser with this file (docs/how-to/release.md). To see what a
+# release would contain without publishing anything:
+#   goreleaser release --snapshot --clean --skip=publish,docker,sbom,sign
+version: 2
+project_name: asp
+
+builds:
+  - id: asp
+    dir: cli
+    main: ./cmd/asp
+    binary: asp
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Version={{ .Version }}
+      - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/luisgf/agent-sandbox-platform/cli/internal/version.Date={{ .Date }}
+  - id: control-plane
+    dir: control-plane
+    main: ./cmd/api
+    binary: asp-control-plane
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/luisgf/agent-sandbox-platform/control-plane/internal/version.Version={{ .Version }}
+      - -X github.com/luisgf/agent-sandbox-platform/control-plane/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/luisgf/agent-sandbox-platform/control-plane/internal/version.Date={{ .Date }}
+  - id: node-agent
+    dir: node-agent
+    main: ./cmd/node-agent
+    binary: asp-node-agent
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/luisgf/agent-sandbox-platform/node-agent/internal/version.Version={{ .Version }}
+      - -X github.com/luisgf/agent-sandbox-platform/node-agent/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/luisgf/agent-sandbox-platform/node-agent/internal/version.Date={{ .Date }}
+
+archives:
+  - id: asp
+    ids: [asp]
+    name_template: "asp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [LICENSE, README.md]
+  - id: control-plane
+    ids: [control-plane]
+    name_template: "asp-control-plane_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - src: control-plane/README.md
+        dst: README.md
+      - src: packaging/systemd/asp-control-plane.service
+        dst: asp-control-plane.service
+      - src: packaging/etc/control-plane.env
+        dst: control-plane.env
+  - id: node-agent
+    ids: [node-agent]
+    name_template: "asp-node-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - src: node-agent/README.md
+        dst: README.md
+      - src: packaging/systemd/asp-node-agent.service
+        dst: asp-node-agent.service
+      - src: packaging/etc/node-agent.env
+        dst: node-agent.env
+
+nfpms:
+  - id: asp
+    package_name: asp
+    ids: [asp]
+    formats: [deb, rpm]
+    file_name_template: "asp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    maintainer: Luis González Fernández <luisgf@luisgf.es>
+    homepage: https://github.com/luisgf/agent-sandbox-platform
+    description: asp, the command line of the Agent Sandbox Platform.
+    license: Apache-2.0
+    bindir: /usr/bin
+  - id: asp-control-plane
+    package_name: asp-control-plane
+    ids: [control-plane]
+    formats: [deb, rpm]
+    file_name_template: "asp-control-plane_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    maintainer: Luis González Fernández <luisgf@luisgf.es>
+    homepage: https://github.com/luisgf/agent-sandbox-platform
+    description: |-
+      The Agent Sandbox Platform control plane: the API that places sandboxes on nodes,
+      its keys and enrollment CA. Run it with Postgres.
+    license: Apache-2.0
+    bindir: /usr/bin
+    contents:
+      - src: packaging/systemd/asp-control-plane.service
+        dst: /lib/systemd/system/asp-control-plane.service
+      - src: packaging/etc/control-plane.env
+        dst: /etc/asp/control-plane.env
+        type: config|noreplace
+        file_info: {mode: 0600}
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+  - id: asp-node-agent
+    package_name: asp-node-agent
+    ids: [node-agent]
+    formats: [deb, rpm]
+    file_name_template: "asp-node-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    maintainer: Luis González Fernández <luisgf@luisgf.es>
+    homepage: https://github.com/luisgf/agent-sandbox-platform
+    description: |-
+      The Agent Sandbox Platform node-agent: runs the sandboxes of a KVM host as
+      Cloud Hypervisor microVMs. It needs cloud-hypervisor and virtiofsd, a guest kernel
+      and a guest image (docs/bare-metal-ch.md); `sudo asp doctor` checks the host.
+    license: Apache-2.0
+    bindir: /usr/bin
+    recommends: [nftables, iproute2]
+    contents:
+      - src: packaging/systemd/asp-node-agent.service
+        dst: /lib/systemd/system/asp-node-agent.service
+      - src: packaging/etc/node-agent.env
+        dst: /etc/asp/node-agent.env
+        type: config|noreplace
+        file_info: {mode: 0600}
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+
+# The control plane as a container image: for Kubernetes, or a host that would rather
+# not install it (ADR-0004). The nodes are not containers: they need KVM.
+dockers_v2:
+  - id: control-plane
+    ids: [control-plane]
+    dockerfile: packaging/docker/control-plane.Dockerfile
+    images:
+      - ghcr.io/luisgf/asp-control-plane
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms: [linux/amd64, linux/arm64]
+    labels:
+      org.opencontainers.image.title: asp-control-plane
+      org.opencontainers.image.description: The Agent Sandbox Platform control plane
+      org.opencontainers.image.source: https://github.com/luisgf/agent-sandbox-platform
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: Apache-2.0
+
+# The names the files of one release go by: SHA256SUMS lists the archives and packages;
+# the guest kernel and image have a list of their own (images/guest/README.md).
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+# A software bill of materials for each archive (needs syft on the runner).
+sboms:
+  - id: archives
+    artifacts: archive
+
+source:
+  enabled: true
+  name_template: "asp_{{ .Version }}_source"
+
+# Signing is off: set up cosign keyless (GitHub OIDC) and uncomment to sign SHA256SUMS.
+# signs:
+#   - cmd: cosign
+#     artifacts: checksum
+#     args: ["sign-blob", "--yes", "--output-signature=${signature}", "--output-certificate=${certificate}", "${artifact}"]
+
+changelog:
+  # CHANGELOG.md is written by hand (keep a changelog); the release notes are its section.
+  disable: true
+
+release:
+  github:
+    owner: luisgf
+    name: agent-sandbox-platform
+  draft: false
+  prerelease: auto
+  header: |
+    See [CHANGELOG.md](https://github.com/luisgf/agent-sandbox-platform/blob/{{ .Tag }}/CHANGELOG.md).
+    Verify the downloads with `sha256sum -c SHA256SUMS --ignore-missing`.

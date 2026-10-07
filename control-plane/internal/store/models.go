@@ -127,6 +127,9 @@ type Node struct {
 	EgressEnforced bool `json:"egress_enforced"`
 	// AgentInstanceID changes when the node-agent process restarts.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+	// AgentVersion is the build of the node-agent, as it said on its last register
+	// (023); empty for an agent that predates the field.
+	AgentVersion    string `json:"agent_version,omitempty"`
 	CertFingerprint string `json:"cert_fingerprint,omitempty"`
 	CertSerial      string `json:"cert_serial,omitempty"`
 	// CertNotAfter is when the current node certificate expires (016).
@@ -239,6 +242,8 @@ type RegisterNodeInput struct {
 	// AgentInstanceID is random per node-agent process; a new one on register
 	// means the agent restarted and its running sandboxes are orphaned.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+	// AgentVersion is the build of the node-agent ("0.1.0", "dev+1a2b3c4d").
+	AgentVersion string `json:"agent_version,omitempty"`
 }
 
 // acceptsWork resolves the optional register field.

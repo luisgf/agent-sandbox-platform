@@ -94,7 +94,7 @@ Todas llevan el prefijo `ASP_`. Los booleanos se escriben `1`/`true`/`yes`/`on` 
 | `ASP_ENROLL_LISTEN` | `127.0.0.1:8081` | Plaintext enroll-only cuando `ASP_MTLS_STRICT=1` |
 | `ASP_OIDC_KEY` | `/tmp/asp-oidc-key.pem` | PEM RSA de firma actual (auto-create; mint) |
 | `ASP_OIDC_KEY_PREV` | unset | PEM RSA previa (solo JWKS durante rotación) |
-| `ASP_OIDC_ISSUER` | `http://127.0.0.1$ASP_LISTEN_ADDR` | Issuer OIDC |
+| `ASP_OIDC_ISSUER` | `http://<ASP_LISTEN_ADDR>` (`https` con TLS; sin host o `0.0.0.0`, `127.0.0.1`) | Issuer OIDC. Si otros hosts verifican los tokens contra este control plane, ponla con la URL con la que llegan a él |
 | `ASP_ATTEST_KEY` | `$TMPDIR/asp-attest-key.pem` | PEM ECDSA P-256 de atestación; su clave pública es de confianza (lab de un host: el node-agent usa el mismo fichero) |
 | `ASP_ATTEST_PUB` | — | PEM de clave pública que sustituye a la de `ASP_ATTEST_KEY` para verificar |
 | `ASP_ATTEST_TRUSTED_PUBS` | — | Bundle PEM (`PUBLIC KEY` y/o `CERTIFICATE`) de más claves de confianza. La clave que trae la evidencia (`public_key_pem`) nunca vale; por mTLS vale además la del certificado del nodo que llama |
@@ -116,6 +116,15 @@ Todas llevan el prefijo `ASP_`. Los booleanos se escriben `1`/`true`/`yes`/`on` 
 go test ./...
 ASP_NODE_BOOTSTRAP_TOKEN=dev go run ./cmd/api
 ```
+
+**Imagen de contenedor.** `docker build -f control-plane/Dockerfile -t asp-control-plane .` desde la raíz del repositorio (una versión publica `ghcr.io/luisgf/asp-control-plane:<versión>`, amd64 y arm64): distroless, 6 MB, usuario no root, sin shell. Escucha en `0.0.0.0:8080` y guarda la CA y las claves en el volumen `/var/lib/asp`. Hace falta una primera clave y, en producción, Postgres:
+
+```bash
+docker run -d --name asp-cp -p 8080:8080 -v asp-cp-state:/var/lib/asp \
+  -e ASP_DATABASE_URL=postgres://asp:...@db:5432/asp -e ASP_BOOTSTRAP_API_KEY=... asp-control-plane
+```
+
+Los nodos no van en contenedores (necesitan KVM): esto es solo el plano de control, para Kubernetes o para quien prefiera no instalarlo en el host ([ADR-0004](../docs/adr/0004-k8s-scope.md)). Con TLS delante o con `ASP_TLS_CERT`/`ASP_TLS_KEY`, antes de que lo usen nodos de otros hosts.
 
 **Tests contra Postgres.** Sin `DATABASE_URL` los tests corren con el store en memoria. Con ella (un servidor Postgres; el rol necesita `CREATEDB`) cada paquete crea una base propia, la borra al terminar y no pisa a los demás, y se añade:
 

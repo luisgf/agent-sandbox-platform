@@ -29,3 +29,6 @@ vendor/
 # local-net client config holds a private key
 *.local-net.conf
 *.local-net.key
+
+# Release builds (goreleaser)
+/dist/
