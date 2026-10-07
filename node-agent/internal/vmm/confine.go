@@ -112,12 +112,13 @@ func (c *Confinement) FSSpec(sandboxID string) unit.Spec {
 // as the owner of each file of the workspace): it serves a unix socket and the files
 // of the workspace and has no use for the network, a core file, or a new privilege.
 // What it may do inside the workspace is left to its own chroot, capability drop and
-// seccomp filter.
+// seccomp filter. It has no PrivateTmp: that would replace /tmp and /var/tmp with
+// empty directories, and a workspace there (a project under /tmp, a root in
+// /var/tmp) would not exist for it; the chroot already keeps it to the workspace.
 var fsHardening = []string{
 	"NoNewPrivileges=yes",
 	"RestrictAddressFamilies=AF_UNIX",
 	"IPAddressDeny=any",
-	"PrivateTmp=yes",
 	"RestrictRealtime=yes",
 	"LockPersonality=yes",
 	"SystemCallArchitectures=native",
@@ -215,7 +216,6 @@ func (u *Unprivileged) Properties(cfg MicroVMConfig) []string {
 	}
 	p := []string{
 		"NoNewPrivileges=yes",
-		"PrivateTmp=yes",
 		"ProtectHome=yes",
 		"ProtectSystem=strict",
 		"RestrictAddressFamilies=AF_UNIX",
@@ -227,6 +227,12 @@ func (u *Unprivileged) Properties(cfg MicroVMConfig) []string {
 		"SystemCallArchitectures=native",
 		"UMask=0077",
 		"LimitCORE=0",
+	}
+	// The VMM does not see /tmp or /var/tmp of the host. ReadWritePaths does not bring a
+	// path under them back (the directory is there and empty), so a node whose run
+	// directory, disks or kernel are in one runs its VMMs without that isolation.
+	if !underTmp(cfg.RunDir) && !underTmp(cfg.RootFSPath) && !underTmp(cfg.KernelPath) {
+		p = append(p, "PrivateTmp=yes")
 	}
 	if len(rw) > 0 {
 		p = append(p, "ReadWritePaths="+strings.Join(rw, " "))
@@ -240,6 +246,20 @@ func (u *Unprivileged) Properties(cfg MicroVMConfig) []string {
 		}
 	}
 	return p
+}
+
+// underTmp reports whether path is /tmp or /var/tmp or inside one.
+func underTmp(path string) bool {
+	if path == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, dir := range []string{"/tmp", "/var/tmp"} {
+		if path == dir || strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate says why the settings cannot be used.
