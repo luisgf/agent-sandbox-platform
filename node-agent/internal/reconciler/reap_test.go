@@ -20,6 +20,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/hostvsock"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 )
 
@@ -62,13 +63,14 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 // fakeProcs is a process table. A signal kills, except SIGTERM on a
-// stubborn process.
+// stubborn process and anything on an unkillable one (state D).
 type fakeProcs struct {
-	mu       sync.Mutex
-	procs    []hostproc.Proc
-	alive    map[int]bool
-	stubborn map[int]bool
-	signals  []string
+	mu         sync.Mutex
+	procs      []hostproc.Proc
+	alive      map[int]bool
+	stubborn   map[int]bool
+	unkillable map[int]bool
+	signals    []string
 }
 
 func (f *fakeProcs) add(pid int, argv ...string) {
@@ -99,7 +101,7 @@ func (f *fakeProcs) Signal(p hostproc.Proc, sig syscall.Signal) error {
 		name = "KILL"
 	}
 	f.signals = append(f.signals, fmt.Sprintf("%s %d", name, p.PID))
-	if sig == syscall.SIGKILL || !f.stubborn[p.PID] {
+	if !f.unkillable[p.PID] && (sig == syscall.SIGKILL || !f.stubborn[p.PID]) {
 		f.alive[p.PID] = false
 	}
 	return nil
@@ -152,7 +154,7 @@ func newReapFixture(t *testing.T) *reapFixture {
 	t.Helper()
 	sockDir, diskDir, keyDir, sys := shortTempDir(t), t.TempDir(), t.TempDir(), t.TempDir()
 	f := &reapFixture{
-		procs:   &fakeProcs{alive: map[int]bool{}, stubborn: map[int]bool{}},
+		procs:   &fakeProcs{alive: map[int]bool{}, stubborn: map[int]bool{}, unkillable: map[int]bool{}},
 		taps:    &tap.RecordingRunner{},
 		argvLog: mockNetTools(t),
 	}
@@ -177,6 +179,14 @@ func newReapFixture(t *testing.T) *reapFixture {
 	writeFile(t, disk, "copy")
 	writeFile(t, key, "private\n")
 	f.gone = append(f.gone, link, disk, key)
+	// Cloud Hypervisor and virtiofsd leave these next to their sockets.
+	for _, name := range []string{
+		vmm.APISocketName(leftID) + vmm.APISocketLockSuffix,
+		virtiofsName(leftID) + virtiofs.PIDFileSuffix,
+	} {
+		writeFile(t, in(sockDir, name), "")
+		f.gone = append(f.gone, in(sockDir, name))
+	}
 
 	for _, name := range []string{
 		"ssh-agent.sock",          // --ssh-agent-bridge
@@ -194,6 +204,19 @@ func newReapFixture(t *testing.T) *reapFixture {
 	}
 	writeFile(t, in(sockDir, virtiofsName(otherID)), "") // a regular file, not a socket
 	writeFile(t, in(sockDir, lockFileName), "1\n")
+	for _, name := range []string{
+		vmm.APISocketName(keptID) + vmm.APISocketLockSuffix, // the lock of the Keep socket
+		"ch-debug.sock" + vmm.APISocketLockSuffix,           // not a sandbox id
+		vsockName(leftID) + vmm.APISocketLockSuffix,         // nobody locks the muxer
+		vmm.APISocketName(leftID) + virtiofs.PIDFileSuffix,  // CH writes no pid file
+	} {
+		writeFile(t, in(sockDir, name), "")
+		f.kept = append(f.kept, in(sockDir, name))
+	}
+	// A directory, not the pid file virtiofsd writes.
+	if err := os.Mkdir(in(sockDir, virtiofsName(otherID)+virtiofs.PIDFileSuffix), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// The base image under a copy's name, kept through a symlinked Keep path.
 	base := in(diskDir, rootfsName(otherID))
 	writeFile(t, base, "base")
@@ -208,7 +231,7 @@ func newReapFixture(t *testing.T) *reapFixture {
 	writeFile(t, in(keyDir, "server.key"), "not a node key\n")
 	f.kept = append(f.kept,
 		in(sockDir, vmm.APISocketName(otherID)), in(sockDir, virtiofsName(otherID)), in(sockDir, lockFileName),
-		base, in(keyDir, "server.key"))
+		in(sockDir, virtiofsName(otherID)+virtiofs.PIDFileSuffix), base, in(keyDir, "server.key"))
 
 	for name, file := range map[string]string{
 		"asp-0a1b2c3d":    "tun_flags",                // leftID's TAP
@@ -298,7 +321,7 @@ func TestReapRemovesWhatAPreviousAgentLeft(t *testing.T) {
 	if want := []string{"ip link delete asp-0a1b2c3d"}; !slices.Equal(f.taps.Calls, want) {
 		t.Fatalf("tap calls=%q want %q", f.taps.Calls, want)
 	}
-	if len(rep.Sockets) != 6 || len(rep.Disks) != 1 {
+	if len(rep.Sockets) != 8 || len(rep.Disks) != 1 {
 		t.Fatalf("sockets=%q disks=%q", rep.Sockets, rep.Disks)
 	}
 	f.assertGone(t)
@@ -313,7 +336,7 @@ func TestReapReportOnlyTouchesNothing(t *testing.T) {
 	if rep.Err != nil {
 		t.Fatal(rep.Err)
 	}
-	if len(rep.Processes) != 2 || len(rep.LocalNet) != 2 || len(rep.Taps) != 1 || len(rep.Sockets) != 6 || len(rep.Disks) != 1 {
+	if len(rep.Processes) != 2 || len(rep.LocalNet) != 2 || len(rep.Taps) != 1 || len(rep.Sockets) != 8 || len(rep.Disks) != 1 {
 		t.Fatalf("report=%+v", rep)
 	}
 	if len(f.procs.signals) != 0 || len(f.taps.Calls) != 0 {
@@ -342,6 +365,29 @@ func TestReapKeepsGoingAfterAFailure(t *testing.T) {
 	f.assertGone(t)
 }
 
+// A VM that outlives SIGKILL still holds its lock: the lock stays for the next
+// cleanup, while the virtiofsd that did exit loses its pid file.
+func TestReapKeepsTheLockOfAVMThatSurvives(t *testing.T) {
+	f := newReapFixture(t)
+	f.procs.unkillable[101] = true
+	// Do not wait the full SIGKILL grace for a process that never exits.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	rep := Reap(ctx, f.cfg)
+	if rep.Err == nil || !strings.Contains(rep.Err.Error(), "pid 101 still running") {
+		t.Fatalf("err=%v", rep.Err)
+	}
+	lock := filepath.Join(f.cfg.SocketDir, vmm.APISocketName(leftID)+vmm.APISocketLockSuffix)
+	if slices.Contains(rep.Sockets, lock) {
+		t.Fatalf("listed the lock of a running VM: %q", rep.Sockets)
+	}
+	f.assertKept(t, []string{lock})
+	pid := filepath.Join(f.cfg.SocketDir, virtiofsName(leftID)+virtiofs.PIDFileSuffix)
+	if _, err := os.Lstat(pid); !os.IsNotExist(err) {
+		t.Fatalf("pid file of an exited virtiofsd is still there (%v)", err)
+	}
+}
+
 // Whatever a start leaves on the host, the reaper finds: the agent dies
 // without stopping the sandbox, and the next process cleans up.
 func TestReapRemovesWhatEnsureRunningCreates(t *testing.T) {
@@ -359,6 +405,7 @@ func TestReapRemovesWhatEnsureRunningCreates(t *testing.T) {
 	wr.SSHAgentShared = "/nonexistent/agent.sock"
 	wr.FSLauncher = func(_ context.Context, _, _, sock string) (func(), error) {
 		staleSocket(t, sock)
+		writeFile(t, sock+virtiofs.PIDFileSuffix, "")
 		return func() {}, nil
 	}
 	wr.tick(context.Background())
@@ -379,7 +426,9 @@ func TestReapRemovesWhatEnsureRunningCreates(t *testing.T) {
 	for _, p := range left {
 		staleSocket(t, p)
 	}
-	left = append(left, cfg.WorkspaceFSSocket, h.SSHSock, h.RootFS)
+	chLock := left[0] + vmm.APISocketLockSuffix
+	writeFile(t, chLock, "")
+	left = append(left, chLock, cfg.WorkspaceFSSocket, cfg.WorkspaceFSSocket+virtiofs.PIDFileSuffix, h.SSHSock, h.RootFS)
 
 	rep := Reap(context.Background(), ReapConfig{SocketDir: sockDir, DiskDir: diskDir, Keep: []string{base}})
 	if rep.Err != nil {

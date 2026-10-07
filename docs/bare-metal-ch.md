@@ -141,7 +141,7 @@ console=ttyS0 root=/dev/vda reboot=k panic=1
   disks/               # --disk-dir: rootfs-{sandboxID}.img, copia privada por sandbox
   local-net/           # ASP_LOCAL_NET_KEY_DIR: clave WireGuard {sandboxID}.key por sesión local-net
   tap/                 # scripts/state de TAP (opcional)
-/run/asp/              # sockets runtime: ch-{sandboxID}.sock + vsock-{sandboxID}.sock; node-agent.lock (§5.6)
+/run/asp/              # sockets runtime: ch-{sandboxID}.sock (+ .lock de CH) + vsock-{sandboxID}.sock; node-agent.lock (§5.6)
 /run/cloud-hypervisor/api.sock   # opcional: --ch-api-socket shared/legacy/debug
 /opt/sandbox/{vmlinux,rootfs.img} → symlinks a /var/lib/asp/...
 ```
@@ -536,6 +536,7 @@ Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`,
 | Túneles local-net | claves `{id}.key` en `ASP_LOCAL_NET_KEY_DIR` y devices WireGuard `wg-asp-*`. Borra el device, las `ip rule`, la tabla, las reglas FORWARD y las excepciones nft, como al parar la sandbox |
 | TAPs | devices TUN/TAP `asp-{8 hex}` |
 | Sockets y enlaces | `ch-`, `vsock-` (y sus `_26501`/`_26502`), `virtiofs-` y `ssh-agent-{id}.sock` en `--ch-socket-dir` |
+| Locks y pid files | `ch-{id}.sock.lock` (de Cloud Hypervisor) y `virtiofs-{id}.sock.pid` (de virtiofsd) en `--ch-socket-dir`: ninguno de los dos los borra al salir. Se quedan si su socket es `--ch-api-socket` o si su proceso sigue vivo tras SIGKILL. Al parar una sandbox el agente también los borra, una vez ha salido el proceso |
 
 - Solo toca nombres con un id de sandbox del plano de control (UUID en minúsculas) y con el tipo de fichero que crea el agente. Nunca toca el rootfs base, `--ch-api-socket`, el bridge SSH ni el socket de identidad.
 - Un fallo no para el resto: sale como `host cleanup incomplete` en el log y el agente arranca igual. Cada resto borrado deja una línea `removing leftover of a previous node-agent`.

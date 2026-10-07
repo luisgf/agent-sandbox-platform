@@ -127,7 +127,9 @@ func TestCloudHypervisorSkipWithoutSocket(t *testing.T) {
 	}
 }
 
-// fakeCHRunner starts a minimal HTTP-over-unix server that looks like CH's API.
+// fakeCHRunner starts a minimal HTTP-over-unix server that looks like CH's API,
+// and leaves a lock file next to the socket as CH does. A stubborn process
+// ignores Kill until the test closes it.
 type fakeCHRunner struct {
 	mu      sync.Mutex
 	starts  []fakeStart
@@ -137,7 +139,9 @@ type fakeCHRunner struct {
 	deletes int
 	// vmInfoState is what vm.info reports; "" means Running.
 	vmInfoState string
-	procs       []*fakeCHProc
+	// stubborn makes the processes ignore Kill until the test closes them.
+	stubborn bool
+	procs    []*fakeCHProc
 }
 
 type fakeStart struct {
@@ -147,15 +151,23 @@ type fakeStart struct {
 }
 
 type fakeCHProc struct {
-	ln     net.Listener
-	srv    *http.Server
-	done   chan struct{}
-	runner *fakeCHRunner
+	ln       net.Listener
+	srv      *http.Server
+	done     chan struct{}
+	runner   *fakeCHRunner
+	stubborn bool
 }
 
 func (p *fakeCHProc) Pid() int { return 4242 }
 
 func (p *fakeCHProc) Kill() error {
+	if p.stubborn {
+		return nil
+	}
+	return p.exit()
+}
+
+func (p *fakeCHProc) exit() error {
 	_ = p.srv.Close()
 	_ = p.ln.Close()
 	return nil
@@ -166,20 +178,27 @@ func (p *fakeCHProc) Wait() error {
 	return nil
 }
 
-func (r *fakeCHRunner) Start(name string, args ...string) (Process, error) {
-	sock := ""
+// apiSocketArg is the --api-socket that Start passes to cloud-hypervisor.
+func apiSocketArg(args []string) string {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--api-socket" {
-			sock = args[i+1]
-			break
+			return args[i+1]
 		}
 	}
+	return ""
+}
+
+func (r *fakeCHRunner) Start(name string, args ...string) (Process, error) {
+	sock := apiSocketArg(args)
 	if sock == "" {
 		return nil, os.ErrInvalid
 	}
 	_ = os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(sock+APISocketLockSuffix, nil, 0o600); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
@@ -235,10 +254,10 @@ func (r *fakeCHRunner) Start(name string, args ...string) (Process, error) {
 		_ = srv.Serve(ln)
 		close(done)
 	}()
-	proc := &fakeCHProc{ln: ln, srv: srv, done: done, runner: r}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	proc := &fakeCHProc{ln: ln, srv: srv, done: done, runner: r, stubborn: r.stubborn}
 	r.procs = append(r.procs, proc)
-	r.mu.Unlock()
 	return proc, nil
 }
 
@@ -311,6 +330,12 @@ func TestPerSandboxSpawnStartStop(t *testing.T) {
 	if _, err := os.Stat(sock1); !os.IsNotExist(err) {
 		t.Fatalf("socket1 should be removed: err=%v", err)
 	}
+	if _, err := os.Stat(sock1 + APISocketLockSuffix); !os.IsNotExist(err) {
+		t.Fatalf("lock of socket1 should be removed: err=%v", err)
+	}
+	if _, err := os.Stat(sock2 + APISocketLockSuffix); err != nil {
+		t.Fatalf("lock of the running sandbox: %v", err)
+	}
 
 	if err := ch.Stop(ctx, cfg2.ID); err != nil {
 		t.Fatalf("stop2: %v", err)
@@ -326,9 +351,41 @@ func TestPerSandboxSpawnStartStop(t *testing.T) {
 		t.Fatalf("deletes=%d", deletes)
 	}
 
+	if _, err := os.Stat(sock2 + APISocketLockSuffix); !os.IsNotExist(err) {
+		t.Fatalf("lock of socket2 should be removed: err=%v", err)
+	}
+
 	// Idempotent stop.
 	if err := ch.Stop(ctx, cfg1.ID); err != nil {
 		t.Fatalf("idempotent stop: %v", err)
+	}
+}
+
+// The lock is Cloud Hypervisor's while it runs: a Stop that cannot see the
+// process exit removes the socket and leaves the lock.
+func TestStopKeepsLockOfLiveCH(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeCHRunner{stubborn: true}
+	ch := NewSpawningCloudHypervisor("cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = 2 * time.Second
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := ch.Start(context.Background(), MicroVMConfig{ID: id, KernelPath: "/k"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runner.procs[0].exit() })
+	sock := ch.SocketPath(id)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := ch.Stop(ctx, id); err == nil {
+		t.Fatal("Stop reported success for a CH that did not exit")
+	}
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Fatalf("socket should be removed: err=%v", err)
+	}
+	if _, err := os.Stat(sock + APISocketLockSuffix); err != nil {
+		t.Fatalf("lock of a running CH: %v", err)
 	}
 }
 
@@ -407,8 +464,13 @@ func TestPerSandboxWaitReadyTimeout(t *testing.T) {
 	if ch.InstanceCount() != 0 {
 		t.Fatalf("leaked instances=%d", ch.InstanceCount())
 	}
+	lock := filepath.Join(dir, APISocketName("sb-timeout")+APISocketLockSuffix)
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatalf("lock of a failed start should be removed: err=%v", err)
+	}
 }
 
+// hangRunner starts a CH that takes its lock but never serves the API.
 type hangRunner struct{}
 
 type hangProc struct {
@@ -416,6 +478,9 @@ type hangProc struct {
 }
 
 func (hangRunner) Start(name string, args ...string) (Process, error) {
+	if err := os.WriteFile(apiSocketArg(args)+APISocketLockSuffix, nil, 0o600); err != nil {
+		return nil, err
+	}
 	return &hangProc{killed: make(chan struct{})}, nil
 }
 
