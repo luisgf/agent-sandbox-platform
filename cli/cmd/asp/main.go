@@ -108,11 +108,13 @@ type globalFlags struct {
 
 func addGlobalFlags(fs *flag.FlagSet, g *globalFlags) {
 	defURL := envOr("ASP_CP_URL", "http://127.0.0.1:8080")
-	defKey := os.Getenv("ASP_API_KEY")
-	defID := auth.EnvIDToken()
 	fs.StringVar(&g.cpURL, "cp-url", defURL, "control-plane base URL")
-	fs.StringVar(&g.apiKey, "api-key", defKey, "Bearer API key (env ASP_API_KEY)")
-	fs.StringVar(&g.idToken, "id-token", defID, "IdP access token (env ASP_ID_TOKEN)")
+	// The credentials have no default: the flag package prints a default in the
+	// usage text, which for a secret taken from the environment would put it in
+	// the log of whatever ran `asp -h` or mistyped a flag. newClient reads the
+	// environment after parsing.
+	fs.StringVar(&g.apiKey, "api-key", "", "Bearer API key (default: env ASP_API_KEY)")
+	fs.StringVar(&g.idToken, "id-token", "", "IdP access token (default: env ASP_ID_TOKEN)")
 	fs.StringVar(&g.tenant, "tenant", os.Getenv("ASP_TENANT"), "tenant_id for create/list/run (env ASP_TENANT); empty: the caller's tenant, or the control plane's default")
 	fs.DurationVar(&g.timeout, "timeout", 60*time.Second, "wait timeout for running state")
 	fs.BoolVar(&g.jsonOut, "json", false, "print raw JSON to stdout")
@@ -154,6 +156,12 @@ func isDefinedFlag(fs *flag.FlagSet, arg string) bool {
 }
 
 func newClient(g globalFlags) (*client.Client, error) {
+	if g.apiKey == "" {
+		g.apiKey = os.Getenv("ASP_API_KEY")
+	}
+	if g.idToken == "" {
+		g.idToken = auth.EnvIDToken()
+	}
 	c := client.New(g.cpURL, g.apiKey)
 	res, err := auth.ResolveBearer(context.Background(), auth.ResolveInput{
 		ExplicitToken: g.idToken,
