@@ -171,6 +171,8 @@ func TestResumeWithoutItsDiskFails(t *testing.T) {
 	rec, disks := retainRec(t, cp, fake)
 	cp.mu.Lock()
 	cp.boxes[idA].BootCount = 2
+	ran := time.Now().Add(-time.Hour)
+	cp.boxes[idA].BootedAt = &ran // it ran, so a disk had to be kept
 	cp.mu.Unlock()
 	rec.tick(context.Background())
 
@@ -180,6 +182,91 @@ func TestResumeWithoutItsDiskFails(t *testing.T) {
 	}
 	if len(fake.Configs) != 0 || exists(diskOf(disks, idA)) {
 		t.Fatal("a VM or a blank disk was made for a resume")
+	}
+}
+
+// A sandbox stopped before it ever ran (stopped while still requested) has no disk
+// to keep: resuming it gives it a fresh copy of the base image instead of failing
+// with disk_lost (#112).
+func TestResumeOfASandboxThatNeverRanGetsAFreshDisk(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	fake := vmm.NewFakeVMM(nil)
+	rec, disks := retainRec(t, cp, fake)
+	clones := 0
+	rec.CloneDisk = func(_, dst string) error { clones++; return os.WriteFile(dst, []byte("fresh"), 0o644) }
+	cp.mu.Lock()
+	cp.boxes[idA].BootCount = 2 // the resume counted; booted_at is nil
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+
+	if got, detail := cp.state(idA); got != "running" {
+		t.Fatalf("state=%s detail=%q, want running", got, detail)
+	}
+	if clones != 1 {
+		t.Fatalf("%d clones, want 1", clones)
+	}
+	if b, _ := os.ReadFile(diskOf(disks, idA)); string(b) != "fresh" {
+		t.Fatalf("disk=%q", b)
+	}
+	// Its first run sets booted_at: from now on it has a disk to keep.
+	cp.mu.Lock()
+	booted := cp.boxes[idA].BootedAt != nil
+	cp.mu.Unlock()
+	if !booted {
+		t.Fatal("running did not set booted_at")
+	}
+	cp.setState(idA, "stopping")
+	rec.tick(context.Background())
+	cp.mu.Lock()
+	cp.boxes[idA].State, cp.boxes[idA].BootCount = "requested", 3
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+	if clones != 1 {
+		t.Fatalf("a resume after a real run cloned again (%d clones)", clones)
+	}
+}
+
+// A control plane that predates booted_at never sends it: boot_count above 1 with
+// a disk that exists is still a resume, and the disk is reused, never replaced.
+func TestResumeWithoutBootedAtReusesAnExistingDisk(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	rec, disks := retainRec(t, cp, vmm.NewFakeVMM(nil))
+	clones := 0
+	rec.CloneDisk = func(_, dst string) error { clones++; return os.WriteFile(dst, []byte("fresh"), 0o644) }
+	if err := os.MkdirAll(disks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(diskOf(disks, idA), []byte("guest data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cp.mu.Lock()
+	cp.boxes[idA].BootCount = 2
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+
+	if got, _ := cp.state(idA); got != "running" || clones != 0 {
+		t.Fatalf("state=%s clones=%d", got, clones)
+	}
+	if b, _ := os.ReadFile(diskOf(disks, idA)); string(b) != "guest data" {
+		t.Fatalf("the disk was replaced: %q", b)
+	}
+}
+
+// A first start of a sandbox that was resumed before it ever ran, and fails,
+// goes back to stopped (it can be tried again) and keeps no disk.
+func TestFailedFirstRunOfAnUnbootedResumeKeepsNoDisk(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	rec, disks := retainRec(t, cp, failingEngine{vmm.NewFakeVMM(nil)})
+	cp.mu.Lock()
+	cp.boxes[idA].BootCount = 2
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+
+	if got, detail := cp.state(idA); got != "stopped" || !strings.Contains(detail, "resume failed") {
+		t.Fatalf("state=%s detail=%q", got, detail)
+	}
+	if exists(diskOf(disks, idA)) {
+		t.Fatal("a fresh disk was kept for a start that failed")
 	}
 }
 

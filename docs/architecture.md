@@ -127,7 +127,7 @@ Con `ASP_AUTO_PROVISION=0` (default prod/bare-metal):
 4. TAP (si `--tap-auto`) → VMM `Start` → dialer vsock → `POST …/status` `running`.
 5. Attestation opcional: nodo firma `BootStatement`, CP `POST …/attest`.
 6. Heartbeat y sondeo de `/work` mientras corre. Si la sandbox sale del conjunto `assigned` del nodo (o el CP responde 409 a un `status`), el nodo para la VM.
-7. `POST /v1/sandboxes/{id}/stop` → `stopping` → el nodo apaga el guest (`sync; systemctl poweroff` por el pod-daemon) y para el VMM → TAP/sockets limpios, **disco conservado** → `stopped`. Antes del claim, directamente `stopped`. El reaper de inactividad hace lo mismo. `POST …/start` (reanudar) → `requested` en el mismo nodo (409 si no puede tomar sandboxes, 503 si no tiene hueco), `boot_count` + 1; el nodo arranca el disco conservado. `DELETE` → `deleting` → el nodo borra la VM y el disco → `deleted`.
+7. `POST /v1/sandboxes/{id}/stop` → `stopping` → el nodo apaga el guest (`sync; systemctl poweroff` por el pod-daemon) y para el VMM → TAP/sockets limpios, **disco conservado** → `stopped`. Antes del claim, directamente `stopped`. El reaper de inactividad hace lo mismo. `POST …/start` (reanudar) → `requested` en el mismo nodo (409 si no puede tomar sandboxes, 503 si no tiene hueco), `boot_count` + 1; el nodo arranca el disco conservado (el de una sandbox que llegó a correr: `booted_at`; una parada antes de su primer arranque recibe un disco nuevo). `DELETE` → `deleting` → el nodo borra la VM y el disco → `deleted`.
 8. Si el nodo se pierde, el monitor la pasa a `failed` (`node_lost`); ver [Fallos y recuperación](#fallos-y-recuperación).
 
 Reintentos idempotentes; el reconciler **reconcilia** estado real vs deseado en lugar de asumir RPC perfectos. `state_version` evita lost updates.

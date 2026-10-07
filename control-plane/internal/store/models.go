@@ -53,8 +53,14 @@ type Sandbox struct {
 	// stopped. Cleared when the sandbox runs or is resumed.
 	StatusDetail string `json:"status_detail,omitempty"`
 	// BootCount is how many times the sandbox has been started: 1 at the first
-	// boot, one more per resume. Above 1 the node boots the disk a stop kept.
+	// boot, one more per resume. It is a counter to show; it does not say whether
+	// a disk exists (BootedAt does).
 	BootCount int `json:"boot_count"`
+	// BootedAt is when the node first reported the sandbox running. Until then no
+	// disk is worth keeping: a sandbox stopped before it ever ran resumes on a
+	// fresh disk, while one that ran resumes on the disk its stop kept, and its
+	// node reports it lost if that disk is gone. Never cleared.
+	BootedAt *time.Time `json:"booted_at,omitempty"`
 	// StoppedAt is when the node reported the sandbox stopped; nil while it is
 	// not stopped. The retention TTL counts from it.
 	StoppedAt *time.Time `json:"stopped_at,omitempty"`

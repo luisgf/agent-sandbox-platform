@@ -81,10 +81,14 @@ func (r *Reconciler) shutdownGuest(ctx context.Context, id string) {
 		"grace", r.StopGrace.String(), "exec_error", execErr)
 }
 
-// rootFSFor returns the disk a sandbox boots from. A first boot gets a fresh
-// copy of the base image; a resume (boot_count above 1) reuses the disk its
-// stop kept, and never makes a new one in its place: a missing disk is
-// errDiskLost. resumed says which of the two it was.
+// rootFSFor returns the disk a sandbox boots from. A sandbox that has run
+// (booted_at) has a disk its stop kept: it is reused, and never replaced by a new
+// one: a missing disk is errDiskLost. A sandbox that never ran has no disk worth
+// keeping, so it gets a fresh copy of the base image, a resume of one stopped
+// before its first boot included (it used to fail with disk_lost); a leftover of
+// an attempt that did not get as far as running is replaced. A control plane that
+// predates booted_at does not send it: then boot_count above 1, a resume, with a
+// disk that exists means reuse it. resumed says which of the two it was.
 //
 // baseDigest is the digest of the base image the disk was copied from: measured
 // for a first boot, read from the record next to the disk for a resume ("" for
@@ -93,13 +97,14 @@ func (r *Reconciler) rootFSFor(sb cpclient.Sandbox) (path, baseDigest string, re
 	if r.DiskDir == "" {
 		return "", "", false, nil
 	}
-	resumed = sb.BootCount > 1
 	if err := r.checkDiskSpace(); err != nil {
-		return "", "", resumed, err
+		return "", "", sb.BootCount > 1, err
 	}
-	if resumed {
-		dst := filepath.Join(r.DiskDir, rootfsName(sb.ID))
-		if fi, statErr := os.Stat(dst); statErr != nil || !fi.Mode().IsRegular() {
+	dst := filepath.Join(r.DiskDir, rootfsName(sb.ID))
+	fi, statErr := os.Stat(dst)
+	have := statErr == nil && fi.Mode().IsRegular()
+	if sb.BootedAt != nil || (sb.BootCount > 1 && have) {
+		if !have {
 			return "", "", true, fmt.Errorf("%w (%s)", errDiskLost, dst)
 		}
 		return dst, readBaseDigest(dst), true, nil

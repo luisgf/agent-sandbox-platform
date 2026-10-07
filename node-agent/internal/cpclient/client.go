@@ -312,6 +312,11 @@ type Sandbox struct {
 	// boot, more after each resume (ADR-0012). 0 from a control plane that
 	// predates the field, read as a first boot.
 	BootCount int `json:"boot_count,omitempty"`
+	// BootedAt is when this sandbox first ran. Set, the sandbox has a disk a stop
+	// kept and a resume reuses it; nil, it never ran and a start gets a fresh
+	// copy of the base image. A control plane that predates the field never sends
+	// it (see rootFSFor).
+	BootedAt *time.Time `json:"booted_at,omitempty"`
 }
 
 type workResponse struct {
