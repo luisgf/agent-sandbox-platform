@@ -105,13 +105,30 @@ type execStdinRequest struct {
 	Cols   int    `json:"cols,omitempty"`
 }
 
-// HeaderASPActorSub carries the human/service actor for lab when no IdP JWT is present (ADR-0007).
+// HeaderASPActorSub carries the actor of a request in the open lab, where
+// nothing authenticates the caller (ADR-0007). Any other caller is attributed
+// from its credential and the header is ignored.
 const HeaderASPActorSub = "X-ASP-Actor-Sub"
 
-// resolveActorSub prefers IdP JWT sub, then header, then body, then optional create-time owner fallback.
+// apiKeyActor is how an API key appears in the audit trail.
+func apiKeyActor(k store.ApiKey) string {
+	return "apikey:" + k.KeyPrefix
+}
+
+// resolveActorSub names who is acting, from what authenticated them: the IdP
+// token's sub, the API key, the node certificate. Only when nothing did (the
+// open lab) does it take the header, the body and the create-time owner, which
+// anyone can write.
 func resolveActorSub(r *http.Request, bodyActor, ownerFallback string) string {
-	if p, ok := IdPPrincipalFromContext(r.Context()); ok && strings.TrimSpace(p.Sub) != "" {
+	ctx := r.Context()
+	if p, ok := IdPPrincipalFromContext(ctx); ok && strings.TrimSpace(p.Sub) != "" {
 		return strings.TrimSpace(p.Sub)
+	}
+	if k, ok := APIKeyFromContext(ctx); ok {
+		return apiKeyActor(k)
+	}
+	if id, ok := NodeIdentityFromContext(ctx); ok {
+		return "node:" + id
 	}
 	if v := strings.TrimSpace(r.Header.Get(HeaderASPActorSub)); v != "" {
 		return v
@@ -182,6 +199,15 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 			input.OwnerEmail = email
 		}
 		input.ActorSub = sub
+	} else if _, ok := APIKeyFromContext(r.Context()); ok {
+		// A key is a service principal: it cannot say which human a sandbox is
+		// for, or every token minted for it would carry that human's sub. The
+		// sandbox has no owner and the key is the actor.
+		if input.OwnerSub != "" || input.OwnerEmail != "" {
+			writeError(w, http.StatusForbidden, "owner_sub and owner_email come from the IdP token: an API key cannot name an owner")
+			return
+		}
+		input.ActorSub = resolveActorSub(r, "", "")
 	} else {
 		input.ActorSub = resolveActorSub(r, input.ActorSub, input.OwnerSub)
 	}

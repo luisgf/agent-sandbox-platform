@@ -132,7 +132,7 @@ ASP_IDP_DEFAULT_TENANT=default   # the realm's tokens carry no tenant_id claim
 Si `ASP_IDP_ISSUER` vacío → validador nil:
 
 - No hay RBAC IdP.
-- Create/exec pueden usar body `owner_sub` / header `X-ASP-Actor-Sub` (smokes dry-run).
+- Create/exec pueden usar body `owner_sub` / header `X-ASP-Actor-Sub` (smokes dry-run), pero solo si tampoco hay API keys: con una key, el actor es la key y el dueño no se puede nombrar.
 - `ASP_IDP_REQUIRED=1` **sin** issuer configurado es configuración inválida/ops error (el unit lab siempre lleva issuer).
 
 Con IdP on + required (este lab): sin token en `GET /v1/sandboxes` → **401**  
