@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -92,7 +93,30 @@ func run(ctx context.Context, args []string) error {
 	var st store.Store
 	storeName := "memory"
 
-	if dbURL := databaseURL(); dbURL != "" {
+	dbURL := databaseURL()
+	liteFile, isSQLite, err := sqlitePath(dbURL)
+	if err != nil {
+		return configError{err}
+	}
+	if isSQLite {
+		// A single host: the state is one file, no database server to run.
+		if err := os.MkdirAll(filepath.Dir(liteFile), 0o700); err != nil {
+			return fmt.Errorf("sqlite directory: %w", err)
+		}
+		lite, err := store.OpenSQLite(ctx, liteFile)
+		if err != nil {
+			return fmt.Errorf("open sqlite: %w", err)
+		}
+		defer lite.Close()
+		if store.AutoProvisionEnabled() {
+			if err := lite.EnsureBootstrapNode(ctx); err != nil {
+				return fmt.Errorf("bootstrap node: %w", err)
+			}
+		}
+		st = lite
+		storeName = "sqlite"
+		slog.Info("using SQLite store", "file", liteFile)
+	} else if dbURL != "" {
 		dbTimeouts, err := store.DBTimeoutsFromEnv()
 		if err != nil {
 			return configError{err}
@@ -249,7 +273,7 @@ func run(ctx context.Context, args []string) error {
 			"note", "a stopped sandbox keeps its disk on its node until it is deleted or this expires")
 		if store.IsMemory(st) {
 			slog.Warn("stopped sandboxes are kept in memory: restarting the control plane forgets them, "+
-				"and each node then removes their disks. Set ASP_DATABASE_URL (Postgres) to keep them across restarts",
+				"and each node then removes their disks. Set ASP_DATABASE_URL (sqlite:///var/lib/asp/asp.db, or Postgres) to keep them across restarts",
 				"store", storeName)
 		}
 	} else {

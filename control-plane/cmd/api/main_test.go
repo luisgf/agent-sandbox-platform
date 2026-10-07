@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,13 +20,18 @@ import (
 // and the channel run's result arrives on.
 func startRun(t *testing.T) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
+	return startRunIn(t, t.TempDir(), nil)
+}
+
+// startRunIn is startRun with its keys in dir (a restart keeps them) and extra settings.
+func startRunIn(t *testing.T, dir string, extra map[string]string) (string, context.CancelFunc, <-chan error) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
 	_ = ln.Close()
-	dir := t.TempDir()
 	for k, v := range map[string]string{
 		"LISTEN_ADDR":              addr,
 		"DATABASE_URL":             "",
@@ -45,6 +51,9 @@ func startRun(t *testing.T) (string, context.CancelFunc, <-chan error) {
 		// These tests exercise shutdown, not authentication.
 		"ASP_INSECURE_OPEN_API": "1",
 	} {
+		t.Setenv(k, v)
+	}
+	for k, v := range extra {
 		t.Setenv(k, v)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -156,6 +165,82 @@ func TestShutdownTimeoutFromEnv(t *testing.T) {
 		t.Setenv(EnvShutdownTimeout, bad)
 		if _, err := shutdownTimeoutFromEnv(); err == nil {
 			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+}
+
+// With a sqlite: database URL the state is a file: what a first run wrote is there after the
+// control plane stopped and started again, and the file is private.
+func TestSQLiteStateSurvivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "state", "asp.db")
+	extra := map[string]string{"ASP_DATABASE_URL": "sqlite://" + db, "ASP_AUTO_PROVISION": "0", "ASP_ALLOW_TMP_KEYS": "1"}
+
+	base, cancel, done := startRunIn(t, dir, extra)
+	postJSON(t, base+"/v1/nodes/register", `{"id":"lite-node","agent_endpoint":"http://127.0.0.1:9100"}`)
+	sb := postJSON(t, base+"/v1/sandboxes", `{"tenant_id":"t","image_ref":"img","cpu_millis":100,"memory_mib":64}`)
+	id, _ := sb["id"].(string)
+	if id == "" {
+		t.Fatalf("no sandbox id in %v", sb)
+	}
+	cancel()
+	waitRun(t, done)
+
+	fi, err := os.Stat(db)
+	if err != nil {
+		t.Fatalf("the database file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("the database file is %v: it holds key hashes and fence tokens", fi.Mode().Perm())
+	}
+	if di, err := os.Stat(filepath.Dir(db)); err != nil || di.Mode().Perm() != 0o700 {
+		t.Errorf("its directory: %v %v", di, err)
+	}
+
+	base, cancel, done = startRunIn(t, dir, extra)
+	resp, err := http.Get(base + "/v1/sandboxes/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), id) {
+		t.Fatalf("the sandbox after a restart: %d %s", resp.StatusCode, raw)
+	}
+	resp, err = http.Get(base + "/v1/nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "lite-node") {
+		t.Fatalf("the node after a restart: %s", raw)
+	}
+	cancel()
+	waitRun(t, done)
+}
+
+func TestSQLitePathOfTheDatabaseURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"sqlite:///var/lib/asp/asp.db": "/var/lib/asp/asp.db",
+		"sqlite:/var/lib/asp/asp.db":   "/var/lib/asp/asp.db",
+		"sqlite://relative.db":         "relative.db",
+		"sqlite:relative.db":           "relative.db",
+		" sqlite:///x.db ":             "/x.db",
+	} {
+		got, ok, err := sqlitePath(in)
+		if err != nil || !ok || got != want {
+			t.Errorf("sqlitePath(%q) = %q %v %v, want %q", in, got, ok, err, want)
+		}
+	}
+	for _, in := range []string{"postgres://asp@db/asp", "", "host=db user=asp"} {
+		if _, ok, err := sqlitePath(in); ok || err != nil {
+			t.Errorf("sqlitePath(%q) = %v %v: not a SQLite URL", in, ok, err)
+		}
+	}
+	for _, in := range []string{"sqlite:", "sqlite://", "sqlite:///"} {
+		if _, ok, err := sqlitePath(in); !ok || err == nil {
+			t.Errorf("sqlitePath(%q) = %v %v: want a SQLite URL with no path to be an error", in, ok, err)
 		}
 	}
 }

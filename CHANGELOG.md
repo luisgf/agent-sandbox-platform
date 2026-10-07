@@ -55,6 +55,9 @@ The first release will be 0.1.0. Until then this is what `main` has.
   against a deployment through its API; the nightly workflow runs it with the other KVM smokes.
 - A Postgres run of the API tests, and a parity script that holds the memory and Postgres stores to
   one contract.
+- **A SQLite store** for a single host: `ASP_DATABASE_URL=sqlite:///var/lib/asp/server/asp.db` keeps
+  the state in one private file (no CGO, no database server). The same parity script, shared store
+  tests and API suite run on it, with no server needed, so every test run covers it.
 
 ### Changed
 

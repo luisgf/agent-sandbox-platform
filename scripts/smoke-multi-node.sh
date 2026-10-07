@@ -8,8 +8,18 @@
 # per run so leftover rows do not count as usage).
 # The control plane and node B are configured from YAML files and drop-ins (docs/how-to/config-file.md),
 # node A from flags and the environment: a setting the file layer lost would break a step below.
+#
+# The store: ASP_DATABASE_URL (or DATABASE_URL) names one; ASP_SMOKE_STORE=memory|sqlite picks
+# one of those. With neither, the scenario runs twice: on the memory store and on a SQLite file.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -z "${ASP_SMOKE_STORE:-}" && -z "${ASP_DATABASE_URL:-${DATABASE_URL:-}}" ]]; then
+  for store in memory sqlite; do
+    echo "######## the control plane on the $store store"
+    ASP_SMOKE_STORE=$store "$0"
+  done
+  exit 0
+fi
 # shellcheck source=smoke-lib.sh
 source "$ROOT/scripts/smoke-lib.sh"
 WORKDIR="${TMPDIR:-/tmp}/asp-smoke-multi-$$"
@@ -33,6 +43,7 @@ export ASP_AUTO_PROVISION=0
 # With a database the control plane runs in production mode; the smoke keeps
 # its keys in WORKDIR on purpose.
 export ASP_DATABASE_URL="${ASP_DATABASE_URL:-${DATABASE_URL:-}}"
+[[ "${ASP_SMOKE_STORE:-}" == sqlite ]] && export ASP_DATABASE_URL="sqlite://$WORKDIR/asp.db"
 export ASP_ALLOW_TMP_KEYS=1
 # Empty tenant rules deny (the memory store would allow all): step 1b checks
 # that rules reach a running sandbox in both directions.
