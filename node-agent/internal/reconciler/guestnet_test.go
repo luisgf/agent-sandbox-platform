@@ -52,6 +52,10 @@ func TestReconcilerGivesEachTapItsOwnSubnet(t *testing.T) {
 
 	ips := map[string]bool{}
 	for _, cfg := range fake.Configs {
+		// Each guest also gets its name (asp-<shortid>) in the ip= argument.
+		if !strings.Contains(cfg.Cmdline, ":asp-") {
+			t.Fatalf("cmdline without the guest's name: %q", cfg.Cmdline)
+		}
 		i := strings.Index(cfg.Cmdline, "ip=")
 		if i < 0 {
 			t.Fatalf("cmdline without ip=: %q", cfg.Cmdline)

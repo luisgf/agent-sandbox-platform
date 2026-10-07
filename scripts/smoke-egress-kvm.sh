@@ -3,7 +3,8 @@
 # through the node's egress proxy, with or without HTTP_PROXY.
 #
 # Needs root, /dev/kvm, cloud-hypervisor, nftables, python3, and a guest kernel and
-# rootfs (the guest needs bash and iproute2: the images/guest one has them).
+# rootfs built from this tree (images/guest: bash, iproute2, chrony; an older image
+# boots but fails the identity checks, which is the point of them).
 #
 # It touches nothing on the host's own network: the control plane, the node-agent and
 # the sandbox's TAP live in a network namespace of their own (asp-egress-smoke), and
@@ -15,7 +16,10 @@
 # ns B serves a web server on :80 (allowed.test) and a plain TCP service on :22222.
 # Phase 1 runs the node as shipped (the proxy is set; nothing else): the redirect and
 # enforce mode must be on, and the guest must reach allowed.test only through the
-# proxy, get 403 for anything else, and be unable to reach :22222 at all. Phase 2
+# proxy, get 403 for anything else, and be unable to reach :22222 at all. It also
+# checks what the guest was told about itself: hostname, resolver (the DNS sink: an
+# allowed name resolves, any other does not), HTTP_PROXY and a clock that follows the
+# host (chrony on the PTP device). Phase 2
 # turns the redirect off (--egress-nft-redirect=false) and shows the same probes
 # bypass the proxy, so the test can tell the difference.
 #
@@ -183,6 +187,8 @@ probe() { # dial port host [abs] -> the guest's answer, "ERR timeout" when it ha
   [[ -n "$out" ]] && echo "$out" || echo "ERR timeout"
 }
 
+gx() { asp session exec --name egress --buffered --cmd "$1" 2>&1; } # run a command in the guest
+
 want() { # label pattern answer
   if grep -qE "$2" <<<"$3"; then
     echo "  ok   $1 -> $(head -c 60 <<<"$3" | tr '\n' ' ')"
@@ -217,12 +223,33 @@ run_phase() { # name redirect-flags...
       want "no proxy, port 80 to anywhere: redirected, denied" '403' "$(probe 192.0.2.10 80 denied.test)"
       want "no proxy, port 80: redirected, allowed" 'origin-ok' "$(probe 10.99.0.2 80 allowed.test)"
       want "no proxy, a service on another port: unreachable" '^ERR' "$(probe 10.99.0.2 22222 x)"
+      # What the guest was told about itself.
+      local sb8
+      sb8=$(json_field sandbox_id <"$WORK/sessions/egress.json" | cut -c1-8)
+      want "hostname" "^asp-$sb8\$" "$(gx hostname)"
+      want "resolver is the gateway" "nameserver $gw" "$(gx 'cat /etc/resolv.conf')"
+      want "an allowed name resolves through the DNS sink" '^10\.99\.0\.2 ' "$(gx 'getent hosts allowed.test')"
+      want "any other name does not" '^$' "$(gx "sh -c 'getent hosts denied.test || true'")"
+      want "HTTP_PROXY is set for commands" "HTTP_PROXY=http://$gw:8888" "$(gx 'env')"
+      want "NO_PROXY is set for commands" 'no_proxy=localhost,127.0.0.1' "$(gx 'env')"
+      want "uid 1000 has a name" '^sandbox:' "$(gx 'getent passwd 1000')"
+      # chrony selects its source some 20 s after the guest boots.
+      local tracking=""
+      for _ in $(seq 1 30); do
+        tracking=$(gx 'chronyc tracking')
+        grep -q 'PHC0' <<<"$tracking" && break
+        sleep 2
+      done
+      want "the clock follows the host" 'PHC0' "$tracking"
       ;;
     open)
       grep -qE "[[:space:]]off[[:space:]]" <<<"$row" || fail "asp node list should show egress off: $row"
       want "via the proxy, an allowed host" 'origin-ok' "$(probe "$gw" 8888 allowed.test abs)"
       want "no proxy, port 80 to anywhere is NOT redirected" '^ERR' "$(probe 192.0.2.10 80 denied.test)"
       want "no proxy, a service on another port is reachable" 'bypass-open' "$(probe 10.99.0.2 22222 x)"
+      # Without the redirect nothing would answer on the gateway's port 53: no resolver.
+      want "no resolver is handed out" '^$' "$(gx "sh -c 'grep nameserver /etc/resolv.conf || true'")"
+      want "the proxy variables are still set" "HTTP_PROXY=http://$gw:8888" "$(gx 'env')"
       ;;
   esac
   local sb

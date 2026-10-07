@@ -107,3 +107,38 @@ func TestEgressEnforced(t *testing.T) {
 		}
 	}
 }
+
+func TestListenPort(t *testing.T) {
+	for in, want := range map[string]int{
+		":8888": 8888, "0.0.0.0:5353": 5353, "127.0.0.1:53": 53, "[::]:9": 9,
+		"": 0, "8888": 0, ":": 0, ":x": 0, ":0": 0, ":-1": 0,
+	} {
+		if got := listenPort(in); got != want {
+			t.Errorf("listenPort(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// What a guest is told about the network follows what its node really offers.
+func TestGuestResolverAndProxy(t *testing.T) {
+	redirect := config{EgressProxyListen: ":8888", EgressDNSSink: ":5353", EgressNFTRedirect: true, NFTDNSAction: "redirect"}
+	if guestProxyPort(redirect) != 8888 || !guestDNS(redirect) {
+		t.Fatal("a node with the proxy, the sink and the redirect offers both")
+	}
+	for name, c := range map[string]config{
+		"no sink":                 {EgressProxyListen: ":8888", EgressNFTRedirect: true, NFTDNSAction: "redirect"},
+		"sink but no redirect":    {EgressProxyListen: ":8888", EgressDNSSink: ":5353", NFTDNSAction: "redirect"},
+		"dns dropped by the nft":  {EgressProxyListen: ":8888", EgressDNSSink: ":5353", EgressNFTRedirect: true, NFTDNSAction: "drop"},
+		"a sink nobody can reach": {EgressDNSSink: ":5353", NFTDNSAction: "redirect"},
+	} {
+		if guestDNS(c) {
+			t.Errorf("%s: the guest would be given a resolver that does not answer", name)
+		}
+	}
+	if !guestDNS(config{EgressDNSSink: "0.0.0.0:53"}) {
+		t.Error("a sink on port 53 answers without a redirect")
+	}
+	if guestProxyPort(config{}) != 0 || guestProxyPort(config{EgressProxyListen: "garbage"}) != 0 {
+		t.Error("no proxy, no proxy port")
+	}
+}

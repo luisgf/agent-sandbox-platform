@@ -109,6 +109,41 @@ func resolveEgress(cfg *config) error {
 	return nil
 }
 
+// listenPort is the port of a listen address (":8888", "0.0.0.0:8888"), or 0.
+func listenPort(addr string) int {
+	i := strings.LastIndex(addr, ":")
+	if i < 0 {
+		return 0
+	}
+	p, err := strconv.Atoi(addr[i+1:])
+	if err != nil || p <= 0 {
+		return 0
+	}
+	return p
+}
+
+// guestProxyPort is where guests find the egress proxy on their gateway: the port
+// of --egress-proxy-listen, or 0 when the node has no proxy.
+func guestProxyPort(cfg config) int {
+	if cfg.EgressProxyListen == "" {
+		return 0
+	}
+	return listenPort(cfg.EgressProxyListen)
+}
+
+// guestDNS says whether a guest should be given its gateway as resolver: when the
+// DNS sink is running and the guest's queries reach it, through the nft redirect of
+// port 53 or because the sink listens on 53 itself. Otherwise nothing answers there.
+func guestDNS(cfg config) bool {
+	if cfg.EgressDNSSink == "" {
+		return false
+	}
+	if listenPort(cfg.EgressDNSSink) == 53 {
+		return true
+	}
+	return cfg.EgressNFTRedirect && strings.EqualFold(cfg.NFTDNSAction, "redirect")
+}
+
 // egressEnforced is what the node tells the control plane about its guests'
 // egress: true only when the proxy listens and the nft rules that force every
 // guest through it are in place in enforce mode. A rule set that soft mode could

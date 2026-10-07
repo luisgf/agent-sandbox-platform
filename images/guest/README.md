@@ -21,6 +21,15 @@ El `Dockerfile`:
 - Usuario `sandboxd` (uid 10001); `ASP_HOST_CID=2`; `SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock`.
 - **Quién ejecuta los comandos:** con la unit de systemd, `pod-daemon` corre como root, pero cada comando corre como el dueño de `/workspace` (o como `sandboxd`) salvo que la petición pida `as_root`, con límites y en el cgroup `/sys/fs/cgroup/asp-exec`, y el daemon solo contesta al host. Detalle en [`pod-daemon/README.md`](../../pod-daemon/README.md#quién-ejecuta-un-comando-y-con-qué-límites). El socket del agente SSH es `0666` en `/run/agent-sandbox` (`0755`): los comandos ya no corren como `sandboxd` y lo necesitan; quién puede firmar con qué clave lo decide el node-agent.
 
+## Identidad de red y hora
+
+El nodo escribe en la línea de comandos del kernel lo que el guest necesita saber de sí mismo y la imagen lo aplica al arrancar:
+
+- **`cmdline-ip.service`** (antes de `network.target` y de pod-daemon) lee `ip=<guest>::<gw>:<mask>:<hostname>:eth0:off:<dns>`: pone la dirección y la ruta por defecto (el kernel del lab no tiene `IP_PNP`), el **hostname** (`asp-<shortid>`; también `/etc/hostname` y `/etc/hosts`) y el **resolver** en `/etc/resolv.conf` (`options timeout:2 attempts:2`). Un campo vacío no se toca. Pruebas: `sh images/guest/helpers/cmdline-ip_test.sh` (`make test-guest-helper`, y en CI).
+- **`systemd.setenv=HTTP_PROXY=…`** (y `HTTPS_PROXY`, `NO_PROXY`, en mayúsculas y minúsculas) lo entiende systemd como entorno por defecto de todos los servicios: pod-daemon y, por tanto, los comandos que ejecuta lo heredan.
+- **`chrony`** sigue el reloj del host con `refclock PHC /dev/ptp0` (el módulo `ptp_kvm` se carga por `modules-load.d/ptp_kvm.conf`; el árbol `lib/modules` de `ASP_GUEST_MODULES` debe traerlo). No hay servidores de red: el guest no tiene ruta a ninguno. `chronyc tracking` muestra la fuente `PHC0`. Sin esto la hora de un guest que dura días se aleja de la del host y los `exp` de los tokens dejan de ser fiables.
+- El usuario **`sandbox`** (uid 1000, con `/home/sandbox`) da nombre al dueño habitual de un workspace; pod-daemon lo usa para `HOME`, `USER` y `LOGNAME` de los comandos.
+
 ## Rootfs.img
 
 Ver [`scripts/build-guest-rootfs.sh`](../../scripts/build-guest-rootfs.sh) para exportar la imagen OCI a un `rootfs.img` ext4 usable por Cloud Hypervisor (`disks[].path`).

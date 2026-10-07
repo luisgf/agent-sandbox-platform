@@ -166,7 +166,7 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 1. TAP `asp-{shortid}` con su propia /30 de `--guest-subnet` (TAP `.1`, guest `.2` vía `ip=` en la cmdline). El proxy identifica el sandbox por esa IP de origen.
 2. NAT MASQUERADE ops (`asp_nat`) — conectividad mínima hacia el proxy.
-3. Guest `HTTP_PROXY=http://<gateway>:8888`.
+3. Guest `HTTP_PROXY=http://<gateway>:8888`, puesto por el nodo en la cmdline del kernel (`systemd.setenv=`), junto al hostname y el resolver (`ip=`): ver `docs/bare-metal-ch.md` §3.4.
 4. Con `--egress-proxy-listen` el nodo aplica por defecto el redirect nft en modo `enforce`: fuerza HTTP(S)+DNS por proxy/sink y descarta el resto (otros puertos, guest→guest, guest→servicios del host y orígenes falsificados), y un nodo que no puede aplicarlo no arranca. Informa `egress_enforced` al plano de control (`asp node list`, columna `EGRESS`).
 5. En CI y con `--dry-run`: modo `soft` (SoftFail sin root); `--nft-egress-mode=soft` lo pide en un nodo real, con aviso.
 
