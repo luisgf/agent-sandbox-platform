@@ -43,11 +43,13 @@ Environment=ASP_HOST_VSOCK=1
 Environment=ASP_EGRESS_ENFORCE=1
 EnvironmentFile=/etc/asp/node-agent.env
 ExecStart=/usr/local/bin/node-agent
-# The VMs are children of the agent, and a new agent process does not adopt
-# them: the control plane fails them as node_agent_restarted. control-group
-# stops every cloud-hypervisor and virtiofsd together with the agent (on stop,
-# on restart and when the agent dies), so none is left running for nobody.
-# Do not change it to process or none.
+# The VMs do not survive the agent: a new agent process does not adopt them and
+# the control plane fails them as node_agent_restarted. control-group stops every
+# cloud-hypervisor and virtiofsd that is a child of the agent together with it (on
+# stop, on restart and when the agent dies). With --vm-confine (the default on a
+# host with systemd) each VM runs in a unit of its own instead, bound to this
+# service with BindsTo=, so systemd stops it with the agent just the same: none is
+# left running for nobody. Do not change KillMode to process or none.
 KillMode=control-group
 TimeoutStopSec=30
 # Then remove what those VMs held: TAPs, wg-asp-* tunnels, sockets and rootfs

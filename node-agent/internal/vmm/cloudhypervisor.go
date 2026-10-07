@@ -50,6 +50,9 @@ type CloudHypervisor struct {
 	SocketDir string
 	// Runner starts CH processes (per-sandbox mode). Nil → DefaultRunner.
 	Runner Runner
+	// Confine, when set, runs each CH in a transient systemd service of its own
+	// with resource limits (per-sandbox mode). Runner is then not used.
+	Confine *Confinement
 	// ReadyTimeout is how long Start waits for the API socket to accept Ping.
 	ReadyTimeout time.Duration
 	Logger       *slog.Logger
@@ -399,7 +402,16 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 	if binary == "" {
 		binary = "cloud-hypervisor"
 	}
-	proc, err := c.runner().Start(binary, "--api-socket", sock)
+	// --seccomp true is Cloud Hypervisor's default; it is spelled out so that a
+	// different default in some version cannot turn the filter off.
+	args := []string{"--api-socket", sock, "--seccomp", "true"}
+	var proc Process
+	var err error
+	if c.Confine != nil {
+		proc, err = c.Confine.Launcher.Start(c.Confine.Spec(config.ID, config), binary, args...)
+	} else {
+		proc, err = c.runner().Start(binary, args...)
+	}
 	if err != nil {
 		return fmt.Errorf("spawn cloud-hypervisor: %w", err)
 	}

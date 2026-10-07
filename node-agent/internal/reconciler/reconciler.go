@@ -129,6 +129,9 @@ type Reconciler struct {
 	WorkspaceRoots workspace.Roots
 	// VirtiofsdSandbox is virtiofsd's --sandbox mode (none, chroot, namespace).
 	VirtiofsdSandbox string
+	// Confine, when set, runs each virtiofsd in a transient systemd service of its
+	// own with resource limits, as the VMM does (vmm.CloudHypervisor.Confine).
+	Confine *vmm.Confinement
 	// VirtiofsdBin is the virtiofsd executable. Empty means "virtiofsd" on PATH.
 	// Used only when the sandbox spec has a workspace_host_path.
 	VirtiofsdBin string
@@ -1019,12 +1022,17 @@ func (r *Reconciler) startWorkspace(ctx context.Context, sb cpclient.Sandbox) (s
 	if r.FSLauncher != nil {
 		stop, err = r.FSLauncher(ctx, sb.ID, host, sock)
 	} else {
-		stop, err = virtiofs.Start(ctx, virtiofs.Config{
+		cfg := virtiofs.Config{
 			Binary:     r.VirtiofsdBin,
 			SocketPath: sock,
 			SharedDir:  host,
 			Sandbox:    r.VirtiofsdSandbox,
-		})
+		}
+		if r.Confine != nil {
+			cfg.Launcher = &r.Confine.Launcher
+			cfg.Unit = r.Confine.FSSpec(sb.ID)
+		}
+		stop, err = virtiofs.Start(ctx, cfg)
 	}
 	if err != nil {
 		if errors.Is(err, virtiofs.ErrNotFound) {

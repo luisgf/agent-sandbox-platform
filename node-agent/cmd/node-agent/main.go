@@ -38,6 +38,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/sshagent"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/tap"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/virtiofs"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/vmm"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/workspace"
@@ -107,6 +108,11 @@ type config struct {
 	ReapLeftovers        string        // --reap-leftovers: on | report | off
 	ReapOnly             bool          // --reap-only: clean up and exit, without registering
 	PrintMeasurement     bool          // --print-measurement: print what this node would attest and exit
+	VMConfine            string        // --vm-confine: auto | on | off
+	VMSlice              string        // --vm-slice
+	VMMemoryOverheadMiB  int           // --vm-memory-overhead-mib
+	VMCPUOverheadPercent int           // --vm-cpu-overhead-percent
+	VMTasksMax           int           // --vm-tasks-max
 }
 
 func main() {
@@ -211,6 +217,7 @@ func main() {
 	}
 
 	var engine vmm.VMM
+	var vmConfine *vmm.Confinement
 	if cfg.DryRun {
 		engine = vmm.NewFakeVMM(slog.Default())
 		slog.Info("using FakeVMM (dry-run)")
@@ -220,8 +227,15 @@ func main() {
 		slog.Info("using Cloud Hypervisor shared API socket", "socket", cfg.CHAPISocket, "binary", cfg.VMMBinary)
 	} else {
 		// Default: spawn one cloud-hypervisor per sandbox under --ch-socket-dir.
-		engine = vmm.NewSpawningCloudHypervisor(cfg.VMMBinary, cfg.CHSocketDir)
-		slog.Info("using Cloud Hypervisor per-sandbox spawn", "socket_dir", cfg.CHSocketDir, "binary", cfg.VMMBinary)
+		ch := vmm.NewSpawningCloudHypervisor(cfg.VMMBinary, cfg.CHSocketDir)
+		vmConfine, err = vmConfinement(cfg, unit.Available())
+		if err != nil {
+			slog.Error("--vm-confine", "error", err)
+			os.Exit(2)
+		}
+		ch.Confine = vmConfine
+		engine = ch
+		slog.Info("using Cloud Hypervisor per-sandbox spawn", "socket_dir", cfg.CHSocketDir, "binary", cfg.VMMBinary, "confined", vmConfine != nil)
 	}
 
 	var podClient *poddaemon.Client
@@ -602,6 +616,7 @@ func main() {
 			os.Exit(2)
 		}
 		rec.WorkspaceRoots = roots
+		rec.Confine = vmConfine
 		rec.VirtiofsdSandbox, err = virtiofsSandbox(cfg.VirtiofsdSandbox, os.Geteuid())
 		if err != nil {
 			slog.Error("--virtiofsd-sandbox", "error", err)
@@ -704,6 +719,11 @@ func loadConfig() config {
 	flag.StringVar(&cfg.CHSocketDir, "ch-socket-dir", getenv("CH_SOCKET_DIR", "/run/asp"), "directory for per-sandbox CH API sockets (ch-{sandboxID}.sock)")
 	flag.StringVar(&cfg.VMMBinary, "ch-binary", getenv("CLOUD_HYPERVISOR_BIN", "cloud-hypervisor"), "cloud-hypervisor binary path (spawned per sandbox when not using --ch-api-socket)")
 	flag.StringVar(&cfg.WorkspaceRoots, "workspace-root", getenv("ASP_WORKSPACE_ROOTS", workspace.DefaultRoot), "comma-separated directories a sandbox's workspace may live under: a workspace must be inside <root>/<tenant>/ (symbolic links resolved). The workspace path comes from the sandbox spec, so without this any caller could export the node's disks and keys; with no root that exists, no sandbox can have a workspace")
+	flag.StringVar(&cfg.VMConfine, "vm-confine", getenv("ASP_VM_CONFINE", "auto"), "run each microVM and its virtiofsd in a transient systemd service with resource limits: auto (when this host can: root, systemd), on (refuse to start if it cannot) or off (children of this process, as before)")
+	flag.StringVar(&cfg.VMSlice, "vm-slice", getenv("ASP_VM_SLICE", vmm.DefaultSlice), "systemd slice of the microVM services")
+	flag.IntVar(&cfg.VMMemoryOverheadMiB, "vm-memory-overhead-mib", getenvInt("ASP_VM_MEMORY_OVERHEAD_MIB", vmm.DefaultMemoryOverheadMiB), "memory added to the guest's for the VMM's own use, in the unit's MemoryMax")
+	flag.IntVar(&cfg.VMCPUOverheadPercent, "vm-cpu-overhead-percent", getenvInt("ASP_VM_CPU_OVERHEAD_PERCENT", vmm.DefaultCPUOverheadPercent), "percent of one CPU added to the guest's vCPUs for the VMM's own threads, in the unit's CPUQuota")
+	flag.IntVar(&cfg.VMTasksMax, "vm-tasks-max", getenvInt("ASP_VM_TASKS_MAX", vmm.DefaultTasksMax), "most processes and threads of one microVM service")
 	flag.StringVar(&cfg.VirtiofsdSandbox, "virtiofsd-sandbox", getenv("ASP_VIRTIOFSD_SANDBOX", ""), "virtiofsd --sandbox mode: chroot (confine the daemon to the workspace), namespace or none. Default chroot when running as root, none otherwise")
 	flag.StringVar(&cfg.VirtiofsdBin, "virtiofsd-bin", getenv("VIRTIOFSD_BIN", "virtiofsd"), "Rust virtiofsd binary; started per sandbox only when workspace_host_path is set")
 	flag.StringVar(&cfg.DiskDir, "disk-dir", getenv("ASP_DISK_DIR", "/var/lib/asp/disks"), "per-sandbox rootfs copies (rootfs-{id}.img). A stop keeps the copy when the control plane keeps stopped sandboxes (ADR-0012); a delete, or a control plane that does not, removes it. Copies no sandbox owns are removed after a poll. Ignored with --dry-run")

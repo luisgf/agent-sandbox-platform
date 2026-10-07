@@ -29,6 +29,11 @@ Agente privilegiado en cada nodo de sandboxes. Habla con Cloud Hypervisor vía H
 | `--insecure-agent-listen` | `ASP_INSECURE_AGENT_LISTEN=1` | permite `--agent-listen` fuera de loopback (solo lab) |
 | `--workspace-root` | `ASP_WORKSPACE_ROOTS` | Directorios (separados por comas) bajo los que puede vivir el workspace de una sandbox: debe estar dentro de `<raíz>/<tenant>/`, con los enlaces simbólicos resueltos. El path viene del spec de la sandbox, así que sin esto cualquiera que pueda crear una exportaría los discos y las claves del nodo. Defecto `/srv/asp/workspaces`; si no existe, ninguna sandbox puede tener workspace |
 | `--virtiofsd-sandbox` | `ASP_VIRTIOFSD_SANDBOX` | `--sandbox` de virtiofsd: `chroot` (lo confina al workspace), `namespace` o `none`. Defecto `chroot` si el agente es root, `none` si no |
+| `--vm-confine` | `ASP_VM_CONFINE` | `auto` (por defecto), `on` o `off`. Cada microVM y su `virtiofsd` corren en un servicio systemd transitorio propio (`asp-vm-<id>`, `asp-vm-<id>-fs`) con su cgroup y sus límites; con `auto`, cuando el host puede (root y systemd) y, si no, como hijos del agente diciendo por qué; `on` no arranca si no puede; `off` es el comportamiento anterior |
+| `--vm-slice` | `ASP_VM_SLICE` | slice de esos servicios (`asp-vms.slice`) |
+| `--vm-memory-overhead-mib` | `ASP_VM_MEMORY_OVERHEAD_MIB` | memoria que se suma a la del guest en el `MemoryMax` del servicio (por defecto 256) |
+| `--vm-cpu-overhead-percent` | `ASP_VM_CPU_OVERHEAD_PERCENT` | porcentaje de una CPU que se suma a las vCPU en el `CPUQuota` (por defecto 50) |
+| `--vm-tasks-max` | `ASP_VM_TASKS_MAX` | procesos e hilos máximos de un servicio de VM (por defecto 1024) |
 | `--capacity-cpu` | `ASP_CAPACITY_CPU` | `-1` = núcleos del host; `0` = no limita |
 | `--capacity-mem-mib` | `ASP_CAPACITY_MEM_MIB` | `-1` = `MemTotal − max(1 GiB, 10 %)`; `0` = no limita |
 | `--max-sandboxes` | `ASP_MAX_SANDBOXES` | `0` = sin tope |
