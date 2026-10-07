@@ -109,14 +109,35 @@ func (o *Options) Validate() error {
 
 var nodeIDChars = regexp.MustCompile(`[^a-z0-9.-]+`)
 
-// nodeIDFor turns a host name into a node id: lower case, letters, digits, dots and dashes.
+// nodeIDFor turns a host name into the id of its node: lower case, letters, digits, dots and
+// dashes, and "-node" after it. The host's own name is in the control plane's certificate, and the
+// control plane refuses a node that carries a name of its certificate (a node certificate with
+// that name could pass for the server), so the id cannot be the bare host name.
 func nodeIDFor(hostname string) string {
 	id := nodeIDChars.ReplaceAllString(strings.ToLower(strings.TrimSpace(hostname)), "-")
 	id = strings.Trim(id, "-.")
 	if id == "" {
 		return "node"
 	}
-	return id
+	return id + "-node"
+}
+
+// certificateCN is the common name of the certificate asp-server makes, which is a name too.
+const certificateCN = "asp-server"
+
+// checkNodeID refuses an id the control plane would refuse to enrol: any name of its own TLS
+// certificate. Better said here, before anything starts, than in the log of a node that retries.
+func checkNodeID(id string, names Names) error {
+	reserved := append([]string{certificateCN}, names.DNS...)
+	for _, ip := range names.IPs {
+		reserved = append(reserved, ip.String())
+	}
+	for _, r := range reserved {
+		if strings.EqualFold(id, r) {
+			return fmt.Errorf("--node-id %q is a name in the control plane's TLS certificate, which a node may not carry: choose another", id)
+		}
+	}
+	return nil
 }
 
 // Prepare makes what a host needs and leaves it where Layout says: the directories, the
@@ -176,6 +197,9 @@ func Prepare(opts Options) (Prepared, error) {
 
 	names, err := NamesFor(hostOf(opts.Listen), hostname, opts.TLSSANs, opts.Addrs)
 	if err != nil {
+		return Prepared{}, err
+	}
+	if err := checkNodeID(p.NodeID, names); err != nil {
 		return Prepared{}, err
 	}
 	replaced, err := EnsureCertificate(layout.TLSCert(), layout.TLSKey(), names, opts.Now())

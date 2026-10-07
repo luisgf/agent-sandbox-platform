@@ -60,7 +60,7 @@ func newFlags(stderr io.Writer) (*flag.FlagSet, *standalone.Options, *stringList
 	fs.StringVar(&opts.DataDir, "data-dir", standalone.DefaultDataDir, "where everything lives: the database, the keys, the certificate, the disks")
 	fs.StringVar(&opts.Listen, "listen", "127.0.0.1:8443", "where the control plane listens (host:port). The loopback by default: 0.0.0.0:8443 lets other hosts join")
 	fs.Var(sans, "tls-san", "more names or addresses its TLS certificate must be valid for (comma separated, or repeated)")
-	fs.StringVar(&opts.NodeID, "node-id", "", "the id of the node on this host (default: the host name)")
+	fs.StringVar(&opts.NodeID, "node-id", "", "the id of the node on this host (default: the host name and -node; a name in the control plane's certificate is refused)")
 	fs.BoolVar(&opts.NoAgent, "no-agent", false, "run the control plane alone, with no node on this host")
 	fs.StringVar(&opts.Profile, "profile", standalone.ProfileDefault, "default, or lab: a node without VMs (--dry-run) for a host with no KVM and for the smokes")
 	fs.StringVar(&opts.ControlPlane, "control-plane", "", "the asp-control-plane program (default: beside this one, on the PATH, or where the packages put it)")

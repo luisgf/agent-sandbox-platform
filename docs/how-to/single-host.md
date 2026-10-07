@@ -87,7 +87,7 @@ El instalador lee el certificado del servidor, **lo rechaza si su SHA-256 no es 
 | `--data-dir` | dónde vive todo (`/var/lib/asp`) |
 | `--listen` | dónde escucha el plano de control (`127.0.0.1:8443`) |
 | `--tls-san` | más nombres o direcciones para el certificado |
-| `--node-id` | el id del nodo de este host (el nombre del host) |
+| `--node-id` | el id del nodo de este host (por defecto el nombre del host seguido de `-node`: el nombre del host está en el certificado del plano de control, y éste no admite un nodo que lleve un nombre de su certificado) |
 | `--no-agent` | solo el plano de control |
 | `--profile` | `default` o `lab` |
 | `--control-plane`, `--node-agent` | los programas (por defecto, junto a `asp-server`, en el `PATH` o donde los paquetes) |

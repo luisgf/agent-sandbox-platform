@@ -32,7 +32,7 @@ Léelo antes de ejecutarlo si quieres: es un único fichero de shell (`scripts/i
 | **standalone** | |
 | `INSTALL_ASP_LISTEN` | dónde escucha el plano de control (por defecto `127.0.0.1:8443`, el loopback; `0.0.0.0:8443` deja que otros hosts se unan) |
 | `INSTALL_ASP_TLS_SAN` | más nombres o direcciones para su certificado, separados por comas |
-| `INSTALL_ASP_NODE_ID` | el id del nodo de este host (por defecto el nombre del host) |
+| `INSTALL_ASP_NODE_ID` | el id del nodo de este host (por defecto el nombre del host con `-node`: el nombre del host está en el certificado del plano de control, que no admite un nodo con un nombre suyo) |
 | `INSTALL_ASP_PROFILE` | `default`, o `lab`: un nodo sin VMs, para probar en un host sin KVM |
 | **server** | |
 | `INSTALL_ASP_LISTEN` | dónde escucha (por defecto `127.0.0.1:8080`; los nodos de otros hosts necesitan una dirección que alcancen, y TLS) |

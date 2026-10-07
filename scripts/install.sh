@@ -35,7 +35,7 @@
 #   INSTALL_ASP_LISTEN    where the control plane listens (default 127.0.0.1:8443, the loopback;
 #                         0.0.0.0:8443 lets other hosts join)
 #   INSTALL_ASP_TLS_SAN   more names or addresses its certificate is valid for (comma separated)
-#   INSTALL_ASP_NODE_ID   the id of the node on this host (default: the host name)
+#   INSTALL_ASP_NODE_ID   the id of the node on this host (default: the host name and -node)
 #   INSTALL_ASP_PROFILE   default, or lab
 #   INSTALL_ASP_SKIP_IMAGE  1 = do not pull the guest kernel and image of the release
 #

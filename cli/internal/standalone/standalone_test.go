@@ -142,7 +142,7 @@ func marksHave(dir string, want ...string) func() bool {
 
 func TestNodeIDFor(t *testing.T) {
 	for in, want := range map[string]string{
-		"Node1": "node1", "my_host": "my-host", "  ": "node", "ncc1701d.example": "ncc1701d.example", "-x-": "x",
+		"Node1": "node1-node", "my_host": "my-host-node", "  ": "node", "ncc1701d.example": "ncc1701d.example-node", "-x-": "x-node",
 	} {
 		if got := nodeIDFor(in); got != want {
 			t.Errorf("nodeIDFor(%q) = %q, want %q", in, got, want)
@@ -291,7 +291,7 @@ func TestPrepareMakesTheHostOnceAndKeepsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.NodeID != "box" || p.LocalURL != "https://127.0.0.1:18443" || p.PublicURL != p.LocalURL {
+	if p.NodeID != "box-node" || p.LocalURL != "https://127.0.0.1:18443" || p.PublicURL != p.LocalURL {
 		t.Errorf("ids and urls: %+v", p)
 	}
 	if len(p.AdminKey) != 48 || len(p.NodeToken) != 48 || len(p.AgentToken) != 64 || p.AdminKey == p.NodeToken {
@@ -687,5 +687,38 @@ func TestWaitHealthyWaitsForTheCertificateToBeAnswered(t *testing.T) {
 	defer cancel2()
 	if err := waitHealthy(ctx2, p); err != nil {
 		t.Fatalf("a control plane answering over its own certificate: %v", err)
+	}
+}
+
+// The control plane refuses a node that carries a name of its own certificate, and the host's
+// name is in the certificate: the default id of the node is not the host name, and an id the
+// operator gives that is one of the names is refused before anything starts.
+func TestTheNodeIDIsNotAnameOfTheCertificate(t *testing.T) {
+	dir := t.TempDir()
+	base := Options{DataDir: filepath.Join(dir, "a"), Listen: "127.0.0.1:8443", User: "x", Group: "x",
+		Hostname: func() (string, error) { return "runnervm8df0l", nil },
+		Addrs:    func() ([]net.Addr, error) { return nil, nil }}
+	p, err := Prepare(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := LoadCertificate(p.Layout.TLSCert())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append(append([]string{}, cert.DNSNames...), cert.Subject.CommonName, "127.0.0.1", "::1") {
+		if strings.EqualFold(p.NodeID, name) {
+			t.Fatalf("the default node id %q is a name of the certificate", p.NodeID)
+		}
+	}
+	for _, id := range []string{"runnervm8df0l", "LOCALHOST", "asp-server", "127.0.0.1"} {
+		base.DataDir, base.NodeID = filepath.Join(dir, "b-"+id), id
+		if _, err := Prepare(base); err == nil || !strings.Contains(err.Error(), "TLS certificate") {
+			t.Errorf("--node-id %q: %v", id, err)
+		}
+	}
+	base.DataDir, base.NodeID = filepath.Join(dir, "c"), "box1"
+	if _, err := Prepare(base); err != nil {
+		t.Errorf("an id that is none of the names: %v", err)
 	}
 }
