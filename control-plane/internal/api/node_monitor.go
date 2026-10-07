@@ -113,6 +113,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 			if err != nil {
 				slog.Error("node monitor: mark offline", "node_id", n.ID, "error", err)
 			} else if changed {
+				s.mx().nodeEvents.Inc("offline")
 				slog.Warn("node offline: no signs of life", "node_id", n.ID, "silent_for", silent.Round(time.Second).String())
 			}
 		}
@@ -139,6 +140,7 @@ func (s *Server) sweepNodes(ctx context.Context, now, started time.Time, cfg Nod
 			slog.Error("node monitor: fail sandboxes of a lost node", "node_id", n.ID, "error", err)
 			continue
 		}
+		s.mx().lost.Add(float64(len(failed)), store.StopReasonNodeLost)
 		for _, sb := range failed {
 			slog.Warn("sandbox lost with its node", "sandbox_id", sb.ID, "node_id", n.ID, "state", sb.State,
 				"revoked", n.RevokedAt != nil, "silent_for", silent.Round(time.Second).String())
@@ -179,9 +181,11 @@ func (s *Server) fenceLostNode(ctx context.Context, n store.Node, lastSign time.
 	switch {
 	case err != nil:
 		slog.Error("fence of a lost node failed; failing its sandboxes anyway", "node_id", n.ID, "provider", provider, "error", err)
+		s.mx().nodeEvents.Inc("fence_failed")
 		_ = s.Store.EmitNodeEvent(ctx, n.ID, "node.fence_failed", "node-monitor", map[string]any{"provider": provider, "error": err.Error()})
 	case fenced:
 		slog.Warn("fenced a lost node", "node_id", n.ID, "provider", provider)
+		s.mx().nodeEvents.Inc("fenced")
 		_ = s.Store.EmitNodeEvent(ctx, n.ID, "node.fenced", "node-monitor", map[string]any{"provider": provider})
 	}
 }

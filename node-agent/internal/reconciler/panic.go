@@ -30,7 +30,7 @@ func (r *Reconciler) afterStartPanic(sb cpclient.Sandbox, v any) {
 	ctx, cancel := context.WithTimeout(context.Background(), panicCleanupTimeout)
 	defer cancel()
 	resumed := sb.BootedAt != nil || sb.BootCount > 1
-	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: resumed})
+	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: resumed, how: "panic"})
 	if !resumed {
 		r.removeRootFSByID(sb.ID)
 	}
@@ -46,7 +46,7 @@ func (r *Reconciler) afterStartPanic(sb cpclient.Sandbox, v any) {
 func (r *Reconciler) afterStopPanic(sb cpclient.Sandbox, v any) {
 	ctx, cancel := context.WithTimeout(context.Background(), panicCleanupTimeout)
 	defer cancel()
-	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: r.retainsDisks()})
+	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: r.retainsDisks(), how: "panic"})
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "stopped", panicDetail(v)); err != nil {
 		r.Logger.Warn("report after panic", "sandbox_id", sb.ID, "state", "stopped", "error", err)
 	}
@@ -58,7 +58,7 @@ func (r *Reconciler) afterStopPanic(sb cpclient.Sandbox, v any) {
 func (r *Reconciler) afterDeletePanic(sb cpclient.Sandbox, v any) {
 	ctx, cancel := context.WithTimeout(context.Background(), panicCleanupTimeout)
 	defer cancel()
-	r.teardownLocal(ctx, sb.ID, teardownOpts{})
+	r.teardownLocal(ctx, sb.ID, teardownOpts{how: "panic"})
 	r.removeRootFSByID(sb.ID)
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, "deleted", panicDetail(v)); err != nil {
 		r.Logger.Warn("report after panic", "sandbox_id", sb.ID, "state", "deleted", "error", err)

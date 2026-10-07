@@ -259,6 +259,34 @@ func (m *MemoryStore) ListSandboxes(ctx context.Context, tenantID string) ([]San
 	return out, nil
 }
 
+func (m *MemoryStore) CountSandboxes(ctx context.Context) ([]SandboxCount, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	type key struct {
+		tenant string
+		state  SandboxState
+	}
+	counts := map[key]int64{}
+	for _, sb := range m.sandboxes {
+		counts[key{sb.TenantID, sb.State}]++
+	}
+	out := make([]SandboxCount, 0, len(counts))
+	for k, n := range counts {
+		out = append(out, SandboxCount{TenantID: k.tenant, State: k.state, Count: n})
+	}
+	sortSandboxCounts(out)
+	return out, nil
+}
+
+func sortSandboxCounts(c []SandboxCount) {
+	sort.Slice(c, func(i, j int) bool {
+		if c[i].TenantID != c[j].TenantID {
+			return c[i].TenantID < c[j].TenantID
+		}
+		return c[i].State < c[j].State
+	})
+}
+
 func (m *MemoryStore) ClaimSandbox(ctx context.Context, id, nodeID string) (Sandbox, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(nodeID) == "" {
 		return Sandbox{}, fmt.Errorf("%w: id and node_id required", ErrInvalidInput)

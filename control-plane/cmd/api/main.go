@@ -20,11 +20,20 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/metrics"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/store"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
+)
+
+// The optional operations listeners (see metrics.Serve): no authentication, so
+// loopback unless the insecure variable says otherwise.
+const (
+	envMetricsListen     = "ASP_METRICS_LISTEN"
+	envPprofListen       = "ASP_PPROF_LISTEN"
+	envInsecureObsListen = "ASP_INSECURE_OBS_LISTEN"
 )
 
 // EnvShutdownTimeout bounds how long SIGTERM waits for in-flight requests.
@@ -152,6 +161,21 @@ func run(ctx context.Context, args []string) error {
 		slog.Warn(api.EnvInsecureAgentHTTP + "=1: plain HTTP agent endpoints on other hosts are allowed; exec traffic is unauthenticated (lab only)")
 	}
 	srv.OIDC = oidcSigner
+	if pg, ok := st.(*store.PostgresStore); ok {
+		srv.MetricsRegistry().AddCollector(poolCollector(pg.Pool()))
+	}
+	// Metrics and profiles on a listener of their own, loopback-only: neither has
+	// authentication. GET /metrics on the API port serves the metrics to a platform key.
+	if addr := strings.TrimSpace(os.Getenv(envMetricsListen)); addr != "" {
+		if err := metrics.Serve(ctx, "metrics", addr, api.EnvTruthy(envInsecureObsListen), srv.MetricsRegistry().Mux()); err != nil {
+			return configError{err}
+		}
+	}
+	if addr := strings.TrimSpace(os.Getenv(envPprofListen)); addr != "" {
+		if err := metrics.Serve(ctx, "pprof", addr, api.EnvTruthy(envInsecureObsListen), metrics.PprofHandler()); err != nil {
+			return configError{err}
+		}
+	}
 	attestor, err := attest.LoadOrCreate()
 	if err != nil {
 		return fmt.Errorf("attestor: %w", err)
@@ -287,7 +311,7 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	server := newHTTPServer(api.AuthMiddleware(st, authCfg)(api.RequestLog(mux)))
+	server := newHTTPServer(api.AuthMiddleware(st, authCfg)(api.RequestLog(srv.Instrument(mux))))
 	server.TLSConfig = tlsCfg
 	servers := []*trackedServer{server}
 	serveErr := make(chan error, 2)
@@ -304,7 +328,7 @@ func run(ctx context.Context, args []string) error {
 		if enrollAddr == "" {
 			enrollAddr = "127.0.0.1:8081"
 		}
-		enroll, err := startEnrollPlaintext(enrollAddr, st, authCfg, mux, serveErr)
+		enroll, err := startEnrollPlaintext(enrollAddr, st, authCfg, srv.Instrument(mux), serveErr)
 		if err != nil {
 			slog.Error("enroll plaintext listen", "addr", enrollAddr, "error", err)
 		} else {

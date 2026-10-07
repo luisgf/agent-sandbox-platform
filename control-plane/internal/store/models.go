@@ -96,6 +96,13 @@ type Sandbox struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+// SandboxCount is how many sandboxes a tenant has in a state.
+type SandboxCount struct {
+	TenantID string       `json:"tenant_id"`
+	State    SandboxState `json:"state"`
+	Count    int64        `json:"count"`
+}
+
 type Node struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`

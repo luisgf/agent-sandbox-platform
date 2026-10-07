@@ -86,6 +86,8 @@ type Reconciler struct {
 	// GuestSubnet is the pool each TAP's /30 is carved from (default
 	// tap.DefaultGuestSubnet). Must match the nft --guest-subnet.
 	GuestSubnet netip.Prefix
+	// Metrics counts starts, stops and exits. Nil counts nothing.
+	Metrics *Metrics
 	// GuestDNS hands each guest its gateway as the resolver: the node's DNS sink
 	// answers there (the nft redirect sends port 53 to it). Off when nothing would
 	// answer, so a lookup fails at once instead of timing out.
@@ -344,6 +346,7 @@ func (r *Reconciler) poll(ctx context.Context) {
 			r.OnUnknownNode(ctx)
 			return
 		}
+		r.Metrics.pollFailed()
 		r.Logger.Warn("list work failed", "error", err)
 		return
 	}
@@ -406,6 +409,7 @@ func (r *Reconciler) applyEgress(e *cpclient.WorkEgress) {
 			continue
 		}
 		r.Egress.Set(id, egressAllowlist(pol))
+		r.Egress.SetTenant(id, tenant)
 		r.egressVersions[id] = pol.Version
 		r.Logger.Info("egress policy applied", "sandbox_id", id, "tenant_id", tenant, "mode", pol.Mode, "rules", len(pol.Rules), "version", pol.Version)
 	}
@@ -466,7 +470,7 @@ func (r *Reconciler) tapMgr() *tap.Manager {
 	return &tap.Manager{Logger: r.Logger}
 }
 
-func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) error {
+func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) (retErr error) {
 	r.mu.Lock()
 	_, have := r.handles[sb.ID]
 	r.mu.Unlock()
@@ -501,6 +505,12 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 	r.mu.Lock()
 	delete(r.exits, sb.ID)
 	r.mu.Unlock()
+	// Count how it goes.
+	kind, startedAt := "new", time.Now()
+	if sb.BootedAt != nil || sb.BootCount > 1 {
+		kind = "resume"
+	}
+	defer func() { r.Metrics.recordStart(kind, startedAt, retErr) }()
 
 	cfg := r.vmConfig(sb)
 
@@ -640,7 +650,7 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		} else {
 			err = fmt.Errorf("guest_not_ready: the guest did not answer within %s%s", r.GuestReadyTimeout, lastConsoleLine(console))
 		}
-		r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: resumed})
+		r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: resumed, how: "start_failed"})
 		r.failStart(ctx, sb, err)
 		return fmt.Errorf("start: %w", err)
 	}
@@ -719,7 +729,7 @@ func (r *Reconciler) postAttestation(ctx context.Context, sb cpclient.Sandbox, h
 // and the disk stays; otherwise it is the old stop, which removes the disk.
 func (r *Reconciler) ensureStopped(ctx context.Context, sb cpclient.Sandbox) error {
 	keep := r.retainsDisks()
-	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: keep, graceful: keep})
+	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: keep, graceful: keep, how: "stop"})
 	detail := "vmm deleted"
 	if keep {
 		detail = "vmm stopped, disk kept"
@@ -742,7 +752,7 @@ func (r *Reconciler) selfFence(ctx context.Context, id, why string) {
 	// refused because the sandbox is already stopping) must keep it, a delete or
 	// the disk GC removes it. Removing it here would leave a stopped sandbox that
 	// cannot be resumed. An older control plane keeps no disks: remove it as before.
-	r.teardownLocal(ctx, id, teardownOpts{keepDisk: r.retainsDisks()})
+	r.teardownLocal(ctx, id, teardownOpts{keepDisk: r.retainsDisks(), how: "fence"})
 }
 
 // teardownLocal stops the VM and releases everything it held on this host,
@@ -752,6 +762,7 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string, opts teardown
 	h, had := r.handles[id]
 	if had {
 		delete(r.handles, id)
+		r.Metrics.stop(opts.how)
 	}
 	if r.releasing == nil {
 		r.releasing = make(map[string]bool)
@@ -1011,6 +1022,7 @@ func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) bool {
 		cancel()
 		if err == nil {
 			r.Logger.Info("guest answering", "sandbox_id", sandboxID, "after", time.Since(start).Round(time.Millisecond))
+			r.Metrics.recordGuestWait(start, true)
 			return true
 		}
 		// A VM whose process ended will never answer: stop waiting for it.
@@ -1023,6 +1035,7 @@ func (r *Reconciler) waitGuest(ctx context.Context, sandboxID string) bool {
 		case <-time.After(guestPoll):
 		}
 	}
+	r.Metrics.recordGuestWait(start, false)
 	r.Logger.Warn("guest did not answer", "sandbox_id", sandboxID,
 		"waited", time.Since(start).Round(time.Millisecond), "error", err)
 	return false

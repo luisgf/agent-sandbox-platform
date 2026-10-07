@@ -2,6 +2,7 @@
 package execproxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/egress"
@@ -151,9 +153,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := client.Exec(r.Context(), execRequestFromBody(body))
 	if err != nil {
-		if s.Logger != nil {
-			s.Logger.Error("pod-daemon exec", "error", err, "sandbox_id", body.SandboxID)
-		}
+		s.logExecError(r, "pod-daemon exec", err, "sandbox_id", body.SandboxID)
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -273,9 +273,7 @@ func (s *Server) handleExecStdin(w http.ResponseWriter, r *http.Request) {
 		Rows:   body.Rows,
 		Cols:   body.Cols,
 	}); err != nil {
-		if s.Logger != nil {
-			s.Logger.Error("pod-daemon exec stdin", "error", err, "sandbox_id", body.SandboxID, "exec_id", body.ExecID)
-		}
+		s.logExecError(r, "pod-daemon exec stdin", err, "sandbox_id", body.SandboxID, "exec_id", body.ExecID)
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -299,9 +297,7 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request, client
 			s.writeBufferedAsNDJSON(w, r, client, in, body.SandboxID)
 			return
 		}
-		if s.Logger != nil {
-			s.Logger.Error("pod-daemon exec stream", "error", err, "sandbox_id", body.SandboxID)
-		}
+		s.logExecError(r, "pod-daemon exec stream", err, "sandbox_id", body.SandboxID)
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -344,9 +340,7 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request, client
 			return
 		}
 		if rerr != nil {
-			if s.Logger != nil {
-				s.Logger.Error("pod-daemon exec stream copy", "error", rerr, "sandbox_id", body.SandboxID)
-			}
+			s.logExecError(r, "pod-daemon exec stream copy", rerr, "sandbox_id", body.SandboxID)
 			return
 		}
 	}
@@ -355,9 +349,7 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request, client
 func (s *Server) writeBufferedAsNDJSON(w http.ResponseWriter, r *http.Request, client *poddaemon.Client, in poddaemon.ExecRequest, sandboxID string) {
 	out, err := client.Exec(r.Context(), in)
 	if err != nil {
-		if s.Logger != nil {
-			s.Logger.Error("pod-daemon exec", "error", err, "sandbox_id", sandboxID)
-		}
+		s.logExecError(r, "pod-daemon exec", err, "sandbox_id", sandboxID)
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -473,4 +465,26 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// clientGone reports that err is explained by the client having left: its request
+// was cancelled (a `| head`, a Ctrl-C, a timeout on its side) or its connection
+// reset. That is an ordinary end of a stream, not a fault of the agent.
+func clientGone(r *http.Request, err error) bool {
+	return r.Context().Err() != nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
+}
+
+// logExecError logs a failure of an exec call: at error level when the agent or
+// the guest failed, at info when the client simply went away.
+func (s *Server) logExecError(r *http.Request, msg string, err error, attrs ...any) {
+	if s.Logger == nil {
+		return
+	}
+	args := append([]any{"error", err}, attrs...)
+	if clientGone(r, err) {
+		s.Logger.Info(msg+": the client went away", args...)
+		return
+	}
+	s.Logger.Error(msg, args...)
 }

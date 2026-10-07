@@ -26,6 +26,8 @@ type DNSSink struct {
 	// Lookup resolves an allowed name; nil uses net.DefaultResolver.LookupIP
 	// (tests inject a fake).
 	Lookup func(ctx context.Context, network, host string) ([]net.IP, error)
+	// Metrics counts the queries answered, by decision. Nil: none.
+	Metrics *Metrics
 }
 
 // DNS header bits and response codes (RFC 1035 §4.1.1).
@@ -114,13 +116,17 @@ func (d *DNSSink) answer(req []byte, from netip.Addr) []byte {
 	reply := func(rcode int, addrs []net.IP) []byte {
 		return buildDNSResponse(id, reqFlags, name, qtype, addrs, rcode)
 	}
+	tenant := tenantLabel(d.Cache, d.Cache.SandboxFor(from))
 	if reqFlags&dnsOpcodeMask != 0 {
+		d.Metrics.query("unsupported", tenant)
 		return reply(dnsRcodeNotImp, nil)
 	}
 	if d.allowlist(from).Check(name) != nil {
+		d.Metrics.query("deny", tenant)
 		return reply(dnsRcodeNXDomain, nil)
 	}
 	if qtype != dnsTypeA && qtype != dnsTypeAAAA {
+		d.Metrics.query("allow", tenant)
 		return reply(dnsRcodeNoError, nil)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -129,10 +135,13 @@ func (d *DNSSink) answer(req []byte, from netip.Addr) []byte {
 	if err != nil {
 		var dnsErr *net.DNSError
 		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			d.Metrics.query("allow", tenant) // the policy allowed it; the name does not exist
 			return reply(dnsRcodeNXDomain, nil)
 		}
+		d.Metrics.query("error", tenant)
 		return reply(dnsRcodeServFail, nil)
 	}
+	d.Metrics.query("allow", tenant)
 	var addrs []net.IP
 	for _, ip := range ips {
 		if qtype == dnsTypeA && ip.To4() != nil {

@@ -66,6 +66,7 @@ func (s *Server) sweepRetention(ctx context.Context, now time.Time, cfg Retentio
 	if expired, err := s.Store.ExpireStoppedSandboxes(ctx, now, cfg.TTL); err != nil {
 		slog.Error("retention: expiring stopped sandboxes", "error", err)
 	} else {
+		s.mx().reaped.Add(float64(len(expired)), "retention_expired")
 		for _, sb := range expired {
 			slog.Info("stopped sandbox deleted: retention TTL", "id", sb.ID, "tenant", sb.TenantID, "state", sb.State, "ttl", cfg.TTL.String())
 		}
@@ -73,6 +74,7 @@ func (s *Server) sweepRetention(ctx context.Context, now time.Time, cfg Retentio
 	if evicted, err := s.Store.EvictStoppedOverCap(ctx, cfg.MaxStoppedPerTenant); err != nil {
 		slog.Error("retention: evicting stopped sandboxes over the tenant cap", "error", err)
 	} else {
+		s.mx().reaped.Add(float64(len(evicted)), "tenant_cap")
 		for _, sb := range evicted {
 			// The user's disk goes to make room: say so where an operator will see it.
 			slog.Warn("stopped sandbox deleted to keep its tenant under the cap", "id", sb.ID, "tenant", sb.TenantID,

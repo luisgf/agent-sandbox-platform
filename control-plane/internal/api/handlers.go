@@ -19,6 +19,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/attest"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/authn/idp"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/fence"
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/metrics"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pki"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
@@ -69,6 +70,10 @@ type Server struct {
 	// ReservedNodeNames are the names of the control plane's own TLS
 	// certificate: no node may enroll under one of them (see checkNodeNameFree).
 	ReservedNodeNames []string
+
+	// Metrics is what GET /metrics serves; nil creates a registry on first use.
+	Metrics *metrics.Registry
+	metricsInit
 }
 
 // DefaultBufferedExecTimeout is how long a buffered exec (no ?stream=1) may run
@@ -249,6 +254,7 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	sb, err := s.Store.CreateSandbox(r.Context(), input)
 	if err != nil {
+		s.mx().creates.Inc(createResult(err))
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -259,7 +265,33 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.mx().creates.Inc("ok")
+	logLifecycle("created", sb, "cpu_millis", sb.CPUMillis, "memory_mib", sb.MemoryMiB, "owner_sub", sb.OwnerSub)
 	writeJSON(w, http.StatusCreated, sb)
+}
+
+// createResult names why a create failed, for the metrics.
+func createResult(err error) string {
+	var nc *store.NoCapacityError
+	switch {
+	case errors.As(err, &nc):
+		return "no_capacity"
+	case errors.Is(err, store.ErrNodeUnavailable):
+		return "node_unavailable"
+	case errors.Is(err, store.ErrInvalidInput):
+		return "invalid"
+	}
+	return "error"
+}
+
+// logLifecycle writes the one line a sandbox gets for each step of its life, with
+// the same fields every time, so a sandbox's story is one grep on its id.
+func logLifecycle(event string, sb store.Sandbox, kv ...any) {
+	args := []any{"event", event, "sandbox_id", sb.ID, "tenant", sb.TenantID, "state", string(sb.State)}
+	if sb.NodeID != nil && *sb.NodeID != "" {
+		args = append(args, "node_id", *sb.NodeID)
+	}
+	slog.Info("sandbox lifecycle", append(args, kv...)...)
 }
 
 // placementErrorResponse explains a refused placement; reasons counts why each
@@ -1550,6 +1582,7 @@ func (s *Server) UpdateSandboxStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	logLifecycle("reported", sb, "detail", strings.TrimSpace(req.Detail), "stop_reason", sb.StopReason)
 	writeJSON(w, http.StatusOK, sb)
 }
 
@@ -1607,6 +1640,7 @@ func (s *Server) StopSandbox(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, err)
 		return
 	}
+	logLifecycle("stop_requested", sb, "actor", actorSub)
 	writeJSON(w, http.StatusOK, sb)
 }
 
@@ -1624,6 +1658,7 @@ func (s *Server) StartSandbox(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, err)
 		return
 	}
+	logLifecycle("resume_requested", sb, "actor", actorSub)
 	writeJSON(w, http.StatusOK, sb)
 }
 
@@ -1639,6 +1674,7 @@ func (s *Server) DestroySandbox(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, err)
 		return
 	}
+	logLifecycle("delete_requested", sb, "actor", actorSub)
 	writeJSON(w, http.StatusOK, sb)
 }
 

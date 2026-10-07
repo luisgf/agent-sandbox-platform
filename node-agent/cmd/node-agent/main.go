@@ -33,6 +33,7 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/identity"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/localnet"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/measure"
+	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/metrics"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/nftredirect"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/poddaemon"
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/reconciler"
@@ -91,6 +92,9 @@ type config struct {
 	EgressNFTRedirect    bool    // resolved by resolveEgress
 	egressNFTRedirect    optBool // --egress-nft-redirect as given (unset: on with an egress proxy)
 	EgressEnforced       bool    // reported on register: proxy listening and nft rules applied in enforce mode
+	MetricsListen        string  // --metrics-listen: GET /metrics, Prometheus text format
+	PprofListen          string  // --pprof-listen: runtime profiles under /debug/pprof/
+	InsecureObsListen    bool    // --insecure-obs-listen: let those two listen off the loopback
 	NFTEgressMode        string  // soft | enforce ("": enforce, soft with --dry-run)
 	NFTDNSAction         string  // redirect | drop
 	NFTHTTPPorts         string
@@ -255,6 +259,25 @@ func main() {
 	}
 	pdRegistry := poddaemon.NewRegistry(fallbackDialer)
 
+	// Metrics: the registry every part below counts into. Served by --metrics-listen,
+	// loopback unless --insecure-obs-listen (the endpoint has no authentication).
+	obs := metrics.NewRegistry()
+	obs.AddCollector(metrics.RuntimeCollector(time.Now()))
+	egressMetrics := egress.NewMetrics(obs)
+	obs.AddCollector(diskCollector(cfg.DiskDir))
+	if cfg.MetricsListen != "" {
+		if err := metrics.Serve(ctx, "metrics", cfg.MetricsListen, cfg.InsecureObsListen, obs.Mux()); err != nil {
+			slog.Error("metrics listen", "error", err)
+			os.Exit(2)
+		}
+	}
+	if cfg.PprofListen != "" {
+		if err := metrics.Serve(ctx, "pprof", cfg.PprofListen, cfg.InsecureObsListen, metrics.PprofHandler()); err != nil {
+			slog.Error("pprof listen", "error", err)
+			os.Exit(2)
+		}
+	}
+
 	defaultAL := egress.NewAllowlistFromPolicy("deny-default", nil)
 	policyCache := &egress.PolicyCache{}
 	proxy := &execproxy.Server{
@@ -326,6 +349,7 @@ func main() {
 			Enforce:   true, // proxy always deny-by-default when listening
 			RateLimit: egress.NewTokenBucket(egress.DefaultRate, egress.DefaultBurst),
 			Guard:     guard,
+			Metrics:   egressMetrics,
 		}
 		if cfg.EgressMITM {
 			_ = os.Setenv("ASP_EGRESS_MITM", "1")
@@ -350,6 +374,7 @@ func main() {
 			Cache:     policyCache,
 			Logger:    slog.Default(),
 			Enforce:   true,
+			Metrics:   egressMetrics,
 		}
 		go func() {
 			slog.Info("egress DNS sink listening", "addr", cfg.EgressDNSSink)
@@ -387,6 +412,14 @@ func main() {
 		}
 		cfg.EgressEnforced = egressEnforced(cfg, applied)
 	}
+	obs.AddCollector(func() []metrics.Sample {
+		v := 0.0
+		if cfg.EgressEnforced {
+			v = 1
+		}
+		return []metrics.Sample{{Name: "asp_agent_egress_enforced", Type: "gauge",
+			Help: "1 when this node forces its guests through its egress proxy (rules applied in enforce mode).", Value: v}}
+	})
 	if !cfg.DryRun && cfg.Reconcile && !cfg.EgressEnforced {
 		slog.Warn("this node does not enforce egress: its guests are not forced through the egress proxy", "egress_proxy_listen", cfg.EgressProxyListen, "nft_redirect", cfg.EgressNFTRedirect, "nft_mode", cfg.NFTEgressMode)
 	}
@@ -557,6 +590,8 @@ func main() {
 			os.Exit(1)
 		}
 		rec = reconciler.New(cp, cfg.NodeID, micro, slog.Default(), cfg.ReconcileEvery)
+		rec.Metrics = reconciler.NewMetrics(obs)
+		obs.AddCollector(rec.Collector())
 		rec.KernelPath, rec.RootFSPath = cfg.GuestKernel, cfg.GuestRootFS
 		rec.Workers = cfg.ReconcileWorkers
 		if !cfg.DryRun {
@@ -773,6 +808,9 @@ func loadConfig() config {
 	flag.Var(&cfg.egressNFTRedirect, "egress-nft-redirect", "force guest HTTP(S)+DNS through the egress proxy and sink with nftables and drop the rest. Default: on when --egress-proxy-listen is set and this is not --dry-run; --egress-nft-redirect=false turns it off (HTTP_PROXY is then voluntary)")
 	flag.Var(&cfg.egressNFTRedirect, "nft-egress-redirect", "alias of --egress-nft-redirect (Fase 2e)")
 	flag.StringVar(&cfg.NFTEgressMode, "nft-egress-mode", getenv("ASP_NFT_EGRESS_MODE", ""), "what a node that cannot apply the nft rules does: enforce (refuse to start; the default) or soft (start without egress enforcement; the default with --dry-run)")
+	flag.StringVar(&cfg.MetricsListen, "metrics-listen", os.Getenv("ASP_METRICS_LISTEN"), "serve Prometheus metrics on this address (GET /metrics), e.g. 127.0.0.1:9102. No authentication, so loopback only unless --insecure-obs-listen. Off by default")
+	flag.StringVar(&cfg.PprofListen, "pprof-listen", os.Getenv("ASP_PPROF_LISTEN"), "serve Go runtime profiles on this address (/debug/pprof/), e.g. 127.0.0.1:6060. No authentication, so loopback only unless --insecure-obs-listen. Off by default")
+	flag.BoolVar(&cfg.InsecureObsListen, "insecure-obs-listen", getenv("ASP_INSECURE_OBS_LISTEN", "") == "1", "allow --metrics-listen and --pprof-listen on a non-loopback address (no authentication; put a proxy that authenticates in front)")
 	flag.StringVar(&cfg.NFTDNSAction, "nft-dns-action", getenv("ASP_NFT_DNS_ACTION", "redirect"), "guest DNS handling: redirect (to --egress-dns-sink port) | drop")
 	flag.StringVar(&cfg.NFTHTTPPorts, "nft-http-ports", getenv("ASP_NFT_HTTP_PORTS", "80,443"), "comma-separated guest TCP ports redirected to egress proxy")
 	flag.IntVar(&cfg.CapacityCPU, "capacity-cpu", getenvInt("ASP_CAPACITY_CPU", capacity.Detected), "CPU cores offered to sandboxes: -1 detects, 0 is not enforced (the control plane overcommits CPU)")

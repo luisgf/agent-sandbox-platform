@@ -139,6 +139,11 @@ func (r *Reconciler) vmmExited(ctx context.Context, sb cpclient.Sandbox, info vm
 	if _, err := r.CP.ReportStatus(ctx, sb.ID, state, detail); err != nil && !cpclient.IsConflict(err) {
 		return fmt.Errorf("report %s: %w", state, err)
 	}
-	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: keep})
+	cause := "crash"
+	if info.Err == nil {
+		cause = "poweroff"
+	}
+	r.Metrics.exit(cause)
+	r.teardownLocal(ctx, sb.ID, teardownOpts{keepDisk: keep, how: "exited"})
 	return nil
 }

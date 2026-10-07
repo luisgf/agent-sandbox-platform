@@ -302,6 +302,29 @@ func (p *PostgresStore) SetNodeDiskFree(ctx context.Context, id string, freeMiB 
 	return nil
 }
 
+func (p *PostgresStore) CountSandboxes(ctx context.Context) ([]SandboxCount, error) {
+	rows, err := p.pool.Query(ctx, `SELECT tenant_id, state, count(*) FROM sandboxes GROUP BY tenant_id, state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SandboxCount
+	for rows.Next() {
+		var c SandboxCount
+		var state string
+		if err := rows.Scan(&c.TenantID, &state, &c.Count); err != nil {
+			return nil, err
+		}
+		c.State = SandboxState(state)
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sortSandboxCounts(out)
+	return out, nil
+}
+
 func (p *PostgresStore) CountStoppedByNode(ctx context.Context) (map[string]int64, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT node_id, count(*) FROM sandboxes
