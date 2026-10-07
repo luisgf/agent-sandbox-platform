@@ -1255,26 +1255,40 @@ func (r *Reconciler) consoleTail(id string) string {
 // ansiSequence is a terminal escape sequence (colours, cursor movement).
 var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
 
-// lastConsoleLine is the last printable line of a console tail, without its
-// terminal escapes, for a status detail: " (last console line: ...)", or "" when
-// there is none.
+// consoleTrouble marks a line that says what went wrong.
+var consoleTrouble = regexp.MustCompile(`(?i)kernel panic|vfs:|unable to|cannot |can't |no init|not found|failed|error|oops`)
+
+// consoleLine picks the line of a console tail worth showing in a status detail,
+// without its terminal escapes: the last one that says something went wrong
+// among the last few, else the last printable one. A kernel that cannot mount
+// its root panics and reboots in a loop, so the last line is "Rebooting in 1
+// seconds.." and the useful one is just above it. Returns " (console: ...)" or "".
 func lastConsoleLine(tail string) string {
 	lines := strings.Split(strings.ReplaceAll(ansiSequence.ReplaceAllString(tail, ""), "\r", "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.Map(func(r rune) rune {
+	var printable []string
+	for _, l := range lines {
+		l = strings.TrimSpace(strings.Map(func(r rune) rune {
 			if r < 0x20 || r == 0x7f {
 				return -1
 			}
 			return r
-		}, lines[i])
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+		}, l))
+		if l != "" {
+			printable = append(printable, l)
 		}
-		if len(line) > 120 {
-			line = line[:120]
-		}
-		return fmt.Sprintf(" (last console line: %s)", line)
 	}
-	return ""
+	if len(printable) == 0 {
+		return ""
+	}
+	pick := printable[len(printable)-1]
+	for i := len(printable) - 1; i >= 0 && i >= len(printable)-40; i-- {
+		if consoleTrouble.MatchString(printable[i]) {
+			pick = printable[i]
+			break
+		}
+	}
+	if len(pick) > 160 {
+		pick = pick[:160]
+	}
+	return fmt.Sprintf(" (console: %s)", pick)
 }

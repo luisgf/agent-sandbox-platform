@@ -209,7 +209,7 @@ func TestStartReportsRunningOnceTheGuestAnswers(t *testing.T) {
 // A first boot whose guest never answers is not running: a broken image or a
 // kernel that cannot find its disk looks like a healthy sandbox to everything
 // but exec. After GuestReadyTimeout the VM is torn down and the start is
-// reported failed with guest_not_ready, and the guest's last console line.
+// reported failed with guest_not_ready, and the console line that says why.
 func TestStartFailsWhenTheGuestStaysSilent(t *testing.T) {
 	cp, srv := newRunningCP(t, "guest-silent-01")
 	eng := &bootingEngine{FakeVMM: vmm.NewFakeVMM(nil), t: t, refuse: 1 << 30,
@@ -223,7 +223,7 @@ func TestStartFailsWhenTheGuestStaysSilent(t *testing.T) {
 	detail := cp.detail
 	cp.mu.Unlock()
 	if state != "failed" || !strings.Contains(detail, "guest_not_ready") || !strings.Contains(detail, "500ms") ||
-		!strings.Contains(detail, "last console line: Kernel panic - not syncing: VFS: Unable to mount root fs)") {
+		!strings.Contains(detail, "console: Kernel panic - not syncing: VFS: Unable to mount root fs)") {
 		t.Fatalf("state=%s detail=%q", state, detail)
 	}
 	if waited := time.Since(start); waited < 500*time.Millisecond {
@@ -253,9 +253,15 @@ func TestLastConsoleLine(t *testing.T) {
 	for in, want := range map[string]string{
 		"":                       "",
 		"\r\n \r\n":              "",
-		"boot\r\nlogin: ":        " (last console line: login:)",
-		"a\x1b[0m\n\x1b[2J\n":    " (last console line: a)",
-		strings.Repeat("x", 500): " (last console line: " + strings.Repeat("x", 120) + ")",
+		"boot\r\nlogin: ":        " (console: login:)",
+		"a\x1b[0m\n\x1b[2J\n":    " (console: a)",
+		strings.Repeat("x", 500): " (console: " + strings.Repeat("x", 160) + ")",
+		// A kernel that cannot mount its root panics and reboots in a loop: the line
+		// that says why is above the last one.
+		"VFS: Unable to mount root fs\r\nKernel panic - not syncing\r\nRebooting in 1 seconds..\r\n": " (console: Kernel panic - not syncing)",
+		"all fine\r\nstill fine\r\n": " (console: still fine)",
+		// Only the last few lines are looked at: an old error far above is not news.
+		"error: old\r\n" + strings.Repeat("ok\r\n", 50): " (console: ok)",
 	} {
 		if got := lastConsoleLine(in); got != want {
 			t.Errorf("lastConsoleLine(%q) = %q, want %q", in, got, want)
