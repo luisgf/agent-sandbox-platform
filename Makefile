@@ -1,4 +1,4 @@
-.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
+.PHONY: test test-go test-rust test-guest-helper lint smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
@@ -14,7 +14,7 @@ GO_MODULES := control-plane node-agent cli images/guest/cmd/vsock-ssh-agent-prox
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
 
 help:
-	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | smoke-asp | smoke-asp-auth | asp | build | snapshot | pack | clean"
+	@echo "targets: test | lint | smoke | smoke-multi-node | smoke-egress-kvm | smoke-vmm-user-kvm | e2e-kvm | smoke-asp | smoke-asp-auth | asp | build | snapshot | pack | clean"
 
 test: test-go test-rust test-guest-helper
 
@@ -53,6 +53,11 @@ smoke-egress-kvm:
 
 smoke-vmm-user-kvm:
 	$(ROOT)scripts/smoke-vmm-user-kvm.sh
+
+# The life of a sandbox on a real KVM host (needs root and a guest image: ASP_E2E_ROOTFS), or against
+# a deployment (ASP_E2E_CONTROL_PLANE_URL); see the script.
+e2e-kvm:
+	$(ROOT)scripts/e2e-kvm.sh
 
 smoke-proxy:
 	$(ROOT)scripts/smoke-egress-proxy.sh
