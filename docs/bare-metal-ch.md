@@ -279,8 +279,29 @@ Migraciones `001`–`019` se aplican al arrancar el API si `DATABASE_URL` está 
 
 **Postgres es requisito para que parar conserve el disco** ([ADR-0012](adr/0012-retained-disks.md)). Con el store en memoria, reiniciar el plano de control olvida las sandboxes y cada nodo borra sus discos; el plano de control lo avisa al arrancar. En un servidor que ya corre otras cosas (ncc1701d comparte Docker con otra aplicación):
 
-1. **Un Postgres propio de ASP**, no el de otra aplicación: `docker compose up -d postgres` desde este repo crea `asp-postgres` (Postgres 16, usuario y base `asp`). En el servidor, antes de arrancarlo: publícalo solo en `127.0.0.1:5432` (o el puerto libre que toque), pon la **contraseña generada** en `POSTGRES_PASSWORD` y `DATABASE_URL`, y los datos en un disco persistente fuera de `/var` (que en ncc1701d tiene 2,9 GB): por ejemplo un bind mount a `/sandbox/postgres` o `/home/ubuntu/asp-postgres/data`, en vez del volumen por defecto.
-2. **`DATABASE_URL` en el fichero de secretos** que ya carga la unit del plano de control (`~/.secrets/asp-idp.env`, modo `0600`), nunca en la unit ni en el repo. Las claves ya viven en `/var/lib/asp-control-plane`, que es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`).
+1. **Un Postgres propio de ASP**, no el de otra aplicación (en ncc1701d `infra-db-1` ya ocupa el `5432`). Lo que se hizo allí el 2026-10-07, con la contraseña generada en el momento y sin imprimirla:
+
+   ```bash
+   sudo install -d -o 999 -g 999 -m 700 /sandbox/asp-postgres        # datos fuera de /var (2,9 GB)
+   umask 077
+   printf 'POSTGRES_USER=asp\nPOSTGRES_DB=asp\nPOSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > ~/.secrets/asp-postgres.env
+   docker run -d --name asp-postgres --restart unless-stopped --env-file ~/.secrets/asp-postgres.env \
+     -p 127.0.0.1:5433:5432 -v /sandbox/asp-postgres:/var/lib/postgresql --memory 2g \
+     --log-opt max-size=10m --log-opt max-file=3 postgres:18
+   ```
+
+   Solo en loopback, con política `unless-stopped` y los datos en un bind mount (un `docker volume prune` no los toca). La imagen `postgres:18` ya estaba en el servidor; CI usa la 16. Con `docker compose up -d postgres` en una máquina sin otra base de datos es más corto, pero cambia la contraseña `asp` por una generada.
+2. **`DATABASE_URL` en el fichero de secretos** que ya carga la unit del plano de control (`~/.secrets/asp-idp.env`, modo `0600`), nunca en la unit ni en el repo: `DATABASE_URL=postgres://asp:<contraseña>@127.0.0.1:5433/asp?sslmode=disable`. Las claves ya viven en `/var/lib/asp-control-plane`, que es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`). Como Postgres es un contenedor y al arrancar el servidor puede tardar más que el plano de control, un drop-in (`/etc/systemd/system/asp-control-plane.service.d/postgres.conf`) lo hace esperar a Docker y reintentar sin tope: sin `StartLimitIntervalSec=0`, systemd se rinde tras 5 arranques fallidos en 10 s.
+
+   ```ini
+   [Unit]
+   After=docker.service
+   Wants=docker.service
+   StartLimitIntervalSec=0
+
+   [Service]
+   RestartSec=5
+   ```
 3. **Reinicia el plano de control** sin sesiones activas: las migraciones se aplican solas (`using Postgres store` en el log). El node-agent se registra solo; las sandboxes que viviesen en memoria se pierden, y los discos de las que quedasen paradas los recoge el GC del nodo.
 4. **Comprueba:** `asp sandbox list` vacío; arranca una sesión, páriala, `systemctl restart asp-control-plane`, y `asp session resume` debe funcionar y el disco seguir en `--disk-dir`.
 5. **Copias:** `pg_dump` a `~/asp-backup-<fecha>/` antes de desplegar migraciones nuevas.
