@@ -40,7 +40,7 @@ func testNodeLoss(t *testing.T, s Store, h livenessHooks) {
 	if _, err := s.ClaimSandbox(stopping.ID, "node-a"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MarkSandboxStopping(stopping.ID, ""); err != nil {
+	if _, err := s.StopSandbox(stopping.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	other := create("node-b")
@@ -182,7 +182,7 @@ func testAgentRestartOrphans(t *testing.T, s Store) {
 	if _, err := s.UpdateSandboxStatus(stopping.ID, SandboxRunning, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MarkSandboxStopping(stopping.ID, ""); err != nil {
+	if _, err := s.StopSandbox(stopping.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 

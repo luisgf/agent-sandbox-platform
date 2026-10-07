@@ -42,20 +42,42 @@ func (s *Server) sweepIdle(timeout time.Duration) {
 }
 
 // execBlock is non-empty when exec must not be proxied: only a running
-// sandbox has a guest the node agent can reach. The caller answers 409.
+// sandbox has a guest the node agent can reach. The caller answers 409. The
+// message names what to do: wait, resume (the disk of a stopped sandbox is
+// kept), or start a new sandbox.
 func execBlock(sb store.Sandbox) string {
-	switch sb.StopReason {
-	case store.StopReasonIdle:
-		return store.IdleReapedMessage
-	case store.StopReasonNodeLost, store.StopReasonAgentRestarted:
-		return store.NodeLostMessage
-	}
+	lost := sb.StopReason == store.StopReasonNodeLost || sb.StopReason == store.StopReasonAgentRestarted
 	switch sb.State {
 	case store.SandboxRunning:
 		return ""
 	case store.SandboxRequested, store.SandboxScheduled, store.SandboxStarting:
 		return "sandbox is " + string(sb.State) + "; wait until it is running"
-	default:
-		return "sandbox is " + string(sb.State)
+	case store.SandboxStopping, store.SandboxStopped:
+		switch {
+		case lost:
+			return store.NodeLostMessage
+		case sb.StopReason == store.StopReasonIdle:
+			return store.IdleReapedMessage
+		case sb.State == store.SandboxStopped:
+			msg := "sandbox is stopped; its disk is kept: resume it (asp session resume)"
+			if sb.StatusDetail != "" {
+				msg += " (the last resume failed: " + sb.StatusDetail + ")"
+			}
+			return msg
+		}
+		return "sandbox is stopping"
+	case store.SandboxFailed:
+		if lost {
+			return store.NodeLostMessage
+		}
+		if sb.StatusDetail != "" {
+			return "sandbox failed: " + sb.StatusDetail
+		}
+		return "sandbox failed"
+	case store.SandboxDeleting:
+		return "sandbox is being deleted"
+	case store.SandboxDeleted:
+		return "sandbox was deleted"
 	}
+	return "sandbox is " + string(sb.State)
 }

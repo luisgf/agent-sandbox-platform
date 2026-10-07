@@ -352,7 +352,7 @@ func TestMemoryStoreDestroyAndStatus(t *testing.T) {
 	if err != nil || running.State != SandboxRunning {
 		t.Fatalf("status running: %+v err=%v", running, err)
 	}
-	stopping, err := s.MarkSandboxStopping(sb.ID, "")
+	stopping, err := s.StopSandbox(sb.ID, "")
 	if err != nil || stopping.State != SandboxStopping {
 		t.Fatalf("destroy: %+v err=%v", stopping, err)
 	}
@@ -505,7 +505,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	}
 
 	// Destroy with actor_sub
-	_, err = s.MarkSandboxStopping(sb2.ID, "user:carol")
+	_, err = s.StopSandbox(sb2.ID, "user:carol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestMemoryStoreOwnerAndActorSub(t *testing.T) {
 	}
 }
 
-func TestDestroyFailedSandboxStops(t *testing.T) {
+func TestDeleteFailedSandboxIsDeleted(t *testing.T) {
 	s := newMemoryStoreWithNodes(t)
 	sb, err := s.CreateSandbox(CreateSandboxInput{
 		TenantID:  "tenant-a",
@@ -530,11 +530,11 @@ func TestDestroyFailedSandboxStops(t *testing.T) {
 	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxFailed, "virtiofs"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.MarkSandboxStopping(sb.ID, "user")
+	out, err := s.DeleteSandbox(sb.ID, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.State != SandboxStopped {
+	if out.State != SandboxDeleted {
 		t.Fatalf("state %s", out.State)
 	}
 }

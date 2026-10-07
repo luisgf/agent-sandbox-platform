@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/sched"
@@ -49,16 +50,20 @@ func occupyingStateNames() []string {
 type NodeWork struct {
 	Sandboxes []Sandbox
 	Assigned  []string
+	// Retained are the stopped sandboxes on the node: their disks stay. Never nil
+	// in a response, so a node can tell a control plane that has the list from
+	// one that predates it (ADR-0012).
+	Retained []string
 	// Tenants maps every assigned sandbox to its tenant (for its egress policy).
 	Tenants map[string]string
 }
 
-// NeedsNodeAction reports whether a sandbox assigned to a node needs its node
-// agent to act: claim and start it, stop it, or follow a running full-tunnel
+// NeedsNodeAction reports whether a sandbox on a node needs its node agent to
+// act: claim and start it, stop it, delete it (the VM, if any, and the disk), or follow a running full-tunnel
 // local-net session (pending → up → withdrawn).
 func NeedsNodeAction(sb Sandbox) bool {
 	switch sb.State {
-	case SandboxRequested, SandboxStarting, SandboxStopping:
+	case SandboxRequested, SandboxStarting, SandboxStopping, SandboxDeleting:
 		return true
 	case SandboxRunning:
 		return sb.LocalNet
@@ -125,4 +130,40 @@ func placedEventPayload(nodeID string, cfg sched.Config, input CreateSandboxInpu
 		"policy":  string(cfg.Policy),
 		"pinned":  strings.TrimSpace(input.NodeID) != "",
 	})
+}
+
+// add files a sandbox of the node under what the node is told about it: held
+// capacity (assigned), work to do, or a disk to keep (retained).
+func (w *NodeWork) add(sb Sandbox) {
+	switch {
+	case OccupiesNode(sb.State):
+		w.Assigned = append(w.Assigned, sb.ID)
+		w.Tenants[sb.ID] = sb.TenantID
+		if NeedsNodeAction(sb) {
+			w.Sandboxes = append(w.Sandboxes, sb)
+		}
+	case sb.State == SandboxDeleting: // holds no capacity, still needs the node
+		w.Sandboxes = append(w.Sandboxes, sb)
+	case sb.State == SandboxStopped:
+		w.Retained = append(w.Retained, sb.ID)
+	}
+}
+
+func (w *NodeWork) sortWork() {
+	sort.Slice(w.Sandboxes, func(i, j int) bool { return w.Sandboxes[i].CreatedAt.Before(w.Sandboxes[j].CreatedAt) })
+	sort.Strings(w.Assigned)
+	sort.Strings(w.Retained)
+}
+
+// recordsDetail: the detail a node sends is kept for a start that could not
+// finish: failed, or a resume that went back to stopped. A plain stop's detail
+// ("vmm stopped") says nothing worth keeping.
+func recordsDetail(prev, to SandboxState) bool {
+	switch to {
+	case SandboxFailed:
+		return true
+	case SandboxStopped:
+		return prev == SandboxRequested || prev == SandboxStarting
+	}
+	return false
 }

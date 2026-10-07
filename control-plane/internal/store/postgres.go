@@ -352,28 +352,30 @@ func (p *PostgresStore) ListNodeWork(nodeID string) (NodeWork, error) {
 		return NodeWork{}, fmt.Errorf("%w: node_id required", ErrInvalidInput)
 	}
 	ctx := context.Background()
+	// What holds capacity, what is being deleted, and what a stop keeps.
+	states := append(occupyingStateNames(), string(SandboxDeleting), string(SandboxStopped))
 	rows, err := p.pool.Query(ctx, `
 		SELECT `+sandboxColumns+`
 		FROM sandboxes
 		WHERE node_id = $1 AND state = ANY($2)
-		ORDER BY created_at ASC`, nodeID, occupyingStateNames())
+		ORDER BY created_at ASC`, nodeID, states)
 	if err != nil {
 		return NodeWork{}, err
 	}
 	defer rows.Close()
-	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}, Tenants: map[string]string{}}
+	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}, Retained: []string{}, Tenants: map[string]string{}}
 	for rows.Next() {
 		sb, err := scanSandbox(rows)
 		if err != nil {
 			return NodeWork{}, err
 		}
-		work.Assigned = append(work.Assigned, sb.ID)
-		work.Tenants[sb.ID] = sb.TenantID
-		if NeedsNodeAction(sb) {
-			work.Sandboxes = append(work.Sandboxes, sb)
-		}
+		work.add(sb)
 	}
-	return work, rows.Err()
+	if err := rows.Err(); err != nil {
+		return NodeWork{}, err
+	}
+	work.sortWork()
+	return work, nil
 }
 
 func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detail string) (Sandbox, error) {
@@ -398,17 +400,22 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 		UPDATE sandboxes s SET state=$2, state_version=s.state_version+1, updated_at=$3,
 		    last_activity_at=CASE WHEN $2='running' THEN $3 ELSE s.last_activity_at END,
 		    stop_reason=CASE WHEN $2='running' THEN '' ELSE s.stop_reason END,
+		    status_detail=CASE
+		      WHEN $2='running' THEN ''
+		      WHEN $5<>'' AND ($2='failed' OR ($2='stopped' AND prev.state IN ('requested','starting'))) THEN $5
+		      ELSE s.status_detail END,
+		    stopped_at=CASE WHEN $2='stopped' THEN $3::timestamptz ELSE s.stopped_at END,
 		    local_net_state=CASE
-		      WHEN $2 IN ('failed','stopped','stopping') AND s.local_net THEN 'withdrawn'
-		      WHEN $2 IN ('failed','stopped','stopping') AND NOT s.local_net THEN 'off'
+		      WHEN $2 IN ('failed','stopped','stopping','deleted') AND s.local_net THEN 'withdrawn'
+		      WHEN $2 IN ('failed','stopped','stopping','deleted') AND NOT s.local_net THEN 'off'
 		      ELSE s.local_net_state END,
-		    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE s.local_net_client_public END,
-		    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping') THEN '' ELSE s.local_net_grant_hash END,
-		    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping') THEN NULL ELSE s.local_net_grant_expires_at END
+		    local_net_client_public=CASE WHEN $2 IN ('failed','stopped','stopping','deleted') THEN '' ELSE s.local_net_client_public END,
+		    local_net_grant_hash=CASE WHEN $2 IN ('failed','stopped','stopping','deleted') THEN '' ELSE s.local_net_grant_hash END,
+		    local_net_grant_expires_at=CASE WHEN $2 IN ('failed','stopped','stopping','deleted') THEN NULL ELSE s.local_net_grant_expires_at END
 		FROM (SELECT id, state FROM sandboxes WHERE id=$1 FOR UPDATE) prev
 		WHERE s.id = prev.id AND prev.state = ANY($4)
 		RETURNING prev.state, `+sandboxColumnsS,
-		id, string(state), now, agentFromStates(state)), &from)
+		id, string(state), now, agentFromStates(state), detail), &from)
 	if errors.Is(err, pgx.ErrNoRows) {
 		cur, gerr := p.GetSandbox(id)
 		if gerr != nil {
@@ -444,85 +451,9 @@ func (p *PostgresStore) UpdateSandboxStatus(id string, state SandboxState, detai
 func agentFromStates(to SandboxState) []string {
 	var out []string
 	for _, from := range []SandboxState{SandboxRequested, SandboxScheduled, SandboxStarting, SandboxRunning,
-		SandboxPaused, SandboxStopping, SandboxStopped, SandboxFailed} {
+		SandboxPaused, SandboxStopping, SandboxStopped, SandboxFailed, SandboxDeleting, SandboxDeleted} {
 		if ValidAgentTransition(from, to) {
 			out = append(out, string(from))
-		}
-	}
-	return out
-}
-
-func (p *PostgresStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) {
-	if strings.TrimSpace(id) == "" {
-		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
-	}
-	actorSub = strings.TrimSpace(actorSub)
-	ctx := context.Background()
-	now := time.Now().UTC()
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return Sandbox{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	// One statement, decided from the state the row had when it was locked: a
-	// sandbox never claimed (requested) or failed has no VM, so it is stopped
-	// at once; an active one goes to stopping for its node to clean up.
-	var from string
-	sb, err := scanSandbox(tx.QueryRow(ctx, `
-		UPDATE sandboxes s SET
-		    state=CASE WHEN prev.state IN ('requested','failed') THEN 'stopped' ELSE 'stopping' END,
-		    state_version=s.state_version+1, updated_at=$2,
-		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
-		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
-		FROM (SELECT id, state FROM sandboxes WHERE id=$1 FOR UPDATE) prev
-		WHERE s.id = prev.id AND prev.state = ANY($3)
-		RETURNING prev.state, `+sandboxColumnsS,
-		id, now, destroyableStates()), &from)
-	if errors.Is(err, pgx.ErrNoRows) {
-		cur, gerr := p.GetSandbox(id)
-		if gerr != nil {
-			return Sandbox{}, gerr
-		}
-		if cur.State == SandboxStopped || cur.State == SandboxStopping {
-			return cur, nil
-		}
-		return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, cur.State)
-	}
-	if err != nil {
-		return Sandbox{}, err
-	}
-	payload := json.RawMessage(`{"reason":"destroy"}`)
-	switch SandboxState(from) {
-	case SandboxRequested:
-		payload = json.RawMessage(`{"reason":"destroy_unclaimed"}`)
-	case SandboxFailed:
-		payload = json.RawMessage(`{"reason":"destroy_failed"}`)
-	}
-	if err := emitEventTx(ctx, tx, EmitEventInput{
-		SandboxID: id,
-		TenantID:  sb.TenantID,
-		EventType: "sandbox.state_changed",
-		FromState: &from,
-		ToState:   strPtr(string(sb.State)),
-		Actor:     "api",
-		ActorSub:  actorSub,
-		Payload:   payload,
-	}); err != nil {
-		return Sandbox{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Sandbox{}, err
-	}
-	return sb, nil
-}
-
-// destroyableStates are the states MarkSandboxStopping moves: the active
-// lifecycle (to stopping, or stopped before a claim) and failed (to stopped).
-func destroyableStates() []string {
-	out := []string{string(SandboxFailed)}
-	for _, st := range []SandboxState{SandboxRequested, SandboxScheduled, SandboxStarting, SandboxRunning, SandboxPaused} {
-		if IsActiveLifecycle(st) {
-			out = append(out, string(st))
 		}
 	}
 	return out
@@ -591,6 +522,7 @@ func (p *PostgresStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) 
 		stopped, err := scanSandbox(tx.QueryRow(ctx, `
 			UPDATE sandboxes
 			SET state=$2, stop_reason=$3,
+			    stopped_at=CASE WHEN $2='stopped' THEN $4::timestamptz ELSE stopped_at END,
 			    state_version=state_version+1, updated_at=$4,
 			    local_net_state=CASE WHEN local_net THEN 'withdrawn' ELSE 'off' END,
 			    local_net_client_public='',
@@ -1337,7 +1269,8 @@ const sandboxColumns = `id, tenant_id, node_id, state, vmm_profile, image_ref,
 	cpu_millis, memory_mib, state_version, created_at, updated_at,
 	owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
 	local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash,
-	local_net_client_public, local_net_node_public, local_net_listen_port, local_net_node_addr, local_net_client_addr`
+	local_net_client_public, local_net_node_public, local_net_listen_port, local_net_node_addr, local_net_client_addr,
+	status_detail, boot_count, stopped_at`
 
 // qualify prefixes every column of a list with alias (for UPDATE … FROM).
 func qualify(cols, alias string) string {
@@ -1366,6 +1299,7 @@ func scanSandbox(row scannable, pre ...any) (Sandbox, error) {
 		&sb.LocalNet, &sb.LocalNetState, &sb.LocalNetAttachedAt, &sb.LocalNetGrantExpiresAt,
 		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic, &sb.LocalNetNodePublic,
 		&sb.LocalNetListenPort, &sb.LocalNetNodeAddr, &sb.LocalNetClientAddr,
+		&sb.StatusDetail, &sb.BootCount, &sb.StoppedAt,
 	)...)
 	if err != nil {
 		return Sandbox{}, err

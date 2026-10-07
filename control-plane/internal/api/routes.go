@@ -18,6 +18,8 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/sandboxes", s.ListSandboxes)
 	mux.HandleFunc("GET /v1/sandboxes/{id}", s.GetSandbox)
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", s.DestroySandbox)
+	mux.HandleFunc("POST /v1/sandboxes/{id}/stop", s.StopSandbox)
+	mux.HandleFunc("POST /v1/sandboxes/{id}/start", s.StartSandbox)
 	mux.HandleFunc("GET /v1/sandboxes/{id}/events", s.ListSandboxEvents)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.Exec)
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec/stdin", s.ExecStdin)

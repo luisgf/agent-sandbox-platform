@@ -70,13 +70,14 @@ func (p *PostgresStore) FailNodeSandboxes(nodeID, reason string, silentSince tim
 		    FOR UPDATE
 		)
 		UPDATE sandboxes s SET
-		    state = CASE WHEN v.state='stopping' THEN 'stopped' ELSE 'failed' END,
+		    state = CASE WHEN v.state='stopping' THEN 'stopped' WHEN v.state='deleting' THEN 'deleted' ELSE 'failed' END,
+		    stopped_at = CASE WHEN v.state='stopping' THEN $3::timestamptz ELSE s.stopped_at END,
 		    state_version = s.state_version+1, updated_at=$3, stop_reason=$4,
 		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL
 		FROM victims v WHERE s.id = v.id
 		RETURNING v.state, `+sandboxColumnsS,
-		nodeID, silentSince, now, reason, occupyingStateNames())
+		nodeID, silentSince, now, reason, append(occupyingStateNames(), string(SandboxDeleting)))
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +196,7 @@ func failRestartOrphansTx(ctx context.Context, tx pgx.Tx, nodeID string, now tim
 		)
 		UPDATE sandboxes s SET
 		    state = CASE WHEN v.state='stopping' THEN 'stopped' ELSE 'failed' END,
+		    stopped_at = CASE WHEN v.state='stopping' THEN $2::timestamptz ELSE s.stopped_at END,
 		    state_version = s.state_version+1, updated_at=$2, stop_reason=$3,
 		    local_net_state=CASE WHEN s.local_net THEN 'withdrawn' ELSE 'off' END,
 		    local_net_client_public='', local_net_grant_hash='', local_net_grant_expires_at=NULL

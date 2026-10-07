@@ -108,7 +108,7 @@ func testPlacementPolicyAndPins(t *testing.T, s Store, setCfg func(sched.Config)
 	}
 
 	// Stopping does not free capacity (the VM may still run); stopped does.
-	if _, err := s.MarkSandboxStopping(pinned.ID, ""); err != nil {
+	if _, err := s.StopSandbox(pinned.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetSandbox(pinned.ID)
@@ -358,7 +358,7 @@ func testAgentTransitionsAndAssignment(t *testing.T, s Store) {
 	if work, _ := s.ListNodeWork("node-a"); len(work.Sandboxes) != 0 {
 		t.Fatalf("a running sandbox without local-net needs no action: %+v", work.Sandboxes)
 	}
-	if _, err := s.MarkSandboxStopping(sb.ID, ""); err != nil {
+	if _, err := s.StopSandbox(sb.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpdateSandboxStatus(sb.ID, SandboxRunning, "late"); !errors.Is(err, ErrConflict) {

@@ -96,6 +96,7 @@ func (m *MemoryStore) CreateSandbox(input CreateSandboxInput) (Sandbox, error) {
 		CPUMillis:         input.CPUMillis,
 		MemoryMiB:         input.MemoryMiB,
 		StateVersion:      1,
+		BootCount:         1,
 		OwnerSub:          ownerSub,
 		OwnerEmail:        ownerEmail,
 		LastActivityAt:    now,
@@ -246,6 +247,13 @@ func (m *MemoryStore) ListSandboxes(tenantID string) ([]Sandbox, error) {
 		}
 		out = append(out, cloneSandbox(sb))
 	}
+	// Newest first, as the Postgres store lists them: a map has no order.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 
@@ -296,19 +304,14 @@ func (m *MemoryStore) ListNodeWork(nodeID string) (NodeWork, error) {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}, Tenants: map[string]string{}}
+	work := NodeWork{Sandboxes: []Sandbox{}, Assigned: []string{}, Retained: []string{}, Tenants: map[string]string{}}
 	for _, sb := range m.sandboxes {
-		if sb.NodeID == nil || *sb.NodeID != nodeID || !OccupiesNode(sb.State) {
+		if sb.NodeID == nil || *sb.NodeID != nodeID {
 			continue
 		}
-		work.Assigned = append(work.Assigned, sb.ID)
-		work.Tenants[sb.ID] = sb.TenantID
-		if NeedsNodeAction(sb) {
-			work.Sandboxes = append(work.Sandboxes, cloneSandbox(sb))
-		}
+		work.add(sb)
 	}
-	sort.Slice(work.Sandboxes, func(i, j int) bool { return work.Sandboxes[i].CreatedAt.Before(work.Sandboxes[j].CreatedAt) })
-	sort.Strings(work.Assigned)
+	work.sortWork()
 	return work, nil
 }
 
@@ -330,16 +333,24 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		return Sandbox{}, fmt.Errorf("%w: cannot move sandbox from %s to %s", ErrConflict, sb.State, state)
 	}
 	from := string(sb.State)
+	prev := sb.State
 	now := time.Now().UTC()
 	sb.State = state
 	sb.StateVersion++
 	sb.UpdatedAt = now
-	if state == SandboxFailed || state == SandboxStopped || state == SandboxStopping {
+	if state == SandboxFailed || state == SandboxStopped || state == SandboxStopping || state == SandboxDeleted {
 		withdrawLocalNetFields(&sb)
 	}
-	if state == SandboxRunning {
+	switch {
+	case state == SandboxRunning:
 		sb.LastActivityAt = now
 		sb.StopReason = ""
+		sb.StatusDetail = ""
+	case detail != "" && recordsDetail(prev, state):
+		sb.StatusDetail = detail
+	}
+	if state == SandboxStopped {
+		sb.StoppedAt = &now
 	}
 	m.sandboxes[id] = sb
 	out := cloneSandbox(sb)
@@ -358,96 +369,6 @@ func (m *MemoryStore) UpdateSandboxStatus(id string, state SandboxState, detail 
 		ToState:   strPtr(string(state)),
 		Actor:     "node-agent",
 		Payload:   mustJSON(payload),
-	})
-	return out, nil
-}
-
-func (m *MemoryStore) MarkSandboxStopping(id, actorSub string) (Sandbox, error) {
-	if strings.TrimSpace(id) == "" {
-		return Sandbox{}, fmt.Errorf("%w: id required", ErrInvalidInput)
-	}
-	actorSub = strings.TrimSpace(actorSub)
-	m.mu.Lock()
-	sb, ok := m.sandboxes[id]
-	if !ok {
-		m.mu.Unlock()
-		return Sandbox{}, ErrNotFound
-	}
-	if sb.State == SandboxStopped || sb.State == SandboxStopping {
-		out := cloneSandbox(sb)
-		m.mu.Unlock()
-		return out, nil
-	}
-	// Never claimed → stopped immediately: no VM exists before a node claims it.
-	if sb.State == SandboxRequested {
-		from := string(sb.State)
-		sb.State = SandboxStopped
-		withdrawLocalNetFields(&sb)
-		sb.StateVersion++
-		sb.UpdatedAt = time.Now().UTC()
-		m.sandboxes[id] = sb
-		out := cloneSandbox(sb)
-		tenantID := sb.TenantID
-		m.mu.Unlock()
-		_ = m.EmitEvent(EmitEventInput{
-			SandboxID: id,
-			TenantID:  tenantID,
-			EventType: "sandbox.state_changed",
-			FromState: &from,
-			ToState:   strPtr(string(SandboxStopped)),
-			Actor:     "api",
-			ActorSub:  actorSub,
-			Payload:   json.RawMessage(`{"reason":"destroy_unclaimed"}`),
-		})
-		return out, nil
-	}
-	// failed: the node already tore the VM down. Destroy finishes as stopped
-	// instead of 409, so the session file can be cleared.
-	if sb.State == SandboxFailed {
-		from := string(sb.State)
-		sb.State = SandboxStopped
-		withdrawLocalNetFields(&sb)
-		sb.StateVersion++
-		sb.UpdatedAt = time.Now().UTC()
-		m.sandboxes[id] = sb
-		out := cloneSandbox(sb)
-		tenantID := sb.TenantID
-		m.mu.Unlock()
-		_ = m.EmitEvent(EmitEventInput{
-			SandboxID: id,
-			TenantID:  tenantID,
-			EventType: "sandbox.state_changed",
-			FromState: &from,
-			ToState:   strPtr(string(SandboxStopped)),
-			Actor:     "api",
-			ActorSub:  actorSub,
-			Payload:   json.RawMessage(`{"reason":"destroy_failed"}`),
-		})
-		return out, nil
-	}
-	if !IsActiveLifecycle(sb.State) {
-		m.mu.Unlock()
-		return Sandbox{}, fmt.Errorf("%w: cannot destroy from state %s", ErrConflict, sb.State)
-	}
-	from := string(sb.State)
-	sb.State = SandboxStopping
-	withdrawLocalNetFields(&sb)
-	sb.StateVersion++
-	sb.UpdatedAt = time.Now().UTC()
-	m.sandboxes[id] = sb
-	out := cloneSandbox(sb)
-	tenantID := sb.TenantID
-	m.mu.Unlock()
-
-	_ = m.EmitEvent(EmitEventInput{
-		SandboxID: id,
-		TenantID:  tenantID,
-		EventType: "sandbox.state_changed",
-		FromState: &from,
-		ToState:   strPtr(string(SandboxStopping)),
-		Actor:     "api",
-		ActorSub:  actorSub,
-		Payload:   json.RawMessage(`{"reason":"destroy"}`),
 	})
 	return out, nil
 }
@@ -495,6 +416,9 @@ func (m *MemoryStore) StopIdleSandboxes(now time.Time, idleFor time.Duration) ([
 			target = SandboxStopped
 		}
 		sb.State = target
+		if target == SandboxStopped {
+			sb.StoppedAt = &now
+		}
 		withdrawLocalNetFields(&sb)
 		sb.StopReason = StopReasonIdle
 		sb.StateVersion++
@@ -650,6 +574,9 @@ func (m *MemoryStore) failRestartOrphansLocked(nodeID string, now time.Time) []l
 		}
 		from := sb.State
 		sb.State = to
+		if to == SandboxStopped {
+			sb.StoppedAt = &now
+		}
 		withdrawLocalNetFields(&sb)
 		sb.StopReason = StopReasonAgentRestarted
 		sb.StateVersion++
@@ -1103,6 +1030,10 @@ func cloneSandbox(sb Sandbox) Sandbox {
 	if sb.NodeID != nil {
 		nid := *sb.NodeID
 		sb.NodeID = &nid
+	}
+	if sb.StoppedAt != nil {
+		t := *sb.StoppedAt
+		sb.StoppedAt = &t
 	}
 	return sb
 }

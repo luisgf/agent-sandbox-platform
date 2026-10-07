@@ -17,6 +17,10 @@ const (
 	SandboxStopping  SandboxState = "stopping"
 	SandboxStopped   SandboxState = "stopped"
 	SandboxFailed    SandboxState = "failed"
+	// SandboxDeleting: the node is removing the VM and the disk (ADR-0012).
+	SandboxDeleting SandboxState = "deleting"
+	// SandboxDeleted is final. The row stays, so the audit trail does.
+	SandboxDeleted SandboxState = "deleted"
 )
 
 type Tenant struct {
@@ -45,6 +49,15 @@ type Sandbox struct {
 	LastActivityAt time.Time `json:"last_activity_at"`
 	// StopReason is set by the idle reaper (idle_timeout). Empty otherwise.
 	StopReason string `json:"stop_reason,omitempty"`
+	// StatusDetail is why a node last reported failed, or a resume went back to
+	// stopped. Cleared when the sandbox runs or is resumed.
+	StatusDetail string `json:"status_detail,omitempty"`
+	// BootCount is how many times the sandbox has been started: 1 at the first
+	// boot, one more per resume. Above 1 the node boots the disk a stop kept.
+	BootCount int `json:"boot_count"`
+	// StoppedAt is when the node reported the sandbox stopped; nil while it is
+	// not stopped. The retention TTL counts from it.
+	StoppedAt *time.Time `json:"stopped_at,omitempty"`
 	// WorkspaceHostPath is the host directory the session asked to share into
 	// the guest (virtiofs tag "workspace", mount /workspace). Empty means no
 	// share. The node-agent starts virtiofsd when this is set. A guest image
