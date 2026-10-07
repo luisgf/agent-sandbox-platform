@@ -164,10 +164,7 @@ out=$(create no-such-node)
 
 echo "==> 7. destroying a sandbox frees its slot"
 curl -sf -X DELETE "$CP/v1/sandboxes/$s4" >/dev/null || fail "destroy s4"
-for _ in $(seq 1 60); do
-  [[ "$(curl -sf "$CP/v1/sandboxes/$s4" | json_field state)" == stopped ]] && break
-  sleep 0.25
-done
+wait_state "$CP" "$s4" deleted || fail "s4 never reached deleted"
 read -r c5 s5 <<<"$(create)"; [[ "$c5" == 201 ]] || fail "s5 after destroy: $c5 $s5"
 [[ "$(node_of "$s5")" == "$NODE_A" ]] || fail "s5 went to $(node_of "$s5"), want $NODE_A"
 wait_running "$s5"

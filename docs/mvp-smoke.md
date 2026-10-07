@@ -295,7 +295,7 @@ Por defecto `ASP_AUTO_PROVISION` está **off**: Create deja el sandbox en `reque
 1. `GET /v1/nodes/{id}/work` — requested/starting/stopping asignados a ese nodo (el plano de control los coloca al crear)
 2. `POST /v1/sandboxes/{id}/claim` `{node_id}` — assign atómico → `starting`
 3. FakeVMM / CH `Start` → `POST .../status` `{state:running}`
-4. `DELETE /v1/sandboxes/{id}` → `stopping` → Stop+Delete → `stopped`
+4. `POST /v1/sandboxes/{id}/stop` → `stopping` → `stopped`; `POST …/start` → `running` (arranque 2); `DELETE` → `deleting` → `deleted`
 
 ```bash
 export ASP_AUTO_PROVISION=0

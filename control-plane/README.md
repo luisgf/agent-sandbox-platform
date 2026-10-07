@@ -11,10 +11,13 @@ Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default) o P
 | GET | `/oidc/jwks.json` | JWKS público |
 | POST | `/v1/internal/oidc/token` | Mint JWT (nodo; tenant desde store) |
 | POST | `/v1/sandboxes` | Create: coloca en un nodo con hueco (503 si ninguno cabe, 409 si el pin no vale); con `ASP_AUTO_PROVISION=1`, stub → `running` |
-| GET | `/v1/sandboxes?tenant_id=` | List |
+| GET | `/v1/sandboxes?tenant_id=` | List, de la más reciente a la más antigua. Oculta las `deleted`; `?include_deleted=1` las incluye |
 | GET | `/v1/sandboxes/{id}` | Get |
 | GET | `/v1/sandboxes/{id}/events` | Audit trail |
 | POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`) |
+| POST | `/v1/sandboxes/{id}/stop` | Para la sandbox y **conserva su disco** ([ADR-0012](../docs/adr/0012-retained-disks.md)): `stopping` → `stopped`. Dueño, admin u operador con `destroy-any` |
+| POST | `/v1/sandboxes/{id}/start` | Reanuda una `stopped` en el nodo que tiene su disco: `requested`, `boot_count` + 1. 503 si ese nodo no tiene hueco, 409 si no puede tomar sandboxes o la sandbox no está parada. Pide además el derecho de crear |
+| DELETE | `/v1/sandboxes/{id}` | Borra la VM y el disco: `deleting` → `deleted` (directo si ningún nodo tiene nada). La fila se queda |
 | POST | `/v1/sandboxes/{id}/claim` | Claim atómico del nodo asignado |
 | POST | `/v1/sandboxes/{id}/status` | Estado observado por el agente |
 | POST | `/v1/sandboxes/{id}/renew-lease` | **410**: retirado; el conjunto `assigned` de `/work` lo sustituye |
@@ -102,7 +105,7 @@ Cada petición deja una línea `request` con método, ruta, estado, bytes, durac
 
 ## Parada por inactividad
 
-**Por qué.** Una sesión `asp session` (o un create olvidado) deja la microVM encendida hasta un `DELETE`. El reaper del control-plane marca `stopping` (o `stopped` si nunca se asignó nodo) cuando no hay actividad durante el umbral, y el reconciler del nodo apaga la VM.
+**Por qué.** Una sesión `asp session` (o un create olvidado) deja la microVM encendida hasta que alguien la pare. El reaper del control-plane marca `stopping` (o `stopped` si nunca se asignó nodo) cuando no hay actividad durante el umbral, y el reconciler del nodo apaga la VM **conservando su disco**: es una parada, no un borrado, y `asp session resume` la trae de vuelta.
 
 **Qué cuenta como actividad.** `last_activity_at` se mueve en: create, transición a `running` (start) y **exec con respuesta correcta del node-agent** (aunque el proceso del guest salga ≠ 0). No cuentan: GET, heartbeat, sondeos de `/work`, ni un exec que ni siquiera llega al guest.
 
@@ -116,7 +119,7 @@ ASP_SANDBOX_IDLE_TIMEOUT=2h   # recomendado; alternativa 1h
 
 La unit `scripts/systemd/asp-control-plane.service` fija `2h`. Los tests y smokes cortos no exportan la variable.
 
-**Límites.** El reaper no es un sustituto de `asp session stop`: el fichero local de sesión sigue apuntando al id; `asp session status` y `exec` lo dicen (`idle timeout` / `idle_reaped`) y hay que `asp session start --force`. La migración `008` rellena `last_activity_at` de filas viejas con `now()`, así que al activar el reaper no se destruye de golpe todo lo creado hace horas; el reloj de esas filas empieza en la migración. Evento de auditoría: `sandbox.idle_reaped` (`stop_reason=idle_timeout`).
+**Límites.** El reaper no es un sustituto de `asp session rm`: el fichero local de sesión sigue apuntando al id; `asp session status` y `exec` lo dicen (`idle timeout` / `idle_reaped`, con el disco conservado) y hay que `asp session resume`. Una sandbox parada fija su disco y su nodo hasta que se borre. La migración `008` rellena `last_activity_at` de filas viejas con `now()`, así que al activar el reaper no se destruye de golpe todo lo creado hace horas; el reloj de esas filas empieza en la migración. Evento de auditoría: `sandbox.idle_reaped` (`stop_reason=idle_timeout`).
 
 ## Timeouts hacia el node-agent
 

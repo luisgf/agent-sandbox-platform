@@ -27,10 +27,10 @@ Tres fricciones del primer corte ya no se pueden dejar en «después» si el har
 
 - **Un objeto claro:** la sesión. Un agente, un sandbox, mientras dure el trabajo. Varios agentes locales = varios nombres (`--name`), no un fichero compartido.
 - **Identidad estable:** `owner_sub` lo pone el CP desde el JWT del IdP al hacer `start`. No viaja en el JSON de sesión y el guest no lo elige.
-- **Disco del guest** entre execs (ficheros, procesos, `/tmp`). Eso sigue siendo el workspace que de verdad persiste.
+- **Disco del guest** entre execs (ficheros, procesos, `/tmp`), y **entre paradas**: `asp session stop` y el reaper conservan el disco, y `asp session resume` lo arranca otra vez ([ADR-0012](adr/0012-retained-disks.md)). Los procesos y la memoria no sobreviven a una parada.
 - **Directorio del host por virtiofs:** `asp session start --workspace /ruta/absoluta` guarda `workspace_host_path`. El nodo arranca `virtiofsd` y CH recibe el tag `workspace`. La imagen nueva lo monta en `/workspace` al boot; una imagen anterior sigue con `mount -t virtiofs` a mano. Detalle: [`why-virtiofs-pty.md`](why-virtiofs-pty.md).
 - **Egress de esa microVM** durante toda la sesión, no rearmado por comando.
-- **Fin explícito o por idle:** `asp session stop`, o el reaper del CP si `ASP_SANDBOX_IDLE_TIMEOUT` está encendido (lab: `2h`; el binario por defecto lo tiene **apagado**). El reloj inicial lo pone el `start` (create y paso a `running`). Después, **solo un exec que el CP proxyó bien** lo refresca — JSON acumulado o stream NDJSON terminado. `status`, `GET`, heartbeat y renew **no**.
+- **Fin explícito o por idle:** `asp session rm` borra la sesión; `asp session stop` o el reaper del CP (si `ASP_SANDBOX_IDLE_TIMEOUT` está encendido (lab: `2h`; el binario por defecto lo tiene **apagado**)) la paran sin borrarla. El reloj inicial lo pone el `start` (create y paso a `running`). Después, **solo un exec que el CP proxyó bien** lo refresca — JSON acumulado o stream NDJSON terminado. `status`, `GET`, heartbeat y renew **no**.
 - **Salida mientras el comando corre:** `asp session exec` (sin `--buffered`) imprime stdout/stderr según llegan líneas NDJSON. `--buffered` y `--json` conservan el cuerpo JSON de siempre, que es el que usan los smokes.
 - **Enganche del harness sin plugin:** el shell del tool apunta a `asp session exec --name …`. No hay binario de OpenCode en este repo.
 - **La primitiva one-shot no se tira.** CI, smokes y un comando que debe morir con la VM siguen en `asp sandbox run`.

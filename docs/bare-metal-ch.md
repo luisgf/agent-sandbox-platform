@@ -613,7 +613,7 @@ Ejecutar en el host KVM (no en un entorno sin `/dev/kvm`).
    - [ ] `GET /v1/sandboxes/{id}/events` muestra transiciones
    - [ ] `POST .../exec` vía hybrid vsock (guest `--listen vsock`) o unix en dry-run
    - [ ] (opcional) guest dial CID 2:26502 identity / 26501 SSH
-   - [ ] `DELETE /v1/sandboxes/{id}` → `stopping` → Stop/Delete → `stopped`
+   - [ ] `POST /v1/sandboxes/{id}/stop` → `stopping` → el guest se apaga → `stopped` (disco en `--disk-dir`); `POST …/start` → `running` con `boot_count` 2 y lo escrito antes de parar; `DELETE` → `deleting` → `deleted` (disco borrado)
 8. **Egress (política)**
    - [ ] `PUT /v1/tenants/{id}/egress` + check allow/deny
    - [ ] Node `--egress-enforce`
@@ -827,7 +827,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 4. `POST /v1/sandboxes` → reconciler claim → TAP `asp-*` → CH spawn → `running`.
 5. `POST /v1/sandboxes/{id}/exec` → hybrid CONNECT 26500 → guest pod-daemon.
 6. Desde guest: dial CID 2 ports 26501/26502 (o socat); mint OIDC / SSH agent.
-7. `DELETE /v1/sandboxes/{id}` → Stop → delete TAP + sockets → `stopped`.
+7. `POST /v1/sandboxes/{id}/stop` → apagado del guest → delete TAP + sockets → `stopped`, con el disco conservado; `DELETE` → además borra el disco → `deleted`.
 8. Pack release: `make pack` → `/workspace/agent-sandbox-platform-release.tar.gz`.
 
 Smokes dry-run (sin KVM): `make smoke`.
