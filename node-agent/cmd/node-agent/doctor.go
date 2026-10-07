@@ -26,6 +26,7 @@ func doctorConfig(cfg config, cp *cpclient.Client) doctor.Config {
 		DryRun:            cfg.DryRun,
 		GuestKernel:       cfg.GuestKernel,
 		GuestRootFS:       cfg.GuestRootFS,
+		GuestVerify:       strings.ToLower(strings.TrimSpace(cfg.GuestVerify)),
 		DiskDir:           cfg.DiskDir,
 		DiskMinFreeMiB:    diskMinFreeMiB(cfg.DiskMinFreeMiB, cfg.GuestRootFS),
 		CHBinary:          cfg.VMMBinary,

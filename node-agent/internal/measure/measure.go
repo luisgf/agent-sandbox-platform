@@ -4,6 +4,8 @@
 package measure
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -49,6 +52,21 @@ func identity(fi os.FileInfo) entry {
 
 func (e entry) same(o entry) bool {
 	return e.size == o.size && e.mtime.Equal(o.mtime) && e.ino == o.ino
+}
+
+// Peek returns the digest of path if the cache holds it and the file has not changed since,
+// and "" otherwise. It never reads the file.
+func (c *Cache) Peek(path string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	if cached, ok := c.files[path]; ok && cached.same(identity(fi)) {
+		return cached.sum
+	}
+	return ""
 }
 
 // SHA256 returns "sha256:<hex>" for the file at path, following symlinks. Callers
@@ -138,4 +156,40 @@ func VMMVersion(ctx context.Context, binary string) (string, error) {
 		return "", fmt.Errorf("%s --version printed nothing", binary)
 	}
 	return line, nil
+}
+
+// SumsFile is the name of the checksums file a release puts next to the guest files.
+const SumsFile = "SHA256SUMS"
+
+// FromSums finds name in the text of a SHA256SUMS ("<hex>  <name>" per line, a "*" before the
+// name allowed) and returns its digest as "sha256:<hex>".
+func FromSums(sums []byte, name string) (digest string, ok bool) {
+	sc := bufio.NewScanner(bytes.NewReader(sums))
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) == 2 && strings.TrimPrefix(f[1], "*") == name && len(f[0]) == 64 {
+			return Prefix + strings.ToLower(f[0]), true
+		}
+	}
+	return "", false
+}
+
+// Expected is the digest a SHA256SUMS next to the file gives it: next to the path as named,
+// and then next to the file a symlink leads to (a release installed by asp image pull is
+// linked into /opt/sandbox, and the sums sit with the files in the version's directory).
+func Expected(path string) (digest string, listed bool) {
+	candidates := []string{path}
+	if real, err := filepath.EvalSymlinks(path); err == nil && real != path {
+		candidates = append(candidates, real)
+	}
+	for _, c := range candidates {
+		b, err := os.ReadFile(filepath.Join(filepath.Dir(c), SumsFile))
+		if err != nil {
+			continue
+		}
+		if d, ok := FromSums(b, filepath.Base(c)); ok {
+			return d, true
+		}
+	}
+	return "", false
 }

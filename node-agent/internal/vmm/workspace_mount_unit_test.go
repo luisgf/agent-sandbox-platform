@@ -14,7 +14,7 @@ func TestWorkspaceVirtiofsGuestUnit(t *testing.T) {
 		"images/guest/systemd/workspace-virtiofs.service",
 		"images/guest/openrc/workspace-virtiofs",
 		"images/guest/helpers/mount-virtiofs-workspace.sh",
-		"scripts/build-guest-rootfs.sh",
+		"scripts/build-guest-image.sh",
 		"images/guest/Dockerfile",
 	}
 	for _, rel := range files {
@@ -58,28 +58,18 @@ func TestWorkspaceVirtiofsGuestUnit(t *testing.T) {
 		}
 	}
 
-	build, err := os.ReadFile(filepath.Join(root, "scripts/build-guest-rootfs.sh"))
+	df, err := os.ReadFile(filepath.Join(root, "images/guest/Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	bb := string(build)
 	for _, want := range []string{
 		"workspace-virtiofs.service",
 		"mount-virtiofs-workspace.sh",
 		"multi-user.target.wants/workspace-virtiofs.service",
 	} {
-		if !strings.Contains(bb, want) {
-			t.Fatalf("build-guest-rootfs.sh missing %q", want)
+		if !strings.Contains(string(df), want) {
+			t.Fatalf("Dockerfile does not install the workspace mount unit: missing %q", want)
 		}
-	}
-
-	df, err := os.ReadFile(filepath.Join(root, "images/guest/Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(df), "workspace-virtiofs.service") ||
-		!strings.Contains(string(df), "mount-virtiofs-workspace.sh") {
-		t.Fatal("Dockerfile does not install the workspace mount unit")
 	}
 }
 

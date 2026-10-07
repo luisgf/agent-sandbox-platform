@@ -47,3 +47,31 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The guest kernel and image, built twice from scratch (the job fails if the two differ) and
+  # published next to the binaries as asp-guest_<version>_{rootfs.img.gz,vmlinux,SHA256SUMS,image.json}:
+  # what `asp image pull` downloads and checks.
+  guest:
+    name: guest image
+    needs: release        # the release exists, so the files can be attached to it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build the image twice and compare
+        env:
+          ASP_GUEST_VERSION: ${{ github.ref_name }}
+        run: scripts/build-guest-image.sh --verify build/guest
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir -p /tmp/guest
+          for f in rootfs.img.gz vmlinux SHA256SUMS image.json; do
+            [ -f "build/guest/$f" ] && cp "build/guest/$f" "/tmp/guest/asp-guest_${v}_$f"
+          done
+          gh release upload "$GITHUB_REF_NAME" /tmp/guest/* --clobber

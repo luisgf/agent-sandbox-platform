@@ -17,6 +17,8 @@ export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
 
 Configuración: la URL del plano de control es `--control-plane-url` / `ASP_CONTROL_PLANE_URL` (como en el node-agent); la bandera manda sobre la variable. `ASP_REQUIRE_TOKEN=1` hace que el CLI falle si no puede conseguir un token del IdP, en vez de llamar sin él. Los nombres antiguos, `--cp-url`, `ASP_CP_URL` y `ASP_IDP_REQUIRED` (que en el CLI, el plano de control y el nodo significaba tres cosas distintas), siguen valiendo con un aviso en stderr.
 
+Imágenes del guest (en el nodo): `sudo asp image pull --version 0.1.0` instala el kernel y la imagen de una versión en `/var/lib/asp/images/<versión>` (con `current` apuntando a la última y enlaces en `/opt/sandbox`), comprobándolos contra el `SHA256SUMS` de la release a medida que llegan: si algo no coincide no instala nada. `asp image verify [dir]` vuelve a comprobar lo instalado. Detalle en [`images/guest/README.md`](../images/guest/README.md).
+
 Diagnóstico: `asp node doctor <id> [--json]` pide al node-agent de un nodo (en marcha) que se compruebe y trae el informe; `sudo asp doctor [--json] [-- flags]` hace las mismas comprobaciones en el propio nodo, sin arrancar el agente, con los ajustes de `/etc/asp/node-agent.env`. Salen con 1 si una comprobación falla ([`docs/how-to/troubleshooting.md`](../docs/how-to/troubleshooting.md)).
 
 Subcomandos: `sandbox create|get|list [--all]|exec|stop|start|delete|run`, `session start|exec|status|stop|resume|rm`, `auth login|logout|status`, `node list|cordon|uncordon|enroll-token`.

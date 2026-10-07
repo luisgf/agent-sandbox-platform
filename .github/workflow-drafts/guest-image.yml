@@ -1,0 +1,37 @@
+# The guest image is the same bytes every time: a change to what goes into it builds it twice
+# from scratch and fails if the two SHA256SUMS differ (scripts/build-guest-image.sh --verify).
+# A pull request that changes the pinned digests, the snapshot or the packer shows the new
+# image.json in the artifact, with its package list to diff against the last release.
+name: Guest image
+
+on:
+  pull_request:
+    paths:
+      - "images/guest/**"
+      - "pod-daemon/**"
+      - "scripts/build-guest-image.sh"
+      - ".github/workflows/guest-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproducible:
+    name: reproducible build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build twice from scratch and compare
+        run: scripts/build-guest-image.sh --verify build/guest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guest-image
+          path: |
+            build/guest/SHA256SUMS
+            build/guest/image.json
+          if-no-files-found: error
