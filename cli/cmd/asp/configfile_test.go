@@ -49,6 +49,10 @@ func variablesInSource(t *testing.T) map[string]bool {
 		if err != nil {
 			return err
 		}
+		// internal/standalone names the environment of the programs asp-server starts, not the CLI's.
+		if d.IsDir() && d.Name() == "standalone" {
+			return filepath.SkipDir
+		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || filepath.Base(path) == "settingstable.go" {
 			return nil
 		}
