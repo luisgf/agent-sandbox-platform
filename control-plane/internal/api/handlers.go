@@ -438,8 +438,10 @@ func (s *Server) RotateNodeCert(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "node "+certID+" cannot rotate the certificate of node "+r.PathValue("id"))
 			return
 		}
-	} else if !checkBootstrapToken(r) && !authorizeNodeAdmin(w, r, "rotate node certificates",
-		"an idp admin token, a platform api key, the node bootstrap token or the node's own certificate (mTLS) is required to rotate node certificates") {
+	} else if !authorizeNodeAdmin(w, r, "rotate node certificates",
+		"an idp admin token, a platform api key or the node's own certificate (mTLS) is required to rotate node certificates") {
+		// The node bootstrap token is not enough: every node holds it, so it
+		// would let any of them take over another's identity. It only enrolls.
 		return
 	}
 	if s.CA == nil {

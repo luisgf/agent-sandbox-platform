@@ -67,8 +67,8 @@ func TestNodeAdministrationNeedsAnAdminOrAPlatformKey(t *testing.T) {
 		{"idp admin", mintUserJWTWithGroups(t, key, kid, "user:admin", "", []string{"asp-admin"}), [5]int{ok, ok, ok, ok, ok}},
 		{"idp operator", mintUserJWTWithGroups(t, key, kid, "user:op", "", []string{"asp-operator"}), [5]int{forbidden, forbidden, forbidden, forbidden, ok}},
 		{"idp viewer", mintUserJWTWithGroups(t, key, kid, "user:view", "", []string{"asp-viewer"}), [5]int{forbidden, forbidden, forbidden, forbidden, forbidden}},
-		// Every node holds the bootstrap token: it may re-key, nothing else.
-		{"bootstrap token", "boot-secret", [5]int{ok, unauthorized, unauthorized, unauthorized, unauthorized}},
+		// Every node holds the bootstrap token: it enrolls, and does nothing else.
+		{"bootstrap token", "boot-secret", [5]int{unauthorized, unauthorized, unauthorized, unauthorized, unauthorized}},
 		{"no credential", "", [5]int{unauthorized, unauthorized, unauthorized, unauthorized, unauthorized}},
 	} {
 		for i, suffix := range nodeAdminRoutes {
@@ -90,16 +90,15 @@ func TestNodeAdministrationInTheOpenLab(t *testing.T) {
 			t.Errorf("open lab %q: want 200, got %d %s", suffix, rr.Code, rr.Body.String())
 		}
 	}
-	if rr := callNodeRoute(t, h, mem, "lab-rotate", "/rotate-cert", ""); rr.Code != http.StatusUnauthorized {
-		t.Fatalf("open lab rotate-cert without the bootstrap token: want 401, got %d", rr.Code)
-	}
-	if rr := callNodeRoute(t, h, mem, "lab-rotate2", "/rotate-cert", "boot-secret"); rr.Code != http.StatusOK {
-		t.Fatalf("open lab rotate-cert with the bootstrap token: %d %s", rr.Code, rr.Body.String())
+	for i, token := range []string{"", "boot-secret"} {
+		if rr := callNodeRoute(t, h, mem, fmt.Sprintf("lab-rotate%d", i), "/rotate-cert", token); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("open lab rotate-cert with token %q: want 401, got %d %s", token, rr.Code, rr.Body.String())
+		}
 	}
 }
 
-// With ASP_IDP_REQUIRED node administration needs an IdP admin; a node can
-// still re-key with the bootstrap token.
+// With ASP_IDP_REQUIRED node administration needs an IdP admin; the bootstrap
+// token does not re-key a node.
 func TestNodeAdministrationWithIdPRequired(t *testing.T) {
 	_, _, v := testIdP(t)
 	h, mem := nodeAdminServer(t, AuthConfig{IdP: v, IdPRequired: true})
@@ -109,7 +108,7 @@ func TestNodeAdministrationWithIdPRequired(t *testing.T) {
 	if rr := callNodeRoute(t, h, mem, "idp-1", "/revoke", "platform-key"); rr.Code != http.StatusUnauthorized {
 		t.Fatalf("platform key with ASP_IDP_REQUIRED: want 401, got %d", rr.Code)
 	}
-	if rr := callNodeRoute(t, h, mem, "idp-2", "/rotate-cert", "boot-secret"); rr.Code != http.StatusOK {
-		t.Fatalf("bootstrap rotate-cert with ASP_IDP_REQUIRED: %d %s", rr.Code, rr.Body.String())
+	if rr := callNodeRoute(t, h, mem, "idp-2", "/rotate-cert", "boot-secret"); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("bootstrap rotate-cert with ASP_IDP_REQUIRED: want 401, got %d %s", rr.Code, rr.Body.String())
 	}
 }

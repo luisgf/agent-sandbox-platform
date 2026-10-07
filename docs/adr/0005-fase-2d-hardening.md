@@ -25,7 +25,7 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 
 **Qué decidimos:**
 
-- `POST /v1/nodes/{id}/rotate-cert` — autorizado con bootstrap token **o** API key admin. Emite cert nuevo, persiste `cert_serial` + `cert_fingerprint`, y mete el fingerprint anterior en `node_cert_revocations`.
+- `POST /v1/nodes/{id}/rotate-cert` — autorizado con API key admin (plataforma) o admin del IdP, o por el certificado vigente del propio nodo (ver «renovación»). Originalmente también con el bootstrap token; retirado en 2026-10 (#94). Emite cert nuevo, persiste `cert_serial` + `cert_fingerprint`, y mete el fingerprint anterior en `node_cert_revocations`.
 - `POST /v1/nodes/{id}/revoke` — marca `nodes.revoked_at` y revoca el fingerprint actual.
 - Middleware mTLS rechaza fingerprints en la revoke set (`client certificate revoked`).
 
@@ -38,10 +38,10 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 | IdP viewer | 403 | 403 | 403 |
 | API key de plataforma (`scope=platform`, p. ej. `ASP_BOOTSTRAP_API_KEY`) | sí | sí | sí |
 | API key de tenant | 403 | 403 | 403 |
-| Bootstrap token de nodo | sí (un nodo re-emitiendo su cert) | 401 | 401 |
+| Bootstrap token de nodo | 401 (solo enrola) | 401 | 401 |
 
-- Con `ASP_IDP_REQUIRED=1` estas rutas piden un token del IdP, como las demás de usuario; el bootstrap token sigue valiendo para `rotate-cert`.
-- En el lab abierto (sin API keys ni IdP) revoke, cordon, uncordon y la lista quedan abiertas, como el resto de la API. `rotate-cert` sigue pidiendo el bootstrap token: entrega la clave privada de un nodo.
+- Con `ASP_IDP_REQUIRED=1` estas rutas piden un token del IdP, como las demás de usuario; el bootstrap token no vale para `rotate-cert`: lo tienen todos los nodos, y con él uno podía quedarse con la identidad de otro (clave y certificado nuevos, el anterior revocado, y re-registro con su propio endpoint). Solo enrola.
+- En el lab abierto (sin API keys ni IdP) revoke, cordon, uncordon y la lista quedan abiertas, como el resto de la API. `rotate-cert` sigue pidiendo credenciales (401 sin ellas, también con el bootstrap token): entrega la clave privada de un nodo.
 - El bootstrap token se compara en tiempo constante.
 
 **Actualizado 2026-10 (enroll):** `POST /v1/nodes/enroll` solo pedía el bootstrap token compartido, y el llamante elegía el `id`. Re-enrolar un id existente emitía un cert nuevo con ese CN, revocaba el anterior y limpiaba `revoked_at`: quien tuviera el token suplantaba cualquier nodo y echaba al legítimo. Ahora:

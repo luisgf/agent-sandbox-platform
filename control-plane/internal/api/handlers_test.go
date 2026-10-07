@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/oidc"
@@ -521,9 +522,12 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
+	if _, err := mem.EnsureAPIKey("default", "ops", store.APIKeyScopePlatform, "asp_ops", store.HashAPIKeySecret("platform-key")); err != nil {
+		t.Fatal(err)
+	}
 	srv := NewServer(mem)
 	srv.CA = ca
-	mux := testMux(srv)
+	mux := AuthMiddleware(mem, AuthConfig{})(testMux(srv))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/nodes/enroll", bytes.NewBufferString(
 		`{"id":"rot1","name":"rot1","agent_endpoint":"http://127.0.0.1:9100"}`,
@@ -547,8 +551,17 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 		t.Fatalf("rotate without auth want 401 got %d", rr.Code)
 	}
 
+	// The bootstrap token enrolls; it does not re-key a node.
 	req = httptest.NewRequest(http.MethodPost, "/v1/nodes/rot1/rotate-cert", nil)
 	req.Header.Set("Authorization", "Bearer boot-secret")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("rotate with the bootstrap token want 401 got %d %s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/nodes/rot1/rotate-cert", nil)
+	req.Header.Set("Authorization", "Bearer platform-key")
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -569,7 +582,7 @@ func TestRotateAndRevokeNodeCert(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/nodes/rot1/revoke", nil)
-	req.Header.Set("Authorization", "Bearer boot-secret")
+	req.Header.Set("Authorization", "Bearer platform-key")
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -646,15 +659,18 @@ func TestAuthConfigStrictEnv(t *testing.T) {
 	}
 }
 
-func TestRotateWithBootstrapWhenAPIKeysExist(t *testing.T) {
+// The bootstrap token is held by every node and used to enroll. If it could
+// also rotate certificates, any node could take over another's identity: get
+// its key and certificate, re-register with its own endpoint and receive its
+// exec traffic (#94).
+func TestRotateRefusesTheBootstrapToken(t *testing.T) {
 	t.Setenv("ASP_NODE_BOOTSTRAP_TOKEN", "boot-secret")
 	ca, err := pki.GenerateCA("test", pki.DefaultNodeTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mem := store.NewMemoryStore()
-	_, err = mem.EnsureAPIKey("default", "k", store.APIKeyScopePlatform, "asp_test", store.HashAPIKeySecret("not-the-bootstrap"))
-	if err != nil {
+	if _, err := mem.EnsureAPIKey("default", "k", store.APIKeyScopePlatform, "asp_test", store.HashAPIKeySecret("not-the-bootstrap")); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(mem)
@@ -670,13 +686,34 @@ func TestRotateWithBootstrapWhenAPIKeysExist(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("enroll=%d %s", rr.Code, rr.Body.String())
 	}
+	var enrolled enrollResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &enrolled); err != nil {
+		t.Fatal(err)
+	}
 
-	req = httptest.NewRequest(http.MethodPost, "/v1/nodes/rb1/rotate-cert", nil)
-	req.Header.Set("Authorization", "Bearer boot-secret")
-	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("rotate with bootstrap while API keys exist: %d %s", rr.Code, rr.Body.String())
+	for _, header := range []string{"Authorization", "X-ASP-Bootstrap-Token"} {
+		req = httptest.NewRequest(http.MethodPost, "/v1/nodes/rb1/rotate-cert", nil)
+		if header == "Authorization" {
+			req.Header.Set(header, "Bearer boot-secret")
+		} else {
+			req.Header.Set(header, "boot-secret")
+		}
+		rr = httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized && rr.Code != http.StatusForbidden {
+			t.Fatalf("rotate with the bootstrap token (%s) while API keys exist: %d %s", header, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "BEGIN") {
+			t.Fatalf("a refused rotation handed out key material: %s", rr.Body.String())
+		}
+	}
+	// Nothing changed: the node's certificate is still the one it enrolled with.
+	if revoked, err := mem.IsCertRevoked(enrolled.CertFingerprint); err != nil || revoked {
+		t.Fatalf("the refused rotation revoked the node's certificate: %v %v", revoked, err)
+	}
+	n, err := mem.GetNode("rb1")
+	if err != nil || n.CertFingerprint != enrolled.CertFingerprint {
+		t.Fatalf("node certificate changed: %+v %v", n, err)
 	}
 }
 
