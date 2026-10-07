@@ -285,3 +285,40 @@ func TestExitDetail(t *testing.T) {
 		t.Errorf("a long cause is not cut: %d bytes", len(long))
 	}
 }
+
+// The guest powering itself off is how a graceful stop works: the VM's process ends
+// during the stop's own wait, and that must not be reported afterwards as an exit
+// that fails the next start. (Found on a real host: a resume right after a stop
+// failed with "vmm_exited: the guest powered off".)
+func TestExitDuringAGracefulStopDoesNotFailTheNextResume(t *testing.T) {
+	cp := newFakeCP(t, idA)
+	eng := &powerEngine{FakeVMM: vmm.NewFakeVMM(nil), t: t, down: true, exitDuringWait: true}
+	rec, disks := retainRec(t, cp, eng)
+	rec.Registry = poddaemon.NewRegistry(nil)
+	rec.GuestReadyTimeout = 5 * time.Second
+	rec.StopGrace = 5 * time.Second
+	rec.tick(context.Background())
+	if got, _ := cp.state(idA); got != "running" {
+		t.Fatalf("start: %s", got)
+	}
+
+	cp.setState(idA, "stopping")
+	rec.tick(context.Background())
+	if got, detail := cp.state(idA); got != "stopped" || strings.Contains(detail, "vmm_exited") {
+		t.Fatalf("stop: state=%s detail=%q", got, detail)
+	}
+	if _, stale := rec.exitOf(idA); stale {
+		t.Fatal("the exit of a VM that was being stopped outlived the stop")
+	}
+
+	cp.mu.Lock()
+	cp.boxes[idA].State, cp.boxes[idA].BootCount = "requested", 2
+	cp.mu.Unlock()
+	rec.tick(context.Background())
+	if got, detail := cp.state(idA); got != "running" {
+		t.Fatalf("resume: state=%s detail=%q", got, detail)
+	}
+	if !exists(diskOf(disks, idA)) {
+		t.Fatal("the disk is gone")
+	}
+}

@@ -790,7 +790,9 @@ func (c *CloudHypervisor) watch(id string, inst *chInstance) {
 		return
 	}
 	info := ExitInfo{Err: err, Lived: time.Since(inst.bootedAt)}
-	c.logger().Warn("cloud-hypervisor exited on its own", "sandbox_id", id, "lived", info.Lived.Round(time.Millisecond), "error", err)
+	// Info: the guest powering itself off is how a graceful stop ends its VM. The
+	// reconciler warns about the ones that are a crash.
+	c.logger().Info("cloud-hypervisor exited on its own", "sandbox_id", id, "lived", info.Lived.Round(time.Millisecond), "error", err)
 	if fn != nil {
 		fn(id, info)
 	}

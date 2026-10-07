@@ -177,6 +177,9 @@ type Reconciler struct {
 	// exits holds the VMs whose process ended on its own, until they are reported
 	// and released (mu). See exit.go.
 	exits map[string]vmm.ExitInfo
+	// releasing holds the sandboxes teardownLocal is releasing (mu): the VM
+	// ending during a graceful stop is that stop's doing, not an exit to report.
+	releasing map[string]bool
 	// retains: the last poll carried the retained list, so stopping keeps a
 	// sandbox's disk (mu). lastDiskGC is the last disk sweep (mu).
 	retains    bool
@@ -487,6 +490,11 @@ func (r *Reconciler) ensureRunning(ctx context.Context, sb cpclient.Sandbox) err
 		sb = claimed
 	}
 
+	// From here a VM is started, and any exit on record is the previous one's.
+	r.mu.Lock()
+	delete(r.exits, sb.ID)
+	r.mu.Unlock()
+
 	cfg := r.vmConfig(sb)
 
 	// Each TAP gets its own /30. A shared prefix would send every guest's
@@ -738,8 +746,21 @@ func (r *Reconciler) teardownLocal(ctx context.Context, id string, opts teardown
 	if had {
 		delete(r.handles, id)
 	}
+	if r.releasing == nil {
+		r.releasing = make(map[string]bool)
+	}
+	r.releasing[id] = true
 	delete(r.exits, id)
 	r.mu.Unlock()
+	// A guest that powers off during the graceful wait ends its VM's process before
+	// Stop runs: the watcher reports it, and by the time the VM is released that
+	// report is stale. It would fail the next start of this sandbox (a resume).
+	defer func() {
+		r.mu.Lock()
+		delete(r.releasing, id)
+		delete(r.exits, id)
+		r.mu.Unlock()
+	}()
 
 	if had && opts.graceful {
 		r.shutdownGuest(ctx, id)

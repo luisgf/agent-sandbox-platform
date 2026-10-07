@@ -454,6 +454,9 @@ type powerEngine struct {
 	mu     sync.Mutex
 	events []string
 	down   bool // what WaitShutdown reports
+	// exitDuringWait makes the VM's process end while WaitShutdown waits, as it does
+	// when the guest powers itself off.
+	exitDuringWait bool
 }
 
 func (e *powerEngine) Start(ctx context.Context, cfg vmm.MicroVMConfig) error {
@@ -475,8 +478,11 @@ func (e *powerEngine) Stop(ctx context.Context, id string) error {
 	return e.FakeVMM.Stop(ctx, id)
 }
 
-func (e *powerEngine) WaitShutdown(context.Context, string, time.Duration) bool {
+func (e *powerEngine) WaitShutdown(_ context.Context, id string, _ time.Duration) bool {
 	e.record("wait")
+	if e.exitDuringWait {
+		e.FakeVMM.Crash(id, nil, time.Minute)
+	}
 	return e.down
 }
 

@@ -47,6 +47,10 @@ func exitDetail(info vmm.ExitInfo) string {
 // plane thinks of the sandbox and reports it (reportExited).
 func (r *Reconciler) onVMMExit(id string, info vmm.ExitInfo) {
 	r.mu.Lock()
+	if r.releasing[id] {
+		r.mu.Unlock()
+		return // being released: a stop's doing, not a crash
+	}
 	if r.exits == nil {
 		r.exits = make(map[string]vmm.ExitInfo)
 	}
