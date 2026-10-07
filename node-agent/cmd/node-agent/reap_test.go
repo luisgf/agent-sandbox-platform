@@ -58,11 +58,12 @@ func TestDryRunNeverKeepsTheLock(t *testing.T) {
 
 func TestReapConfigDryRunStaysOffTheHost(t *testing.T) {
 	t.Setenv("ASP_LOCAL_NET_KEY_DIR", "/keys")
-	real := reapConfig(config{CHSocketDir: "/run/asp", DiskDir: "/var/lib/asp/disks", CHAPISocket: "/run/ch.sock"}, false)
+	real := reapConfig(config{CHSocketDir: "/run/asp", DiskDir: "/var/lib/asp/disks", CHAPISocket: "/run/ch.sock", GuestRootFS: "/srv/asp/base.img"}, false)
 	if real.DiskDir != "" || real.SysClassNet != "/sys/class/net" || real.Report {
 		t.Fatalf("real agent: %+v", real)
 	}
-	if !slices.Contains(real.Keep, reconciler.DefaultRootFSPath) || !slices.Contains(real.Keep, "/run/ch.sock") {
+	// The base image is never removed, wherever --guest-rootfs puts it.
+	if !slices.Contains(real.Keep, "/srv/asp/base.img") || !slices.Contains(real.Keep, "/run/ch.sock") {
 		t.Fatalf("keep=%q", real.Keep)
 	}
 	if real.LocalNet == nil || real.LocalNet.KeyDir != "/keys" {
