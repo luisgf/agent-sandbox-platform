@@ -23,7 +23,7 @@ Los binarios dicen de qué versión son: `asp version`, `asp-node-agent --versio
 ## Cómo se publica
 
 1. **Prepara el `CHANGELOG.md`.** Pasa lo de `[Unreleased]` a una sección `## [X.Y.Z] - AAAA-MM-DD` y deja `[Unreleased]` vacío. Lo que rompe algo va en **Changed** o **Removed**, con lo que hay que hacer. Si es la primera versión, actualiza también «Supported versions» en [`SECURITY.md`](../../SECURITY.md).
-2. **Comprueba el árbol:** `make lint test` y, si se tocó algo del datapath, `make smoke` (y la prueba con KVM del [bare-metal](../bare-metal-ch.md)).
+2. **Comprueba el árbol:** `make lint test` y, si se tocó algo del datapath, `make smoke` (y la prueba con KVM: `make e2e-kvm`, [probar un nodo de punta a punta](e2e-kvm.md)).
 3. **Mira lo que saldría** sin publicar nada: `make snapshot` deja todo en `dist/`. Prueba un paquete en un contenedor limpio: `docker run --rm -v $PWD/dist:/d debian:bookworm-slim sh -c 'apt-get update -qq && apt-get install -y /d/asp-node-agent_*_linux_amd64.deb && asp-node-agent --version'`.
 4. **Etiqueta y empuja** desde `main`, con el commit del changelog ya dentro:
 

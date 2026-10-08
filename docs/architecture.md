@@ -165,8 +165,8 @@ Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_at
 Ver ADR-0002 y ADR-0006. Resumen operativo:
 
 1. TAP `asp-{shortid}` con su propia /30 de `--guest-subnet` (TAP `.1`, guest `.2` vía `ip=` en la cmdline). El proxy identifica el sandbox por esa IP de origen.
-2. NAT MASQUERADE ops (`asp_nat`) — conectividad mínima hacia el proxy.
-3. Guest `HTTP_PROXY=http://<gateway>:8888`, puesto por el nodo en la cmdline del kernel (`systemd.setenv=`), junto al hostname y el resolver (`ip=`): ver `docs/bare-metal-ch.md` §3.4.
+2. Sin NAT: el guest solo habla con su gateway, donde el nodo escucha el proxy y el sumidero de DNS, y el proxy es quien sale a Internet desde el host.
+3. Guest `HTTP_PROXY=http://<gateway>:8888`, puesto por el nodo en la cmdline del kernel (`systemd.setenv=`), junto al hostname y el resolver (`ip=`): ver [red y egress](concepts/networking-and-egress.md).
 4. Con `--egress-proxy-listen` el nodo aplica por defecto el redirect nft en modo `enforce`: fuerza HTTP(S)+DNS por proxy/sink y descarta el resto (otros puertos, guest→guest, guest→servicios del host y orígenes falsificados), y un nodo que no puede aplicarlo no arranca. Informa `egress_enforced` al plano de control (`asp node list`, columna `EGRESS`).
 5. En CI y con `--dry-run`: modo `soft` (SoftFail sin root); `--nft-egress-mode=soft` lo pide en un nodo real, con aviso.
 
@@ -205,7 +205,7 @@ Stores: `PostgresStore` si `ASP_DATABASE_URL=postgres://…`; `SQLiteStore` si `
 | Attest/JWKS caído | Mint OIDC falla cerrado |
 | FakeVMM dry-run | Todo el plano de control funciona; **cero** aislamiento KVM |
 
-**Autodefensa del nodo ≠ STONITH.** Un nodo particionado sigue corriendo sus VMs hasta que vuelve. BMC out-of-band real sigue siendo ops (documentado en bare-metal §8b–8c). Detalle: [`ops-multi-node.md`](ops-multi-node.md).
+**Autodefensa del nodo ≠ STONITH.** Un nodo particionado sigue corriendo sus VMs hasta que vuelve. BMC out-of-band real sigue siendo ops (documentado en [operaciones de seguridad](how-to/security-operations.md#fencing-stonith)). Detalle: [`ops-multi-node.md`](ops-multi-node.md).
 
 ## Dry-run vs bare-metal
 
@@ -215,7 +215,7 @@ Stores: `PostgresStore` si `ASP_DATABASE_URL=postgres://…`; `SQLiteStore` si `
 | pod-daemon | unix `--pod-daemon-sock` | hybrid vsock CONNECT 26500 |
 | host-vsock | `--host-vsock-dir` unix | AF_VSOCK real |
 | TAP / nft | SoftFail típico | `--tap-auto` + nft `enforce` |
-| Guía | [`mvp-smoke.md`](mvp-smoke.md) | [`bare-metal-ch.md`](bare-metal-ch.md) |
+| Guía | [`mvp-smoke.md`](mvp-smoke.md) | [instalar un nodo](how-to/install-node.md) |
 
 ## Cómo usan la plataforma los agentes
 

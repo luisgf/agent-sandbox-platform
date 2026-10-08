@@ -85,9 +85,9 @@ node-agent \
 
 El bootstrap token compartido (`--bootstrap-token`, `ASP_NODE_BOOTSTRAP_TOKEN`) sigue funcionando en labs, pero solo enrola un id sin certificado o un nodo revocado: no re-enrola un nodo vivo. Si reinicias el agente con `--enroll`, el plano de control responde que el nodo ya está enrolado y el agente sigue con el certificado de `--cert-dir`. Para cambiarle la clave a un nodo vivo, pide un token fijado a él (`asp node enroll-token --node-id node2`) o usa `POST /v1/nodes/{id}/rotate-cert`.
 
-En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)): los mismos ajustes van en `/etc/asp/agent.yaml` y `agent.yaml.d/` ([el fichero de configuración](how-to/config-file.md)). Un solo node-agent por servidor.
+En producción, corre el agente como servicio con la unit [`scripts/systemd/asp-node-agent.service`](../scripts/systemd/asp-node-agent.service) ([instalar un nodo](how-to/install-node.md#5-el-servicio)): los mismos ajustes van en `/etc/asp/agent.yaml` y `agent.yaml.d/` ([el fichero de configuración](how-to/config-file.md)). Un solo node-agent por servidor.
 
-El agente corre cada `cloud-hypervisor` como un usuario sin privilegios propio ([bare-metal §5.7](bare-metal-ch.md#57-el-vmm-sin-privilegios-un-usuario-por-vm)); necesita `setpriv`, y el kernel y el binario del hipervisor legibles por todos. Al arrancar lo comprueba y, si el host no puede, lo dice en el log (`microVMs run as root: …`) y los deja como root: míralo en el primer arranque de cada nodo (`journalctl -u asp-node-agent | grep -i unprivileged`).
+El agente corre cada `cloud-hypervisor` como un usuario sin privilegios propio ([el VMM sin privilegios](concepts/node-runtime.md#el-vmm-sin-privilegios-un-usuario-por-vm)); necesita `setpriv`, y el kernel y el binario del hipervisor legibles por todos. Al arrancar lo comprueba y, si el host no puede, lo dice en el log (`microVMs run as root: …`) y los deja como root: míralo en el primer arranque de cada nodo (`journalctl -u asp-node-agent | grep -i unprivileged`).
 
 Después, desde un puesto con rol admin u operador:
 
@@ -123,7 +123,7 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 - **Tras reiniciar el plano de control** el silencio se cuenta desde su arranque: no se pierde nada por haber estado parado.
 - **Si el nodo vuelve** (por ejemplo, tras una partición de red), pasa a `ready`, pero sus sandboxes ya están fallidas: no aparecen en el conjunto `assigned` de su siguiente sondeo de `/work` y el agente para esas VMs.
 - **Borrar no libera el hueco hasta que el nodo confirma.** Una sandbox en `deleting` sigue ocupando su CPU y su memoria hasta `deleted` (el nodo apaga la VM tras su siguiente sondeo y el `--stop-grace`, unos segundos): un `create` inmediato en un nodo lleno recibe 503 hasta entonces. `asp session start --force` espera a que la anterior desaparezca antes de crear.
-- **Si el node-agent se reinicia**, sus VMs siguen corriendo y el proceso nuevo las adopta ([ADR-0014](adr/0014-vms-outlive-the-agent.md)): se registra diciendo cuáles, y el plano de control las deja como están. Las sandboxes cuya VM murió mientras el agente estaba parado pasan a `stopped` con `node_agent_restarted` (su disco se conserva: `asp session resume`) y las que estaban arrancando se arrancan de nuevo. El agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior que no sea adoptable: VMs muertas, TAPs, túneles y sockets ([bare-metal §5.6](bare-metal-ch.md#56-servicio-systemd-y-reinicios-del-agente)).
+- **Si el node-agent se reinicia**, sus VMs siguen corriendo y el proceso nuevo las adopta ([ADR-0014](adr/0014-vms-outlive-the-agent.md)): se registra diciendo cuáles, y el plano de control las deja como están. Las sandboxes cuya VM murió mientras el agente estaba parado pasan a `stopped` con `node_agent_restarted` (su disco se conserva: `asp session resume`) y las que estaban arrancando se arrancan de nuevo. El agente, al arrancar y antes de registrarse, para y borra lo que quede del proceso anterior que no sea adoptable: VMs muertas, TAPs, túneles y sockets ([reiniciar el agente](concepts/node-runtime.md#reiniciar-el-agente-no-para-las-vms)).
 
 ## Mantenimiento
 
@@ -141,19 +141,8 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 
 Primero, **`asp node doctor <id>`**: el nodo comprueba KVM, hipervisor, imágenes, disco, nftables, reloj y su acceso al plano de control, y dice qué arreglar ([`how-to/troubleshooting.md`](how-to/troubleshooting.md)). `asp node list` muestra la versión del agente y el digest de la imagen del guest de cada nodo (`VERSION`, `GUEST IMAGE`): dos nodos con digests distintos arrancan imágenes distintas. En el propio nodo, aunque el agente no arranque: `sudo asp doctor`.
 
-| Síntoma | Causa probable |
-|---|---|
-| `503 no schedulable nodes registered` | Ningún nodo registrado con `--reconcile`, o el agente aún no se ha registrado. |
-| `503 no node can fit … (2 nodes: 1 cordoned, 1 max_sandboxes)` | Los motivos cuentan por qué se descartó cada nodo. Añade nodos, haz `uncordon`, o espera a que terminen sesiones. |
-| `409 node X is not registered` / `cannot take sandboxes: stale` | `--node-id` fijado a un nodo desconocido o caído. Quita el pin o revisa ese nodo. |
-| `502 … x509: certificate is valid for nodeA, not nodeB` | El `agent_endpoint` de un nodo apunta al agente de otro. Revisa `--endpoint`. |
-| `502 … is plain HTTP on a non-loopback host` | Endpoint `http://` hacia otra máquina. Usa `--agent-tls-listen`. |
-| `403 client certificate is for node …` | El agente usa un `--node-id` distinto del CN de su certificado. Quita `--node-id` o re-enrola. |
-| El agente no arranca: `node certificate cannot serve TLS` | Certificado anterior a ADR-0011. Re-enrola con `--enroll` o `rotate-cert`. |
-| `sandbox was lost with its node` | El nodo llevaba más de `ASP_NODE_FAILOVER_AFTER` sin señales (o fue revocado). Abre una sesión nueva. |
-| `stop_reason=node_agent_restarted` | El node-agent se reinició y su VM no estaba viva para adoptarla (murió mientras el agente estaba parado, o el nodo corre sin confinamiento). La sandbox queda `stopped` con su disco: `asp session resume`. |
-| El agente no arranca: `refusing to start … node-agent.lock is held by pid N` | Ya corre otro node-agent con ese `--ch-socket-dir` (p. ej. el servicio, si lo lanzaste a mano). |
-| `self-fencing` en el log del agente | El plano de control ya no le asigna esa sandbox (failover o destroy); el agente paró la VM. Esperado tras una partición. |
+Los síntomas de varios servidores (`503 no node can fit`, `409 node … is not registered`, `502 … x509`, `403 client certificate is for node …`, `sandbox was lost with its node`…) y su causa están en [la tabla de diagnóstico](how-to/troubleshooting.md#varios-servidores).
+
 
 ## Límites
 

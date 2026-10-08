@@ -842,7 +842,7 @@ func declareSettings(s *settings.Set, cfg *config) {
 	s.Bool(&cfg.MTLS, "mtls", false, "require mTLS client certs for control-plane calls")
 	s.String(&cfg.PodDaemonSock, "pod-daemon-sock", "", "unix socket path for pod-daemon (dry-run / local fallback)")
 	s.Uint(&cfg.PodDaemonPort, "pod-daemon-port", 26500, "guest vsock/TCP port for pod-daemon HTTP (CH hybrid CONNECT)")
-	s.Bool(&cfg.EgressEnforce, "egress-enforce", false, "return 403 on /v1/internal/egress-check denials; required intent for --egress-proxy-listen")
+	s.Bool(&cfg.EgressEnforce, "egress-enforce", false, "return 403 on /v1/internal/egress-check denials; the egress proxy denies either way, and without this flag the agent only warns when --egress-proxy-listen is set")
 	s.String(&cfg.EgressProxyListen, "egress-proxy-listen", "", "optional HTTP forward proxy listen (e.g. :8888); guests set HTTP_PROXY to host TAP IP:port")
 	s.String(&cfg.EgressDNSSink, "egress-dns-sink", "", "optional UDP DNS sink (e.g. :5353) that NXDOMAIN non-allowlisted names. With the nft redirect and --nft-dns-action=redirect it starts by itself on :5353 when not named")
 	s.String(&cfg.EgressAllowCIDRs, "egress-allow-cidr", "", "comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. The proxy checks the address after resolving the name. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows", settings.Env("ASP_EGRESS_ALLOW_CIDRS"))

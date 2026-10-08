@@ -76,7 +76,7 @@ Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi
 
 ## Fase 1f — Ops guide bare-metal CH
 
-- Guía: [`bare-metal-ch.md`](bare-metal-ch.md).
+- Guía: [instalar un nodo](how-to/install-node.md).
 
 **Qué entregó / por qué importaba:** documento el camino KVM real para quien sí tiene `/dev/kvm`; separó dry-run de producción.
 

@@ -90,7 +90,7 @@ Los ajustes de los otros programas: [plano de control](control-plane.md), [`asp`
 
 | Opción | Variable | Por defecto | Qué hace |
 |---|---|---|---|
-| `--egress-enforce` | `ASP_EGRESS_ENFORCE` | `false` | Return 403 on `/v1/internal/egress-check` denials; required intent for `--egress-proxy-listen`. |
+| `--egress-enforce` | `ASP_EGRESS_ENFORCE` | `false` | Return 403 on `/v1/internal/egress-check` denials; the egress proxy denies either way, and without this flag the agent only warns when `--egress-proxy-listen` is set. |
 | `--egress-proxy-listen` | `ASP_EGRESS_PROXY_LISTEN` | — | Optional HTTP forward proxy listen (e.g. `:8888`); guests set HTTP_PROXY to host TAP IP:port. |
 | `--egress-dns-sink` | `ASP_EGRESS_DNS_SINK` | — | Optional UDP DNS sink (e.g. `:5353`) that NXDOMAIN non-allowlisted names. With the nft redirect and `--nft-dns-action=redirect` it starts by itself on `:5353` when not named. |
 | `--egress-allow-cidr` | `ASP_EGRESS_ALLOW_CIDRS` | — | Comma-separated private networks (CIDR or address) the egress proxy may connect to, on top of the public internet. The proxy checks the address after resolving the name. Loopback, link-local, multicast, this node's own addresses and the guests' network are never reachable, whatever a tenant allows. |

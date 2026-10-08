@@ -2,7 +2,7 @@
 
 Guía rápida del camino **dry-run** (FakeVMM, sin KVM): memoria por defecto, Postgres cuando `ASP_DATABASE_URL` está set, enrollment/mTLS y exec dataplane.
 
-Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal-ch.md`](bare-metal-ch.md). Arquitectura: [`architecture.md`](architecture.md). Diagrama: [`diagram.svg`](diagram.svg).
+Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [instalar un nodo](how-to/install-node.md). Arquitectura: [`architecture.md`](architecture.md). Diagrama: [`diagram.svg`](diagram.svg).
 
 ## Precondiciones / resultados / fallos (léelo antes)
 
@@ -10,7 +10,7 @@ Para **Cloud Hypervisor real en bare-metal/KVM** (sin FakeVMM), ver [`bare-metal
 |---|---|
 | **Precondiciones** | Go 1.26+; Rust/Cargo para pod-daemon; puertos libres `8080` (CP) y `9100` (agent); opcional Docker para Postgres. **No** hace falta `/dev/kvm` ni root. |
 | **Qué demuestra** | Plano de control + enroll + exec unix + (scripts) identity/egress/reconcile/CLI y reparto entre dos nodos (`smoke-multi-node`). Contrato de APIs y flags. |
-| **Qué NO demuestra** | Aislamiento de hipervisor, bypass-proof nft, AF_VSOCK real, TAP/NAT. Eso es bare-metal. |
+| **Qué NO demuestra** | Aislamiento de hipervisor, bypass-proof nft, AF_VSOCK real, TAP. Eso es bare-metal. |
 | **Resultado OK** | `curl /healthz` → `{"status":"ok"}`; exec → `exit_code:0`; smokes exit 0; `asp sandbox run` imprime stdout del guest. |
 | **Fallos típicos** | Puerto ocupado; crear sin ningún node-agent con `--reconcile` registrado (503 `no schedulable nodes registered`); un node-agent sin `--reconcile` no recibe sandboxes (409 si lo fijas con `node_id`); pod-daemon caído (exec 5xx/timeout); API key requerida pero no enviada; SoftFail nft/TAP solo avisa en logs. |
 
@@ -317,7 +317,7 @@ export ASP_AUTO_PROVISION=0
 | `--reconcile` / `ASP_RECONCILE=1` | Loop de reconciliación |
 | `--reconcile-interval` | Default 2s |
 
-> **Dry-run vs bare-metal:** aquí FakeVMM + unix sock bastan. CH real = multi-socket spawn + hybrid vsock (`--ch-socket-dir`; [`bare-metal-ch.md`](bare-metal-ch.md) §5–§6). Si Create deja el sandbox en `requested` y nunca pasa a `running`, casi seguro falta `--reconcile` en el node-agent (o tienes `ASP_AUTO_PROVISION=0` sin reconciler). Gaps conocidos: SoftFail nft/TAP, attestation software ≠ TPM/SEV (roadmap).
+> **Dry-run vs bare-metal:** aquí FakeVMM + unix sock bastan. CH real = multi-socket spawn + hybrid vsock (`--ch-socket-dir`; [cómo ejecuta un nodo las sandboxes](concepts/node-runtime.md)). Si Create deja el sandbox en `requested` y nunca pasa a `running`, casi seguro falta `--reconcile` en el node-agent (o tienes `ASP_AUTO_PROVISION=0` sin reconciler). Gaps conocidos: SoftFail nft/TAP, attestation software ≠ TPM/SEV (roadmap).
 
 
 ## 8. CLI `asp` (demo lifecycle)

@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0002-networking](0002-networking.md), [0004-k8s-scope](0004-k8s-scope.md), [`../bare-metal-ch.md`](../bare-metal-ch.md), [`../roadmap.md`](../roadmap.md) §1g–2a
+- **Relacionados:** [0002-networking](0002-networking.md), [0004-k8s-scope](0004-k8s-scope.md), [instalar un nodo](../how-to/install-node.md), [`../roadmap.md`](../roadmap.md) §1g–2a
 
 ## Contexto
 
@@ -48,7 +48,7 @@ El node-agent habla con CH vía su HTTP API sobre Unix socket:
 
 ### Negativas / costes
 
-- Hay que **fijar y validar** versión de CH + kernel + rootfs en ops (`bare-metal-ch.md`); no hay tracking automático de upstream.
+- Hay que **fijar y validar** versión de CH + kernel + rootfs en ops ([instalar un nodo](../how-to/install-node.md)); no hay tracking automático de upstream.
 - CH expone más dispositivos que Firecracker → política de “mínimo necesario” en `MicroVMConfig` (kernel, rootfs, TAP, vsock; sin gadgets extra).
 - Nested virt en lab degrada densidad/latencia; hay que documentarlo como límite, no como bug.
 
@@ -69,7 +69,7 @@ El node-agent habla con CH vía su HTTP API sobre Unix socket:
 | Shared socket | `--ch-api-socket` / `ASP_CH_API_SOCKET` (legacy) |
 | Reconciler | `node-agent/internal/reconciler/` — arma `MicroVMConfig` con `TapDevice`, `VsockCID`, kernel/rootfs |
 | Assets guest | `/opt/sandbox/vmlinux`, `/opt/sandbox/rootfs.img` (convención ops; ver bare-metal) |
-| Guía ops | [`../bare-metal-ch.md`](../bare-metal-ch.md) §2, §5 |
+| Guía ops | [instalar un nodo](../how-to/install-node.md), [cómo ejecuta un nodo las sandboxes](../concepts/node-runtime.md) |
 
 Ejemplo (bare-metal, sin dry-run):
 

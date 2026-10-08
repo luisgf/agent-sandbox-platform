@@ -185,26 +185,7 @@ mv ~/.cache/asp/session.json ~/.cache/asp/sessions/default.json
 
 ## Fallos concretos
 
-| Síntoma | Causa probable |
-|---|---|
-| `no active session` | No hubo `start` de ese `--name`, otro `HOME`, u otro `--session-dir`. |
-| `active session …` en start | Ya hay JSON para ese nombre. `resume --name` si está parada, `rm --name` para borrarla, o `start --force --name`. |
-| `invalid session name` | El nombre tiene `/`, espacios o `..`. |
-| exec HTTP 404 | Alguien borró el sandbox y el JSON sigue. `rm` (limpia en 404) o `start --force`. |
-| `idle timeout` / `idle_reaped=true` | El reaper paró el sandbox y **conservó su disco**. El JSON local sigue. `asp session resume --name …`. |
-| `sandbox is stopped; its disk is kept` | Alguien paró la sesión. `asp session resume --name …`. |
-| `no capacity on the node that holds the disk` al reanudar (503) | El nodo del disco está lleno. La sandbox sigue parada: reintenta, o libera hueco en ese nodo. No se puede mover el disco a otro. |
-| `disk_lost` al reanudar | Falta el disco en el nodo (alguien lo borró, o el plano de control olvidó la sandbox y el GC del nodo lo recogió). No hay vuelta atrás: `asp session rm` y `start`. |
-| `no capacity: …` en start (503) | Ningún nodo tiene hueco; el mensaje cuenta por qué se descartó cada uno (`max_sandboxes`, `insufficient_memory`, `cordoned`, `stale`…). Reintenta, o que un admin añada nodos o haga `uncordon` (`asp node list`). |
-| `node pin rejected: …` en start (409) | `--node-id` apunta a un nodo desconocido, caído, revocado o en cordon. Quita el pin o revisa ese nodo. |
-| `lost_with_node=true` / `sandbox was lost with its node` | Estaba `failed` porque su nodo dejó de dar señales (`node_lost`): el disco vivía en ese servidor, `asp session start --force --name …`. |
-| `was stopped when the node agent restarted` / `…when its node stopped responding` | Es una sandbox `stopped` (`node_agent_restarted`, o `node_lost` si se estaba parando): su VM murió (con el agente, o mientras estaba parado: un reinicio normal del agente **no** la para, la adopta) pero **el disco se conserva** en el nodo. `asp session resume` (cuando el nodo vuelva, si es `node_lost`). `start --force` la borraría: pide `--yes` a propósito. |
-| exec 401 | Token caducado o `ASP_REQUIRE_TOKEN` sin secretos. `asp auth status`. |
-| stdout vacío y exit ≠ 0 | El guest falló sin stdout; el código es el `exit_code`. El error del CLI (red, 500, stream sin evento `exit`) es exit **1**, no el código del guest. |
-| `exec stream: missing exit event` | El proxy cortó el NDJSON. No hubo `exit_code`. El fin del stream no refresca la actividad (su tiempo abierto sí la refrescó). |
-| `state file kept` | `DELETE` falló (no 404). El JSON sigue para reintentar `rm`. |
-| El guest no ve `/workspace` | Imagen nueva: `systemctl status workspace-virtiofs` en el guest. Si el tag no estaba, la unidad sale 0 y no hay mount (sandbox sin workspace, o `virtiofsd` no arrancó). Imagen vieja, sin esa unidad: `mkdir -p /workspace && mount -t virtiofs workspace /workspace`. Si el start falló con `virtiofsd`, el binario no está en el nodo (`--virtiofsd-bin` / `ASP_VIRTIOFSD_BIN`). |
-| Salida de golpe al final | `--buffered`, `--json`, o un pod-daemon que no habla `?stream=1` (el node-agent emite un burst). |
+Los mensajes de `asp session` y de `asp sandbox` y su causa (`no active session`, `no capacity: …`, `disk_lost`, `lost_with_node`, `exec stream: missing exit event`…) están en [la tabla de diagnóstico](how-to/troubleshooting.md#sesiones-asp-session).
 
 
 ## Virtiofs y PTY — qué aterrizó
@@ -255,7 +236,7 @@ Cubren el directorio de sesiones (nombres distintos, modo `0600`, rechazo de `..
 - [ADR-0009](adr/0009-agent-sessions.md) — dirección y seguimiento
 - [`why-agent-sessions.md`](why-agent-sessions.md)
 - [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md) — primitiva one-shot + IdP
-- [`bare-metal-ch.md`](bare-metal-ch.md) — CH real; el nodo arranca virtiofsd si hay workspace
+- [`how-to/install-node.md`](how-to/install-node.md) y [`concepts/node-runtime.md`](concepts/node-runtime.md) — CH real; el nodo arranca virtiofsd si hay workspace
 - [`why-virtiofs-pty.md`](why-virtiofs-pty.md) — por qué este corte
 - [`why-cli-asp.md`](why-cli-asp.md)
 - [`roadmap.md`](roadmap.md)

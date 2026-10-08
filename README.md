@@ -217,7 +217,7 @@ Once a [release](CHANGELOG.md) exists, no compiling is needed: `curl -fsSL https
 
 ## Quickstart (dry-run, no KVM)
 
-Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI. **It provides no isolation.** For real microVMs see [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md).
+Dry-run uses `FakeVMM`: it exercises the whole control path on a laptop or in CI. **It provides no isolation.** For real microVMs see [`docs/how-to/install-node.md`](docs/how-to/install-node.md).
 
 **Requirements:** Go 1.26+, Rust/Cargo. Docker only for Postgres or for building the guest rootfs.
 
@@ -475,7 +475,7 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Architecture, trust boundaries, threat model | [`docs/architecture.md`](docs/architecture.md) |
 | Phases delivered and open gaps | [`docs/roadmap.md`](docs/roadmap.md) |
 | Dry-run smoke test | [`docs/mvp-smoke.md`](docs/mvp-smoke.md) |
-| Real Cloud Hypervisor on bare metal | [`docs/bare-metal-ch.md`](docs/bare-metal-ch.md) |
+| Real Cloud Hypervisor on bare metal | [`docs/how-to/install-node.md`](docs/how-to/install-node.md) · [control plane](docs/how-to/install-control-plane.md) · [how a node runs sandboxes](docs/concepts/node-runtime.md) · [networking and egress](docs/concepts/networking-and-egress.md) · [security operations](docs/how-to/security-operations.md) |
 
 **Operations guides**
 

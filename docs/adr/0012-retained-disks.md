@@ -71,7 +71,7 @@ El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de 
 
 ### 8. Postgres es requisito
 
-La retención solo significa algo si el plano de control recuerda las sandboxes paradas tras reiniciarse. Con el store en memoria un reinicio las olvida y el GC del nodo borra sus discos. El store en memoria queda para tests y smokes; el plano de control avisa al arrancar si lo usa con un TTL activo. El laboratorio pasó a Postgres (guía en [`../bare-metal-ch.md`](../bare-metal-ch.md) § 4.1).
+La retención solo significa algo si el plano de control recuerda las sandboxes paradas tras reiniciarse. Con el store en memoria un reinicio las olvida y el GC del nodo borra sus discos. El store en memoria queda para tests y smokes; el plano de control avisa al arrancar si lo usa con un TTL activo. El laboratorio pasó a Postgres (guía en [instalar el plano de control](../how-to/install-control-plane.md#1-la-base-de-datos)).
 
 ### 9. Una VM que muere sola (#118)
 

@@ -21,7 +21,7 @@ host_vsock: true
 # nftables (table asp_egress; the script is built into the binary). With the proxy set the
 # redirect is on and in enforce mode: a node that cannot apply the rules (no root, no nft)
 # does not start instead of running guests without egress control. `asp node list` shows
-# EGRESS enforced once it registered. Docs: docs/bare-metal-ch.md section 3.
+# EGRESS enforced once it registered. Docs: docs/concepts/networking-and-egress.md.
 egress_enforce: true
 egress_proxy_listen: ":8888"
 egress_dns_sink: ":5353"

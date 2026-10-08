@@ -8,7 +8,7 @@ sudo asp session start
 sudo asp session exec --cmd 'id'
 ```
 
-El instalador baja y comprueba los paquetes (`asp`, `asp-control-plane`, `asp-node-agent` y `asp-server`, [install.md](install.md)), el kernel y la imagen del guest de esa versión, y arranca el servicio `asp-server`. Éste hace lo que antes eran los 24 pasos de [bare-metal-ch.md](../bare-metal-ch.md): la base de datos, las claves, el certificado TLS, la clave de administración y el token del nodo; arranca un plano de control y un nodo, los mantiene en marcha y deja configurado el comando `asp` de ese host.
+El instalador baja y comprueba los paquetes (`asp`, `asp-control-plane`, `asp-node-agent` y `asp-server`, [install.md](install.md)), el kernel y la imagen del guest de esa versión, y arranca el servicio `asp-server`. Éste hace lo que antes eran los 24 pasos de [instalar un nodo](install-node.md) y [el plano de control](install-control-plane.md): la base de datos, las claves, el certificado TLS, la clave de administración y el token del nodo; arranca un plano de control y un nodo, los mantiene en marcha y deja configurado el comando `asp` de ese host.
 
 Sin systemd, o con el tarball, es el mismo programa: `sudo asp-server` (ver abajo).
 
@@ -103,7 +103,7 @@ Lo que importa es `server/` (la base de datos **y** las claves: sin `ca.key` los
 ## Límites
 
 - **Un único plano de control**: SQLite es un fichero de un host. Para más de un plano de control (alta disponibilidad), Postgres.
-- `asp-server` corre como root, como el nodo; el plano de control que arranca, no. Para endurecer la unit del plano de control (`ProtectSystem`, `NoNewPrivileges`…) hay que usar sus servicios por separado ([bare-metal-ch.md](../bare-metal-ch.md)): no se instalan juntos, y la unit de `asp-server` declara `Conflicts=` con ellos.
+- `asp-server` corre como root, como el nodo; el plano de control que arranca, no. Para endurecer la unit del plano de control (`ProtectSystem`, `NoNewPrivileges`…) hay que usar sus servicios por separado ([instalar el plano de control](install-control-plane.md) y [un nodo](install-node.md)): no se instalan juntos, y la unit de `asp-server` declara `Conflicts=` con ellos.
 - Las claves de este host (la CA incluida) están en el mismo disco que los datos.
 
 ## Sin systemd, o a mano
