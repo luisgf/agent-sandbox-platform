@@ -3,8 +3,9 @@
 # smokes with FakeVMM nodes (--dry-run), and the bugs of the data plane (a `/` at 0700, a stop that
 # loses what the guest had not synced, a retained disk deleted by a self-fence) were found by hand.
 #
-# Needs a self-hosted runner with the labels self-hosted, linux and kvm, on a host with /dev/kvm,
-# systemd, cloud-hypervisor, virtiofsd, nftables and docker (to build the guest image), where the
+# Needs a self-hosted runner with the labels self-hosted, linux and kvm, on a host with /dev/kvm (with
+# nested virtualization on, for the installer test), systemd, cloud-hypervisor, virtiofsd, nftables,
+# docker (to build the guest image), qemu-img, mkfs.vfat and python3, where the
 # runner's user has passwordless sudo: the scripts start VMs, TAPs and systemd units as root. Give
 # it a machine of its own (the scripts use their own directories, ports and subnets, and stop only
 # the units they start, but they do run as root), and never run it for a pull request from a fork:
@@ -68,6 +69,14 @@ jobs:
             scripts/build-guest-image.sh --verify --kernel build/guest
             echo "KERNEL=$PWD/build/guest/vmlinux" >> "$GITHUB_ENV"
           fi
+      - name: What a release would contain (the packages)
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish,docker,sbom,sign
+      - name: The installer on a clean Ubuntu and a clean Debian
+        if: ${{ env.OWN_KERNEL == '' }}
+        run: sudo env ASP_INSTALL_E2E_DIST="$PWD/dist" ASP_INSTALL_E2E_GUEST="$PWD/build/guest" scripts/e2e-install-kvm.sh
       - name: The life of a sandbox
         run: |
           sudo env ASP_E2E_ROOTFS="$PWD/build/guest/rootfs.img" ASP_E2E_KERNEL="$KERNEL" \
