@@ -13,6 +13,4 @@ Each draft says at its top what it needs (secrets, runners, settings).
 
 | Draft | What it does | Needs |
 |---|---|---|
-| `guest-image.yml` | Builds the guest image twice and fails if the two `SHA256SUMS` differ | nothing else |
-| `guest-kernel.yml` | Builds the guest kernel twice (it compiles Linux) and fails if the two differ | nothing else |
 | `nightly-kvm.yml` | The real end to end on a KVM host, nightly and for a pull request labelled `needs-kvm` | a self-hosted runner with KVM |

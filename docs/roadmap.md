@@ -4,13 +4,12 @@ Lo que viene. Lo que ya está hecho no se cuenta aquí: los cambios por versión
 
 ## Para publicar la primera versión (0.1.0)
 
-Las piezas están escritas y probadas: una release se instala en una Ubuntu y una Debian limpias, la segunda se une a la primera como nodo, y el kernel y la imagen del guest salen iguales en cada build (`scripts/e2e-install-kvm.sh`, [comprobar un nodo](how-to/e2e-kvm.md#el-instalador-en-máquinas-limpias)). Los workflows de release y de documentación están activos; lo que falta es ensayar la release, publicarla y un runner con KVM para el carril nocturno.
+Las piezas están escritas y probadas: una release se instala en una Ubuntu y una Debian limpias, la segunda se une a la primera como nodo, y el kernel y la imagen del guest salen iguales en cada build (`scripts/e2e-install-kvm.sh`, [comprobar un nodo](how-to/e2e-kvm.md#el-instalador-en-máquinas-limpias)). Los workflows de release, de documentación y del guest (el kernel y la imagen, cada uno construido dos veces desde cero) están activos; lo que falta es ensayar la release, publicarla y un runner con KVM para el carril nocturno.
 
 | Qué falta | Dónde |
 |---|---|
 | Ensayar el workflow de release (Actions → *Release* → *Run workflow*, no publica nada) y publicar `v0.1.0`: binarios, paquetes `.deb`/`.rpm`, la imagen del plano de control, el kernel y la imagen del guest con su `SHA256SUMS`. Después, `scripts/e2e-install-kvm.sh` con los ficheros de esa release: es la comprobación de que un host limpio la instala | #127, [publicar una versión](how-to/release.md) |
 | Un carril de CI nocturno en un host con KVM que recorra el ciclo real. Los scripts están hechos y probados (`e2e-kvm.sh`, `smoke-vmm-user-kvm.sh`, `smoke-egress-kvm.sh`, `e2e-install-kvm.sh`); falta un runner con KVM y activar el workflow. Hoy KVM, virtiofs y `--local-net` no corren en CI (las reglas de nftables sí, en namespaces y sin guest: `smoke-egress-nft.sh`) | #130, [comprobar un nodo](how-to/e2e-kvm.md) |
-| Construir el kernel y la imagen del guest en CI y publicarlos: la receta es reproducible; falta activar los workflows (`guest-image`, `guest-kernel` y el job `guest` de `release`) | #131 |
 | Un solo idioma para la documentación | #142 |
 
 ## Decisiones pendientes
