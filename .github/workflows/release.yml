@@ -70,7 +70,7 @@ jobs:
     name: guest image
     needs: release        # the release exists, so the files can be attached to it
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # the kernel is compiled, twice, and then the image, twice
+    timeout-minutes: 90   # the kernel is compiled, twice, and then the image, twice: about 20 minutes on a hosted runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

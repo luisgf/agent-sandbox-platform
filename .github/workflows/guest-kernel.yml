@@ -1,6 +1,6 @@
 # The guest kernel is the same bytes every time: a change to its recipe (the source, the compiler, the
 # configuration) builds it twice from scratch and fails if the two differ (scripts/build-guest-kernel.sh
-# --verify). It compiles Linux, about 7 minutes on 12 cores and an hour or so on a hosted runner, twice,
+# --verify). It compiles Linux, about 7 minutes on 12 cores and 9 on a hosted runner, twice,
 # so it has a workflow of its own, for the files that can change the kernel. A release builds it with the
 # image (release.yml), and the nightly KVM lane boots it.
 name: Guest kernel
@@ -20,7 +20,7 @@ jobs:
   reproducible:
     name: reproducible kernel
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90   # it takes about 20; a build that hangs should not hold a runner for hours
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
