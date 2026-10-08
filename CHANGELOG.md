@@ -83,6 +83,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Changed
 
+- **A sandbox without a workspace starts 1.8 s faster.** The guest's workspace helper no longer retries the
+  mount eight times for a virtiofs tag when the VM has no virtio-fs device. Measured on a KVM host: the
+  pod-daemon answers 1.4 s after Cloud Hypervisor starts instead of 3.2 s (with a clean disk). The analysis of
+  the rest of the start, and why a warm pool and snapshots wait, is [ADR-0017](docs/adr/0017-fast-start.md);
+  `scripts/bench-vm-start.py` repeats the measurements. Rebuild the guest image to get it.
 - **Roles:** a new role, `user` (`asp-user`), creates and runs its own sandboxes and sees no one else's.
   An `operator` can `exec` in other people's sandboxes only with the group `sandbox:exec-any` (as for
   destroying with `sandbox:destroy-any`): move the people and agents that only use sandboxes to
