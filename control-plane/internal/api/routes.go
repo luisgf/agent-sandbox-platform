@@ -11,6 +11,7 @@ func (s *Server) Routes() *http.ServeMux {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
 	})
+	mux.HandleFunc("GET /openapi.json", s.GetOpenAPI)
 	mux.HandleFunc("GET /metrics", s.ServeMetrics)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.OpenIDConfiguration)
 	mux.HandleFunc("GET /oidc/jwks.json", s.JWKS)

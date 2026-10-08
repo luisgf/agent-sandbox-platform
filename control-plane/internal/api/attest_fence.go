@@ -27,6 +27,25 @@ type verifyAttestRequest struct {
 	Evidence attest.Evidence `json:"evidence"`
 }
 
+// attestationResult is the evidence kept for a sandbox and what the control plane makes of it.
+type attestationResult struct {
+	Attestation store.AttestationRecord `json:"attestation"`
+	Fresh       bool                    `json:"fresh"`
+	Measured    bool                    `json:"measured"`
+	// Allowlisted and ImageName are there only when the control plane has an image allowlist.
+	Allowlisted *bool  `json:"allowlisted,omitempty"`
+	ImageName   string `json:"image_name,omitempty"`
+}
+
+// verifyAttestationResult is the verdict of a bundle checked without storing it.
+type verifyAttestationResult struct {
+	Valid bool   `json:"valid"`
+	Error string `json:"error"`
+	Fresh bool   `json:"fresh"`
+	KID   string `json:"kid"`
+	Alg   string `json:"alg"`
+}
+
 // StoreAttestation verifies and persists node-submitted boot evidence.
 func (s *Server) StoreAttestation(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -164,16 +183,13 @@ func (s *Server) GetAttestation(w http.ResponseWriter, r *http.Request) {
 	if s.Attestor != nil {
 		fresh = s.Attestor.IsFresh(attest.Evidence{Statement: stmt}, time.Now().UTC())
 	}
-	resp := map[string]any{
-		"attestation": rec,
-		"fresh":       fresh,
-		"measured":    stmt.Measured(),
-	}
+	resp := attestationResult{Attestation: rec, Fresh: fresh, Measured: stmt.Measured()}
 	if s.AttestAllow != nil {
 		img, err := s.AttestAllow.Check(stmt)
-		resp["allowlisted"] = err == nil
+		allowlisted := err == nil
+		resp.Allowlisted = &allowlisted
 		if err == nil {
-			resp["image_name"] = img.Name
+			resp.ImageName = img.Name
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -227,12 +243,12 @@ func (s *Server) VerifyAttestation(w http.ResponseWriter, r *http.Request) {
 		ev.Alg = attest.AlgES256
 	}
 	err := s.Attestor.Verify(r.Context(), ev)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"valid": err == nil,
-		"error": errString(err),
-		"fresh": err == nil && s.Attestor.IsFresh(ev, time.Now().UTC()),
-		"kid":   ev.KeyID,
-		"alg":   ev.Alg,
+	writeJSON(w, http.StatusOK, verifyAttestationResult{
+		Valid: err == nil,
+		Error: errString(err),
+		Fresh: err == nil && s.Attestor.IsFresh(ev, time.Now().UTC()),
+		KID:   ev.KeyID,
+		Alg:   ev.Alg,
 	})
 }
 

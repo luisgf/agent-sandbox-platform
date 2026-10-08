@@ -1,0 +1,3062 @@
+openapi: 3.0.3
+info:
+  title: Agent Sandbox Platform control-plane API
+  # The control plane serves this document at GET /openapi.json with the version of its own build here.
+  version: dev
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  description: |
+    The HTTP API of the Agent Sandbox Platform control plane: it creates sandboxes (microVMs) on
+    the nodes, runs commands in them, and manages the nodes, API keys and egress policy.
+
+    This document is written by hand and checked against the code: a test fails when a route of the
+    control plane is missing here (or the other way round), when a field of a JSON body differs
+    from the Go type that carries it, or when a handler can answer a status that is not listed.
+    The reference page `docs/reference/api.md` is generated from it (`make docs`). While ASP is
+    0.x, a minor release may change the API; [CHANGELOG.md](https://github.com/luisgf/agent-sandbox-platform/blob/main/CHANGELOG.md) says so.
+
+    ## Authentication
+
+    Every route except the public ones needs `Authorization: Bearer <token>`. A token is one of:
+
+    * an **API key** (`asp_` and 40 hexadecimal digits), made with `POST /v1/api-keys`. A *tenant*
+      key acts only within its tenant. A *platform* key sees every tenant and may call the node
+      routes, which a tenant key never can.
+    * an **IdP access token**: a JWT of the OIDC provider the control plane trusts
+      (`ASP_IDP_ISSUER`). The caller's tenant, subject, e-mail and role come from its claims. With
+      `ASP_IDP_REQUIRED=1` the routes for people accept nothing else.
+
+    Node agents authenticate on the node routes with their client certificate over mutual TLS
+    (the control plane has `ASP_CLIENT_CA`): the certificate names the node (CN, OU `nodes`) and a
+    node can act only for itself. Without a client CA a platform key does instead.
+
+    Without any key or IdP the control plane refuses every request unless it runs with
+    `ASP_INSECURE_OPEN_API=1`: a laptop and the dry-run smokes, never a shared host.
+
+    ### Roles
+
+    With an IdP token the role decides what the caller may do. `admin` can do everything of a
+    tenant and manage nodes, API keys and the egress policy. `operator` lists and gets every
+    sandbox of the tenant, lists nodes, and acts on sandboxes it does not own only with the grants
+    `exec-any` and `destroy-any`. `user` creates sandboxes and acts on its own. `viewer` only
+    reads. An API key has no role: it is trusted with everything within its scope, except that
+    only a platform key manages nodes and API keys.
+
+    ### Tenants
+
+    A caller confined to a tenant (a tenant key, an IdP token) sees that tenant only: a sandbox of
+    another tenant answers 404 as if it did not exist, and naming another tenant answers 403.
+
+    ## Errors
+
+    An error is always `{"error": "<message>"}` with one of these statuses; the message is meant
+    for people and may change.
+
+    | Status | Meaning |
+    |---|---|
+    | 400 | The body is not JSON, a field is missing or out of range, or a parameter is invalid |
+    | 401 | No credential, an unknown or revoked one, or an IdP token that is not valid |
+    | 403 | The credential is valid but the role, the tenant or the node identity does not allow it |
+    | 404 | The sandbox, node, key or tenant does not exist (or is another tenant's) |
+    | 409 | The request conflicts with the state of the resource: a sandbox that is not running, a node that is revoked or cannot take sandboxes |
+    | 413 | The body is larger than the limit (1 MiB; 64 KiB for the small node calls) |
+    | 502, 504 | The node agent did not answer, or a buffered exec exceeded its time limit |
+    | 503 | Not configured on this control plane (attestation, OIDC, enrollment), or **no node has room**: then `Retry-After: 30` and `reasons` count why each node was skipped |
+
+    ## Sandbox states
+
+    `requested` (placed on a node, waiting for it) → `starting` (the node claimed it) → `running`.
+    A stop goes `stopping` → `stopped`, and **keeps the disk** until a resume (`POST …/start`) or
+    a delete; a stopped sandbox expires after a retention period. A delete goes `deleting` →
+    `deleted` and removes the disk; the row stays for the audit trail. `failed` is a sandbox the
+    node could not start, or lost with its node (`stop_reason` says which). `scheduled` and
+    `paused` are accepted states a node may report; the control plane does not use them today.
+
+    ## Commands and streaming
+
+    `POST /v1/sandboxes/{id}/exec` runs a command and answers once it exits (JSON), or with
+    `?stream=1` (or `Accept: application/x-ndjson`) streams its output as it comes: one JSON object
+    per line, see `ExecStreamEvent`. A streamed command has no time limit; a buffered one is
+    cut at `ASP_BUFFERED_EXEC_TIMEOUT` (10 minutes) and answers 504.
+servers:
+  - url: https://control-plane.example:8443
+    description: The address of your control plane. A laptop or smoke run is `http://127.0.0.1:8080`.
+security:
+  - apiKey: []
+  - idpToken: []
+tags:
+  - name: Sandboxes
+    description: Create a sandbox, look at it, stop it, resume it and delete it.
+  - name: Exec
+    description: Run commands in a running sandbox, buffered or streamed.
+  - name: Local network
+    description: The opt-in tunnel that sends a sandbox's traffic out through the caller's own network (ADR-0010).
+  - name: Egress policy
+    description: The hosts a tenant's sandboxes may reach.
+  - name: Attestation
+    description: Signed evidence of what a node booted a sandbox from.
+  - name: Nodes
+    description: The inventory of nodes and their administration, for operators.
+  - name: Node agent
+    description: The protocol between the control plane and the node agents. Not for people; listed because the API is whole.
+  - name: API keys
+    description: Create, list, revoke and rotate API keys.
+  - name: Identity
+    description: The OIDC issuer of the control plane, whose tokens a sandbox presents to the services it calls.
+  - name: Operations
+    description: Health, metrics and this document.
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      description: Answers 200 while the process serves requests. It does not look at the store or the nodes.
+      tags: [Operations]
+      x-asp-access: public
+      security: []
+      responses:
+        '200':
+          description: The control plane is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /openapi.json:
+    get:
+      operationId: getOpenAPI
+      summary: This document
+      description: The OpenAPI document of the API, as JSON. `info.version` is the version of the control plane that serves it.
+      tags: [Operations]
+      x-asp-access: public
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI 3.0 document.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus metrics
+      description: |
+        The metrics of the control plane in the Prometheus text format: requests, sandbox creates and
+        their results, sandboxes by state, the nodes, the idle reaper and the node monitor
+        (`docs/how-to/monitoring.md` lists them). Needs an IdP `admin` or `operator`, or a platform
+        key: they span every tenant. The same metrics are served without credentials on the separate
+        listener of `ASP_METRICS_LISTEN` (loopback unless told otherwise).
+      tags: [Operations]
+      x-asp-access: operator
+      responses:
+        '200':
+          description: The metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /.well-known/openid-configuration:
+    get:
+      operationId: getOpenIDConfiguration
+      summary: OIDC discovery document
+      description: The discovery document of the control plane as an OIDC issuer.
+      tags: [Identity]
+      x-asp-access: public
+      security: []
+      responses:
+        '200':
+          description: The discovery document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenIDConfiguration'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /oidc/jwks.json:
+    get:
+      operationId: getJWKS
+      summary: Public keys of the issuer
+      description: The keys that verify the tokens `POST /v1/internal/oidc/token` mints, the current one and the one before a rotation.
+      tags: [Identity]
+      x-asp-access: public
+      security: []
+      responses:
+        '200':
+          description: The key set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JWKS'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/internal/oidc/token:
+    post:
+      operationId: mintOIDCToken
+      summary: Mint a token for a sandbox
+      description: |
+        A node mints a short-lived JWT for one of its sandboxes, for the services the sandbox calls.
+        The tenant, subject and the human owner (`user_sub`, and `act` for the delegation) come from the
+        store: what the node or the guest sends for them is ignored. When the sandbox has fresh boot
+        evidence the token carries it as `x_asp_attestation`.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCTokenRequest'
+      responses:
+        '200':
+          description: The token and its claims.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCToken'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes:
+    post:
+      operationId: createSandbox
+      summary: Create a sandbox
+      description: |
+        Places a new sandbox on a node with room for it and answers 201 with the sandbox in state
+        `requested`: the node claims it on its next poll and boots it, so poll `GET /v1/sandboxes/{id}`
+        until it is `running`. With `ASP_AUTO_PROVISION=1` (dry-run, no nodes) the control plane moves
+        it to `running` itself.
+
+        If no node has room the answer is **503** with `Retry-After: 30` and `reasons`; naming a
+        node (`node_id`) that cannot take sandboxes is a **409**. The scheduler is described in ADR-0011.
+
+        `tenant_id` defaults to the caller's tenant, or to `ASP_DEFAULT_TENANT` (`default`) for a
+        caller that sees every tenant. An IdP caller needs the role `user`, `operator` or `admin` and
+        becomes the owner (`owner_sub`, `owner_email` come from its token; naming another owner is
+        403). An API key cannot name an owner either: the sandbox has none and the key is the actor.
+        When `ASP_WORKSPACE_ROOTS` is set, `workspace_host_path` must be inside `<root>/<tenant>` for one of the roots.
+        `local_net` opts into the tunnel; v1 has no policy for it, so the keys `local_net_policy`,
+        `prefixes`, `cidrs`, `cidr`, `ports`, `routes`, `exceptions` and `local_net_allow` are 400,
+        and a request that says it is from the guest (`X-ASP-Caller: guest`) may not set it (403).
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/ActorSubHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSandboxRequest'
+      responses:
+        '201':
+          description: The sandbox, placed on a node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The node named in `node_id` does not exist, is revoked, or cannot take sandboxes (it is cordoned, offline, or does not accept work).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/NoCapacity'
+    get:
+      operationId: listSandboxes
+      summary: List sandboxes
+      description: |
+        The sandboxes of a tenant, most recent first. A caller confined to a tenant gets that tenant
+        whatever it asks (asking for another is 403); one that sees every tenant gets all of them,
+        or those of `tenant_id`. The deleted ones are history and are left out unless
+        `include_deleted` is `1`. With an IdP token the role `user` sees only its own sandboxes;
+        `admin`, `operator` and `viewer` see the tenant's.
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/TenantFilter'
+        - $ref: '#/components/parameters/IncludeDeleted'
+      responses:
+        '200':
+          description: The sandboxes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}:
+    get:
+      operationId: getSandbox
+      summary: Get a sandbox
+      description: The sandbox and the state its node last reported. An IdP caller needs to be its owner or an `admin`, `operator` or `viewer`.
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteSandbox
+      summary: Delete a sandbox and its disk
+      description: |
+        Deletes the VM and its disk. The sandbox goes to `deleting`, and to `deleted` when its node
+        reports it removed (at once when no node holds anything). The row stays for the audit trail.
+        Deleting a sandbox that is being or already deleted changes nothing and answers 200.
+        An IdP caller needs to be the owner, an `admin`, or an `operator` with `destroy-any`.
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The sandbox, `deleting` or `deleted`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/stop:
+    post:
+      operationId: stopSandbox
+      summary: Stop a sandbox and keep its disk
+      description: |
+        Powers the VM off and keeps its disk (ADR-0012): the sandbox goes to `stopping`, and to
+        `stopped` when its node reports it (at once if it was never claimed). `POST …/start`
+        boots it again on that disk; a stopped sandbox is deleted after the retention period
+        (`ASP_STOPPED_SANDBOX_TTL`, 7 days) or beyond the per-tenant cap. Stopping a sandbox that is
+        already stopping or stopped changes nothing and answers 200; one that failed or is being
+        deleted cannot be stopped (409).
+        An IdP caller needs to be the owner, an `admin`, or an `operator` with `destroy-any`.
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The sandbox, `stopping` or `stopped`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/start:
+    post:
+      operationId: startSandbox
+      summary: Resume a stopped sandbox
+      description: |
+        Boots a `stopped` sandbox again, on the node that holds its disk: it goes back to `requested`
+        and `boot_count` goes up by one. It takes room on that node like a create does, so it can answer
+        **503** (no room there) and needs the right to create as well as the right to stop: the owner,
+        an `admin` or an `operator` with `destroy-any`, who also may create. A sandbox that is already
+        starting or running is left as it is (200); one that is stopping, failed or deleted cannot be resumed
+        (409), and neither can one whose node cannot take sandboxes.
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The sandbox, back in `requested`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/NoCapacity'
+  /v1/sandboxes/{id}/events:
+    get:
+      operationId: listSandboxEvents
+      summary: The audit trail of a sandbox
+      description: Every step of the sandbox's life in order, with who did it (`actor`, `actor_sub`). Same access as getting the sandbox.
+      tags: [Sandboxes]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The events, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxEventList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/exec:
+    post:
+      operationId: execSandbox
+      summary: Run a command in a sandbox
+      description: |
+        Runs `cmd` in a running sandbox, through the control plane to the agent of its node and the
+        daemon in the guest. The control plane sends the tenant's egress policy along.
+
+        **Buffered** (the default): the answer comes when the command exits, as `ExecResponse` (the exit code
+        of a command that fails is in `exit_code`, the HTTP status is still 200). It is cut at the smaller of
+        `timeout_seconds` and `ASP_BUFFERED_EXEC_TIMEOUT` (10 minutes by default; a `timeout_seconds` of 0 means
+        that limit): then 504. **Streamed** (`?stream=1`, or `Accept: application/x-ndjson`): the answer is
+        `application/x-ndjson`, one `ExecStreamEvent` per line, as the command writes, and ends with
+        an `exit` event. A stream has no time limit and ends when the command does, or when the caller
+        disconnects (the command is killed).
+
+        With `pty` the guest runs the command under a pseudoterminal; with `pty` or `stdin_stream` the
+        first event is `ready` with an `exec_id`, and the caller sends input and resizes with
+        `POST …/exec/stdin`. `stdin` is the input of a buffered command, given up front. By default a
+        command runs as the owner of the workspace, or as the guest's default user; `as_root` runs it as root.
+
+        A command is activity: it keeps the sandbox from being stopped for idleness while it runs,
+        and a `sandbox.exec` event records it (how many arguments it had and its exit code; never the command line).
+        Only a `running` sandbox can run a command: any other state is 409 and the message says what to do.
+        An IdP caller needs to be the owner, an `admin`, or an `operator` with `exec-any`. The actor
+        in the audit trail is the caller's credential; `actor_sub` and `X-ASP-Actor-Sub` count only
+        in the open lab, where nothing authenticates.
+      tags: [Exec]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+        - $ref: '#/components/parameters/Stream'
+        - $ref: '#/components/parameters/ActorSubHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecRequest'
+      responses:
+        '200':
+          description: The result of a buffered command, or the events of a streamed one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecResponse'
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/ExecStreamEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The sandbox is not running (the message says what to do), or the agent has no guest for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '504':
+          description: A buffered command exceeded its time limit. Stream it, or raise `timeout_seconds` up to `ASP_BUFFERED_EXEC_TIMEOUT`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/sandboxes/{id}/exec/stdin:
+    post:
+      operationId: execStdin
+      summary: Send input to a streamed command
+      description: |
+        Sends keystrokes or data (`data`), the end of input (`close`), or a new terminal size
+        (`rows`, `cols`) to a command started with `pty` or `stdin_stream` whose stream answered
+        `ready`. It does not start a command. A successful call counts as activity, so a terminal that
+        is waiting for input is not reaped. Same access as `exec`.
+      tags: [Exec]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecStdinRequest'
+      responses:
+        '200':
+          description: The input was delivered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecStdinAck'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The sandbox is not running, or no command with that `exec_id` is running in it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+  /v1/sandboxes/{id}/local-net/grant:
+    post:
+      operationId: issueLocalNetGrant
+      summary: Get a grant for the local-net tunnel
+      description: |
+        For a sandbox created with `local_net: true`: issues a one-time `grant` (valid 10 minutes) that the
+        caller's CLI shows to `…/local-net/heartbeat` to bring the tunnel up, with where to dial and what
+        the node published for it. It does not turn `local_net` on. Only the owner may take it
+        (403 for anyone else, an `admin` included); a guest may not at all.
+        The node's `listen_port` and tunnel addresses are 0 and empty until the node has published them: retry.
+      tags: [Local network]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The grant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalNetGrant'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The sandbox did not ask for `local_net`, or it is not active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/local-net/heartbeat:
+    post:
+      operationId: heartbeatLocalNet
+      summary: Bring the tunnel up, or keep it up
+      description: |
+        The caller's CLI presents the `grant` and its WireGuard public key (32 bytes, base64): a valid pair
+        moves `local_net_state` to `up`. It does not count as activity. A grant that expired withdraws the
+        tunnel (egress stays closed, it does not fall back to the public proxy) and answers 401, as does a
+        grant that is wrong. Only the owner may call it.
+      tags: [Local network]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocalNetHeartbeatRequest'
+      responses:
+        '200':
+          description: The sandbox, with `local_net_state` `up`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/local-net/attach:
+    delete:
+      operationId: detachLocalNet
+      summary: Take the tunnel down
+      description: |
+        Withdraws the tunnel: `local_net_state` becomes `withdrawn`. `local_net` stays true, so the sandbox's
+        egress stays closed instead of going back to the node's public proxy. Only the owner may call it.
+      tags: [Local network]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The sandbox, with `local_net_state` `withdrawn`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/local-net/node-public:
+    post:
+      operationId: registerLocalNetNode
+      summary: The node publishes its tunnel key
+      description: |
+        The node-agent publishes the public key of the WireGuard device it made for the sandbox, and the UDP port
+        and the two ends of the /30 it allocated. It does not turn `local_net` on or move the tunnel state.
+        The node must be the one the sandbox is placed on; a guest may not call it.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocalNetNodePublicRequest'
+      responses:
+        '200':
+          description: The sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/tenants/{id}/egress:
+    get:
+      operationId: getTenantEgress
+      summary: A tenant's egress rules and the policy they make
+      description: |
+        The stored rules of a tenant and the effective policy the nodes apply: `deny-default` with those
+        rules when at least one is enabled, else `allow-all` only if the control plane runs with
+        `ASP_EGRESS_DEFAULT_ALLOW`, else `deny-default` with no rules (nothing leaves). Needs the IdP role `admin`,
+        or an API key of the tenant (or a platform key).
+      tags: [Egress policy]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: The rules and the policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressRules'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: putTenantEgress
+      summary: Replace a tenant's egress rules
+      description: |
+        Replaces the whole rule set (not a patch). A rule allows a host (`api.example.com`, or `*.example.com` for
+        its subdomains and the domain itself) on a `port`; one without `port` allows the web ports 80 and 443,
+        and other ports need a rule that names them. `enabled` defaults to true. Nodes pick the new policy
+        up on their next work poll, running sandboxes included.
+      tags: [Egress policy]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutEgressRequest'
+      responses:
+        '200':
+          description: The rules as stored, and the policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressRules'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/tenants/{id}/egress/check:
+    post:
+      operationId: checkTenantEgress
+      summary: Would a tenant's policy let a host through?
+      description: Evaluates a host (and port) against the tenant's effective policy, with the same matching the nodes use. For testing a policy before relying on it.
+      tags: [Egress policy]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EgressCheckRequest'
+      responses:
+        '200':
+          description: The verdict and the policy it came from.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressCheck'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/attestation:
+    get:
+      operationId: getAttestation
+      summary: The boot evidence of a sandbox
+      description: |
+        The latest signed statement a node made about what it booted the sandbox from, with whether it is
+        `fresh`, whether the node `measured` the kernel and image (hashed them) and, when the control plane has an
+        image allowlist, whether the digests are on it (`allowlisted`, `image_name`). The statement is the node's
+        own word, signed by it: a node the control plane trusts, not a hardware root of trust.
+      tags: [Attestation]
+      x-asp-access: tenant
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '200':
+          description: The evidence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttestationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The sandbox does not exist, or it has no attestation yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/attestation/verify:
+    post:
+      operationId: verifyAttestation
+      summary: Verify boot evidence without storing it
+      description: Checks the signature and shape of an evidence bundle and says whether it is fresh. It stores nothing and looks at no sandbox.
+      tags: [Attestation]
+      x-asp-access: tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyAttestationRequest'
+      responses:
+        '200':
+          description: The verdict. `valid` false carries the reason in `error`; it is still a 200.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyAttestationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{id}/attest:
+    post:
+      operationId: storeAttestation
+      summary: A node submits the boot evidence of a sandbox
+      description: |
+        The node-agent sends the statement it signed when it booted a sandbox. The control plane verifies the
+        signature against a key it trusts (`ASP_ATTEST_KEY`, `ASP_ATTEST_PUB`, `ASP_ATTEST_TRUSTED_PUBS`) or, over
+        mTLS, the key of the node's certificate, which binds the evidence to the node's enrolled identity. A key that
+        only the statement carries is not trusted. It then checks the image against the allowlist if there is one,
+        stores the evidence and records a `sandbox.attested` event; a refused image is recorded as
+        `sandbox.attestation_refused`.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttestRequest'
+      responses:
+        '200':
+          description: The stored evidence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttestationRecord'
+        '400':
+          description: The statement is for another sandbox, its signature does not verify, or its image is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{id}/claim:
+    post:
+      operationId: claimSandbox
+      summary: A node claims a sandbox placed on it
+      description: |
+        The node the scheduler placed a `requested` sandbox on claims it, which moves it to `starting`.
+        Only that node can: claiming a sandbox placed elsewhere, or one not in `requested`, is 409.
+        With mTLS `node_id` may be left out, and when given must be the certificate's node.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+      responses:
+        '200':
+          description: The sandbox, `starting`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/sandboxes/{id}/renew-lease:
+    post:
+      operationId: renewSandboxLease
+      summary: Renew a lease (removed)
+      description: |
+        Leases were replaced by the `assigned` list of `GET /v1/nodes/{id}/work`: a node stops the VMs the control
+        plane no longer assigns to it. The route stays for one release so that an old node-agent logs why it
+        fails. It always answers 410.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      deprecated: true
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      responses:
+        '410':
+          description: Removed. Update the node agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/sandboxes/{id}/status:
+    post:
+      operationId: updateSandboxStatus
+      summary: A node reports what a sandbox is doing
+      description: |
+        The node reports the state it observed (`starting`, `running`, `stopped`, `failed`, `deleted`…) and,
+        for a failure, why (`detail`). A report that arrives late does not bring a sandbox back: `stopped` is
+        final, `failed` only goes to `stopped`, `stopping` only finishes, and `deleted` is accepted only for a
+        sandbox being deleted. Those are 409. A guest may not call it.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/SandboxID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusRequest'
+      responses:
+        '200':
+          description: The sandbox as updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes:
+    get:
+      operationId: listNodes
+      summary: List the nodes
+      description: |
+        Every registered node, by id, with what is placed on it (`allocated`), what it offers after CPU
+        overcommit (`allocatable`, 0 = not limited) and whether the scheduler can place a new sandbox there
+        (`schedulable`, and `unschedulable_reason` when not). Fence credentials are never included. The inventory is
+        operations data: it needs the IdP role `admin` or `operator`, or a platform key (a tenant key is 403).
+      tags: [Nodes]
+      x-asp-access: operator
+      responses:
+        '200':
+          description: The nodes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/{id}/doctor:
+    get:
+      operationId: nodeDoctor
+      summary: Run the self-checks of a node
+      description: |
+        The node-agent of the node runs its checks (KVM, hypervisor, guest images, disk, nftables, clock,
+        this control plane) and the control plane returns its report as the agent made it. It reaches the node the way an
+        exec does. The checks take a while: the call is bounded at 90 seconds. Same callers as listing the nodes.
+        `asp node doctor <id>` calls it.
+      tags: [Nodes]
+      x-asp-access: operator
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoctorReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The node is revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '501':
+          description: The node-agent predates the doctor. Upgrade it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+  /v1/nodes/{id}/cordon:
+    post:
+      operationId: cordonNode
+      summary: Stop placing sandboxes on a node
+      description: The scheduler places no new sandbox on the node; the ones running there stay. Needs the IdP role `admin` or a platform key.
+      tags: [Nodes]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '200':
+          description: The node, `cordoned`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/{id}/uncordon:
+    post:
+      operationId: uncordonNode
+      summary: Place sandboxes on a node again
+      description: Undoes `cordon`. Needs the IdP role `admin` or a platform key.
+      tags: [Nodes]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '200':
+          description: The node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/{id}/revoke:
+    post:
+      operationId: revokeNode
+      summary: Revoke a node and its certificate
+      description: |
+        Marks the node and the fingerprint of its current client certificate revoked: its mTLS calls are refused
+        and the scheduler never picks it. The bootstrap token every node holds is not enough: needs the IdP role
+        `admin` or a platform key.
+      tags: [Nodes]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '200':
+          description: The node, with `revoked_at`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/{id}/rotate-cert:
+    post:
+      operationId: rotateNodeCert
+      summary: Issue a node a new certificate
+      description: |
+        Issues a replacement client certificate for the node and revokes the fingerprint of the old one. Callable
+        with the node's own, still valid certificate over mTLS (how node agents renew before expiry), an IdP `admin`,
+        or a platform key. The bootstrap token does not work: every node holds it, so it would let one take over
+        another's identity. It always needs a credential, even in the open lab, because it hands out a private key.
+        The response carries the new private key: it is shown only here.
+      tags: [Nodes]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '200':
+          description: The new certificate and key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The node is revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/nodes/{id}/fence:
+    put:
+      operationId: setNodeFence
+      summary: Say how to power a node off
+      description: |
+        Sets where the control plane asks for a power-off when it declares the node lost (`ASP_FENCE_PROVIDER`:
+        a webhook URL, a Redfish base URL or an IPMI host), with the credential for it: the secret itself, or a
+        reference the control plane resolves when it fences (`env:NAME`, `file:/abs/path`). Needs the IdP role `admin` or
+        a platform key. Neither the endpoint nor the token is ever returned by any call.
+      tags: [Nodes]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetFenceRequest'
+      responses:
+        '204':
+          description: The target is set.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: clearNodeFence
+      summary: Remove a node's power-off target
+      description: Removes the fence target. Needs the IdP role `admin` or a platform key.
+      tags: [Nodes]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '204':
+          description: The target is removed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/enroll-tokens:
+    post:
+      operationId: createEnrollToken
+      summary: Issue a single-use enrollment token
+      description: |
+        Issues a token with which one node enrolls (`POST /v1/nodes/enroll`), instead of the bootstrap token every node would
+        share. With `node_id` it is pinned: only that node may use it, and it may re-enroll a node that already holds a certificate
+        (re-keying it). It lasts `ttl_seconds` (one hour by default, 7 days at most). The body is optional.
+        Needs the IdP role `admin` or a platform key, and always a credential, even in the open lab.
+      tags: [Nodes]
+      x-asp-access: admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrollTokenRequest'
+      responses:
+        '201':
+          description: The token. It is shown only here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollToken'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/enroll:
+    post:
+      operationId: enrollNode
+      summary: Enroll a node
+      description: |
+        A node-agent presents the bootstrap token (`ASP_NODE_BOOTSTRAP_TOKEN`) or an enrollment token, as
+        `Authorization: Bearer` or `X-ASP-Bootstrap-Token`, and gets a client certificate for mutual TLS, with its private key
+        and the CA that signed it. The bootstrap token enrolls only an id that has no certificate yet, or a revoked node;
+        re-enrolling a live node needs a token pinned to it (409 otherwise). The node is registered in the same call; it takes
+        no sandboxes until it registers with its capacity. With `ASP_MTLS_STRICT=1` the main listener demands
+        client certificates, so this route (and `/healthz`) is also served on the plaintext listener of `ASP_ENROLL_LISTEN`.
+      tags: [Node agent]
+      x-asp-access: public
+      security:
+        - enrollToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrollNodeRequest'
+      responses:
+        '201':
+          description: The certificate, its key and the CA.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The enrollment token is pinned to another node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: The node is enrolled and not revoked, and the token is not pinned to it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/nodes/register:
+    post:
+      operationId: registerNode
+      summary: A node registers
+      description: |
+        The node-agent announces itself and what it offers: its endpoints, hypervisor profiles, capacity, whether it takes work and
+        enforces egress, and what it runs (version, guest kernel and image digests). It repeats this on every start. It makes
+        the node `ready`; it does not undo a cordon and keeps the node's fence target. A revoked node is 409. A new
+        `agent_instance_id` means the agent restarted: the sandboxes it had running and does not list in `adopted_sandboxes`
+        are failed as orphaned. With mTLS a node registers only itself. `agent_endpoint` must be `https://`, or `http://` on
+        loopback (on another host only with `ASP_INSECURE_AGENT_HTTP=1`, for a lab).
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterNodeRequest'
+      responses:
+        '200':
+          description: The node as stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The node is revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/{id}/heartbeat:
+    post:
+      operationId: heartbeatNode
+      summary: A node says it is alive
+      description: |
+        Refreshes `last_seen_at`; every 30 seconds or so. The body is optional and may carry the free space of the node's disk
+        directory. A node that has not been heard from for `ASP_NODE_STALE_AFTER` is not schedulable, and after
+        `ASP_NODE_FAILOVER_AFTER` its sandboxes are failed (ADR-0011). A revoked node is 409; an unknown one is 404, which is
+        the agent's cue to register again.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: The node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The node is revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/nodes/{id}/work:
+    get:
+      operationId: listNodeWork
+      summary: What a node has to do
+      description: |
+        The poll of a node-agent (every 2 seconds or so; it also counts as a sign of life). `sandboxes` are the ones placed
+        on the node that need its action: claim, start, stop, delete, local-net. `assigned` lists every sandbox the node must keep
+        running: the node stops any VM it runs that is not listed (it was failed over, or destroyed). `retained` lists the
+        stopped sandboxes whose disks the node keeps. `egress` carries the egress policy of each tenant that has a sandbox
+        on the node, with a `version` that changes when the decision can: a node reapplies a policy only when it moves.
+        It is absent when the rules could not be read: the node keeps the ones it has. An unknown node is 404.
+      tags: [Node agent]
+      x-asp-access: node
+      security:
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/NodeID'
+      responses:
+        '200':
+          description: The work.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeWork'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/api-keys:
+    post:
+      operationId: createApiKey
+      summary: Create an API key
+      description: |
+        Makes a key and returns its `secret` **once**: it is stored only as a hash. A platform key may make a key for any
+        tenant and either scope; an IdP `admin` may make `tenant` keys for their own tenant only (403 otherwise). A tenant
+        key may not manage keys.
+        `tenant_id` defaults to the caller's tenant, or `default`. `name` is unique within the tenant (409).
+        `ttl` is a Go duration (`720h`) or days (`30d`), at most 5 years; empty means the key does not expire.
+      tags: [API keys]
+      x-asp-access: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+      responses:
+        '201':
+          description: The key and its secret.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyWithSecret'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The tenant already has a key with that name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listApiKeys
+      summary: List API keys
+      description: The keys, without secrets, revoked ones included. An IdP `admin` confined to a tenant sees their tenant's; a platform key sees all, or those of `tenant_id`.
+      tags: [API keys]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/TenantFilter'
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/api-keys/{id}:
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: The key stops authenticating at once. The row stays, marked revoked. Another tenant's key is 404 to a confined admin.
+      tags: [API keys]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/ApiKeyID'
+      responses:
+        '200':
+          description: The key, with `revoked_at`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/api-keys/{id}/rotate:
+    post:
+      operationId: rotateApiKey
+      summary: Give an API key a new secret
+      description: The key keeps its id and settings and gets a new `secret`, returned once. The old secret stops working at once. A revoked key cannot be rotated (409).
+      tags: [API keys]
+      x-asp-access: admin
+      parameters:
+        - $ref: '#/components/parameters/ApiKeyID'
+      responses:
+        '200':
+          description: The key and its new secret.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyWithSecret'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The key is revoked, or no free key prefix was found (retry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: |
+        An API key: `asp_` and 40 hexadecimal digits. The secret is shown once, when the key is created or
+        rotated (`POST /v1/api-keys`); the control plane keeps only a hash of it. A *tenant* key acts within its
+        tenant; a *platform* key sees every tenant and may call the node routes.
+    idpToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        An access token of the OIDC identity provider the control plane trusts (`ASP_IDP_ISSUER`). Its claims give the
+        tenant, the subject, the e-mail and the role (`admin`, `operator`, `user`, `viewer`).
+    enrollToken:
+      type: http
+      scheme: bearer
+      description: |
+        The node bootstrap token (`ASP_NODE_BOOTSTRAP_TOKEN`) or a single-use enrollment token (`asp_enroll_…`, from
+        `POST /v1/nodes/enroll-tokens`). `X-ASP-Bootstrap-Token` carries it too.
+  parameters:
+    SandboxID:
+      name: id
+      in: path
+      required: true
+      description: The id of the sandbox.
+      schema:
+        type: string
+    NodeID:
+      name: id
+      in: path
+      required: true
+      description: The id of the node.
+      schema:
+        type: string
+    TenantID:
+      name: id
+      in: path
+      required: true
+      description: The id of the tenant.
+      schema:
+        type: string
+    ApiKeyID:
+      name: id
+      in: path
+      required: true
+      description: The id of the API key (not its secret or its prefix).
+      schema:
+        type: string
+    TenantFilter:
+      name: tenant_id
+      in: query
+      required: false
+      description: Only this tenant's. A caller confined to a tenant gets its own whatever it asks, and naming another tenant is 403.
+      schema:
+        type: string
+    IncludeDeleted:
+      name: include_deleted
+      in: query
+      required: false
+      description: '`1` or `true` also lists the deleted sandboxes, which are history.'
+      schema:
+        type: string
+        enum: ['1', 'true']
+    Stream:
+      name: stream
+      in: query
+      required: false
+      description: '`1`, `true` or `yes` streams the output as NDJSON; `Accept: application/x-ndjson` does the same.'
+      schema:
+        type: string
+        enum: ['1', 'true', 'yes']
+    ActorSubHeader:
+      name: X-ASP-Actor-Sub
+      in: header
+      required: false
+      description: |
+        The actor to record in the audit trail. Honoured only in the open lab (`ASP_INSECURE_OPEN_API=1`), where
+        nothing authenticates the caller; anyone else is attributed from their credential and the header is ignored.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: The body is not valid JSON, a field is missing or out of range, or a parameter is invalid. The message says which.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: No credential, an unknown, revoked or expired one, or an IdP token that is not valid or names no tenant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: The credential is valid but its role, its tenant or its node identity does not allow this.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: It does not exist, or it belongs to another tenant than the caller's.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: The request conflicts with the state of the resource. The message says how.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLarge:
+      description: The body is larger than the limit (1 MiB; 64 KiB for the calls of nodes and keys).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: The control plane failed to do it, usually its store. The message is the error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadGateway:
+      description: The node agent did not answer, or refused the control plane. The message says which.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: The control plane has not been set up for this (attestation, OIDC, enrollment CA).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NoCapacity:
+      description: |
+        No node can take it. `reasons` counts, for each reason, how many nodes were skipped for it. Capacity frees as
+        sandboxes stop: try again after `Retry-After`.
+      headers:
+        Retry-After:
+          description: Seconds to wait before trying again. Always `30`.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PlacementError'
+  schemas:
+    Error:
+      type: object
+      description: The body of every error.
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: What went wrong, for people. It may change between releases.
+    PlacementError:
+      type: object
+      description: The 503 of a placement that found no room.
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: >-
+            A sentence with the reasons, for example `no node can take the sandbox (2 nodes: insufficient_memory 1, cordoned 1)`.
+        reasons:
+          type: object
+          description: |
+            For each reason a node was skipped, how many nodes. The reasons are `unknown_node`, `no_agent_endpoint`,
+            `revoked`, `offline`, `stale`, `not_accepting_work`, `cordoned`, `vmm_profile`, `insufficient_cpu`,
+            `insufficient_memory` and `max_sandboxes`.
+          additionalProperties:
+            type: integer
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          description: 'Always `ok`.'
+          type: string
+          enum: [ok]
+    OpenIDConfiguration:
+      type: object
+      description: The OIDC discovery document of the control plane as an issuer.
+      required: [issuer, jwks_uri, token_endpoint, id_token_signing_alg_values_supported, response_types_supported, subject_types_supported]
+      properties:
+        issuer:
+          description: 'The issuer: the address of this control plane.'
+          type: string
+        jwks_uri:
+          description: 'Where the public keys are.'
+          type: string
+        token_endpoint:
+          description: 'Where nodes mint tokens. It needs a node credential, so it is not for people.'
+          type: string
+        id_token_signing_alg_values_supported:
+          description: '`RS256`.'
+          type: array
+          items:
+            type: string
+        response_types_supported:
+          description: '`id_token`.'
+          type: array
+          items:
+            type: string
+        subject_types_supported:
+          description: '`public`.'
+          type: array
+          items:
+            type: string
+    JWKS:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          description: 'The current key, and the one before the last rotation for as long as tokens signed with it can still be around.'
+          type: array
+          items:
+            $ref: '#/components/schemas/JWK'
+    JWK:
+      type: object
+      description: An RSA public key, RFC 7517.
+      required: [kty, use, alg, kid, 'n', e]
+      properties:
+        kty:
+          description: 'The key type, `RSA`.'
+          type: string
+          enum: [RSA]
+        use:
+          description: '`sig`: the key verifies signatures.'
+          type: string
+          enum: [sig]
+        alg:
+          description: '`RS256`.'
+          type: string
+          enum: [RS256]
+        kid:
+          description: 'The key id, as in the `kid` header of the tokens it verifies.'
+          type: string
+        'n':
+          type: string
+          description: The modulus, base64url.
+        e:
+          type: string
+          description: The exponent, base64url.
+    OIDCTokenRequest:
+      type: object
+      required: [sandbox_id, aud]
+      properties:
+        sandbox_id:
+          type: string
+          description: The sandbox to mint the token for. It must be placed on the calling node.
+        aud:
+          type: string
+          description: >-
+            The audience of the token: the service that will verify it.
+        nonce:
+          description: 'Put into the token as its `nonce` claim.'
+          type: string
+        user_sub:
+          type: string
+          description: Ignored. The human owner comes from the sandbox.
+        act:
+          description: Ignored. The delegation comes from the sandbox.
+    OIDCToken:
+      type: object
+      required: [access_token, token_type, expires_in, claims]
+      properties:
+        access_token:
+          type: string
+          description: The JWT, signed RS256 with a key in the JWKS.
+        token_type:
+          description: 'Always `Bearer`.'
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          format: int64
+          description: Seconds until it expires.
+        claims:
+          type: object
+          description: |
+            The claims of the token, for convenience: `sub`, `iss`, `aud`, `tenant_id`, `sandbox_id`, and when they apply
+            `user_sub` (the human owner), `act` (the delegation) and `x_asp_attestation` (what the node measured at boot).
+          additionalProperties: true
+    SandboxState:
+      type: string
+      description: Where a sandbox is in its life. See the states in the description of this API.
+      enum: [requested, scheduled, starting, running, paused, stopping, stopped, failed, deleting, deleted]
+    Sandbox:
+      type: object
+      description: A sandbox, as the control plane and its node last knew it.
+      required:
+        - id
+        - tenant_id
+        - node_id
+        - state
+        - vmm_profile
+        - image_ref
+        - cpu_millis
+        - memory_mib
+        - state_version
+        - last_activity_at
+        - boot_count
+        - local_net
+        - local_net_state
+        - created_at
+        - updated_at
+      properties:
+        id:
+          description: 'The id of the sandbox.'
+          type: string
+        tenant_id:
+          description: 'The tenant that owns it.'
+          type: string
+        node_id:
+          type: string
+          nullable: true
+          description: The node the sandbox is placed on; null if it has none.
+        state:
+          $ref: '#/components/schemas/SandboxState'
+        vmm_profile:
+          type: string
+          description: The hypervisor profile; `cloud-hypervisor` unless asked otherwise.
+        image_ref:
+          type: string
+          description: The image the caller asked for, recorded with the sandbox.
+        cpu_millis:
+          type: integer
+          description: CPU in thousandths of a core.
+        memory_mib:
+          description: 'Memory in MiB.'
+          type: integer
+        state_version:
+          type: integer
+          format: int64
+          description: Goes up with every change of state.
+        owner_sub:
+          type: string
+          description: The IdP subject of the creator. Empty for a sandbox made with an API key.
+        owner_email:
+          description: 'The creator''s e-mail, from the IdP token. For showing; it decides nothing.'
+          type: string
+        last_activity_at:
+          type: string
+          format: date-time
+          description: The last command, or the last time the sandbox started. The idle reaper counts from here.
+        stop_reason:
+          type: string
+          description: |
+            Why the sandbox was stopped or failed, when the user did not ask: `idle_timeout`, `node_lost`,
+            `node_agent_restarted`, `vmm_exited`, `unscheduled`, `retention_expired` or `tenant_cap`.
+        status_detail:
+          type: string
+          description: Why the node last reported a failure, or why a resume went back to stopped.
+        boot_count:
+          type: integer
+          description: >-
+            How many times the sandbox has started: 1 at the first boot, one more per resume.
+        booted_at:
+          type: string
+          format: date-time
+          description: When the node first reported it running. Until then there is no disk worth keeping. Never cleared.
+        stopped_at:
+          type: string
+          format: date-time
+          description: When the node reported it stopped; absent while it is not. The retention period counts from it.
+        workspace_host_path:
+          type: string
+          description: The host directory shared into the guest at `/workspace`, if any.
+        local_net:
+          type: boolean
+          description: The sandbox routes its traffic through the caller's local-net tunnel and never through the node's public proxy.
+        local_net_state:
+          description: 'Where the tunnel is: `off` (none; egress goes through the node''s proxy), `pending` (asked for, not up), `up`, or `withdrawn` (taken down; egress stays closed).'
+          type: string
+          enum: ['off', pending, up, withdrawn]
+        local_net_attached_at:
+          description: 'When the tunnel last came up.'
+          type: string
+          format: date-time
+        local_net_grant_expires_at:
+          description: 'When the current grant expires. The grant itself is not stored.'
+          type: string
+          format: date-time
+        local_net_client_public:
+          type: string
+          description: The WireGuard public key of the caller's end.
+        local_net_node_public:
+          type: string
+          description: The WireGuard public key of the node's end.
+        local_net_listen_port:
+          description: 'The node''s UDP port for the tunnel; 0 until the node publishes it.'
+          type: integer
+        local_net_node_addr:
+          description: 'The node''s end of the tunnel''s /30.'
+          type: string
+        local_net_client_addr:
+          description: 'The caller''s end of the tunnel''s /30.'
+          type: string
+        created_at:
+          description: 'When the sandbox was created.'
+          type: string
+          format: date-time
+        updated_at:
+          description: 'When it last changed.'
+          type: string
+          format: date-time
+    CreateSandboxRequest:
+      type: object
+      required: [image_ref, cpu_millis, memory_mib]
+      properties:
+        tenant_id:
+          type: string
+          description: The tenant. Defaults to the caller's, or to `ASP_DEFAULT_TENANT` (`default`).
+        image_ref:
+          type: string
+          description: |
+            The image to run, recorded with the sandbox (`debian:bookworm-slim`). A node boots the base image it is
+            configured with; the reference does not select one today.
+        cpu_millis:
+          type: integer
+          minimum: 1
+          description: CPU in thousandths of a core (`1000` is one core).
+        memory_mib:
+          description: 'Memory in MiB, at least 64.'
+          type: integer
+          minimum: 64
+        vmm_profile:
+          type: string
+          description: The hypervisor profile. Defaults to `cloud-hypervisor`. Only a node that lists it is a candidate.
+        node_id:
+          type: string
+          description: Place the sandbox on this node. A node that cannot take it is 409, not another node.
+        owner_sub:
+          type: string
+          description: Only in the open lab. With an IdP token the owner is its subject; naming another is 403.
+        owner_email:
+          description: 'Only in the open lab. With an IdP token it comes from the token.'
+          type: string
+        actor_sub:
+          type: string
+          description: Only in the open lab. Who the audit trail says created it.
+        workspace_host_path:
+          type: string
+          description: An absolute host directory to share into the guest at `/workspace`. It must be inside `<root>/<tenant>` of an `ASP_WORKSPACE_ROOTS` root.
+        local_net:
+          type: boolean
+          description: Opt into the local-net tunnel. Off by default.
+    SandboxList:
+      type: object
+      required: [sandboxes]
+      properties:
+        sandboxes:
+          description: 'The sandboxes, most recent first.'
+          type: array
+          items:
+            $ref: '#/components/schemas/Sandbox'
+    SandboxEvent:
+      type: object
+      description: One row of a sandbox's append-only audit trail.
+      required: [id, sandbox_id, tenant_id, event_type, actor, payload, created_at]
+      properties:
+        id:
+          description: 'Goes up with every event.'
+          type: integer
+          format: int64
+        sandbox_id:
+          description: 'The sandbox it is about.'
+          type: string
+        tenant_id:
+          description: 'Its tenant.'
+          type: string
+        event_type:
+          type: string
+          description: |
+            What happened: `sandbox.created`, `sandbox.placed`, `sandbox.claimed`, `sandbox.state_changed`, `sandbox.resumed`,
+            `sandbox.exec`, `sandbox.idle_reaped`, `sandbox.node_lost`, `sandbox.agent_restarted`, `sandbox.unscheduled`,
+            `sandbox.deleted`, `sandbox.attested`, `sandbox.attestation_refused`, `sandbox.local_net_requested`,
+            `sandbox.local_net_up` or `sandbox.local_net_withdrawn`. New types may appear.
+        from_state:
+          description: 'The state before, for a change of state.'
+          type: string
+        to_state:
+          description: 'The state after.'
+          type: string
+        actor:
+          type: string
+          description: The component that did it (`api`, `node-agent`, `local-agent`, `idle-reaper`…).
+        actor_sub:
+          type: string
+          description: >-
+            The person or service on whose behalf: the IdP subject, `apikey:<prefix>`, or `node:<id>`.
+        request_id:
+          description: 'The request that caused it, when there is one.'
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+          description: Details of the event; they depend on its type.
+        created_at:
+          description: 'When it happened.'
+          type: string
+          format: date-time
+    SandboxEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          description: 'The events, oldest first.'
+          type: array
+          items:
+            $ref: '#/components/schemas/SandboxEvent'
+    ExecRequest:
+      type: object
+      required: [cmd]
+      properties:
+        cmd:
+          type: array
+          minItems: 1
+          description: >-
+            The command and its arguments. Not run through a shell: use `["sh", "-c", "…"]` for that.
+          items:
+            type: string
+        env:
+          type: object
+          description: Variables to add to the command's environment.
+          additionalProperties:
+            type: string
+        cwd:
+          type: string
+          description: The working directory in the guest.
+        actor_sub:
+          type: string
+          description: Only in the open lab. See the `X-ASP-Actor-Sub` header.
+        pty:
+          type: boolean
+          description: >-
+            Run the command under a pseudoterminal. Use it with a stream: the first event is `ready`.
+        rows:
+          type: integer
+          description: The initial height of the terminal. 0 lets the guest pick 24.
+        cols:
+          type: integer
+          description: The initial width of the terminal. 0 lets the guest pick 80.
+        stdin:
+          type: string
+          description: Input for a buffered command, given up front.
+        stdin_stream:
+          type: boolean
+          description: Keep a pipe to the command open, to feed with `…/exec/stdin`. A stream answers `ready` first.
+        as_root:
+          type: boolean
+          description: Run as root. By default the command runs as the owner of the workspace, or as the guest's default user.
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          description: |
+            How long a buffered command may run, at most `ASP_BUFFERED_EXEC_TIMEOUT`; 0 uses that limit. A stream has none.
+    ExecResponse:
+      type: object
+      description: The result of a buffered command.
+      required: [stdout, stderr, exit_code]
+      properties:
+        stdout:
+          description: 'What the command wrote to its standard output. Invalid UTF-8 is replaced.'
+          type: string
+        stderr:
+          description: 'What it wrote to its standard error.'
+          type: string
+        exit_code:
+          type: integer
+          description: The command's exit status. 124 when the guest cut it off for time.
+    ExecStreamEvent:
+      type: object
+      description: |
+        One line of a streamed command. `ready` comes first when the command was started with `pty` or `stdin_stream`, and
+        carries `exec_id`. `stdout` and `stderr` carry `data`, a chunk of the output (invalid UTF-8 is replaced). `exit`
+        comes last and carries `exit_code`.
+      required: [type]
+      properties:
+        type:
+          description: 'What the line is.'
+          type: string
+          enum: [ready, stdout, stderr, exit]
+        exec_id:
+          type: string
+          description: With `ready`. Pass it to `…/exec/stdin`.
+        data:
+          type: string
+          description: With `stdout` and `stderr`.
+        exit_code:
+          type: integer
+          description: With `exit`.
+    ExecStdinRequest:
+      type: object
+      required: [exec_id]
+      properties:
+        exec_id:
+          type: string
+          description: The `exec_id` of the `ready` event.
+        data:
+          type: string
+          description: Bytes to write to the command's input.
+        close:
+          type: boolean
+          description: Close the command's input (end of file).
+        rows:
+          type: integer
+          description: A new terminal height, for a command with `pty`.
+        cols:
+          type: integer
+          description: A new terminal width, for a command with `pty`.
+    ExecStdinAck:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          description: 'Always true.'
+          type: boolean
+    LocalNetGrant:
+      type: object
+      required: [grant, dial, expires_at, tunnel_iface, transport, node_public_key, listen_port, node_tunnel_addr, client_tunnel_addr]
+      properties:
+        grant:
+          type: string
+          description: The one-time secret that brings the tunnel up. Shown only here; the control plane keeps a hash.
+        dial:
+          type: string
+          description: '`host[:port]` where the caller reaches the node, from the node''s `local_net_dial` or `ASP_LOCAL_NET_DIAL`.'
+        expires_at:
+          description: 'When the grant stops being valid: 10 minutes after it is issued.'
+          type: string
+          format: date-time
+        tunnel_iface:
+          type: string
+          description: The name of the WireGuard interface.
+        transport:
+          description: 'Always `wireguard`.'
+          type: string
+          enum: [wireguard]
+        node_public_key:
+          type: string
+          description: Empty until the node has published its key.
+        listen_port:
+          type: integer
+          description: The node's UDP port for this tunnel; 0 until the node publishes it.
+        node_tunnel_addr:
+          description: 'The node''s end of the tunnel''s /30; empty until the node publishes it.'
+          type: string
+        client_tunnel_addr:
+          description: 'The caller''s end of the /30.'
+          type: string
+    LocalNetHeartbeatRequest:
+      type: object
+      required: [grant, client_public_key]
+      properties:
+        grant:
+          description: 'The grant from `…/local-net/grant`.'
+          type: string
+        client_public_key:
+          type: string
+          description: >-
+            The caller's WireGuard public key: 32 bytes, standard base64.
+    LocalNetNodePublicRequest:
+      type: object
+      required: [public_key]
+      properties:
+        public_key:
+          type: string
+          description: The public key of the WireGuard device the node made for the sandbox.
+        listen_port:
+          description: 'The UDP port the node''s device listens on.'
+          type: integer
+          minimum: 1
+          maximum: 65535
+        node_tunnel_addr:
+          type: string
+          description: The node's end of the /30, inside 10.188.0.0/16.
+        client_tunnel_addr:
+          type: string
+          description: The other host of that /30.
+    EgressRule:
+      type: object
+      required: [host_pattern, enabled]
+      properties:
+        id:
+          description: 'The id of the rule.'
+          type: string
+        tenant_id:
+          description: 'The tenant it belongs to.'
+          type: string
+        host_pattern:
+          type: string
+          description: A host name (`api.example.com`) or `*.example.com`, which matches its subdomains and the domain itself. Lower-cased when stored.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The port it allows. Without one, 80 and 443.
+        enabled:
+          description: 'A disabled rule is kept and does not count.'
+          type: boolean
+    EgressRuleInput:
+      type: object
+      required: [host_pattern]
+      properties:
+        host_pattern:
+          description: 'A host name, or `*.` and a domain.'
+          type: string
+        port:
+          description: 'The port it allows. Without one, 80 and 443.'
+          type: integer
+          minimum: 1
+          maximum: 65535
+        enabled:
+          type: boolean
+          description: Defaults to true.
+    PutEgressRequest:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          description: The whole set of rules. An empty list removes them all.
+          items:
+            $ref: '#/components/schemas/EgressRuleInput'
+    EgressPolicy:
+      type: object
+      description: What a tenant's sandboxes may reach.
+      required: [tenant_id, mode, rules]
+      properties:
+        tenant_id:
+          description: 'The tenant.'
+          type: string
+        mode:
+          type: string
+          enum: [allow-all, deny-default]
+          description: '`deny-default` lets through only what a rule allows.'
+        rules:
+          type: array
+          description: The enabled rules.
+          items:
+            $ref: '#/components/schemas/EgressRule'
+    EgressRules:
+      type: object
+      required: [tenant_id, rules, policy]
+      properties:
+        tenant_id:
+          description: 'The tenant.'
+          type: string
+        rules:
+          type: array
+          description: The stored rules, enabled or not.
+          items:
+            $ref: '#/components/schemas/EgressRule'
+        policy:
+          $ref: '#/components/schemas/EgressPolicy'
+    EgressCheckRequest:
+      type: object
+      required: [host]
+      properties:
+        host:
+          type: string
+          description: A host name. A URL is accepted and reduced to its host.
+        port:
+          type: integer
+          description: The port. 0 or absent means the caller does not know it, as for a DNS lookup.
+    EgressCheck:
+      type: object
+      required: [tenant_id, host, port, allowed, policy]
+      properties:
+        tenant_id:
+          description: 'The tenant.'
+          type: string
+        host:
+          description: 'The host as it was asked.'
+          type: string
+        port:
+          description: 'The port as it was asked; 0 if none.'
+          type: integer
+        allowed:
+          description: 'Whether the policy lets it through.'
+          type: boolean
+        policy:
+          $ref: '#/components/schemas/EgressPolicy'
+    BootStatement:
+      type: object
+      description: What a node says it booted a sandbox from.
+      required: [sandbox_id, image_digest, vmm_profile, cid, node_id, ts]
+      properties:
+        sandbox_id:
+          description: 'The sandbox the VM was booted for.'
+          type: string
+        image_digest:
+          type: string
+          description: '`sha256:<hex>` of the base image the sandbox''s disk was copied from, as the node hashed it. A node that does not measure sends the image reference here.'
+        vmm_profile:
+          description: 'The hypervisor profile it ran under.'
+          type: string
+        cid:
+          type: integer
+          minimum: 0
+          description: The vsock context id of the guest.
+        node_id:
+          description: 'The node that booted it.'
+          type: string
+        ts:
+          type: string
+          format: date-time
+          description: When the node made the statement. Old statements are not fresh.
+        kernel_digest:
+          type: string
+          description: '`sha256:<hex>` of the kernel the VM loaded.'
+        vmm_version:
+          type: string
+          description: The version the hypervisor reported.
+        boot:
+          type: string
+          enum: [new, resume]
+          description: A `resume` boots a retained disk that has diverged from the base image `image_digest` names.
+    Evidence:
+      type: object
+      description: A signed boot statement.
+      required: [statement, signature, alg]
+      properties:
+        statement:
+          $ref: '#/components/schemas/BootStatement'
+        signature:
+          type: string
+          description: base64url of the DER ECDSA signature.
+        alg:
+          description: 'The signature algorithm.'
+          type: string
+          enum: [ES256]
+        key_id:
+          description: 'The id of the key that signed, when the node has one.'
+          type: string
+        public_key_pem:
+          description: 'The public key, when the node sends it along.'
+          type: string
+        received_at:
+          description: 'When the control plane stored it.'
+          type: string
+          format: date-time
+    AttestRequest:
+      type: object
+      required: [statement, signature]
+      properties:
+        statement:
+          $ref: '#/components/schemas/BootStatement'
+        signature:
+          description: 'base64url of the DER ECDSA signature of the statement.'
+          type: string
+        alg:
+          type: string
+          enum: [ES256]
+          description: Defaults to `ES256`.
+        key_id:
+          description: 'The id of the signing key.'
+          type: string
+        public_key_pem:
+          description: 'The signing key, PEM.'
+          type: string
+    AttestationRecord:
+      type: object
+      description: The latest verified evidence kept for a sandbox.
+      required: [sandbox_id, node_id, image_digest, vmm_profile, cid, statement_ts, alg, signature, bundle, received_at]
+      properties:
+        sandbox_id:
+          description: 'The sandbox.'
+          type: string
+        node_id:
+          description: 'The node that booted it.'
+          type: string
+        image_digest:
+          description: '`sha256:<hex>` of the base image, or the image reference for a node that does not measure.'
+          type: string
+        vmm_profile:
+          description: 'The hypervisor profile.'
+          type: string
+        cid:
+          description: 'The vsock context id of the guest.'
+          type: integer
+          minimum: 0
+        statement_ts:
+          description: 'When the node made the statement.'
+          type: string
+          format: date-time
+        alg:
+          description: 'The signature algorithm.'
+          type: string
+        key_id:
+          description: 'The id of the signing key.'
+          type: string
+        signature:
+          description: 'base64url of the DER ECDSA signature.'
+          type: string
+        bundle:
+          $ref: '#/components/schemas/Evidence'
+        received_at:
+          description: 'When the control plane stored it.'
+          type: string
+          format: date-time
+    AttestationResult:
+      type: object
+      required: [attestation, fresh, measured]
+      properties:
+        attestation:
+          $ref: '#/components/schemas/AttestationRecord'
+        fresh:
+          type: boolean
+          description: The statement is recent enough to be trusted for a token claim.
+        measured:
+          type: boolean
+          description: The statement carries real digests of the kernel and the base image.
+        allowlisted:
+          type: boolean
+          description: >-
+            Only when the control plane has an image allowlist: the digests are on it.
+        image_name:
+          type: string
+          description: The allowlist's name for the image, when `allowlisted`.
+    VerifyAttestationRequest:
+      type: object
+      required: [evidence]
+      properties:
+        evidence:
+          $ref: '#/components/schemas/Evidence'
+    VerifyAttestationResult:
+      type: object
+      required: [valid, error, fresh, kid, alg]
+      properties:
+        valid:
+          description: 'Whether the signature and the statement hold.'
+          type: boolean
+        error:
+          type: string
+          description: Why it is not valid; empty when it is.
+        fresh:
+          description: 'Whether the statement is recent enough.'
+          type: boolean
+        kid:
+          description: 'The key id of the evidence.'
+          type: string
+        alg:
+          description: 'Its algorithm.'
+          type: string
+    ClaimRequest:
+      type: object
+      properties:
+        node_id:
+          type: string
+          description: The claiming node. With mTLS it may be left out and is the certificate's node.
+    StatusRequest:
+      type: object
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/SandboxState'
+        detail:
+          type: string
+          description: Why, for a failure.
+    NodeUsage:
+      type: object
+      description: What is placed on a node, or what it offers.
+      required: [cpu_millis, memory_mib, sandboxes]
+      properties:
+        cpu_millis:
+          description: 'CPU in thousandths of a core.'
+          type: integer
+          format: int64
+        memory_mib:
+          description: 'Memory in MiB.'
+          type: integer
+          format: int64
+        sandboxes:
+          description: 'How many sandboxes.'
+          type: integer
+          format: int64
+    Node:
+      type: object
+      description: A node as the control plane stores it. The fence target is never part of it.
+      required:
+        - id
+        - name
+        - endpoint
+        - state
+        - vmm_profiles
+        - capacity_cpu
+        - capacity_mem_mib
+        - max_sandboxes
+        - cordoned
+        - accepts_work
+        - egress_enforced
+        - last_seen_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          description: 'The node id: the CN of its certificate.'
+          type: string
+        name:
+          description: 'A name for people; the id if none was given.'
+          type: string
+        endpoint:
+          type: string
+          description: The node's own address, as it registered.
+        agent_endpoint:
+          type: string
+          description: Where the control plane calls the node agent. `https://` over mutual TLS, or `http://` on loopback.
+        state:
+          type: string
+          description: '`ready` once registered or enrolled; `offline` when it has been revoked or the control plane declared it lost (a heartbeat brings it back).'
+        vmm_profiles:
+          description: 'The hypervisor profiles the node can run.'
+          type: array
+          items:
+            type: string
+        capacity_cpu:
+          type: integer
+          description: Cores the node offers; 0 is not limited.
+        capacity_mem_mib:
+          type: integer
+          description: Memory the node offers; 0 is not limited.
+        max_sandboxes:
+          type: integer
+          description: At most this many sandboxes; 0 is not limited.
+        cordoned:
+          type: boolean
+          description: An admin stopped new placements. Running sandboxes stay.
+        accepts_work:
+          type: boolean
+          description: False for an agent that runs without `--reconcile`, and for a node that enrolled but has not registered.
+        local_net_dial:
+          type: string
+          description: '`host[:port]` a laptop dials for this node''s local-net tunnels.'
+        egress_enforced:
+          type: boolean
+          description: The node forces its guests through its egress proxy, so a tenant's policy binds them.
+        agent_instance_id:
+          type: string
+          description: Changes when the node agent process restarts.
+        agent_version:
+          description: 'The build of the node-agent, as it said when it registered.'
+          type: string
+        guest_kernel_digest:
+          description: '`sha256:<hex>` of the guest kernel the node boots, as it hashed it.'
+          type: string
+        guest_image_digest:
+          description: '`sha256:<hex>` of the base image the node boots.'
+          type: string
+        cert_fingerprint:
+          type: string
+          description: SHA-256 of the node's current client certificate.
+        cert_serial:
+          description: 'The serial number of the current certificate.'
+          type: string
+        cert_not_after:
+          type: string
+          format: date-time
+          description: When the node certificate expires.
+        disk_free_mib:
+          type: integer
+          format: int64
+          description: Free space of the node's disk directory at its last heartbeat.
+        enrolled_at:
+          description: 'When the node enrolled.'
+          type: string
+          format: date-time
+        revoked_at:
+          description: 'When it was revoked; absent otherwise.'
+          type: string
+          format: date-time
+        last_seen_at:
+          description: 'Its last heartbeat or work poll; null if it has had none.'
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          description: 'When the node first appeared.'
+          type: string
+          format: date-time
+        updated_at:
+          description: 'When it last changed.'
+          type: string
+          format: date-time
+    NodeView:
+      description: A node as operators see it, with what is placed on it and whether the scheduler can use it.
+      allOf:
+        - $ref: '#/components/schemas/Node'
+        - type: object
+          required: [allocated, allocatable, vm_overhead_mib, stopped_sandboxes, fence_configured, schedulable]
+          properties:
+            allocated:
+              $ref: '#/components/schemas/NodeUsage'
+            allocatable:
+              $ref: '#/components/schemas/NodeUsage'
+            vm_overhead_mib:
+              type: integer
+              format: int64
+              description: Memory counted for each sandbox on top of its own, for the hypervisor.
+            stopped_sandboxes:
+              type: integer
+              format: int64
+              description: Stopped sandboxes on the node. Each keeps a disk there and holds no CPU or memory.
+            fence_configured:
+              type: boolean
+              description: The control plane can power the node off if it declares it lost.
+            schedulable:
+              description: 'The scheduler can place a new sandbox on the node.'
+              type: boolean
+            unschedulable_reason:
+              type: string
+              enum: [unknown_node, no_agent_endpoint, revoked, offline, stale, not_accepting_work, cordoned, vmm_profile, insufficient_cpu, insufficient_memory, max_sandboxes]
+              description: Why the scheduler skips the node; absent when `schedulable`.
+    NodeList:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          description: 'The nodes, by id.'
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeView'
+    RegisterNodeRequest:
+      type: object
+      description: What a node-agent announces on every start. `id` or `name` is required.
+      properties:
+        id:
+          description: 'The node id. With mTLS it is the certificate''s.'
+          type: string
+        name:
+          description: 'A name for people; defaults to the id.'
+          type: string
+        endpoint:
+          description: 'The node''s own address.'
+          type: string
+        agent_endpoint:
+          type: string
+          description: Where the control plane calls the agent; defaults to `endpoint`. `https://`, or `http://` on loopback.
+        vmm_profiles:
+          type: array
+          items:
+            type: string
+          description: Defaults to `["cloud-hypervisor"]`.
+        capacity_cpu:
+          description: 'Cores offered; 0 is not limited.'
+          type: integer
+          minimum: 0
+        capacity_mem_mib:
+          description: 'Memory offered, in MiB; 0 is not limited.'
+          type: integer
+          minimum: 0
+        max_sandboxes:
+          description: 'At most this many sandboxes; 0 is not limited.'
+          type: integer
+          minimum: 0
+        accepts_work:
+          type: boolean
+          description: Defaults to true (agents that predate the field).
+        local_net_dial:
+          description: '`host[:port]` a laptop dials for this node''s local-net tunnels.'
+          type: string
+        egress_enforced:
+          description: 'The node forces its guests through its egress proxy.'
+          type: boolean
+        adopted_sandboxes:
+          type: array
+          items:
+            type: string
+          description: Sandboxes whose VMs the previous process of this agent left running and this one took over.
+        agent_instance_id:
+          type: string
+          description: Random per process. A new one means the agent restarted.
+        agent_version:
+          description: 'The build of the node-agent.'
+          type: string
+        guest_kernel_digest:
+          description: '`sha256:<hex>` of the guest kernel.'
+          type: string
+        guest_image_digest:
+          description: '`sha256:<hex>` of the base image.'
+          type: string
+    EnrollNodeRequest:
+      type: object
+      description: '`id` or `name` is required.'
+      properties:
+        id:
+          type: string
+          description: >-
+            The node id, which becomes the CN of its certificate and the name the control plane checks when it calls the agent.
+            A DNS-style name: letters, digits, `-` and `_` in labels separated by dots, at most 253 characters, not an IP address.
+        name:
+          description: 'A name for people; defaults to the id.'
+          type: string
+        endpoint:
+          description: 'The node''s own address.'
+          type: string
+        agent_endpoint:
+          description: 'Where the control plane calls the agent; defaults to `endpoint`.'
+          type: string
+        vmm_profiles:
+          description: 'The hypervisor profiles; defaults to `cloud-hypervisor`.'
+          type: array
+          items:
+            type: string
+        capacity_cpu:
+          description: 'Cores offered; 0 is not limited.'
+          type: integer
+        capacity_mem_mib:
+          description: 'Memory offered, in MiB; 0 is not limited.'
+          type: integer
+    EnrollResponse:
+      type: object
+      required: [node_id, client_cert_pem, client_key_pem, ca_cert_pem, cert_fingerprint, node]
+      properties:
+        node_id:
+          description: 'The node id, as in the certificate.'
+          type: string
+        client_cert_pem:
+          type: string
+          description: The node's client certificate (also valid as a server certificate for the agent's mTLS listener).
+        client_key_pem:
+          type: string
+          description: >-
+            Its private key. Shown only here: the control plane does not keep it.
+        ca_cert_pem:
+          type: string
+          description: The CA that signed it.
+        cert_fingerprint:
+          description: 'SHA-256 of the certificate.'
+          type: string
+        cert_serial:
+          description: 'Its serial number.'
+          type: string
+        node:
+          $ref: '#/components/schemas/Node'
+    EnrollTokenRequest:
+      type: object
+      properties:
+        node_id:
+          type: string
+          description: Pin the token to this node.
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 604800
+          description: How long it lasts. 0 or absent is one hour; 7 days at most.
+    EnrollToken:
+      type: object
+      required: [token, expires_at, note]
+      properties:
+        token:
+          type: string
+          description: '`asp_enroll_` and 64 hexadecimal digits. Shown only here; the control plane keeps a hash.'
+        node_id:
+          description: 'The node it is pinned to; absent if it works for any.'
+          type: string
+        expires_at:
+          description: 'When it stops working.'
+          type: string
+          format: date-time
+        note:
+          type: string
+          description: How to use it.
+    HeartbeatRequest:
+      type: object
+      properties:
+        disk_free_mib:
+          type: integer
+          format: int64
+          nullable: true
+          description: Free space of the node's disk directory, in MiB. Absent or null if the node does not report it.
+    NodeWork:
+      type: object
+      required: [sandboxes, assigned, retained]
+      properties:
+        sandboxes:
+          type: array
+          description: The sandboxes placed on the node that need its action.
+          items:
+            $ref: '#/components/schemas/Sandbox'
+        assigned:
+          type: array
+          description: The ids of every sandbox the node must keep running. The node stops any VM it runs that is not listed.
+          items:
+            type: string
+        retained:
+          type: array
+          description: The ids of the stopped sandboxes whose disks the node keeps. Always present, even empty; a node that does not see it is talking to an older control plane.
+          items:
+            type: string
+        egress:
+          $ref: '#/components/schemas/WorkEgress'
+    WorkEgress:
+      type: object
+      description: The egress policies a node needs, one for each tenant that has a sandbox on it.
+      required: [tenants, policies]
+      properties:
+        tenants:
+          type: object
+          description: The tenant of each sandbox assigned to the node, by sandbox id.
+          additionalProperties:
+            type: string
+        policies:
+          type: object
+          description: The effective egress policy of each of those tenants, by tenant id.
+          additionalProperties:
+            $ref: '#/components/schemas/WorkEgressPolicy'
+    WorkEgressPolicy:
+      allOf:
+        - $ref: '#/components/schemas/EgressPolicy'
+        - type: object
+          required: [version]
+          properties:
+            version:
+              type: string
+              description: Changes when what the policy allows can change, and not when the order or the ids of its rules do.
+    SetFenceRequest:
+      type: object
+      required: [endpoint]
+      properties:
+        endpoint:
+          type: string
+          maxLength: 2048
+          description: Where the control plane asks for the power-off. A webhook URL, a Redfish base URL or an IPMI host, according to `ASP_FENCE_PROVIDER`.
+        token:
+          type: string
+          description: The credential for it, or a reference the control plane resolves when it fences (`env:NAME`, `file:/abs/path`).
+    DoctorResult:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          description: 'The check.'
+          type: string
+        status:
+          type: string
+          enum: [ok, warn, fail, skip]
+          description: '`fail` means sandboxes will not start or will not be confined; `warn`, that it works but not as it should; `skip`, that it does not apply to this node.'
+        detail:
+          description: 'What it found.'
+          type: string
+        fix:
+          type: string
+          description: What to do about a warn or a fail.
+    DoctorReport:
+      type: object
+      description: The report of a node-agent's self-checks, as the agent made it.
+      required: [at, results]
+      properties:
+        node_id:
+          description: 'The node.'
+          type: string
+        at:
+          description: 'When the checks ran.'
+          type: string
+          format: date-time
+        results:
+          description: 'One entry per check, in the order they ran.'
+          type: array
+          items:
+            $ref: '#/components/schemas/DoctorResult'
+    CreateApiKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        tenant_id:
+          type: string
+          description: The tenant of the key. Defaults to the caller's tenant, or `default`.
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          description: Unique within the tenant.
+        scope:
+          type: string
+          enum: [tenant, platform]
+          description: Defaults to `tenant`. Only a platform key can make a `platform` key.
+        ttl:
+          type: string
+          description: >-
+            How long it lasts, a Go duration (`720h`) or days (`30d`), at most 5 years. Empty: it does not expire.
+    ApiKey:
+      type: object
+      description: An API key, without its secret.
+      required: [id, tenant_id, name, scope, key_prefix, created_at]
+      properties:
+        id:
+          description: 'The id of the key: what the other calls take. Not the secret.'
+          type: string
+        tenant_id:
+          description: 'The tenant it belongs to.'
+          type: string
+        name:
+          description: 'Its name, unique within the tenant.'
+          type: string
+        scope:
+          description: '`tenant` acts within its tenant; `platform` sees every tenant and may call the node routes.'
+          type: string
+          enum: [tenant, platform]
+        key_prefix:
+          type: string
+          description: The first 8 characters of the secret, to tell keys apart. Not a secret.
+        last_used_at:
+          type: string
+          format: date-time
+          description: When it last authenticated a request; written at most once a minute.
+        expires_at:
+          description: 'When it stops working; absent if it does not expire.'
+          type: string
+          format: date-time
+        revoked_at:
+          description: 'When it was revoked; absent otherwise.'
+          type: string
+          format: date-time
+        created_at:
+          description: 'When it was created.'
+          type: string
+          format: date-time
+    ApiKeyWithSecret:
+      description: An API key and its secret, as create and rotate return them.
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: >-
+                The key itself, to use as a Bearer token. Shown only here: the control plane keeps a hash.
+    ApiKeyList:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          description: 'The keys.'
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKey'

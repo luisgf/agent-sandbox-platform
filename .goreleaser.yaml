@@ -87,6 +87,9 @@ archives:
       - LICENSE
       - src: control-plane/README.md
         dst: README.md
+      # The description of the API, for whoever generates a client offline: the control plane serves it too.
+      - src: control-plane/internal/api/openapi.yaml
+        dst: openapi.yaml
       - src: packaging/systemd/asp-control-plane.service
         dst: asp-control-plane.service
       - src: packaging/etc/server.yaml

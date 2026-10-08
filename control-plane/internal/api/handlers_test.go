@@ -20,7 +20,7 @@ import (
 )
 
 func testMux(s *Server) http.Handler {
-	return s.Routes()
+	return recordAnswers(s.Routes())
 }
 
 // newTestStore returns a memory store with healthy nodes, so creates without

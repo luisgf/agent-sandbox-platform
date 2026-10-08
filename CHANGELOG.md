@@ -13,6 +13,10 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Added
 
+- **An OpenAPI description of the control-plane API.** `GET /openapi.json` serves it without credentials; the
+  [API reference](docs/reference/api.md) is generated from it (`make docs`). Tests keep it true: every route is in
+  it and it has no other, the fields of each body are those of the Go type, a status a handler answers is listed,
+  and the `asp` client only calls routes, fields and statuses it describes.
 - **Sandboxes that keep their state.** Stopping a sandbox keeps its disk; `asp session resume`
   boots it again on that disk, and `asp session rm` deletes it. Stopped sandboxes expire after
   7 days (`ASP_STOPPED_SANDBOX_TTL`) or beyond a per-tenant cap. [ADR-0012](docs/adr/0012-retained-disks.md)
