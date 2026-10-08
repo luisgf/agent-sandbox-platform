@@ -31,9 +31,11 @@ docs:
 	cd $(ROOT)node-agent && go test ./cmd/node-agent -run ReferenceIsUpToDate -count=1 -update
 	cd $(ROOT)cli && go test ./cmd/asp ./cmd/asp-server -run ReferenceIsUpToDate -count=1 -update
 
-# The relative links of every Markdown file: the file exists and so does the heading.
+# The relative links of every Markdown file (the file exists and so does the heading), and the
+# status of every ADR against docs/adr/README.md.
 check-docs:
 	python3 $(ROOT)scripts/check-doc-links.py
+	python3 $(ROOT)scripts/check-adrs.py
 
 # What CI checks besides the tests: gofmt, go vet and staticcheck per module.
 lint:

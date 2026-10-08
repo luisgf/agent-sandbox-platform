@@ -1,6 +1,7 @@
 # ADR-0007: Identidad multi-usuario (humano ↔ sandbox)
 
-- **Estado:** Aceptada — **fases 1–5 implementadas** (schema/audit + IdP JWT + RBAC + SSH scoped MVP + workload `user_sub`/`act`)
+- **Estado:** Aceptada
+- **Implementación:** hecha, fases 1–5 (schema/audit + IdP JWT + RBAC + SSH scoped MVP + workload `user_sub`/`act`)
 - **Fecha:** 2026-10
 - **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0008](0008-network-flow-attribution.md) (flujos de red → `owner_sub`, evaluación), [`../architecture.md`](../architecture.md), [`../roadmap.md`](../roadmap.md) (§ readiness corporativa)
 - **Extiende:** el modelo de “identidad” de ADR-0003 (tenant + sandbox + nodo) con **sujeto humano** del IdP corporativo

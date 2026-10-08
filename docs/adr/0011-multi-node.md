@@ -1,6 +1,7 @@
 # ADR-0011: Varios nodos — identidad, canal plano de control ↔ nodo, colocación por capacidad y nodos caídos
 
-- **Estado:** Aceptada (2026-10-05). Identidad, canal, colocación y nodos caídos implementados; sin lab KVM con varios servidores reales.
+- **Estado:** Aceptada
+- **Implementación:** hecha (identidad, canal, colocación y nodos caídos); sin un lab KVM con varios servidores reales.
 - **Fecha:** 2026-10-05
 - **Extiende:** [0005](0005-fase-2d-hardening.md) (identidad de nodo = certificado cliente mTLS), [0004](0004-k8s-scope.md) (el planificador de capacidad vive en nuestro plano de control)
 - **Relacionados:** [0010](0010-on-demand-local-net.md) (`Node.agent_endpoint`), [`../architecture.md`](../architecture.md), [instalar un nodo](../how-to/install-node.md)
@@ -138,5 +139,5 @@ El plano de control elige el nodo **al crear** la sandbox (ADR-0004: el planific
 - La colocación no conoce `--workspace`: la ruta tiene que existir en el nodo elegido.
 - Sin migración: el disco del guest vive en su nodo.
 - Con varias réplicas del plano de control, cada una corre su monitor: el CAS lo hace seguro, pero el fencing podría repetirse.
-- El agente no adopta VMs tras reiniciar: sus sandboxes quedan `stopped` (sin mentir, y con su disco) y sus VMs se paran, también al actualizar el agente. Hay que drenar el nodo antes.
+- ~~El agente no adopta VMs tras reiniciar.~~ *Enmendado 2026-10:* un agente con VMs confinadas las adopta al reiniciar ([0014](0014-vms-outlive-the-agent.md)). Sin confinamiento (`--vm-confine=off`, sin systemd, `--ch-api-socket`) o con `--vm-survive-restart=false`, sus sandboxes quedan `stopped` (sin mentir, y con su disco) y sus VMs se paran, también al actualizar el agente: hay que drenar el nodo antes.
 - Un node-agent por host: al arrancar borra todos los TAPs `asp-*` y túneles `wg-asp-*`, que son del host entero.

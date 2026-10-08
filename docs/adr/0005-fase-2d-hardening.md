@@ -1,4 +1,4 @@
-# ADR-0005: Fase 2d — Hardening (certs, mTLS estricto, SSH confirm, nft sketch)
+# ADR-0005: Rotación de certificados de nodo, mTLS estricto y confirmación de firmas SSH (antes «Fase 2d»)
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09

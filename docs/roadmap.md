@@ -251,19 +251,19 @@ Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`)
 | **3n.2** | Direccionamiento TAP / nft `ct mark` por iif | ⏳ No implementado |
 | **3n.3** | Forced egress → proxy corporativo (headers/mTLS host-side) | ⏳ No implementado |
 
-**Estado:** propuesta / aceptada para evaluación (2026-10). **Sin código** de atribución aún. Criterio futuro: dos sandboxes, distinto `owner_sub`, mismo destino → audit distinto sin headers del guest.
+**Estado:** propuesta ([ADR-0008](adr/0008-network-flow-attribution.md)), implementada en parte (2026-10): una /30 y un TAP por sandbox, y el proxy identifica la sandbox por la IP de origen, así que su audit lleva `sandbox_id`; falta `owner_sub` en esa línea, la identidad hacia un proxy corporativo y las marcas de nft. Criterio futuro: dos sandboxes, distinto `owner_sub`, mismo destino → audit distinto sin headers del guest.
 
-## Futuro — Red local bajo demanda (propuesta)
+## Red local bajo demanda
 
 Gap distinto del egress público: un sandbox en un nodo remoto no puede hablar con la LAN del usuario. No debe poder hacerlo abriendo el router de casa, ni desviando `0.0.0.0/0` por el portátil **salvo** un opt-in explícito de esa sesión. Ese opt-in es el diseño de v1; el desvío por defecto, y el desvío silencioso, no.
 
-**Decisión de diseño (propuesta):** [ADR-0010](adr/0010-on-demand-local-net.md).
+**Decisión de diseño:** [ADR-0010](adr/0010-on-demand-local-net.md).
 
 Default **apagado** (`local_net=false`). Solo `asp session start --local-net` (o `"local_net": true` en `POST /v1/sandboxes`) lo enciende. No hay prefijos ni puertos que declarar: v1 es todo o nada. El agente local abre un túnel saliente (WireGuard preferido, en un netns o TUN de usuario; el nodo no escucha en la LAN) y la **ruta por defecto de esa sesión** (`0.0.0.0/0` y `::/0` si existe, DNS incluido) sale por él. El portátil ve y hace NAT de todo ese tráfico, también el Internet público; la allowlist del nodo no aplica mientras el túnel está up. Si el agente se desconecta, el nodo blackholea esa default y **no** cae en silencio al proxy. El túnel muere con la sesión o el idle. Identidad: `owner_sub`. El guest no enciende ni apaga el flag. Excepciones estrechas, más adelante; no en v1.
 
 | Subfase (prevista) | Entrega | Estado |
 |---|---|---|
-| **3l.0** | ADR + why + enlaces roadmap/README/0008/0009 | ✅ **Hecho** (docs only) |
+| **3l.0** | ADR y enlaces desde el roadmap, el README, 0008 y 0009 | ✅ **Hecho** (docs only) |
 | **3l.1** | Campo `local_net` bool en el CP (default false; 400 si el body trae policy, CIDR o puertos) | ✅ Corte mínimo (memoria + migración 010) |
 | **3l.2** | Túnel por sandbox: default de esa sesión por el túnel; blackhole si no está up; sin redirect al proxy ni al DNS sink; sin filtro de CIDR | ✅ Plan en el node-agent (memoria). No hay `ip`/`wg` en CI |
 | **3l.3** | Agente local (`asp session local-net up/down`) y teardown al stop / idle / detach | ✅ `ip`+`wg` si hay tools y CAP_NET_ADMIN. Sin keepalive de sueño ni NAT demostrado |

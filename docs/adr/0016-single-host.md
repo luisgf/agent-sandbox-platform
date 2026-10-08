@@ -1,6 +1,7 @@
 # ADR-0016: Un solo host: SQLite y `asp-server`, un servidor que se configura solo
 
-- **Estado:** Aceptada (2026-10, #124)
+- **Estado:** Aceptada
+- **Fecha:** 2026-10 (#124)
 - **Contexto:** [ADR-0011](0011-multi-node.md) (nodos y colocación), [ADR-0004](0004-k8s-scope.md) (el plano de control puede ir fuera del nodo), [#125](../how-to/config-file.md) (fichero de configuración)
 
 ## Contexto

@@ -1,7 +1,8 @@
 # ADR-0010: Red local bajo demanda (túnel completo iniciado por el agente local)
 
-- **Estado:** Contrato de esta revisión vigente. Los comandos `ip`/`wg` del dispositivo por sesión están cableados (2026-10-03) — ver [Estado de implementación](#estado-de-implementación). Un lab con paquetes no está demostrado.
+- **Estado:** Aceptada
 - **Fecha:** 2026-10-03
+- **Implementación:** hecha en el nodo, el plano de control y el CLI (los comandos `ip`/`wg` del dispositivo por sesión están cableados); una prueba a mano en un host KVM pasó tráfico por el túnel, y no hay un lab que haya pasado un paquete a una LAN real, ni nada de esto en CI. Ver [Estado de implementación](#estado-de-implementación).
 - **Revisión:** 2026-10-03. La primera redacción (commit `1858dd2`) fijaba v1 como allowlist de CIDR **y** puertos, y prohibía instalar `0.0.0.0/0` y `::/0` hacia el portátil. **Esta revisión sustituye ese contrato.** v1 es todo o nada: con el flag, la ruta por defecto del sandbox sale por el agente local; sin el flag, no hay túnel. Pedir prefijos al usuario no es v1.
 - **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft; egress del nodo cuando el flag está apagado), [0008](0008-network-flow-attribution.md) (flujo → `owner_sub`, evaluación), [0009](0009-agent-sessions.md) (la sesión es el objeto; egress de esa microVM), [0007](0007-multi-user-identity.md) (`owner_sub`), [`../roadmap.md`](../roadmap.md)
 - **No es:** una VPN de sistema en el portátil (no se toca la ruta por defecto de la máquina del usuario), un agujero de entrada en el router de casa, ni un split tunnel que el usuario tenga que rellenar con CIDRs. Con `local_net` apagado, el egress público de ADR-0002 no se mueve. Con `local_net` encendido, el default **de esa sesión** sí sale por el agente local, y el proxy del nodo deja de ser el camino.
@@ -47,7 +48,7 @@ Con el túnel **up**, el portátil **ve y hace NAT** de todo ese tráfico: la LA
 
 Si el túnel no está (`pending` o `withdrawn`) y el flag sigue true, la default de esa sesión está en **blackhole**. No se reinstala el proxy `:8888` ni el sink. Cuando la sesión termina, el idle reap corre, o el agente local hace detach, el nodo **destruye** el túnel. No queda listener en casa.
 
-### Forma concreta de API y CLI (contrato; sin código en este cambio)
+### Forma concreta de API y CLI (contrato; implementado, ver [Estado de implementación](#estado-de-implementación))
 
 `POST /v1/sandboxes` gana un booleano. Ausente o false = comportamiento de hoy (egress del nodo, ADR-0002).
 
@@ -108,7 +109,7 @@ POST /v1/sandboxes/{id}/local-net/heartbeat   # o el propio keepalive del transp
 DELETE /v1/sandboxes/{id}/local-net/attach    # cierre ordenado (sleep, stop del agente)
 ```
 
-Forma de CLI equivalente, no implementada: `asp local-net attach --name NOMBRE`. Tiene que resolver el Bearer por `asp auth`, no leer un secreto del fichero de sesión. `asp session stop` (y el reaper) piden el detach aunque el attach no haya existido. Attach sobre una sesión con `local_net=false` es **409**: no se enciende el túnel a posteriori sin haberlo pedido en el create. Cambiar el flag a mitad de vida no es v1 (habría que parar y volver a crear).
+Forma de CLI: `asp session local-net up --name NOMBRE` (y `down`). Tiene que resolver el Bearer por `asp auth`, no leer un secreto del fichero de sesión. `asp session stop` (y el reaper) piden el detach aunque el attach no haya existido. Attach sobre una sesión con `local_net=false` es **409**: no se enciende el túnel a posteriori sin haberlo pedido en el create. Cambiar el flag a mitad de vida no es v1 (habría que parar y volver a crear).
 
 `GET /v1/sandboxes/{id}` expone estado para que el usuario vea la verdad:
 
@@ -144,9 +145,9 @@ Se mueve la **ruta por defecto del sandbox**, no la del nodo y no la del portát
 
 En el portátil el túnel vive en un **netns o en un TUN que lee el agente**, no como `AllowedIPs = 0.0.0.0/0` de la tabla principal. Si el cryptokey routing de WireGuard se aplicara a la tabla del sistema, el diseño habría instalado una VPN de sistema: **prohibido**. El agente hace NAT (MASQUERADE) del tráfico que sale del túnel hacia el uplink que el portátil ya usa. Por eso el portátil ve cada flujo.
 
-### Modelo de datos (previsto)
+### Modelo de datos
 
-Sin migración en este cambio. Cuando se implemente, campos en `sandboxes` (siguiente migración después de `007`; el número exacto lo fija el corte de código):
+Campos de `sandboxes` (migraciones `010`, `011` y `017`). Además de los de la tabla, el corte de código añadió `local_net_grant_hash`, `local_net_client_public`, `local_net_node_public`, `local_net_listen_port`, `local_net_node_addr` y `local_net_client_addr`:
 
 | Campo | Tipo | Notas |
 |---|---|---|
@@ -251,7 +252,7 @@ asp session start --local-net
   → reconciler arranca la VM
   → node-agent: tabla de ESA sesión con blackhole de 0.0.0.0/0 (y ::/0 si aplica)
   → sin HTTP_PROXY al :8888, sin redirect nft de ese TAP al proxy ni al sink
-  → asp local-net attach
+  → asp session local-net up
        grant (sub == owner_sub) → dial saliente → túnel up
   → node-agent sustituye el blackhole por default vía wg-asp-{short}
   → state=up
