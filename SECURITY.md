@@ -6,6 +6,8 @@ ASP is a sandbox. A way to break its isolation is the most important kind of bug
 
 Please **do not open a public issue**. Report privately through GitHub: [**Report a vulnerability**](https://github.com/luisgf/agent-sandbox-platform/security/advisories/new) (Security tab → *Report a vulnerability*).
 
+What ASP protects, from whom, and what it does not guarantee: the [security model](docs/concepts/security-model.md) (in Spanish, like the rest of `docs/`).
+
 Include what you can of:
 
 - the affected component and commit;

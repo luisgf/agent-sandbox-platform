@@ -78,6 +78,10 @@ No hay manifiestos de “Sandbox CRD” en el árbol a propósito.
 - NetworkPolicy de K8s **no** sustituye el forward proxy + nft del nodo.
 - El proyecto no pretende ser un RuntimeClass ni un competidor de KubeVirt.
 
+## Enmiendas
+
+- **2026-10:** esta decisión descartó la sandbox-como-Pod con Kata y KubeVirt, pero no examinó el proyecto `agent-sandbox` de Kubernetes (SIG Apps), ni Kata con Cloud Hypervisor como `RuntimeClass`, ni Virtink o E2B como alternativas completas. Se reevaluará con una medición en el ADR-0013 (reservado, [#143](https://github.com/luisgf/agent-sandbox-platform/issues/143)). Entretanto, la comparación está en [ASP frente a Kubernetes](../concepts/asp-vs-kubernetes.md).
+
 ## Referencias cruzadas
 
 - VMM: ADR-0001
