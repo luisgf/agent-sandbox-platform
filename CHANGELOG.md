@@ -143,6 +143,10 @@ The first release will be 0.1.0. Until then this is what `main` has.
   certificates are valid for their node id only.
 - The node-agent's local API takes a bearer token; loopback is no longer a credential.
 - The egress proxy never connects to loopback, link-local or private destinations.
+- The proxy and the DNS sink answer only the guests: they are bound to every address, and the node's
+  firewall table now drops connections to them from anything that is not a guest TAP or loopback, over
+  IPv4 and IPv6 (before, a node with a public address and no firewall of its own exposed them).
+  `scripts/smoke-egress-nft.sh` tests the table in network namespaces, and runs in CI.
 - Tenant API keys and IdP principals are confined to their tenant; callers are attributed from their
   credential, not from the request body; the IdP audience is required.
 - The control plane refuses to start in production mode with keys in a temporary directory.

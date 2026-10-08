@@ -10,7 +10,9 @@
 #   - forward: no other port leaves the node, and no guest reaches another
 #     guest. Only a local-net session's own tunnel (wg-asp-*) is forwarded.
 #   - input: a guest reaches only the proxy and the DNS sink on the host,
-#     never node-agent, sshd or any other host service.
+#     never node-agent, sshd or any other host service. And only a guest (or
+#     the node itself, on loopback) reaches those two: they are bound to every
+#     address, so the table is what keeps the network the node is on out.
 #   - anti-spoof: a guest may only use the /30 routed to its own TAP, so the
 #     proxy's per-sandbox policy (keyed by source IP) cannot be borrowed.
 # Guest TAPs are matched by name (asp-*); wg-asp-* does not match.
@@ -110,6 +112,16 @@ NFT
   fi
 }
 
+# What reaches the end of an input chain is neither a guest nor the node itself. The proxy
+# and the DNS sink are for the guests alone, however their listeners are bound.
+render_service_guard() {
+  cat <<NFT
+    tcp dport ${PROXY_PORT} drop comment "asp_proxy_guests_only"
+    tcp dport ${DNS_SINK_PORT} drop comment "asp_dns_sink_guests_only"
+    udp dport ${DNS_SINK_PORT} drop comment "asp_dns_sink_guests_only"
+NFT
+}
+
 render() {
   cat <<NFT
 # agent-sandbox-platform — guest egress, deny-by-default (table ${TABLE})
@@ -133,11 +145,15 @@ $(render_dns_nat)
   }
   chain input {
     type filter hook input priority filter; policy accept;
+    # The node itself (its checks and the smokes use 127.0.0.1) is not a guest.
+    iifname "lo" accept comment "asp_loopback"
     # Guest → host: only the proxy and the DNS sink (after the redirect above).
     iifname "asp-*" ct state established,related accept
     iifname "asp-*" tcp dport ${PROXY_PORT} accept comment "asp_guest_proxy"
 $(render_input_dns)
     iifname "asp-*" drop comment "asp_guest_to_host_drop"
+    # Everyone else: not the proxy, not the DNS sink. Other ports are the host's own business.
+$(render_service_guard)
   }
   chain forward {
     type filter hook forward priority filter; policy accept;
@@ -158,7 +174,10 @@ table ip6 ${TABLE} {
   # services. Only a local-net session's own tunnel is forwarded.
   chain input {
     type filter hook input priority filter; policy accept;
+    iifname "lo" accept comment "asp_loopback"
     iifname "asp-*" drop comment "asp_guest_to_host_drop"
+    # The listeners are dual-stack and guests have no IPv6: nobody uses the proxy or the sink over it.
+$(render_service_guard)
   }
   chain forward {
     type filter hook forward priority filter; policy accept;

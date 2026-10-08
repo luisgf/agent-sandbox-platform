@@ -79,6 +79,7 @@ Con el redirect, la tabla `asp_egress` hace esto con lo que el guest envía:
 - redirige sus puertos HTTP(S) (`--nft-http-ports`, `80,443`) al proxy, y su DNS al sumidero (`--nft-dns-action=redirect`) o lo descarta (`drop`);
 - **descarta todo lo demás**: otros puertos, otros guests, los servicios del host (solo alcanza el proxy y el sumidero, nunca el node-agent ni `sshd`) y orígenes falsificados (un guest solo puede usar la /30 de su propio TAP, así que no puede tomar prestada la política de otro);
 - solo reenvía el túnel propio de una sesión local-net (`wg-asp-*`). Los TAPs se reconocen por su nombre (`asp-*`).
+- **deja el proxy y el sumidero solo para los guests**, y para el propio nodo por loopback: los listeners escuchan en todas las direcciones (`:8888`, `:5353`), así que la tabla descarta las conexiones a esos puertos que no vienen de un TAP `asp-*` ni de `lo`, por IPv4 y por IPv6. Los demás puertos del host no son asunto de la tabla.
 
 Cada nodo informa `egress_enforced` al registrarse y `asp node list` lo muestra en la columna `EGRESS` (`enforced` u `off`): `off` significa que la política de egress del tenant **no obliga** a los guests de ese nodo. Es `true` solo con el proxy escuchando y las reglas puestas en modo `enforce`. Sin `--egress-proxy-listen`, un nodo con `--tap-auto` lo avisa en el log. `sudo asp doctor` comprueba la tabla ([diagnosticar un nodo](../how-to/troubleshooting.md)).
 
@@ -92,6 +93,8 @@ sudo ./scripts/nftables-egress-redirect.sh apply --mode enforce \
   --guest-subnet 10.200.0.0/16 --proxy-port 8888 \
   --dns-sink-port 5353 --dns-action redirect
 ```
+
+**Comprobar las reglas sin KVM:** `sudo make smoke-egress-nft` las carga en nftables dentro de tres *network namespaces* (un guest, el nodo y la red) y comprueba cada una: a dónde va el tráfico web y DNS de un guest, qué se descarta, y que la red del nodo no alcanza el proxy ni el sumidero. Corre también en CI.
 
 **Comprobarlo en un host KVM:** `make smoke-egress-kvm` (root, `ASP_SMOKE_ROOTFS=` con la imagen del guest) levanta el plano de control y el agente en un netns propio, con un «internet» falso detrás de un veth, y comprueba que el guest solo llega a un host permitido por el proxy, con o sin `HTTP_PROXY`, que recibe 403 para el resto y que no alcanza otros puertos; luego repite con `--egress-nft-redirect=false` para ver que la prueba distingue. No toca la red del host.
 

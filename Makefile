@@ -1,4 +1,4 @@
-.PHONY: test docs check-docs test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm e2e-install-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
+.PHONY: test docs check-docs test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-nft smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm e2e-install-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
@@ -68,6 +68,10 @@ smoke:
 
 smoke-multi-node:
 	$(ROOT)scripts/smoke-multi-node.sh
+
+# The egress rules in nftables for real, in network namespaces: needs root, `ip`, `nft` and python3, no KVM.
+smoke-egress-nft:
+	$(ROOT)scripts/smoke-egress-nft.sh
 
 # Needs root, KVM and a guest image (ASP_SMOKE_ROOTFS); see the script.
 smoke-egress-kvm:

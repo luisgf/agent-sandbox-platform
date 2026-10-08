@@ -9,7 +9,7 @@ Las piezas están escritas y probadas: una release se instala en una Ubuntu y un
 | Qué falta | Dónde |
 |---|---|
 | Ensayar el workflow de release (Actions → *Release* → *Run workflow*, no publica nada) y publicar `v0.1.0`: binarios, paquetes `.deb`/`.rpm`, la imagen del plano de control, el kernel y la imagen del guest con su `SHA256SUMS`. Después, `scripts/e2e-install-kvm.sh` con los ficheros de esa release: es la comprobación de que un host limpio la instala | #127, [publicar una versión](how-to/release.md) |
-| Un carril de CI nocturno en un host con KVM que recorra el ciclo real. Los scripts están hechos y probados (`e2e-kvm.sh`, `smoke-vmm-user-kvm.sh`, `smoke-egress-kvm.sh`, `e2e-install-kvm.sh`); falta un runner con KVM y activar el workflow. Hoy KVM, nftables en `enforce`, virtiofs y `--local-net` no corren en CI | #130, [comprobar un nodo](how-to/e2e-kvm.md) |
+| Un carril de CI nocturno en un host con KVM que recorra el ciclo real. Los scripts están hechos y probados (`e2e-kvm.sh`, `smoke-vmm-user-kvm.sh`, `smoke-egress-kvm.sh`, `e2e-install-kvm.sh`); falta un runner con KVM y activar el workflow. Hoy KVM, virtiofs y `--local-net` no corren en CI (las reglas de nftables sí, en namespaces y sin guest: `smoke-egress-nft.sh`) | #130, [comprobar un nodo](how-to/e2e-kvm.md) |
 | Un solo idioma para la documentación | #142 |
 
 ## Decisiones pendientes

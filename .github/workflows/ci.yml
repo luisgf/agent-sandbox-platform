@@ -132,6 +132,20 @@ jobs:
       - name: scripts/smoke-multi-node.sh
         run: ./scripts/smoke-multi-node.sh
 
+  # The node's egress rules in nftables for real, in network namespaces of the runner: who reaches the
+  # proxy and the DNS sink, what a guest can and cannot send. No guest and no KVM, only root.
+  egress-nft:
+    name: Egress rules (nftables in namespaces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: nftables
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nftables
+      - name: scripts/smoke-egress-nft.sh
+        run: sudo ./scripts/smoke-egress-nft.sh
+
   rust:
     name: Rust (pod-daemon)
     runs-on: ubuntu-latest
