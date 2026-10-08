@@ -15,6 +15,9 @@ DOCKERFILE="$ROOT/images/guest/kernel/Dockerfile"
 verify=0
 if [[ "${1:-}" == "--verify" ]]; then verify=1; shift; fi
 OUT="${1:-$ROOT/build/kernel}"
+# An absolute path without a trailing slash, as in build-guest-image.sh, which needs it ("$OUT.a" must be a sibling).
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
+OUT="${OUT%/}"
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 arg() { sed -n "s/^ARG $1=//p" "$DOCKERFILE" | head -n1; }
