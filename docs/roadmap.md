@@ -4,15 +4,14 @@ Lo que viene. Lo que ya está hecho no se cuenta aquí: los cambios por versión
 
 ## Para publicar la primera versión (0.1.0)
 
-Las piezas están escritas; lo que falta es activarlas y comprobarlas en un host limpio.
+Las piezas están escritas y probadas: una release se instala en una Ubuntu y una Debian limpias, la segunda se une a la primera como nodo, y el kernel y la imagen del guest salen iguales en cada build (`scripts/e2e-install-kvm.sh`, [comprobar un nodo](how-to/e2e-kvm.md#el-instalador-en-máquinas-limpias)). Lo que falta es activarlas y publicar, y el token con que se sube este trabajo no puede crear ficheros de `.github/workflows/` (`gh auth refresh -s workflow`, y mover los borradores de `.github/workflow-drafts/`).
 
 | Qué falta | Dónde |
 |---|---|
-| Activar el workflow de release y publicar `v0.1.0`: binarios, paquetes `.deb`/`.rpm`, la imagen del plano de control, el kernel y la imagen del guest con su `SHA256SUMS`. El workflow está en `.github/workflow-drafts/` porque el token con que se subió no puede crear ficheros de `.github/workflows/` | #127, [publicar una versión](how-to/release.md) |
-| Comprobar el instalador (`install.sh`) y el alta de un segundo servidor en una Ubuntu y una Debian limpias, y la guía del primer arranque que sale de ahí | #128, #124 |
-| Un carril de CI nocturno en un host con KVM que recorra el ciclo real (arrancar, exec, workspace, parar, reanudar, borrar). Hoy KVM, nftables en `enforce`, virtiofs y `--local-net` no corren en CI: se comprueban a mano en un host | #130, [comprobar un nodo](how-to/e2e-kvm.md) |
-| Construir la imagen del guest en CI y publicarla | #131 |
-| Un índice de la documentación por tipo de lector, y un `README.md` que sea solo la portada | #133 |
+| Activar el workflow de release y publicar `v0.1.0`: binarios, paquetes `.deb`/`.rpm`, la imagen del plano de control, el kernel y la imagen del guest con su `SHA256SUMS`. Después, `scripts/e2e-install-kvm.sh` con los ficheros de esa release: es la comprobación de que un host limpio la instala | #127, [publicar una versión](how-to/release.md) |
+| Un carril de CI nocturno en un host con KVM que recorra el ciclo real. Los scripts están hechos y probados (`e2e-kvm.sh`, `smoke-vmm-user-kvm.sh`, `smoke-egress-kvm.sh`, `e2e-install-kvm.sh`); falta un runner con KVM y activar el workflow. Hoy KVM, nftables en `enforce`, virtiofs y `--local-net` no corren en CI | #130, [comprobar un nodo](how-to/e2e-kvm.md) |
+| Construir el kernel y la imagen del guest en CI y publicarlos: la receta es reproducible; falta activar los workflows (`guest-image`, `guest-kernel` y el job `guest` de `release`) | #131 |
+| El paso de CI que corre la suite de la API sobre Postgres | #132 |
 | Un solo idioma para la documentación | #142 |
 
 ## Decisiones pendientes
