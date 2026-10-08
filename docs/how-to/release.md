@@ -32,7 +32,7 @@ Los binarios dicen de qué versión son: `asp version`, `asp-node-agent --versio
    git push origin v0.1.0
    ```
 
-5. **Verifica la release:** que el workflow termine, que `SHA256SUMS` valide los ficheros descargados, que `docker run ghcr.io/luisgf/asp-control-plane:0.1.0 --version` conteste (el paquete de ghcr se hace público una vez, en los ajustes de paquetes del repositorio) y que un nodo limpio instale el `.deb`.
+5. **Verifica la release:** que el workflow termine, que `SHA256SUMS` valide los ficheros descargados, que `docker run ghcr.io/luisgf/asp-control-plane:0.1.0 --version` conteste (el paquete de ghcr se hace público una vez, en los ajustes de paquetes del repositorio) y que un nodo limpio instale el `.deb`: con los ficheros de la release bajados a un directorio (`gh release download v0.1.0 -D rel`), `sudo ASP_INSTALL_E2E_RELEASE=rel scripts/e2e-install-kvm.sh` lo hace en una Ubuntu y una Debian limpias ([comprobar un nodo](e2e-kvm.md#el-instalador-en-máquinas-limpias)).
 
 Una versión con sufijo (`v0.2.0-rc.1`) se publica como pre-release.
 

@@ -33,6 +33,22 @@ ASP_E2E_WORKSPACE=/srv/asp/workspaces/default/e2e \   # un directorio del nodo, 
 
 Hace lo mismo menos lo que solo ve el host del nodo (el estado del disco, el TAP, las units). Crea la sandbox `e2e-<pid>` y la borra al terminar, también si falla. Los scripts ignoran los ficheros de configuración (`ASP_CONFIG=/dev/null`, [el fichero de configuración](config-file.md)): ni el `/etc/asp` del host donde corren ni el `asp.yaml` de quien los lanza entran en la prueba, y las credenciales para un despliegue van en el entorno.
 
+## El instalador en máquinas limpias
+
+`scripts/e2e-install-kvm.sh` comprueba lo que ninguno de los otros recorre: que **una release se instala en un host limpio** y funciona. Arranca una Ubuntu 24.04 y una Debian 12 (las cloud images de los proveedores, con Cloud Hypervisor y virtualización anidada, bajo systemd de verdad), y en ellas:
+
+1. En la Ubuntu: `curl … | sh` con el rol `standalone`, sin tocar nada antes. Comprueba que instaló Cloud Hypervisor, bajó la imagen del guest, y que `asp doctor` no encuentra fallos; `asp session start` y `exec`; un workspace compartido con su dueño.
+2. En la Debian (sin `nftables`): se une como segundo nodo con un token y la huella del certificado, se ve en `asp node list`, y una sesión colocada en ella ejecuta un comando por mTLS.
+3. `asp-uninstall.sh --purge` en las dos: no queda paquete, directorio, tabla de nftables ni unit.
+
+```bash
+make snapshot && scripts/build-guest-image.sh --kernel          # dist/ y build/guest
+sudo ASP_INSTALL_E2E_DIST=dist ASP_INSTALL_E2E_GUEST=build/guest scripts/e2e-install-kvm.sh
+sudo ASP_INSTALL_E2E_RELEASE=rel scripts/e2e-install-kvm.sh        # o los ficheros de una release bajados a rel/
+```
+
+El host necesita root, `/dev/kvm` con `nested` activo, `cloud-hypervisor`, `qemu-img`, `mkfs.vfat`, `losetup`, `ip`, `python3` y `ssh`. Las máquinas viven en un *network namespace* propio (un bridge, dos TAP `iet*` y un veth hacia el host) y solo hablan con dos servicios que escuchan en el extremo del veth: un servidor web con la release y un proxy que deja llegar a los mirrors de Debian y Ubuntu y a GitHub (de donde el instalador baja Cloud Hypervisor): no toca el cortafuegos del host, ni Docker, ni un nodo que corra allí, y lo deja todo como estaba. Las cloud images se bajan una vez (`ASP_INSTALL_E2E_IMAGES`) y se comprueban contra las sumas del proveedor. `ASP_INSTALL_E2E_KEEP=1` deja las máquinas en pie si algo falla. Es la forma de cumplir el último punto de [publicar una versión](release.md) («que un nodo limpio instale el paquete») sin hacerlo a mano.
+
 ## En CI
 
-[`.github/workflow-drafts/nightly-kvm.yml`](../../.github/workflow-drafts/nightly-kvm.yml) lo ejecuta cada noche en un runner propio con KVM, con `smoke-vmm-user-kvm.sh` y `smoke-egress-kvm.sh`, sobre el kernel y la imagen que construye el propio repositorio, y para un PR que un mantenedor etiquete `needs-kvm`. Hace falta un runner (`self-hosted, linux, kvm`) en una máquina para él solo, con `sudo` sin contraseña, y el permiso `workflow` para activar el workflow (`gh auth refresh -s workflow`, luego `git mv` a `.github/workflows/`). No lo ejecuta para PRs de forks.
+[`.github/workflow-drafts/nightly-kvm.yml`](../../.github/workflow-drafts/nightly-kvm.yml) lo ejecuta cada noche en un runner propio con KVM, con `smoke-vmm-user-kvm.sh`, `smoke-egress-kvm.sh` y `e2e-install-kvm.sh`, sobre el kernel y la imagen que construye el propio repositorio, y para un PR que un mantenedor etiquete `needs-kvm`. Hace falta un runner (`self-hosted, linux, kvm`) en una máquina para él solo, con `sudo` sin contraseña, y el permiso `workflow` para activar el workflow (`gh auth refresh -s workflow`, luego `git mv` a `.github/workflows/`). No lo ejecuta para PRs de forks.

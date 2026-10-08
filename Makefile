@@ -1,4 +1,4 @@
-.PHONY: test docs check-docs test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
+.PHONY: test docs check-docs test-go test-rust test-guest-helper lint lint-sh smoke smoke-multi-node smoke-egress-kvm smoke-vmm-user-kvm e2e-kvm e2e-install-kvm smoke-proxy smoke-asp smoke-asp-auth asp build snapshot pack clean help
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 RELEASE_TGZ ?= /workspace/agent-sandbox-platform-release.tar.gz
@@ -80,6 +80,11 @@ smoke-vmm-user-kvm:
 # a deployment (ASP_E2E_CONTROL_PLANE_URL); see the script.
 e2e-kvm:
 	$(ROOT)scripts/e2e-kvm.sh
+
+# The installer on clean Ubuntu and Debian machines (cloud images booted with nested KVM): needs root, KVM
+# with nested virtualization, `make snapshot` and scripts/build-guest-image.sh --kernel; see the script.
+e2e-install-kvm:
+	$(ROOT)scripts/e2e-install-kvm.sh
 
 smoke-proxy:
 	$(ROOT)scripts/smoke-egress-proxy.sh

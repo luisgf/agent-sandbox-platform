@@ -44,6 +44,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
   release's kernel and image and refuses anything that does not match its checksums; the node-agent
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
+- **`scripts/e2e-install-kvm.sh`: the installer on clean machines.** A clean Ubuntu 24.04 and a clean Debian 12
+  (the vendors' cloud images, booted by Cloud Hypervisor with nested KVM, under systemd) get a release: `curl | sh`
+  as `standalone`, a first session and a shared workspace, the Debian one joining as a second node with a token,
+  `asp-uninstall.sh --purge`. It is what the one-host and join flows were verified with, kept as a script, and
+  it can run against the files of a published release.
 - **A guest kernel built from source, the same bytes every time.** `scripts/build-guest-kernel.sh` compiles Linux 6.18
   (longterm) with Cloud Hypervisor's guest configuration, everything built in (virtio, vsock, virtio-fs, the KVM
   clock, cgroup v2), from a tarball checked against its SHA-256 with a pinned compiler; the build fails if the final
