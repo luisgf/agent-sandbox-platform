@@ -111,6 +111,10 @@ jobs:
           cache-dependency-path: control-plane/go.*
       - name: go test (Postgres integration)
         run: go test ./internal/store/... -run Postgres -count=1 -v
+      # The API suite on Postgres. Each test binary makes a database of its own on the
+      # server, so this and the step above do not touch each other's tables.
+      - name: go test (API on Postgres)
+        run: ASP_TEST_STORE=postgres go test ./internal/api/... -count=1
 
   smoke-multi-node:
     name: Smoke (two dry-run nodes)

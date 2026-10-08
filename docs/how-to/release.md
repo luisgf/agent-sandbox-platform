@@ -50,5 +50,6 @@ El instalador lleva fijada la versión de Cloud Hypervisor que pone en los nodos
 
 ## Primera vez en un repositorio
 
-- El workflow vive en `.github/workflow-drafts/release.yml` hasta que quien empuja tenga el permiso `workflow` (`gh auth refresh -s workflow`): `git mv .github/workflow-drafts/release.yml .github/workflows/release.yml`.
+- El workflow `.github/workflows/release.yml` está activo: se dispara con una etiqueta `v*`. **Ensáyalo antes de etiquetar**: en la pestaña Actions, *Release → Run workflow* sobre `main` hace lo mismo que una release (goreleaser, la imagen del plano de control para amd64 y arm64, y el kernel y la imagen del guest, cada uno dos veces desde cero) **sin publicar nada**: ni release, ni imagen en ghcr, ni ficheros adjuntos; deja los paquetes y los ficheros del guest como artefactos de la ejecución (el job del guest tarda más de una hora).
+- El paquete `asp-control-plane` de ghcr.io se hace público una vez, en los ajustes de paquetes del repositorio, después de la primera release.
 - Firmar con cosign está apagado: el bloque `signs:` de `.goreleaser.yaml` está comentado y se enciende con firma sin clave (OIDC de GitHub) cuando se quiera.
