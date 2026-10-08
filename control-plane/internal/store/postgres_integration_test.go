@@ -496,7 +496,7 @@ func TestMemoryConcurrentRotations(t *testing.T) {
 // Control planes that start together (the replicas of a deployment) must each find the schema done
 // or do it, never fail because another was doing it: the one that lost used to die with a duplicate
 // key on schema_migrations or on a table, and rely on its supervisor to start it again.
-func TestApplyMigrationsFromSeveralReplicasAtOnce(t *testing.T) {
+func TestPostgresApplyMigrationsFromSeveralReplicasAtOnce(t *testing.T) {
 	if pgtest.Server() == "" {
 		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
 	}

@@ -44,6 +44,9 @@ The first release will be 0.1.0. Until then this is what `main` has.
   release's kernel and image and refuses anything that does not match its checksums; the node-agent
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
+- **CI:** the API test suite also runs on Postgres in CI (it ran on the memory store only); the release workflow is
+  active, with a rehearsal from the Actions tab that builds everything a release has and publishes nothing; the
+  documentation checks (links, anchors, reachability, ADR statuses) run on every pull request.
 - **`scripts/e2e-install-kvm.sh`: the installer on clean machines.** A clean Ubuntu 24.04 and a clean Debian 12
   (the vendors' cloud images, booted by Cloud Hypervisor with nested KVM, under systemd) get a release: `curl | sh`
   as `standalone`, a first session and a shared workspace, the Debian one joining as a second node with a token,

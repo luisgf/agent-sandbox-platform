@@ -10,6 +10,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A rehearsal from the Actions tab: the same steps as a snapshot, publishing nothing (no release, no
+  # image pushed, nothing attached). Run it on main before tagging the first release.
+  workflow_dispatch:
 
 permissions:
   contents: write   # create the release and upload its files
@@ -44,9 +47,21 @@ jobs:
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: "~> v2"
-          args: release --clean
+          # A tag publishes. Run by hand, it builds the same things as a snapshot and publishes nothing.
+          args: release --clean ${{ github.ref_type == 'tag' && '' || '--snapshot --skip=publish' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: The rehearsal's files
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-rehearsal
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS
+          if-no-files-found: error
 
   # The guest kernel and image, built twice from scratch (the job fails if the two differ) and
   # published next to the binaries as asp-guest_<version>_{rootfs.img.gz,vmlinux,SHA256SUMS,image.json}:
@@ -55,6 +70,7 @@ jobs:
     name: guest image
     needs: release        # the release exists, so the files can be attached to it
     runs-on: ubuntu-latest
+    timeout-minutes: 300  # the kernel is compiled, twice, and then the image, twice
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,7 +81,18 @@ jobs:
         env:
           ASP_GUEST_VERSION: ${{ github.ref_name }}
         run: scripts/build-guest-image.sh --verify --kernel build/guest
+      - name: The rehearsal's files
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guest-rehearsal
+          path: |
+            build/guest/SHA256SUMS
+            build/guest/image.json
+            build/guest/vmlinux
+          if-no-files-found: error
       - name: Attach it to the release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
