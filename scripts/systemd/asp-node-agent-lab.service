@@ -1,7 +1,14 @@
 # ASP node-agent, lab layout (ncc1701d): the control plane runs on the same host, over plain
 # HTTP on loopback, with no mTLS and no enrollment. For a node of a real multi-host
 # deployment use asp-node-agent.service. This is the unit installed on ncc1701d on
-# 2026-10-07 in place of a transient systemd-run unit.
+# 2026-10-07 in place of a transient systemd-run unit; since 2026-10-08 its settings are in
+# /etc/asp/agent.yaml.
+# Create before the first start (what the YAML points at; docs/lab/ncc1701d.md has the commands):
+#   - the node's API key, ~/.secrets/asp-node.key (api_key_file): the control plane's
+#     ASP_BOOTSTRAP_API_KEY, because plain HTTP has no client certificate to say who the node is
+#   - /var/lib/asp/agent.token, 0640 root:ubuntu: the secret of the node's local API. The agent makes
+#     it 0600 if it is missing, and the control plane, which runs as ubuntu, could not read it
+#   - /sandbox/workspaces/<tenant> (workspace_root): a workspace has to live under it
 # Install (on the node):
 #   sudo install -o root -g root -m 0755 build/node-agent /usr/local/bin/node-agent
 #       (root-owned and outside the build directory: the unit runs as root)

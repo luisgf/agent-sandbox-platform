@@ -5,7 +5,12 @@
 listen_addr: 127.0.0.1:18112
 oidc_issuer: http://127.0.0.1:18112
 # Authentication is always on. The first key comes from ASP_BOOTSTRAP_API_KEY (in the env file) and
-# the node-agent sends it (ASP_NODE_API_KEY_FILE) because there is no client certificate over plain HTTP.
+# the node-agent sends it (api_key_file in agent.yaml) because there is no client certificate over plain HTTP.
+
+# Where a workspace may live (<root>/<tenant>/...), the same as workspace_root in agent.yaml: a path
+# outside is refused with a 400 at create instead of leaving a sandbox that does not start.
+workspace_roots: /sandbox/workspaces
+
 # Stop sandboxes idle for 2h (successful exec / create / start). 0 or off disables.
 # Process default is off so unit tests and short smokes do not reap; this lab unit opts in.
 sandbox_idle_timeout: 2h

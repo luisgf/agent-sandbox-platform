@@ -45,6 +45,10 @@ while [[ "${1:-}" == --* ]]; do
   shift
 done
 OUT="${1:-$ROOT/build/guest}"
+# An absolute path without a trailing slash: `docker run -v build/guest:/out` is a volume NAME, not a directory,
+# and "$OUT.a" below must be a sibling of it.
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
+OUT="${OUT%/}"
 SIZE_MB="${ASP_ROOTFS_SIZE_MB:-512}"
 EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || true)}"
 [[ -n "$EPOCH" ]] || { echo "SOURCE_DATE_EPOCH is not set and this is not a git checkout" >&2; exit 2; }

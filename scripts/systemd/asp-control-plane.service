@@ -26,7 +26,8 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/src/bots
-# Non-secret ASP_IDP_* live here (mode 600). Missing file = unit fail (lab expects IdP on).
+# The IdP settings (ASP_IDP_*) and the secrets (ASP_BOOTSTRAP_API_KEY, ASP_DATABASE_URL) live here,
+# mode 0600. Missing file = unit fail (lab expects IdP on).
 EnvironmentFile=/home/ubuntu/.secrets/asp-idp.env
 # The other settings (listen address, issuer, idle timeout, where the keys are) are in
 # /etc/asp/server.yaml. Key material must survive a reboot: systemd creates
