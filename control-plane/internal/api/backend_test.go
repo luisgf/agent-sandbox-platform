@@ -59,6 +59,13 @@ func TestMain(m *testing.M) {
 			code = c
 		}
 	}
+	// What the whole suite made the handlers answer has to be what openapi.yaml says they answer.
+	if problems := undocumentedAnswers(); len(problems) > 0 {
+		for _, p := range problems {
+			fmt.Fprintln(os.Stderr, "FAIL (openapi.yaml):", p)
+		}
+		code = 1
+	}
 	os.Exit(code)
 }
 

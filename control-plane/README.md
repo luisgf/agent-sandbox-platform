@@ -2,46 +2,11 @@
 
 Servicio Go multi-tenant: API HTTP (TLS opcional), store in-memory (default), un fichero SQLite (`ASP_DATABASE_URL=sqlite:///…`, un solo host) o PostgreSQL (`ASP_DATABASE_URL`), journal de eventos, API keys, enrollment PKI, egress allowlist, OIDC (JWKS/mint) y proxy de exec hacia node-agents.
 
-## Endpoints
+## API
 
-| Método | Ruta | Estado |
-|---|---|---|
-| GET | `/healthz` | OK (siempre público) |
-| GET | `/.well-known/openid-configuration` | OIDC discovery |
-| GET | `/oidc/jwks.json` | JWKS público |
-| POST | `/v1/internal/oidc/token` | Mint JWT (nodo; tenant desde store) |
-| POST | `/v1/sandboxes` | Create: coloca en un nodo con hueco (503 si ninguno cabe, 409 si el pin no vale); con `ASP_AUTO_PROVISION=1`, stub → `running` |
-| GET | `/v1/sandboxes?tenant_id=` | List, de la más reciente a la más antigua. Oculta las `deleted`; `?include_deleted=1` las incluye |
-| GET | `/v1/sandboxes/{id}` | Get |
-| GET | `/v1/sandboxes/{id}/events` | Audit trail |
-| POST | `/v1/sandboxes/{id}/exec` | Proxy a node-agent (+ `egress_allowlist`). `"as_root": true` pide root en el guest; sin él, el pod-daemon ejecuta como el dueño del workspace o como `sandboxd` ([pod-daemon](../pod-daemon/README.md#quién-ejecuta-un-comando-y-con-qué-límites)). El evento `sandbox.exec` lleva `as_root` |
-| POST | `/v1/sandboxes/{id}/stop` | Para la sandbox y **conserva su disco** ([ADR-0012](../docs/adr/0012-retained-disks.md)): `stopping` → `stopped`. Dueño, admin u operador con `destroy-any` |
-| POST | `/v1/sandboxes/{id}/start` | Reanuda una `stopped` en el nodo que tiene su disco: `requested`, `boot_count` + 1 (`booted_at` dice si llegó a correr y, por tanto, si hay un disco que reutilizar). 503 si ese nodo no tiene hueco, 409 si no puede tomar sandboxes o la sandbox no está parada. Pide además el derecho de crear |
-| DELETE | `/v1/sandboxes/{id}` | Borra la VM y el disco: `deleting` → `deleted` (directo si ningún nodo tiene nada). La fila se queda |
-| POST | `/v1/sandboxes/{id}/claim` | Claim atómico del nodo asignado |
-| POST | `/v1/sandboxes/{id}/status` | Estado observado por el agente |
-| POST | `/v1/sandboxes/{id}/renew-lease` | **410**: retirado; el conjunto `assigned` de `/work` lo sustituye |
-| POST | `/v1/sandboxes/{id}/attest` | Guarda evidencia de boot firmada (nodo) |
-| GET | `/v1/sandboxes/{id}/attestation` | Última atestación |
-| POST | `/v1/attestation/verify` | Verifica bundle sin persistir |
-| PUT/GET | `/v1/tenants/{id}/egress` | Allowlist de egress. Una regla sin `port` vale para 80 y 443; otros puertos piden una regla que los nombre |
-| POST | `/v1/tenants/{id}/egress/check` | Helper de evaluación |
-| POST | `/v1/nodes/enroll` | Bootstrap token o token de enroll → PEMs del cert de nodo. El bootstrap token solo enrola un id sin certificado o un nodo revocado; re-enrolar un nodo vivo pide un token fijado a él (409) |
-| POST / GET | `/v1/api-keys` | Crea una API key (`{"tenant_id","name","scope","ttl"}`; el secreto se devuelve **una vez**) / lista las keys sin secretos, también las revocadas (`?tenant_id=`). API key de plataforma o admin del IdP (el admin, solo keys `tenant` de su tenant) |
-| DELETE / POST | `/v1/api-keys/{id}`, `/v1/api-keys/{id}/rotate` | Revoca la key (la fila queda, marcada) / le da un secreto nuevo, devuelto una vez (el anterior deja de valer al instante) |
-| POST | `/v1/nodes/enroll-tokens` | Token de enroll de un solo uso (admin o API key de plataforma); `node_id` lo fija a un nodo, `ttl_seconds` (1 h por defecto, 7 días máx.) |
-| POST | `/v1/nodes/{id}/rotate-cert` | Nuevo cert (admin, API key de plataforma o el certificado vigente del propio nodo por mTLS: así lo renuevan los node-agents; el bootstrap token no vale); revoca fingerprint anterior |
-| POST | `/v1/nodes/{id}/revoke` | Marca nodo + fingerprint revocados (admin o API key de plataforma) |
-| POST | `/v1/nodes/register` | Registra/actualiza nodo |
-| POST | `/v1/nodes/{id}/heartbeat` | `last_seen_at` |
-| GET | `/v1/nodes/{id}/work` | Trabajo para reconciler (solo sus sandboxes; refresca `last_seen_at`), `assigned`: las que el nodo debe seguir corriendo (para el resto), y `egress`: tenant de cada sandbox y política efectiva con `version` de cada tenant |
-| POST | `/v1/nodes/{id}/cordon` | Sin colocaciones nuevas (admin o API key de plataforma) |
-| POST | `/v1/nodes/{id}/uncordon` | Vuelve al reparto (admin o API key de plataforma) |
-| PUT / DELETE | `/v1/nodes/{id}/fence` | Fija (`{"endpoint","token"}`; el token puede ser `env:NAME` o `file:/ruta`) o quita el destino de fencing del nodo (admin o API key de plataforma; 204). Nunca se devuelve |
-| GET | `/v1/nodes` | Lista nodos con asignado/ofrecido, si son planificables y cuándo caduca su certificado (`cert_not_after`) (admin, operador o API key de plataforma) |
-| GET | `/v1/nodes/{id}/doctor` | El node-agent del nodo ejecuta sus comprobaciones (KVM, hipervisor, imágenes, disco, nftables, reloj, este plano de control) y devuelve el informe tal cual: `{node_id, at, results:[{name,status,detail,fix}]}`. 501 si el agente es anterior al doctor; 502 si no contesta; 409 si el nodo está revocado. Mismos llamantes que `GET /v1/nodes`. `asp node doctor <id>` ([`docs/how-to/troubleshooting.md`](../docs/how-to/troubleshooting.md)) |
+La API HTTP (`/v1`) tiene una referencia con las rutas, el cuerpo de cada petición y respuesta, los estados que devuelve cada ruta y quién puede llamarla: [la API del plano de control](../docs/reference/api.md). Se genera de [`internal/api/openapi.yaml`](internal/api/openapi.yaml), que el plano de control sirve también como JSON en `GET /openapi.json`, sin credenciales (para generar un cliente o abrirlo en Swagger UI).
 
-Administrar nodos (listar, cordon, uncordon, fence, revoke, rotate-cert) nunca acepta una API key de tenant: los nodos los comparten todos los tenants (403). Con `ASP_IDP_REQUIRED=1` hace falta un token del IdP con rol admin (operador para listar). `rotate-cert` acepta además el certificado vigente del propio nodo (mTLS), para que se renueve; el bootstrap token no vale ni ahí ni en `revoke`, porque lo tienen todos los nodos y con él uno podría quedarse con la identidad de otro. En el lab abierto (sin API keys ni IdP) estas rutas quedan abiertas como el resto, salvo `rotate-cert`, que siempre pide credenciales porque entrega la clave privada de un nodo.
+Ese documento está escrito a mano y unos tests lo comparan con el código, así que no se queda atrás: cada ruta de `routes.go` está en él y al revés, los campos de cada cuerpo son los del tipo Go que lo escribe, un estado que un manejador devuelve y el documento no lista es un fallo, y las órdenes de `asp` (`cli/internal/client`) solo llaman a rutas, campos y estados que el documento tiene. Al añadir o cambiar una ruta se edita el documento y se ejecuta `make docs`.
 
 ## Configuración
 
