@@ -21,6 +21,9 @@
 #   INSTALL_ASP_METHOD    deb, rpm or tar (default: the package manager of the host)
 #   INSTALL_ASP_NO_START  1 = install and configure, start nothing
 #   INSTALL_ASP_FORCE     1 = replace a 10-install.yaml that exists (the old one is kept as .bak)
+#   INSTALL_ASP_SKIP_VMM  1 = on a node (agent, standalone), do not install Cloud Hypervisor and virtiofsd
+#   INSTALL_ASP_CH_URL    where the Cloud Hypervisor release files are, without the trailing slash (a mirror;
+#                         default: the project's release of the version this script pins, whose SHA-256 it checks)
 #
 # server:
 #   INSTALL_ASP_LISTEN        address to listen on (default 127.0.0.1:8080; nodes on other hosts
@@ -57,6 +60,13 @@ ROLE="${INSTALL_ASP_ROLE:-cli}"
 VERSION="${INSTALL_ASP_VERSION:-latest}"
 BASE_URL="${INSTALL_ASP_URL:-}"
 ETC="${INSTALL_ASP_ETC:-/etc/asp}"
+
+# The Cloud Hypervisor a node runs: the version ASP is tested with (the node-agent's doctor warns about
+# another major version), from the project's own release. It is refused unless it has the SHA-256 written
+# here (GitHub's digests of the release assets). Raising it: docs/how-to/release.md.
+CH_VERSION=v53.0
+CH_SHA256_AMD64=448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc
+CH_SHA256_ARM64=f192b510eea1c710cbc439d716bb0573c223fc463dbe3e6523788a2b7ef62850
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'install-asp: %s\n' "$*" >&2; }
@@ -125,6 +135,8 @@ case "$METHOD" in deb | rpm | tar) ;; *) die "INSTALL_ASP_METHOD: $METHOD is not
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
+# Only release files go in it, and the package manager reads them as a user of its own.
+chmod 0755 "$TMP"
 
 say "==> ASP $VERSION for $OSN/$ARCH ($METHOD), role $ROLE"
 fetch "$BASE_URL/SHA256SUMS" "$TMP/SHA256SUMS" || die "cannot download $BASE_URL/SHA256SUMS (is $VERSION a release?)"
@@ -143,6 +155,51 @@ download() {
 	[ "$got" = "$want" ] || die "$f is $got but SHA256SUMS says $want: not installing it"
 }
 
+# The packages go in through the package manager when there is one, so that what they depend on (nftables
+# and iproute2, for a node) comes with them; dpkg or rpm alone installs what is given and fails on a missing
+# dependency.
+APT_UPDATED=""
+apt_update() {
+	[ -n "$APT_UPDATED" ] || { apt-get update -qq >/dev/null 2>&1 || warn "apt-get update failed: installing from the package lists this host has"; }
+	APT_UPDATED=1
+}
+# pkg_add <name>: a package of the distribution, by whatever manager there is. Fails when there is none.
+pkg_add() {
+	if have apt-get; then
+		apt_update
+		NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" >/dev/null 2>&1
+	elif have dnf; then
+		dnf install -y -q "$1" >/dev/null 2>&1
+	elif have yum; then
+		yum install -y -q "$1" >/dev/null 2>&1
+	elif have zypper; then
+		zypper --non-interactive -q install "$1" >/dev/null 2>&1
+	else
+		return 1
+	fi
+}
+# pkg_file <deb | rpm> <file>: a package file, with its dependencies from the repositories.
+pkg_file() {
+	if [ "$1" = deb ]; then
+		if have apt-get; then
+			apt_update
+			NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$2" >/dev/null && return 0
+			warn "apt-get could not install $2 with its dependencies: trying dpkg (what it depends on is then yours)"
+		fi
+		dpkg -i "$2" >/dev/null
+	else
+		if have dnf; then
+			dnf install -y -q "$2" >/dev/null && return 0
+		elif have yum; then
+			yum install -y -q "$2" >/dev/null && return 0
+		elif have zypper; then
+			zypper --non-interactive -q install --allow-unsigned-rpm "$2" >/dev/null && return 0
+		fi
+		warn "the package manager could not install $2 with its dependencies: trying rpm (what it depends on is then yours)"
+		rpm -U --quiet "$2"
+	fi
+}
+
 # install_component <asp | asp-control-plane | asp-node-agent>
 install_component() {
 	name=$1
@@ -150,12 +207,12 @@ install_component() {
 	deb)
 		f="${name}_${VERSION}_linux_${ARCH}.deb"
 		download "$f"
-		dpkg -i "$TMP/$f" >/dev/null
+		pkg_file deb "$TMP/$f"
 		;;
 	rpm)
 		f="${name}_${VERSION}_linux_${ARCH}.rpm"
 		download "$f"
-		rpm -U --quiet "$TMP/$f"
+		pkg_file rpm "$TMP/$f"
 		;;
 	tar)
 		f="${name}_${VERSION}_${OSN}_${ARCH}.tar.gz"
@@ -244,6 +301,45 @@ write_dropin() {
 yaml_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
 random_hex() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+# install_vmm: what a node runs the sandboxes with. Cloud Hypervisor is in no distribution's repositories
+# in a version ASP is tested with, so it comes from the project's release, checked against the SHA-256 this
+# script pins. virtiofsd (the Rust one, for sandboxes with a workspace) comes from the distribution where it
+# has one (Ubuntu 24.04, Debian 13); elsewhere it is yours, and everything but workspaces works without it.
+install_vmm() {
+	[ "$OSN" = linux ] || return 0
+	[ "${INSTALL_ASP_SKIP_VMM:-}" != 1 ] || return 0
+	if have cloud-hypervisor || [ -x /usr/local/bin/cloud-hypervisor ]; then
+		chv=$( (cloud-hypervisor --version || /usr/local/bin/cloud-hypervisor --version) 2>/dev/null | head -n 1)
+		say "    cloud-hypervisor is there already (${chv:-unknown version})"
+	else
+		case "$ARCH" in
+		amd64) asset=cloud-hypervisor-static want=$CH_SHA256_AMD64 ;;
+		arm64) asset=cloud-hypervisor-static-aarch64 want=$CH_SHA256_ARM64 ;;
+		esac
+		churl="${INSTALL_ASP_CH_URL:-https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$CH_VERSION}/$asset"
+		say "    installing Cloud Hypervisor $CH_VERSION"
+		if fetch "$churl" "$TMP/$asset"; then
+			got=$(sha256 "$TMP/$asset")
+			[ "$got" = "$want" ] || die "$asset is $got but $want was expected: not installing it"
+			install -m 0755 "$TMP/$asset" /usr/local/bin/cloud-hypervisor
+		else
+			warn "cannot download $churl: install Cloud Hypervisor $CH_VERSION yourself (docs/how-to/install-node.md), point INSTALL_ASP_CH_URL at a mirror, or INSTALL_ASP_SKIP_VMM=1 to skip this"
+		fi
+	fi
+	if ! have virtiofsd && [ ! -x /usr/libexec/virtiofsd ] && [ ! -x /usr/local/bin/virtiofsd ]; then
+		pkg_add virtiofsd || warn "no virtiofsd (the Rust one: Ubuntu 24.04 and Debian 13 have it as a package): a sandbox with a workspace will not start; the others do"
+	fi
+}
+
+# check_node_tools: what the node-agent runs, besides itself. The packages depend on nftables and
+# iproute2; a tarball install does not, and a node without nft cannot enforce egress and does not start.
+check_node_tools() {
+	[ "$OSN" = linux ] || return 0
+	for t in nft ip setpriv systemd-run; do
+		have "$t" || warn "$t is not installed: the node-agent needs it (nftables, iproute2, util-linux, systemd)"
+	done
+}
 
 if has_role server; then
 	say "==> control plane"
@@ -352,6 +448,8 @@ if has_role agent; then
 		say "    trusting the certificate of $hostport (SHA-256 $got)"
 	fi
 	install_component asp-node-agent
+	install_vmm
+	check_node_tools
 	NODE_ID="${INSTALL_ASP_NODE_ID:-$(hostname -s 2>/dev/null || hostname)}"
 	ENDPOINT="${INSTALL_ASP_ENDPOINT:-https://$NODE_ID:9443}"
 	CA=""
@@ -384,20 +482,35 @@ enroll_token: $(yaml_str "$INSTALL_ASP_TOKEN")
 	fi
 	if want_start; then
 		systemctl daemon-reload
+		# Only what the service says from here on counts: the journal keeps an earlier install's lines.
+		since=$(date '+%Y-%m-%d %H:%M:%S')
 		systemctl enable --now asp-node-agent >/dev/null 2>&1 || warn "the node-agent did not start: journalctl -u asp-node-agent"
 		i=0
+		log=""
 		while [ "$i" -lt 60 ]; do
-			if journalctl -u asp-node-agent --no-pager 2>/dev/null | grep -qE 'registered with control plane'; then
-				say "    the node registered"
-				break
-			fi
+			log=$(journalctl -u asp-node-agent --since "$since" --no-pager -o cat 2>/dev/null) || log=""
+			case $log in *'registered with control plane'*) break ;; esac
 			i=$((i + 1))
 			sleep 1
 		done
-		# The token has done its job, and must not stay in a file.
+		case $log in
+		*'registered with control plane'*) say "    the node registered" ;;
+		*)
+			last=$(printf '%s\n' "$log" | grep -E ' (ERROR|WARN) ' | tail -n 1 | cut -c1-240)
+			warn "the node has not registered with the control plane${last:+. The last problem it logged: $last}"
+			warn "journalctl -u asp-node-agent has the rest, and sudo asp doctor says what this host lacks"
+			;;
+		esac
+		# The token has done its job once the node has enrolled, and must not stay in a file. A node that has
+		# not enrolled needs it for its next try (the service restarts itself).
 		if [ -n "$ENROLL" ] && [ -f "$ETC/agent.yaml.d/20-enroll.yaml" ]; then
-			rm -f "$ETC/agent.yaml.d/20-enroll.yaml" "$ETC/agent.yaml.d/20-enroll.yaml.bak"
-			say "    the enroll token is out of $ETC/agent.yaml.d"
+			case $log in
+			*'enrolled node_id='* | *'node already enrolled'*)
+				rm -f "$ETC/agent.yaml.d/20-enroll.yaml" "$ETC/agent.yaml.d/20-enroll.yaml.bak"
+				say "    the enroll token is out of $ETC/agent.yaml.d"
+				;;
+			*) warn "the node has not enrolled: the token stays in $ETC/agent.yaml.d/20-enroll.yaml for the next try (it is single use and expires); remove the file once asp node list shows the node" ;;
+			esac
 		fi
 	else
 		say "    not started (INSTALL_ASP_NO_START, or no systemd): systemctl enable --now asp-node-agent"
@@ -416,6 +529,10 @@ if has_role standalone; then
 	install_component asp-control-plane
 	install_component asp-node-agent
 	install_component asp-server
+	if [ "$PROFILE" = default ] && [ -c /dev/kvm ]; then
+		install_vmm
+		check_node_tools
+	fi
 	body=""
 	[ -z "${INSTALL_ASP_LISTEN:-}" ] || body="${body}listen: $(yaml_str "$INSTALL_ASP_LISTEN")
 "
@@ -435,16 +552,24 @@ $body" || true
 	fi
 	if want_start; then
 		systemctl daemon-reload
+		since=$(date '+%Y-%m-%d %H:%M:%S')
 		systemctl enable --now asp-server >/dev/null 2>&1 || warn "asp-server did not start: journalctl -u asp-server"
 		i=0
+		up=""
 		while [ "$i" -lt 90 ]; do
-			if journalctl -u asp-server --no-pager 2>/dev/null | grep -qE 'registered with control plane'; then
+			if journalctl -u asp-server --since "$since" --no-pager -o cat 2>/dev/null | grep -qE 'registered with control plane'; then
+				up=1
 				say "    the control plane and the node are up"
 				break
 			fi
 			i=$((i + 1))
 			sleep 1
 		done
+		if [ -z "$up" ]; then
+			last=$(journalctl -u asp-server --since "$since" --no-pager -o cat 2>/dev/null | grep -E ' (ERROR|WARN) ' | tail -n 1 | cut -c1-240)
+			warn "the node has not registered with the control plane${last:+. The last problem it logged: $last}"
+			warn "journalctl -u asp-server has the rest, and sudo asp doctor says what this host lacks"
+		fi
 	else
 		say "    not started (INSTALL_ASP_NO_START, or no systemd): systemctl enable --now asp-server"
 	fi

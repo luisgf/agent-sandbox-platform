@@ -1,6 +1,6 @@
 # Instalar ASP con el script
 
-`install.sh` instala una [versión](release.md) en este host: el CLI, un plano de control, un nodo, o todo junto en un solo host ([`single-host.md`](single-host.md)). Baja los paquetes de la release (`.deb` o `.rpm`; un tarball en cualquier otro Linux, y también en macOS para el CLI), los **comprueba contra el `SHA256SUMS`** de la release, los instala, escribe los ajustes que dan las variables de abajo en un fichero `10-install.yaml` (en `/etc/asp/server.yaml.d/` o `/etc/asp/agent.yaml.d/`, [ver el fichero de configuración](config-file.md)) y arranca el servicio. No arranca nada si el host no tiene systemd, y no pisa nunca un `10-install.yaml` que ya exista.
+`install.sh` instala una [versión](release.md) en este host: el CLI, un plano de control, un nodo, o todo junto en un solo host ([`single-host.md`](single-host.md)). Baja los paquetes de la release (`.deb` o `.rpm`; un tarball en cualquier otro Linux, y también en macOS para el CLI), los **comprueba contra el `SHA256SUMS`** de la release, los instala con el gestor de paquetes (que trae sus dependencias), escribe los ajustes que dan las variables de abajo en un fichero `10-install.yaml` (en `/etc/asp/server.yaml.d/` o `/etc/asp/agent.yaml.d/`, [ver el fichero de configuración](config-file.md)) y arranca el servicio. No arranca nada si el host no tiene systemd, y no pisa nunca un `10-install.yaml` que ya exista.
 
 ```bash
 # el CLI
@@ -29,6 +29,8 @@ Léelo antes de ejecutarlo si quieres: es un único fichero de shell (`scripts/i
 | `INSTALL_ASP_METHOD` | `deb`, `rpm` o `tar`; por defecto el gestor de paquetes del host |
 | `INSTALL_ASP_NO_START` | `1` instala y configura, no arranca nada |
 | `INSTALL_ASP_FORCE` | `1` reemplaza un `10-install.yaml` que ya exista (deja el anterior como `.bak`) |
+| `INSTALL_ASP_SKIP_VMM` | `1` en un nodo (`agent`, `standalone`): no instala Cloud Hypervisor ni `virtiofsd` (los pones tú, [instalar un nodo](install-node.md)) |
+| `INSTALL_ASP_CH_URL` | dónde están los ficheros de la release de Cloud Hypervisor, sin `/` final (un espejo); por defecto la release de GitHub de la versión que fija el script |
 | **standalone** | |
 | `INSTALL_ASP_LISTEN` | dónde escucha el plano de control (por defecto `127.0.0.1:8443`, el loopback; `0.0.0.0:8443` deja que otros hosts se unan) |
 | `INSTALL_ASP_TLS_SAN` | más nombres o direcciones para su certificado, separados por comas |
@@ -52,7 +54,12 @@ Léelo antes de ejecutarlo si quieres: es un único fichero de shell (`scripts/i
 
 - `asp` en `/usr/bin` (paquete) o `/usr/local/bin` (tarball); con el rol `server`, `asp-control-plane` y su unit; con `agent`, `asp-node-agent` y su unit; con `standalone`, los tres y `asp-server` con la suya (y el grupo `asp`, que puede leer la clave de administración).
 - `/etc/asp/server.yaml` o `agent.yaml` (los ajustes que trae el paquete) y, al lado, el directorio `server.yaml.d/` o `agent.yaml.d/` con el `10-install.yaml` que escribe el script. Los del nodo son de modo 0600 y de root; los del plano de control, 0640 y del grupo `asp-control-plane`, porque el servicio los lee con ese usuario. El plano de control guarda la clave de administración en **`/etc/asp/admin-key`** (0600): `export ASP_API_KEY=$(sudo cat /etc/asp/admin-key)`. El plano de control se ejecuta con el usuario de sistema `asp-control-plane`, que es el único, además de root, que lee `tls.key` y esos ficheros.
-- Un nodo necesita además `cloud-hypervisor` y `virtiofsd` (no están en los repositorios de las distribuciones): `sudo asp doctor` dice qué falta y cómo arreglarlo ([`troubleshooting.md`](troubleshooting.md)).
+- Para un nodo (`agent`, y `standalone` en un host con KVM), además de los paquetes:
+  - **Cloud Hypervisor** (v53, la versión con que se prueba ASP) en `/usr/local/bin/cloud-hypervisor`, si no hay uno ya: lo baja de la release del proyecto y **se niega a instalarlo si su SHA-256 no es el que el script lleva fijado** (los digests que GitHub publica para esos ficheros). Subir la versión es un cambio del script ([publicar una versión](release.md#subir-cloud-hypervisor)).
+  - **`virtiofsd`** (el de Rust, para las sandboxes con workspace) del gestor de paquetes si lo tiene (Ubuntu 24.04, Debian 13, Fedora); si no, avisa, y todo menos los workspaces funciona.
+  - `nftables` e `iproute2`, que los paquetes del nodo declaran como dependencias y el gestor de paquetes trae (el nodo no arranca sin `nft`: fuerza el egress por defecto). Con el tarball son cosa tuya, y el script avisa si faltan.
+
+  `INSTALL_ASP_SKIP_VMM=1` no toca nada de esto. `sudo asp doctor` comprueba el resultado y dice cómo arreglar lo que falte ([`troubleshooting.md`](troubleshooting.md)).
 - `/usr/local/bin/asp-killall.sh` (para todas las VMs del nodo y quita lo que dejan) y `asp-uninstall.sh` (quita ASP; `--purge` borra también `/etc/asp` y `/var/lib/asp*`, con confirmación, y con ellos los discos de las sandboxes paradas y la CA del plano de control).
 
 ## Añadir un nodo

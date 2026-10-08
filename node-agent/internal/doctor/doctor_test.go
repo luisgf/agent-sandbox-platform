@@ -6,7 +6,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -500,4 +503,26 @@ func TestGuestVerifyModesInTheDoctor(t *testing.T) {
 	c.GuestVerify = "off"
 	f.contents["/opt/sandbox/SHA256SUMS"] = "bbbb  vmlinux\n"
 	want(t, run(t, find(t, f.host(), c, "guest-kernel")), Warn, "boots from it anyway")
+}
+
+// The installer fetches the Cloud Hypervisor it pins; the doctor warns about any other major version.
+// They must be the same one, or a fresh install starts with a warning about the hypervisor it just got.
+func TestTheInstallerPinsTheCloudHypervisorThatIsTested(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "..", "scripts", "install.sh"))
+	if err != nil {
+		t.Skipf("no installer next to the node-agent: %v", err)
+	}
+	text := string(script)
+	m := regexp.MustCompile(`(?m)^CH_VERSION=v(\d+)\.\d+(\.\d+)?$`).FindStringSubmatch(text)
+	if m == nil {
+		t.Fatal("scripts/install.sh has no CH_VERSION=vN.M line")
+	}
+	if got, _ := strconv.Atoi(m[1]); got != TestedCloudHypervisor {
+		t.Errorf("the installer pins Cloud Hypervisor v%d, the doctor tests v%d", got, TestedCloudHypervisor)
+	}
+	for _, name := range []string{"CH_SHA256_AMD64", "CH_SHA256_ARM64"} {
+		if !regexp.MustCompile(`(?m)^` + name + `=[0-9a-f]{64}$`).MatchString(text) {
+			t.Errorf("scripts/install.sh has no %s=<64 hex digits> line", name)
+		}
+	}
 }

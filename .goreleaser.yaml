@@ -193,10 +193,17 @@ nfpms:
     description: |-
       The Agent Sandbox Platform node-agent: runs the sandboxes of a KVM host as
       Cloud Hypervisor microVMs. It needs cloud-hypervisor and virtiofsd, a guest kernel
-      and a guest image (docs/how-to/install-node.md); `sudo asp doctor` checks the host.
+      and a guest image (install.sh fetches them, docs/how-to/install-node.md does it by hand);
+      `sudo asp doctor` checks the host.
     license: Apache-2.0
     bindir: /usr/bin
-    recommends: [nftables, iproute2]
+    # nft (egress is enforced by default) and ip (TAP devices): the node-agent does not start without them.
+    dependencies: [nftables, iproute2]
+    overrides:
+      rpm:
+        dependencies: [nftables, iproute]
+    # Where the distribution has the Rust virtiofsd (Ubuntu 24.04, Debian 13, Fedora) it comes along.
+    recommends: [virtiofsd]
     contents:
       - src: packaging/systemd/asp-node-agent.service
         dst: /lib/systemd/system/asp-node-agent.service
