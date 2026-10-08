@@ -272,6 +272,70 @@ func TestSessionStartRefusesExistingUnlessForce(t *testing.T) {
 	}
 }
 
+// A session file that points at a sandbox the control plane no longer has (it was reset or reinstalled,
+// or the sandbox expired) is not an active session: start says so and starts a new one. A sandbox that
+// is there, or a control plane that cannot be asked, still refuses, as before.
+func TestSessionStartDropsAPointerToASandboxThatIsGone(t *testing.T) {
+	t.Setenv("ASP_REQUIRE_TOKEN", "")
+	t.Setenv("ASP_IDP_REQUIRED", "")
+	t.Setenv("ASP_ID_TOKEN", "")
+	t.Setenv("ASP_API_KEY", "")
+	cases := []struct {
+		name       string
+		getStatus  int
+		wantCode   int
+		wantNew    bool
+		wantStderr string
+	}{
+		{"gone", http.StatusNotFound, 0, true, "is not on the control plane any more"},
+		{"there", http.StatusOK, 1, false, "active session old-1"},
+		{"cannot say", http.StatusInternalServerError, 1, false, "active session old-1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var deletes atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.PathValue("id") == "new-1":
+					_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "new-1", State: "running", TenantID: "t"})
+				case c.getStatus == http.StatusOK:
+					_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "old-1", State: "running", TenantID: "t"})
+				default:
+					w.WriteHeader(c.getStatus)
+					_, _ = w.Write([]byte(`{"error":"sandbox not found"}`))
+				}
+			})
+			mux.HandleFunc("DELETE /v1/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) { deletes.Add(1) })
+			mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(client.Sandbox{ID: "new-1", State: "running", TenantID: "t"})
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			sessFile := filepath.Join(t.TempDir(), "session.json")
+			if err := session.Save(sessFile, session.State{SandboxID: "old-1", CPURL: srv.URL}); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr strings.Builder
+			code := run([]string{"session", "start", "--session-file", sessFile, "--control-plane-url", srv.URL, "--timeout", "2s"}, &stdout, &stderr)
+			if code != c.wantCode || !strings.Contains(stderr.String(), c.wantStderr) {
+				t.Fatalf("exit=%d (want %d) stderr=%q", code, c.wantCode, stderr.String())
+			}
+			st, err := session.Load(sessFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.wantNew != (st.SandboxID == "new-1") {
+				t.Errorf("recorded %q; a new session was wanted: %v", st.SandboxID, c.wantNew)
+			}
+			if deletes.Load() != 0 {
+				t.Errorf("deleted %d sandboxes: a pointer that is gone has nothing to delete, and a live one is not touched without --force", deletes.Load())
+			}
+		})
+	}
+}
+
 func TestSessionRemoveKeepsFileOnAPIError(t *testing.T) {
 	t.Setenv("ASP_REQUIRE_TOKEN", "")
 	t.Setenv("ASP_IDP_REQUIRED", "")

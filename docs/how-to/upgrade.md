@@ -4,6 +4,8 @@ Cómo pasar un despliegue de una versión a otra sin perder sandboxes ni sesione
 
 **Mientras la versión mayor sea 0, una versión menor puede cambiar ajustes y comportamiento**, y el [CHANGELOG](../../CHANGELOG.md) lo dice bajo *Changed* y *Removed*. Lee lo que hay entre tu versión y la nueva antes de empezar.
 
+> **Ensayado.** En una VM Ubuntu con `asp-server` y una sesión en marcha: instalar los paquetes de otra versión encima no tocó el servicio (el mismo PID, y el binario que corría seguía siendo el viejo); `systemctl restart asp-server` arrancó el nuevo, **adoptó la VM** (el guest siguió con su uptime y el `exec` contestó) y `asp node list` mostró la versión nueva. El orden entre varios hosts (el plano de control primero) y volver atrás se describen a partir del código.
+
 ## Antes de empezar
 
 1. **Haz una copia** de la base de datos y de las claves ([copias y restauración](backup-and-restore.md)). Es lo que te devuelve a donde estabas si una migración o un ajuste sale mal: volver a un binario anterior no deshace una migración.
