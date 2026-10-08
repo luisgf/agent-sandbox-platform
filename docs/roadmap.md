@@ -20,7 +20,7 @@ Las piezas están escritas; lo que falta es activarlas y comprobarlas en un host
 Cada una acaba en un ADR o en una issue cerrada con su motivo; ninguna se da por tomada.
 
 - **¿Y Kubernetes?** [ADR-0004](adr/0004-k8s-scope.md) decidió que las sandboxes no son Pods, sin examinar `agent-sandbox`, Kata con Cloud Hypervisor, Virtink ni E2B. Se reevalúa, con una medición, en el ADR-0013 (#143).
-- **Arranque rápido de una sesión:** instantánea y restauración de Cloud Hypervisor frente a un pool de microVMs precalentadas (#144, #81). Hoy el arranque paga el boot del guest.
+- **Arranque rápido de una sesión:** el [ADR-0017](adr/0017-fast-start.md) (propuesta) mide qué hay en los 6 s de un arranque y propone arreglar primero lo que sobra, sin construir ahora ni el pool de VMs precalentadas (#81) ni las instantáneas de Cloud Hypervisor (#144): el helper del guest que esperaba a un tag que no existe (hecho, −1,8 s), los discos como overlay qcow2 en vez de copias (−1,5 s, #204) y un sondeo de trabajo más corto (#205).
 
 ## Más adelante
 
