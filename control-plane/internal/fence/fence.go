@@ -195,8 +195,25 @@ func FromEnv() FenceProvider {
 	}
 }
 
-// Enabled reports whether a non-noop provider is configured.
+// Enabled reports whether a provider that can power a node off is configured.
 func Enabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ASP_FENCE_PROVIDER"))) {
+	case "http_webhook", "webhook", "http", "redfish", "ipmi":
+		return true
+	default:
+		return false
+	}
+}
+
+// Validate refuses a value of ASP_FENCE_PROVIDER that names no provider. FromEnv answers the
+// no-op provider for such a value, and a control plane that thinks fencing is on while the provider
+// does nothing records "node.fenced" for a node nobody powered off: a typo (redfsh) must stop the
+// start, not turn fencing off in silence.
+func Validate() error {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("ASP_FENCE_PROVIDER")))
-	return v != "" && v != "noop" && v != "none"
+	switch v {
+	case "", "noop", "none", "http_webhook", "webhook", "http", "redfish", "ipmi":
+		return nil
+	}
+	return fmt.Errorf("ASP_FENCE_PROVIDER=%q is not a fence provider: use noop, http_webhook, redfish or ipmi", v)
 }

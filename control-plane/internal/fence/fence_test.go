@@ -108,3 +108,24 @@ func errorsAs(err error, target *SoftFailError) bool {
 	}
 	return false
 }
+
+// A provider name that is none of them must not leave fencing "on" with a provider that does nothing.
+func TestAnUnknownProviderIsRefusedNotIgnored(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		valid   bool
+		enabled bool
+	}{
+		{"", true, false}, {"noop", true, false}, {"none", true, false}, {"NOOP", true, false},
+		{"http_webhook", true, true}, {"webhook", true, true}, {"redfish", true, true}, {"IPMI", true, true},
+		{"redfsh", false, false}, {"ssh", false, false},
+	} {
+		t.Setenv("ASP_FENCE_PROVIDER", tc.value)
+		if got := Validate() == nil; got != tc.valid {
+			t.Errorf("%q: valid=%v, want %v", tc.value, got, tc.valid)
+		}
+		if got := Enabled(); got != tc.enabled {
+			t.Errorf("%q: Enabled=%v, want %v", tc.value, got, tc.enabled)
+		}
+	}
+}
