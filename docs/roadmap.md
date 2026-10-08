@@ -214,7 +214,7 @@ Contrato para harnesses (OpenCode y similares) que enganchan el shell **dentro**
 
 Docs: [`ops-asp-session.md`](ops-asp-session.md).
 
-- **Hecho** (CLI + tests `httptest`; no exige ncc1701d).
+- **Hecho** (CLI + tests `httptest`; no exige un host KVM).
 
 ## Readiness corporativa — Identidad multi-usuario (diseño)
 
@@ -234,7 +234,7 @@ Rollout:
 
 **Criterio “corporate ready” (identidad):** create/exec/destroy atribuibles a humano; JWT de workload con cadena `user_sub`; SSH no compartido a ciegas entre usuarios del mismo nodo. API keys quedan como principals de servicio.
 
-**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.5** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). **Lab ops:** Keycloak realm `asp` @ `auth.luisgf.es` cableado al CP en ncc1701d (`asp-control-plane.service`, puerto `127.0.0.1:18112`) — ver [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md). Gaps residuales: IdP corporativo Entra/Okta, tabla `tenant_memberships`, materializar socks SSH por usuario. SSH MVP = template/path ops, no daemon manager.
+**Estado:** diseño aceptado (2026-10). Fases **3u.1–3u.5** implementadas (schema + JWT IdP + RBAC + SSH scoped MVP + workload `user_sub`/`act`). **Lab ops:** un Keycloak real (realm `asp`) cableado al plano de control del laboratorio — ver [`lab/idp-keycloak.md`](lab/idp-keycloak.md); para conectar el tuyo, [`how-to/idp.md`](how-to/idp.md). Gaps residuales: IdP corporativo Entra/Okta, tabla `tenant_memberships`, materializar socks SSH por usuario. SSH MVP = template/path ops, no daemon manager.
 
 ## Futuro — Atribución de flujos de red → `owner_sub` (evaluación)
 

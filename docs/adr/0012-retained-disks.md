@@ -1,6 +1,6 @@
 # ADR-0012: Parar no es borrar — el disco de una sandbox sobrevive a la parada
 
-- **Estado:** Aceptada (2026-10-07). Implementada en [#86](https://github.com/luisgf/agent-sandbox-platform/issues/86): nodo, plano de control y CLI, y retención con visibilidad. Probada en dry-run (smokes), con Postgres real, con tests del reconciler y con VMs reales en ncc1701d el 2026-10-07 (parar y reanudar con estado y paquetes intactos, reinicios del agente y del plano de control, reaper de inactividad, TTL, tope por tenant, errores de reanudación, pérdida de nodo y permisos por rol). Esa prueba encontró un fallo, corregido: parar una sandbox mientras arrancaba hacía que el autoaislamiento del nodo le borrase el disco.
+- **Estado:** Aceptada (2026-10-07). Implementada en [#86](https://github.com/luisgf/agent-sandbox-platform/issues/86): nodo, plano de control y CLI, y retención con visibilidad. Probada en dry-run (smokes), con Postgres real, con tests del reconciler y con VMs reales en el host de pruebas de los mantenedores ([laboratorio](../lab/README.md)) el 2026-10-07 (parar y reanudar con estado y paquetes intactos, reinicios del agente y del plano de control, reaper de inactividad, TTL, tope por tenant, errores de reanudación, pérdida de nodo y permisos por rol). Esa prueba encontró un fallo, corregido: parar una sandbox mientras arrancaba hacía que el autoaislamiento del nodo le borrase el disco.
 - **Fecha:** 2026-10-07
 - **Extiende:** [0009](0009-agent-sessions.md) (el disco del guest es el workspace de la sesión «mientras vive»; esta ADR fija cuándo deja de vivir), [0011](0011-multi-node.md) (una sandbox parada queda fijada a su nodo)
 - **Relacionados:** [`../architecture.md`](../architecture.md), [`../ops-asp-session.md`](../ops-asp-session.md), tarea de calentamiento de sandboxes [#81](https://github.com/luisgf/agent-sandbox-platform/issues/81)
@@ -60,7 +60,7 @@ El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de 
 
 ### 6. Parada ordenada
 
-`vm.delete` y matar el proceso es una parada brusca. El botón de apagado ACPI (`vm.power-button`) **no funciona** con esta imagen: sin `systemd-logind` ni `dbus` nadie escucha la tecla (comprobado en ncc1701d). El nodo pide el apagado al propio guest con `sync; systemctl poweroff --no-block` por el pod-daemon y espera hasta `--stop-grace` (15 s) a que Cloud Hypervisor salga; si no sale, la parada brusca de siempre, con un aviso en el log. Medido: el proceso sale en menos de un segundo y el ext4 queda `clean`.
+`vm.delete` y matar el proceso es una parada brusca. El botón de apagado ACPI (`vm.power-button`) **no funciona** con esta imagen: sin `systemd-logind` ni `dbus` nadie escucha la tecla (comprobado en el laboratorio). El nodo pide el apagado al propio guest con `sync; systemctl poweroff --no-block` por el pod-daemon y espera hasta `--stop-grace` (15 s) a que Cloud Hypervisor salga; si no sale, la parada brusca de siempre, con un aviso en el log. Medido: el proceso sale en menos de un segundo y el ext4 queda `clean`.
 
 ### 7. Retención y espacio
 
@@ -71,7 +71,7 @@ El plano de control manda al nodo, en cada `/work`, la lista `retained` (ids de 
 
 ### 8. Postgres es requisito
 
-La retención solo significa algo si el plano de control recuerda las sandboxes paradas tras reiniciarse. Con el store en memoria un reinicio las olvida y el GC del nodo borra sus discos. El store en memoria queda para tests y smokes; el plano de control avisa al arrancar si lo usa con un TTL activo. ncc1701d pasa a Postgres (guía en [`../bare-metal-ch.md`](../bare-metal-ch.md) § 4.1).
+La retención solo significa algo si el plano de control recuerda las sandboxes paradas tras reiniciarse. Con el store en memoria un reinicio las olvida y el GC del nodo borra sus discos. El store en memoria queda para tests y smokes; el plano de control avisa al arrancar si lo usa con un TTL activo. El laboratorio pasó a Postgres (guía en [`../bare-metal-ch.md`](../bare-metal-ch.md) § 4.1).
 
 ### 9. Una VM que muere sola (#118)
 
@@ -81,7 +81,7 @@ El proceso de Cloud Hypervisor puede acabar sin que nadie lo pida: lo mata el OO
 - **El informe va antes de liberar.** Si el plano de control no responde, el nodo conserva el manejador y el registro de la salida y repite en el sondeo siguiente; liberar primero dejaría una sandbox `running` sin nada detrás. Un 409 (el plano de control ya la paró, la borró o la dio por perdida) libera sin más.
 - **Una VM que muere mientras arranca** corta la espera del guest en el acto y falla el arranque con la causa (`vmm_exited: … (console: …)`), no tras `--guest-ready-timeout` con `guest_not_ready`; un primer arranque queda `failed` y una reanudación vuelve a `stopped` con su disco.
 - Una VM que Stop acaba no es una caída: el vigilante solo avisa de los procesos que siguen registrados, y una parada o un borrado que ya estaban en marcha limpian el registro de la salida.
-- La causa es la que dice systemd (`Finished with result: …`, `Main processes terminated with: code=killed, status=9/KILL`), que es todo lo que queda de una unit con `--collect`; si fue memoria, el detalle está en `journalctl -k`. Medido en ncc1701d con un `kill -9` del proceso de una VM: `stopped` en el sondeo siguiente, `vmm_exited: exit status 255: Finished with result: signal; …`, disco intacto, reanudada con sus datos; y con un `poweroff` dentro del guest, `the guest powered off after 15s`.
+- La causa es la que dice systemd (`Finished with result: …`, `Main processes terminated with: code=killed, status=9/KILL`), que es todo lo que queda de una unit con `--collect`; si fue memoria, el detalle está en `journalctl -k`. Medido en el laboratorio con un `kill -9` del proceso de una VM: `stopped` en el sondeo siguiente, `vmm_exited: exit status 255: Finished with result: signal; …`, disco intacto, reanudada con sus datos; y con un `poweroff` dentro del guest, `the guest powered off after 15s`.
 
 ## Alternativas consideradas
 

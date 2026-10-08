@@ -13,10 +13,10 @@
 #   sudo systemctl enable --now asp-node-agent.service
 # Replacing a running agent does not stop its VMs (they run in asp-vm-<id>.service units and the
 # new agent adopts them, ADR-0014); `systemctl stop asp-vms.slice` stops them all.
-# Docs: docs/ops-idp-keycloak-lab.md, docs/bare-metal-ch.md section 5.6
+# Docs: docs/lab/ncc1701d.md, docs/bare-metal-ch.md section 5.6
 [Unit]
 Description=ASP node-agent (ncc1701d, Cloud Hypervisor sandboxes)
-Documentation=file:///home/ubuntu/src/bots/docs/ops-idp-keycloak-lab.md
+Documentation=file:///home/ubuntu/src/bots/docs/lab/ncc1701d.md
 # After= orders the start at boot; there is no Wants= on the control plane on purpose: starting or
 # restarting the agent must not start a control plane somebody stopped.
 After=network-online.target asp-control-plane.service

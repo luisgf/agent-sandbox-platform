@@ -303,21 +303,31 @@ export ASP_DATABASE_URL='postgres://asp:asp@127.0.0.1:5432/asp?sslmode=disable'
 
 Migraciones `001`–`020` se aplican al arrancar el API si `ASP_DATABASE_URL` está set (init, enrollment, egress, leases, attestation/fence, cert rotation, multi-user, idle, workspace, local-net, atributos de planificación del nodo, `agent_instance_id`, scope de API keys, tokens de enroll, caducidad del cert de nodo, túnel local-net asignado por el nodo, discos retenidos al parar — `deleting`/`deleted`, `boot_count`, `stopped_at`, `status_detail` —, espacio libre de disco del nodo, `booted_at`).
 
-**Postgres es requisito para que parar conserve el disco** ([ADR-0012](adr/0012-retained-disks.md)). Con el store en memoria, reiniciar el plano de control olvida las sandboxes y cada nodo borra sus discos; el plano de control lo avisa al arrancar. En un servidor que ya corre otras cosas (ncc1701d comparte Docker con otra aplicación):
+**Postgres (o SQLite, en un solo host) es requisito para que parar conserve el disco** ([ADR-0012](adr/0012-retained-disks.md)). Con el store en memoria, reiniciar el plano de control olvida las sandboxes y cada nodo borra sus discos; el plano de control lo avisa al arrancar. En un servidor que ya corre otras cosas (otra aplicación con su propio Postgres en el 5432, por ejemplo):
 
-1. **Un Postgres propio de ASP**, no el de otra aplicación (en ncc1701d `infra-db-1` ya ocupa el `5432`). Lo que se hizo allí el 2026-10-07, con la contraseña generada en el momento y sin imprimirla:
+1. **Un Postgres propio de ASP**, no el de otra aplicación: un contenedor con los datos en un bind mount (en una partición con espacio, no en una `/var` pequeña), solo en loopback y con la política `unless-stopped`. La contraseña se genera en el momento y no se imprime:
 
    ```bash
-   sudo install -d -o 999 -g 999 -m 700 /sandbox/asp-postgres        # datos fuera de /var (2,9 GB)
-   umask 077
-   printf 'POSTGRES_USER=asp\nPOSTGRES_DB=asp\nPOSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > ~/.secrets/asp-postgres.env
-   docker run -d --name asp-postgres --restart unless-stopped --env-file ~/.secrets/asp-postgres.env \
-     -p 127.0.0.1:5433:5432 -v /sandbox/asp-postgres:/var/lib/postgresql --memory 2g \
+   sudo install -d -o 999 -g 999 -m 700 /srv/asp/postgres
+   PW=$(openssl rand -hex 24)
+   printf 'POSTGRES_USER=asp\nPOSTGRES_DB=asp\nPOSTGRES_PASSWORD=%s\n' "$PW" \
+     | sudo install -m 0600 -o root -g root /dev/stdin /etc/asp/postgres.env
+   sudo docker run -d --name asp-postgres --restart unless-stopped --env-file /etc/asp/postgres.env \
+     -p 127.0.0.1:5433:5432 -v /srv/asp/postgres:/var/lib/postgresql --memory 2g \
      --log-opt max-size=10m --log-opt max-file=3 postgres:18
    ```
 
-   Solo en loopback, con política `unless-stopped` y los datos en un bind mount (un `docker volume prune` no los toca). La imagen `postgres:18` ya estaba en el servidor; CI usa la 16. Con `docker compose up -d postgres` en una máquina sin otra base de datos es más corto, pero cambia la contraseña `asp` por una generada.
-2. **`ASP_DATABASE_URL` en el fichero de secretos** que ya carga la unit del plano de control (`~/.secrets/asp-idp.env`, modo `0600`), nunca en la unit ni en el repo: `ASP_DATABASE_URL=postgres://asp:<contraseña>@127.0.0.1:5433/asp?sslmode=disable`. Las claves ya viven en `/var/lib/asp-control-plane`, que es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`). Como Postgres es un contenedor y al arrancar el servidor puede tardar más que el plano de control, un drop-in (`/etc/systemd/system/asp-control-plane.service.d/postgres.conf`) lo hace esperar a Docker y reintentar sin tope: sin `StartLimitIntervalSec=0`, systemd se rinde tras 5 arranques fallidos en 10 s.
+   Un `docker volume prune` no toca un bind mount. CI prueba con Postgres 16. Con `docker compose up -d postgres` es más corto, pero deja la contraseña `asp` de ejemplo.
+2. **`database_url` en un drop-in de la configuración del plano de control** (`/etc/asp/server.yaml.d/`, modo 0640 y del grupo `asp-control-plane`), nunca en la unit ni en el repositorio. Sin imprimir la contraseña:
+
+   ```bash
+   sudo install -m 0640 -o root -g asp-control-plane /dev/stdin /etc/asp/server.yaml.d/20-database.yaml <<EOF
+   database_url: postgres://asp:$PW@127.0.0.1:5433/asp?sslmode=disable
+   EOF
+   unset PW
+   ```
+
+   La CA, la clave OIDC y la de atestación tienen que estar en almacenamiento persistente (`/var/lib/asp-control-plane`, por ejemplo): es lo que exige el modo producción (arranque con código 2 si apuntan a `/tmp`). Como Postgres es un contenedor y al arrancar el servidor puede tardar más que el plano de control, un drop-in de systemd (`/etc/systemd/system/asp-control-plane.service.d/postgres.conf`) lo hace esperar a Docker y reintentar sin tope: sin `StartLimitIntervalSec=0`, systemd se rinde tras 5 arranques fallidos en 10 s.
 
    ```ini
    [Unit]
@@ -330,7 +340,7 @@ Migraciones `001`–`020` se aplican al arrancar el API si `ASP_DATABASE_URL` es
    ```
 3. **Reinicia el plano de control** sin sesiones activas: las migraciones se aplican solas (`using Postgres store` en el log). El node-agent se registra solo; las sandboxes que viviesen en memoria se pierden, y los discos de las que quedasen paradas los recoge el GC del nodo.
 4. **Comprueba:** `asp sandbox list` vacío; arranca una sesión, páriala, `systemctl restart asp-control-plane`, y `asp session resume` debe funcionar y el disco seguir en `--disk-dir`.
-5. **Copias:** `pg_dump` a `~/asp-backup-<fecha>/` antes de desplegar migraciones nuevas.
+5. **Copias:** `pg_dump` a un directorio de copias antes de desplegar migraciones nuevas.
 
 Retención: `ASP_STOPPED_SANDBOX_TTL` (por defecto **7 días**; `0`/`off` conserva hasta borrar) y `ASP_MAX_STOPPED_PER_TENANT` (sin tope por defecto) acotan cuánto tiempo y cuántas sandboxes paradas guardan su disco ([`control-plane/README.md`](../control-plane/README.md#retención-de-sandboxes-paradas)).
 
@@ -359,7 +369,7 @@ export ASP_LISTEN_ADDR=:8443
 # o binario empaquetado + systemd
 ```
 
-Lab IdP (Keycloak realm `asp`, secretos en `~/.secrets/`, unit `asp-control-plane` en `127.0.0.1:18112`): ver [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md) y plantilla [`scripts/systemd/asp-control-plane.service`](../scripts/systemd/asp-control-plane.service).
+Con un IdP (Keycloak, Entra, Okta): [conectar un IdP](how-to/idp.md). El laboratorio de los mantenedores, con su unit y su Keycloak: [`lab/`](lab/README.md).
 
 
 Notas TLS (código actual):
@@ -540,7 +550,7 @@ journalctl -u asp-node-agent -f
 
 Primer arranque: añade `enroll: true` y `enroll_token: …` en un fichero propio (`/etc/asp/agent.yaml.d/20-enroll.yaml`) y bórralo cuando el journal diga `enrolled`; el token no debe quedarse en el nodo. Los ajustes viven en el YAML (la unit solo lleva `ExecStart=… --config /etc/asp/agent.yaml`) y `node-agent --print-config` dice qué vale cada uno y de dónde viene; [el fichero de configuración](how-to/config-file.md) lo explica.
 
-Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`, cada 5 s): el agente sale si no puede registrarse, y con el límite por defecto de systemd (5 arranques en 10 s) un plano de control que tarde en responder al arrancar el servidor dejaría el nodo caído hasta arrancarlo a mano. Un nodo de laboratorio con el plano de control en el mismo host (HTTP por loopback, sin mTLS ni enroll) usa [`scripts/systemd/asp-node-agent-lab.service`](../scripts/systemd/asp-node-agent-lab.service), descrita en [`ops-idp-keycloak-lab.md`](ops-idp-keycloak-lab.md#systemd--asp-node-agentservice).
+Las dos unidades reintentan el arranque **sin tope** (`StartLimitIntervalSec=0`, cada 5 s): el agente sale si no puede registrarse, y con el límite por defecto de systemd (5 arranques en 10 s) un plano de control que tarde en responder al arrancar el servidor dejaría el nodo caído hasta arrancarlo a mano. Un nodo de laboratorio con el plano de control en el mismo host (HTTP por loopback, sin mTLS ni enroll) usa [`scripts/systemd/asp-node-agent-lab.service`](../scripts/systemd/asp-node-agent-lab.service), descrita en [el laboratorio](lab/README.md).
 
 **2. Limpieza al arrancar** (`--reap-leftovers=on`, por defecto). Antes de abrir ningún socket y antes de registrarse, el agente busca lo que dejó un proceso anterior y lo borra. Cubre lo que la unit no evita: un agente lanzado a mano o una unit con `KillMode=process`. **Los discos no entran aquí**: una sandbox parada conserva el suyo ([ADR-0012](adr/0012-retained-disks.md)) y el reaper no sabría distinguirlo de un resto. Tras el primer sondeo de `/work`, el reconciler borra las copias de `--disk-dir` que no son de ninguna sandbox (ni asignada, ni retenida, ni en borrado).
 
@@ -776,10 +786,10 @@ Script de referencia dry-run (no CH): `./scripts/smoke-reconcile.sh`.
 El destino de cada nodo lo configura un admin (IdP admin o API key de plataforma), no el nodo:
 
 ```bash
-asp node fence set ncc1701d --endpoint https://bmc.example/redfish --token-env BMC_PW   # lee BMC_PW del entorno del CP al fencear
-asp node fence set ncc1701d --endpoint 10.0.0.9 --token-file /etc/asp/bmc.pw             # o de un fichero del host del CP
-echo -n "$PW" | asp node fence set ncc1701d --endpoint … --token-stdin                     # o se guarda en la base de datos
-asp node fence clear ncc1701d
+asp node fence set node1 --endpoint https://bmc.example/redfish --token-env BMC_PW   # lee BMC_PW del entorno del CP al fencear
+asp node fence set node1 --endpoint 10.0.0.9 --token-file /etc/asp/bmc.pw             # o de un fichero del host del CP
+echo -n "$PW" | asp node fence set node1 --endpoint … --token-stdin                     # o se guarda en la base de datos
+asp node fence clear node1
 ```
 
 (API: `PUT`/`DELETE /v1/nodes/{id}/fence`.) El endpoint y el token nunca salen en ninguna respuesta; `GET /v1/nodes` solo dice `fence_configured`. Con `--token-env`/`--token-file` el secreto no llega a Postgres; un `ipmitool` recibe la contraseña por `IPMI_PASSWORD`, no por la línea de comandos. Los campos `fence_endpoint`/`fence_token` que mande un agente al registrarse se ignoran, y `ASP_FENCE_ENDPOINT`/`ASP_FENCE_TOKEN` del node-agent ya no hacen nada (avisa en el log). Cuando el monitor da un nodo por perdido y tiene sandboxes, el CP llama al provider (una vez por caída) antes de marcarlas `failed`. Si el fencing falla, se registra `node.fence_failed` y se marcan igual.

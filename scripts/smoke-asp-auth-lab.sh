@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke asp auth + list against lab CP (IdP required). No token printed.
-# Intended on ncc1701d (or with tunnel to 18112 + local secrets file).
+# Intended on the lab host (docs/lab/), or with a tunnel to port 18112 of its control plane + a local secrets file.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ASP_BIN="${ASP_BIN:-$ROOT/build/asp}"

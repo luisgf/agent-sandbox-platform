@@ -124,6 +124,6 @@ Un stream no tiene límite total: dura lo que el comando. Si el cliente cuelga, 
 
 **Límites.** El node-agent y el plano de control envían las cabeceras del stream en cuanto el comando arranca, así que un comando que no escribe nada no agota los 30 s hasta las cabeceras. Esos 30 s y los de `exec/stdin` no se configuran por entorno. Un stream dura lo que el comando: termina si el cliente se va (el guest mata el comando y su grupo de procesos) y, con `--stream-idle-timeout-secs`, tras ese tiempo sin salida ni entrada.
 
-## Lab IdP (Keycloak)
+## IdP (OIDC)
 
-En ncc1701d el CP lab carga `ASP_IDP_*` desde `/home/ubuntu/.secrets/asp-idp.env` (no en git). Unit: `asp-control-plane.service` → `127.0.0.1:18112`. Guía: [`docs/ops-idp-keycloak-lab.md`](../docs/ops-idp-keycloak-lab.md).
+Con `ASP_IDP_ISSUER` el plano de control valida los tokens de un IdP (Keycloak, Entra, Okta…) y saca de ellos el dueño, el rol y el tenant. Guía, con la matriz de roles y un ejemplo con Keycloak: [conectar un IdP](../docs/how-to/idp.md). El Keycloak del laboratorio de los mantenedores: [`docs/lab/idp-keycloak.md`](../docs/lab/idp-keycloak.md).

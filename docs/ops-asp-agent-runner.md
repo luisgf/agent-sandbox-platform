@@ -4,13 +4,13 @@
 
 Cómo esa primitiva (o cualquier otro subcomando `asp`) corre **sin** gestionar el JWT de Keycloak a mano.
 
-Diseño IdP: [ADR-0007](adr/0007-multi-user-identity.md) · lab Keycloak: [ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md) · CLI base: [why-cli-asp.md](why-cli-asp.md).
+Diseño IdP: [ADR-0007](adr/0007-multi-user-identity.md) · conectar un IdP: [how-to/idp.md](how-to/idp.md) · CLI base: [why-cli-asp.md](why-cli-asp.md).
 
 El one-shot **no** desaparece. Deja de ser el contrato que un harness debe llamar por tool.
 
 ## Por qué
 
-Con `ASP_IDP_REQUIRED=1` en el CP lab (`127.0.0.1:18112`), cualquier `POST /v1/sandboxes` sin `Authorization: Bearer <JWT>` responde **401**. El ciclo de vida ya lo encapsula `asp sandbox run`, pero el token seguía siendo un paso manual (`curl` password-grant + `export`).
+Con `ASP_IDP_REQUIRED=1` en el plano de control, cualquier `POST /v1/sandboxes` sin `Authorization: Bearer <JWT>` responde **401**. El ciclo de vida ya lo encapsula `asp sandbox run`, pero el token seguía siendo un paso manual (`curl` password-grant + `export`).
 
 El contrato mínimo de **auth** (vale igual para `session` y para `sandbox run`):
 
@@ -33,8 +33,8 @@ El comando de un agente largo no es `asp sandbox run` por tool; es `asp session 
 | Límite | Realidad |
 |---|---|
 | Password grant = lab | No es el flujo corporativo (auth code / device). Prod → Entra/Okta + otro grant. |
-| `client_credentials` | Puede no llevar `groups` de usuario; RBAC lab suele necesitar password + `asp-lab`. |
-| CP en loopback | Desde fuera de ncc1701d hace falta tunnel SSH al `18112`. |
+| `client_credentials` | Puede no llevar `groups` de usuario; El RBAC suele necesitar el password grant de un usuario de pruebas que esté en un grupo. |
+| CP en loopback | Si el plano de control solo escucha en el loopback de su servidor, desde fuera hace falta un túnel SSH. |
 | Cache local | Quien lea `~/.cache/asp/id_token.json` actúa como ese principal hasta `exp`. |
 | No mint de refresh robusto | Se re-pide access token; no hay máquina de estados OAuth completa. |
 
@@ -44,11 +44,11 @@ El comando de un agente largo no es `asp sandbox run` por tool; es `asp session 
 
 | Variable | Rol |
 |---|---|
-| `ASP_CONTROL_PLANE_URL` | Base del CP (lab: `http://127.0.0.1:18112`) |
+| `ASP_CONTROL_PLANE_URL` | Base del plano de control (por ejemplo `https://cp.example:8443`) |
 | `ASP_ID_TOKEN` | Access token ya obtenido (prioridad máxima; también `--id-token`) |
 | `ASP_REQUIRE_TOKEN` | `1` → exigir token; si hay secretos, auto-fetch (antes `ASP_IDP_REQUIRED`, que sigue valiendo con un aviso) |
 | `ASP_IDP_TOKEN_URL` | Endpoint token; si vacío, `{ASP_IDP_ISSUER}/protocol/openid-connect/token` |
-| `ASP_IDP_ISSUER` | Issuer OIDC (lab: `https://auth.luisgf.es/realms/asp`) |
+| `ASP_IDP_ISSUER` | Issuer OIDC (por ejemplo `https://idp.example.org/realms/asp`) |
 | `ASP_IDP_SECRETS_FILE` | Fichero `KEY=VALUE` (default `~/.secrets/asp-keycloak-lab.txt`) |
 | `ASP_IDP_CLIENT_ID` / `ASP_IDP_CLIENT_SECRET` | Overrides del fichero |
 | `ASP_IDP_USERNAME` / `ASP_IDP_PASSWORD` | Password grant |
@@ -68,11 +68,11 @@ CLIENT_ID / CLIENT_SECRET / USER / PASSWORD / ISSUER / (opcional TOKEN_URL, JWKS
 
 Para el bucle del harness, para aquí y usa [`ops-asp-session.md`](ops-asp-session.md). Lo de abajo es un comando que crea y destruye la VM.
 
-### En ncc1701d (CP lab ya activo)
+### Con un plano de control ya activo
 
 ```bash
-# Precondiciones: build/asp, secretos 600 en ~/.secrets/, unit asp-control-plane activo
-export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112
+# Precondiciones: el binario asp, los secretos del IdP con modo 600 y un plano de control activo
+export ASP_CONTROL_PLANE_URL=https://cp.example:8443
 export ASP_REQUIRE_TOKEN=1
 # ASP_IDP_SECRETS_FILE por defecto: ~/.secrets/asp-keycloak-lab.txt
 
@@ -97,16 +97,16 @@ eval "$(./build/asp auth login --print-env)"
 ### Desde el portátil (tunnel)
 
 ```bash
-ssh -L 18112:127.0.0.1:18112 ubuntu@ncc1701d
+ssh -L 8443:127.0.0.1:8443 usuario@servidor      # el plano de control escucha solo en el loopback del servidor
 # otro terminal, con copia local de secretos o SSH remote-command:
-export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:8443 ASP_REQUIRE_TOKEN=1
 asp sandbox run --tenant=default --cmd 'uname -a'
 ```
 
 ### Solo comprobar auth (sin nodo / sin VMM)
 
 ```bash
-export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
+export ASP_CONTROL_PLANE_URL=https://cp.example:8443 ASP_REQUIRE_TOKEN=1
 ./build/asp auth login
 ./build/asp sandbox list --tenant=default
 # Esperado: 200 (lista posiblemente vacía). Sin token → 401.
@@ -145,7 +145,7 @@ cd cli && go test ./...
 # Smoke CLI dry-run (sin IdP)
 make smoke-asp
 
-# Smoke auth contra lab (en ncc1701d; no imprime el token)
+# Smoke de auth contra un plano de control con IdP (no imprime el token)
 ./scripts/smoke-asp-auth-lab.sh
 ```
 
@@ -156,7 +156,7 @@ make smoke-asp
 1. ¿Rotó `CLIENT_SECRET`? Solo el fichero del host; reiniciar no hace falta en el CP (solo JWKS).
 2. ¿`ASP_REQUIRE_TOKEN=0`? El auto-fetch sigue si hay secretos, pero el CP puede aceptar llamadas sin JWT.
 3. ¿Agente en CI? Preferir secret store → env `ASP_IDP_*`; no copiar `asp-keycloak-lab.txt` al repo ni a logs.
-4. ¿Promoción Entra/Okta? Nuevo grant; no reutilizar password grant ni el usuario `asp-lab`.
+4. ¿Promoción Entra/Okta? Nuevo grant; no reutilizar el password grant ni el usuario de pruebas.
 
 ## Sesión (producto) vs one-shot (esta página)
 
@@ -174,7 +174,7 @@ Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.
 - [adr/0009-agent-sessions.md](adr/0009-agent-sessions.md)
 - [why-agent-sessions.md](why-agent-sessions.md)
 - [ops-asp-session.md](ops-asp-session.md)
-- [ops-idp-keycloak-lab.md](ops-idp-keycloak-lab.md)
+- [how-to/idp.md](how-to/idp.md)
 - [why-cli-asp.md](why-cli-asp.md)
 - [adr/0007-multi-user-identity.md](adr/0007-multi-user-identity.md)
-- Plantilla unit: [`scripts/systemd/asp-control-plane.service`](../scripts/systemd/asp-control-plane.service)
+- La unit del paquete: [`packaging/systemd/asp-control-plane.service`](../packaging/systemd/asp-control-plane.service)

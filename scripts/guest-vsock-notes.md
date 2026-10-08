@@ -118,7 +118,7 @@ optionally `--host-vsock --host-vsock-dir=/tmp/asp-hv`.
 
 ## Bare-metal demo: guest SSH agent via hybrid (26501)
 
-On the node (ncc1701d), after deploying a node-agent build with hybrid attach:
+On the node, after deploying a node-agent build with hybrid attach:
 
 ```bash
 # Create sandbox, wait running, then exec into guest:

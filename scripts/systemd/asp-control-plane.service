@@ -9,10 +9,10 @@
 #
 # Settings: /etc/asp/server.yaml (scripts/systemd/lab/server.yaml), which holds no secret.
 # Secrets: EnvironmentFile only — never commit ~/.secrets/asp-idp.env; the environment beats the file.
-# Docs: docs/ops-idp-keycloak-lab.md
+# Docs: docs/lab/ncc1701d.md (the host this template is for), docs/how-to/idp.md
 [Unit]
 Description=ASP control-plane (Keycloak lab IdP)
-Documentation=file:///home/ubuntu/src/bots/docs/ops-idp-keycloak-lab.md
+Documentation=file:///home/ubuntu/src/bots/docs/lab/ncc1701d.md
 After=network-online.target
 Wants=network-online.target
 # With database_url pointing at a Postgres that may start later (a container, or another

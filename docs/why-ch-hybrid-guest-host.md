@@ -10,7 +10,7 @@ Cloud Hypervisor (y Firecracker) usan **hybrid vsock**: un UDS muxer en el host
 | **Host → guest** | `connect(muxer)` + `CONNECT <port>\n` → `OK …\n` | `HybridVsockDialer` (exec / pod-daemon) ✅ |
 | **Guest → host** | Guest dials AF_VSOCK CID **2**:port; VMM dials host UDS **`{muxer}_{port}`** | Antes: solo `AF_VSOCK Listen` ❌ |
 
-En bare-metal (ncc1701d) se demostró: host→guest exec OK; guest
+En bare-metal se demostró: host→guest exec OK; guest
 `vsock-ssh-agent-proxy` → CID 2:26501 → **`connection reset by peer`**.
 `node-agent --host-vsock` con `vsock.Listen(26501)` **no** recibe esas
 conexiones del muxer híbrido de CH: el VMM nunca las entrega a AF_VSOCK del
