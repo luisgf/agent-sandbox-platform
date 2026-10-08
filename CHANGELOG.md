@@ -135,6 +135,10 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Fixed
 
+- **`asp session start` no longer refuses over a session whose sandbox is gone.** After a reinstall (or a
+  restore of an older database, or an expiry) the session file still named a sandbox the control plane does not
+  have, and `start` answered "active session" until `asp session rm`; it now says the sandbox is gone, drops the
+  pointer and starts a new one. A sandbox that is there, or a control plane that cannot be asked, still refuses.
 - **The installer left a clean Debian node crash-looping** (the node-agent needs `nft`, which was only a
   recommendation and the installer used `dpkg -i`), **and deleted the enroll token of a node that had not
   enrolled.** The node-agent package depends on `nftables` and `iproute2`, the installer installs through

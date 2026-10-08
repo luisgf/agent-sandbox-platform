@@ -172,6 +172,16 @@ func cmdSessionStart(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	existing, loadErr := session.Load(path)
+	if loadErr == nil && !*force && recordedSandboxIsGone(context.Background(), fs, g, existing) {
+		// The pointer outlived its sandbox: the control plane was reset or reinstalled, or the sandbox
+		// expired. That is not an active session, and nothing is left to delete.
+		fmt.Fprintf(stderr, "asp: sandbox %s, recorded in %s, is not on the control plane any more (deleted, expired, or the control plane was reset): starting a new session\n", existing.SandboxID, path)
+		if err := session.Clear(path); err != nil {
+			fmt.Fprintf(stderr, "session start: clear %s: %v\n", path, err)
+			return 1
+		}
+		loadErr = session.ErrNoSession
+	}
 	if loadErr == nil {
 		if !*force {
 			fmt.Fprintf(stderr, "session start: active session %s in %s (asp session resume if it is stopped, asp session rm to delete it, or --force)\n", existing.SandboxID, path)
@@ -734,6 +744,22 @@ func explainResumeError(err error, path string) string {
 		}
 	}
 	return err.Error()
+}
+
+// recordedSandboxIsGone says whether the control plane that holds the sandbox recorded in st answers
+// that it has no such sandbox. Any other answer, or none (no credentials, no network), is "not
+// known": the session stays, as it was before this check.
+func recordedSandboxIsGone(ctx context.Context, fs *flag.FlagSet, g globalFlags, st session.State) bool {
+	if !cpURLWasSet(fs) && st.CPURL != "" {
+		g.cpURL = st.CPURL
+	}
+	c, _ := mustClient(g, io.Discard)
+	if c == nil {
+		return false
+	}
+	_, err := c.GetSandbox(ctx, st.SandboxID)
+	var he *client.HTTPError
+	return errors.As(err, &he) && he.StatusCode == http.StatusNotFound
 }
 
 // cmdSessionRemove deletes the sandbox and its disk and clears the session file.
