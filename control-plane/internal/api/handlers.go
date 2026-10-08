@@ -134,6 +134,11 @@ type execRequest struct {
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
+// execStdinAck is the answer to input the agent took.
+type execStdinAck struct {
+	OK bool `json:"ok"`
+}
+
 type execStdinRequest struct {
 	ExecID string `json:"exec_id"`
 	Data   string `json:"data,omitempty"`
@@ -929,7 +934,7 @@ func (s *Server) ExecStdin(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.TouchSandboxActivity(r.Context(), sb.ID)
 	w.Header().Set("Content-Type", "application/json")
 	if len(bytes.TrimSpace(body)) == 0 {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(execStdinAck{OK: true})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -1096,6 +1101,14 @@ type egressCheckRequest struct {
 	Port int    `json:"port,omitempty"`
 }
 
+type egressCheckResponse struct {
+	TenantID string             `json:"tenant_id"`
+	Host     string             `json:"host"`
+	Port     int                `json:"port"`
+	Allowed  bool               `json:"allowed"`
+	Policy   store.EgressPolicy `json:"policy"`
+}
+
 // GetTenantEgress returns stored rules + effective policy.
 func (s *Server) GetTenantEgress(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -1205,13 +1218,7 @@ func (s *Server) CheckTenantEgress(w http.ResponseWriter, r *http.Request) {
 	}
 	pol := s.effectiveEgress(r.Context(), id)
 	allowed := evaluateEgress(pol, req.Host, req.Port)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"tenant_id": id,
-		"host":      req.Host,
-		"port":      req.Port,
-		"allowed":   allowed,
-		"policy":    pol,
-	})
+	writeJSON(w, http.StatusOK, egressCheckResponse{TenantID: id, Host: req.Host, Port: req.Port, Allowed: allowed, Policy: pol})
 }
 
 func (s *Server) effectiveEgress(ctx context.Context, tenantID string) store.EgressPolicy {
@@ -1303,6 +1310,14 @@ func (s *Server) JWKS(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(append(b, '\n'))
 }
 
+// oidcTokenResponse is a minted token and, for convenience, its claims.
+type oidcTokenResponse struct {
+	AccessToken string         `json:"access_token"`
+	TokenType   string         `json:"token_type"`
+	ExpiresIn   int64          `json:"expires_in"`
+	Claims      map[string]any `json:"claims"`
+}
+
 type oidcTokenRequest struct {
 	SandboxID string `json:"sandbox_id"`
 	Aud       string `json:"aud"`
@@ -1377,12 +1392,7 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 	if claims.XAspAttestation != nil {
 		outClaims["x_asp_attestation"] = claims.XAspAttestation
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": token,
-		"token_type":   "Bearer",
-		"expires_in":   expIn,
-		"claims":       outClaims,
-	})
+	writeJSON(w, http.StatusOK, oidcTokenResponse{AccessToken: token, TokenType: "Bearer", ExpiresIn: expIn, Claims: outClaims})
 }
 
 type claimRequest struct {

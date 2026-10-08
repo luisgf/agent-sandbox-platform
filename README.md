@@ -423,6 +423,8 @@ Every setting is a flag or an `ASP_*` environment variable, and a key in a YAML 
 
 `asp-control-plane --print-config`, `asp-node-agent --print-config` and `asp config show --effective` print what a component uses and where each value came from. Components: [`cli/README.md`](cli/README.md) · [`control-plane/README.md`](control-plane/README.md) · [`node-agent/README.md`](node-agent/README.md) · [`pod-daemon/README.md`](pod-daemon/README.md).
 
+The HTTP API of the control plane has a reference of its own, generated from an OpenAPI document that the control plane also serves at `GET /openapi.json`: [API reference](docs/reference/api.md).
+
 ---
 
 ## Status and known limits

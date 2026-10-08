@@ -784,7 +784,7 @@ type LocalNetGrant struct {
 // IssueLocalNetGrant asks the control plane for a short-lived grant.
 func (c *Client) IssueLocalNetGrant(ctx context.Context, id string) (LocalNetGrant, error) {
 	var out LocalNetGrant
-	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/local-net/grant", map[string]any{}, http.StatusOK, &out)
+	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/local-net/grant", nil, http.StatusOK, &out)
 	return out, err
 }
 

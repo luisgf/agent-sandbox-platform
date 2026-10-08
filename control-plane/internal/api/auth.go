@@ -96,10 +96,11 @@ func withCallerTenant(ctx context.Context, tenant string) context.Context {
 	return context.WithValue(ctx, callerTenantKey, tenant)
 }
 
-// publicPaths never require API keys.
+// isPublicPath is the routes that never require a credential.
 func isPublicPath(path string) bool {
 	switch path {
 	case "/healthz",
+		"/openapi.json",
 		"/v1/nodes/enroll",
 		"/.well-known/openid-configuration",
 		"/oidc/jwks.json":
