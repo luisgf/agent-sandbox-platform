@@ -34,7 +34,7 @@ In scope is anything that breaks a boundary ASP claims to enforce:
 - Impersonating a node or the control plane (mTLS enrollment, bootstrap tokens, PKI).
 - `--local-net` changing the host's default route, or reaching the local network from a session that did not opt in.
 
-Out of scope are the limits the project already documents in [Status and known limits](README.md#status-and-known-limits):
+Out of scope are the limits the project already documents in [known limits](docs/reference/limitations.md) (and, for security, [what the security model does not cover](docs/concepts/security-model.md#lo-que-asp-no-cubre)):
 
 - Dry-run mode (`FakeVMM`). It exercises the control plane and provides no isolation.
 - nftables in `soft` mode, which tolerates missing privileges by design.

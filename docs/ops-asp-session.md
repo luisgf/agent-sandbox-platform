@@ -89,7 +89,7 @@ Diagnóstico (ids, transiciones, errores) va a **stderr**. El id de `start`/`sto
 
 ## Cómo lo apuntaría OpenCode
 
-OpenCode lanza cada llamada a la herramienta bash como `<shell> -c "<comando del modelo>"` en el host, y la opción `"shell"` de `opencode.json` elige ese binario (ruta absoluta). Para que el tool entre al sandbox hay que **sustituir ese shell** por un wrapper. El kit está en [`integrations/opencode/`](../integrations/opencode/), y la guía paso a paso (en inglés) en [README § Using ASP with OpenCode](../README.md#using-asp-with-opencode):
+OpenCode lanza cada llamada a la herramienta bash como `<shell> -c "<comando del modelo>"` en el host, y la opción `"shell"` de `opencode.json` elige ese binario (ruta absoluta). Para que el tool entre al sandbox hay que **sustituir ese shell** por un wrapper. El kit está en [`integrations/opencode/`](../integrations/opencode/), y la guía paso a paso en [Usar ASP con OpenCode](getting-started/opencode.md):
 
 - `asp-opencode-shell`: el wrapper. Pasa el comando a `asp session exec --no-pty -- /bin/sh -c` y devuelve el exit code del guest. El pod-daemon del guest ejecuta como el dueño de `/workspace` (o como `sandboxd` si el workspace es de root), para que los ficheros nuevos conserven el uid del host: virtiofs no traduce ids. `ASP_GUEST_AS_ROOT=1` pide root (`asp session exec --root`). Una imagen anterior ejecuta todo como root e ignora la petición.
 - `plugins/asp-sandbox.ts`: un plugin de OpenCode. Se niega a ejecutar si falta el wrapper (OpenCode caería sin avisar al shell del host), traduce `workdir` a un directorio del guest y le dice al modelo que bash corre en Linux dentro del sandbox.

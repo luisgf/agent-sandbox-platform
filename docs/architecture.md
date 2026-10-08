@@ -20,6 +20,8 @@ La frontera de seguridad **primaria** es la microVM. Los contenedores dentro del
 
 ![Arquitectura](diagram.svg)
 
+Una sesión por dentro, y por qué estados pasa una sandbox: [cómo funciona una sesión](concepts/sessions-and-lifecycle.md). Cada pieza tiene su página en el [índice](README.md).
+
 Fuente Mermaid editable: [`diagram.mmd`](diagram.mmd). Regenerar SVG: `./scripts/gen-diagram.sh`.
 
 ## Seguridad

@@ -9,6 +9,27 @@ Cómo llega la red a una microVM y qué decide lo que puede alcanzar. El diseño
 - Con `nftables` el nodo hace que eso **no sea voluntario**: la tabla `asp_egress` redirige el HTTP(S) y el DNS del guest al proxy y al sumidero y descarta todo lo demás.
 - Por eso **no hace falta NAT** (`MASQUERADE`) para el egress: el guest nunca envía tráfico a Internet por el host, sino al proxy, y las reglas descartan cualquier reenvío. Si tenías una tabla de NAT de antes, no hace daño, y el descarte de `asp_egress` sigue mandando.
 
+Y con `--local-net` (el opt-in de una sesión, [ADR-0010](../adr/0010-on-demand-local-net.md)) el camino cambia entero: la ruta por defecto de esa sesión sale por un túnel WireGuard hasta el portátil del usuario, no por el proxy.
+
+```mermaid
+flowchart TB
+  G["guest"] --> TAP["TAP asp-{id8}"]
+  TAP --> Q{"¿sesión iniciada<br/>con --local-net?"}
+
+  Q -->|"no (por defecto)"| NFT["redirect de nftables<br/>HTTP(S) + DNS"]
+  NFT --> PX["proxy de reenvío :8888<br/>sumidero de DNS (NXDOMAIN)"]
+  PX -->|"allowlist del tenant"| INET(("Internet"))
+
+  Q -->|"sí"| RT["tabla de rutas propia de la sesión<br/>(nunca la principal del host)"]
+  RT --> S{"estado del túnel"}
+  S -->|"pending / withdrawn"| BH["blackhole<br/>(no vuelve en silencio al proxy)"]
+  S -->|"up"| WG["wg-asp-{id8} en el nodo"]
+  WG <-->|"WireGuard"| LW["wg-asp-{id8} en el portátil<br/>(Linux o utun de macOS)"]
+  LW --> LAN(("LAN del usuario"))
+```
+
+**Los secretos se quedan en el host.** El agente SSH vive en el host: dentro del guest, `SSH_AUTH_SOCK` apunta a un proxy de vsock (puerto 26501) que reenvía las peticiones de firma, con una aprobación explícita si se pide; la clave privada no se copia. Para los tokens OIDC, el guest pide uno para una audiencia (puerto 26502); el node-agent toma la sandbox de la conexión vsock del guest, así que un guest no puede pedir el token de otra, y el plano de control firma un JWT corto con el tenant que sale de su almacén (lo que el guest diga de un usuario se ignora). [Modelo de seguridad](security-model.md#el-guest-y-las-credenciales).
+
 ## La red de una sandbox (`--tap-auto`)
 
 Con `--tap-auto` (`ASP_TAP_AUTO=1`), el reconciler crea el TAP antes de arrancar la VM (`ip tuntap add`, `link set up`, `addr add <host>/30`) y lo borra al pararla. El guest recibe su dirección en la línea de comandos del kernel, junto a la base de siempre (`console=ttyS0 root=/dev/vda reboot=k panic=1`). Si un paso falla (sin `CAP_NET_ADMIN`, o el nombre ya existe) la sandbox pasa a `failed` con el motivo `tap: …`, se borra el TAP a medio crear y la VM no arranca sin red; solo `--dry-run` tolera el fallo. **Sin `--tap-auto` no hay red**: la VM pide un TAP que nadie crea, y tampoco hay `/30`, `ip=` ni proxy en el guest; es solo para depurar.

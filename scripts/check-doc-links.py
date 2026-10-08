@@ -5,6 +5,9 @@ For every [text](target) that is not a URL: the file or directory must exist, an
 heading (or an <a id>) of the Markdown file it points at. Code blocks and code spans are skipped. Exit
 status 1 with one line per broken link.
 
+When docs/README.md exists, every file under docs/ must also be reachable from it by following links
+(through any number of pages): an index that leaves a page out is a page nobody finds.
+
     scripts/check-doc-links.py [file-or-directory ...]     (default: the whole repository)
 """
 import os
@@ -120,12 +123,59 @@ def check(path):
     return problems
 
 
+def destinations(path):
+    """The files (and directories) the Markdown file at path links to, fragments dropped."""
+    here = os.path.dirname(path)
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    out = set()
+    for line in strip_code(lines):
+        for target in LINK.findall(line) + IMAGE.findall(line):
+            if re.match(r"[a-zA-Z][a-zA-Z0-9+.-]*:", target) or target.startswith("//"):
+                continue
+            file_part = target.partition("#")[0].split("?")[0]
+            if not file_part:
+                continue
+            base = ROOT if file_part.startswith("/") else here
+            out.add(os.path.normpath(os.path.join(base, file_part.lstrip("/") if file_part.startswith("/") else file_part)))
+    return out
+
+
+def unreachable(index):
+    """The files under the directory of the index that no chain of links from the index reaches."""
+    docs = os.path.dirname(index)
+    seen, queue = {os.path.normpath(index)}, [os.path.normpath(index)]
+    while queue:
+        page = queue.pop()
+        if not page.endswith(".md") or not os.path.isfile(page):
+            continue
+        for dest in destinations(page):
+            if os.path.isdir(dest):
+                dest = os.path.join(dest, "README.md")
+            if dest not in seen and os.path.exists(dest):
+                seen.add(dest)
+                queue.append(dest)
+    missing = []
+    for dirpath, dirnames, filenames in os.walk(docs):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for f in sorted(filenames):
+            full = os.path.join(dirpath, f)
+            if full not in seen and not f.startswith("."):
+                missing.append(full)
+    return missing
+
+
 def main(argv):
     paths = argv[1:] or [ROOT]
     bad = 0
     for path in markdown_files(paths):
         for no, target, why in check(path):
             print("%s:%d: %s: %s" % (os.path.relpath(path, ROOT), no, target, why))
+            bad += 1
+    index = os.path.join(ROOT, "docs", "README.md")
+    if os.path.isfile(index) and not argv[1:]:
+        for page in unreachable(index):
+            print("%s: not reachable from docs/README.md" % os.path.relpath(page, ROOT))
             bad += 1
     if bad:
         print("%d broken link(s)" % bad, file=sys.stderr)

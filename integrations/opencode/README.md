@@ -1,6 +1,6 @@
 # OpenCode integration
 
-Runs OpenCode's bash tool inside an ASP session. Setup guide: [README § Using ASP with OpenCode](../../README.md#using-asp-with-opencode).
+Runs OpenCode's bash tool inside an ASP session. Setup guide: [Usar ASP con OpenCode](../../docs/getting-started/opencode.md) (in Spanish, like the rest of `docs/`).
 
 | File | Install as | What it does |
 |---|---|---|
