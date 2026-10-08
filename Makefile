@@ -95,13 +95,14 @@ asp:
 	cd $(ROOT)cli && go build -trimpath -ldflags "$(call ldflags,cli)" -o $(ASP_BIN) ./cmd/asp
 	@echo "built: $(ASP_BIN)"
 
-# Every binary of a host: the CLI, the control plane (build/api, the name the lab unit
-# runs), the node-agent and, with cargo, the guest's pod-daemon. A release is built by
-# goreleaser instead (make snapshot shows it).
+# Every binary of a host: the CLI, asp-server (a control plane and a node in one process), the
+# control plane (build/api, the name the lab unit runs), the node-agent and, with cargo, the
+# guest's pod-daemon. A release is built by goreleaser instead (make snapshot shows it).
 build: asp
+	cd $(ROOT)cli && go build -trimpath -ldflags "$(call ldflags,cli)" -o $(BUILD_DIR)/asp-server ./cmd/asp-server
 	cd $(ROOT)control-plane && go build -trimpath -ldflags "$(call ldflags,control-plane)" -o $(BUILD_DIR)/api ./cmd/api
 	cd $(ROOT)node-agent && go build -trimpath -ldflags "$(call ldflags,node-agent)" -o $(BUILD_DIR)/node-agent ./cmd/node-agent
-	@echo "built: $(BUILD_DIR)/api $(BUILD_DIR)/node-agent"
+	@echo "built: $(BUILD_DIR)/asp-server $(BUILD_DIR)/api $(BUILD_DIR)/node-agent"
 	@if command -v cargo >/dev/null 2>&1; then \
 	  cd $(ROOT)pod-daemon && cargo build --release && cp target/release/pod-daemon $(BUILD_DIR)/pod-daemon && echo "built: $(BUILD_DIR)/pod-daemon"; \
 	else echo "cargo not found: pod-daemon not built (it runs in the guest image)"; fi

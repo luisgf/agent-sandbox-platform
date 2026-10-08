@@ -101,6 +101,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
   with `ASP_INSECURE_OPEN_API=1`. Nodes authenticate with a certificate or a platform key.
 - **Guest egress is enforced by default** on a node that has an egress proxy.
 - A node that has enrolled takes no sandboxes until it registers.
+- **The README is a landing page** (115 lines), and the documentation has an index, [docs/README.md](docs/README.md), with a
+  line per page. The OpenCode guide, the quickstart and the diagrams of the session, the lifecycle and the network moved to
+  `docs/getting-started/` and `docs/concepts/` (the lifecycle diagram now shows that a restarted agent leaves a sandbox
+  `stopped`, not `failed`). `scripts/check-doc-links.py` also fails when a file under `docs/` cannot be reached from the index.
+  `make build` builds `asp-server` too.
 - **The roadmap lists only what is ahead.** The history of the phases (`1a` … `3m`) moved to
   [docs/history.md](docs/history.md); what the code does not do is in [known limits](docs/reference/limitations.md).
 - Node names are unique in the memory store too, as they are in Postgres; two API keys cannot share

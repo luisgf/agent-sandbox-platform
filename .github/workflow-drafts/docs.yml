@@ -1,0 +1,35 @@
+# The documentation checks, as a job of their own: the relative links of every Markdown file (the file
+# exists and so do the heading and the anchor), every file under docs/ reachable from docs/README.md,
+# and the status of every ADR against docs/adr/README.md. They are `make check-docs`, which needs
+# nothing but Python 3 and runs in a second.
+#
+# The generated pages (docs/reference) need no job: a test in each Go module fails when one is out of
+# date, so the Go jobs of ci.yml already check them.
+#
+# To enable it: git mv .github/workflow-drafts/docs.yml .github/workflows/docs.yml (see README.md here).
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Docs (links and ADR statuses)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Links, anchors and reachability from docs/README.md
+        run: python3 scripts/check-doc-links.py
+      - name: ADR statuses
+        run: python3 scripts/check-adrs.py
