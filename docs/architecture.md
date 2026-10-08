@@ -96,7 +96,7 @@ Proceso privilegiado por nodo (`node-agent/`). Prepara TAP, aplica nft (soft|enf
 | `--egress-proxy-listen` | Forward proxy allowlist |
 | `--egress-dns-sink` | DNS NXDOMAIN non-allowlisted |
 
-> Guest→host under Cloud Hypervisor: see [`why-ch-hybrid-guest-host.md`](why-ch-hybrid-guest-host.md). AF_VSOCK Listen alone is insufficient for CH hybrid muxer.
+> Guest→host under Cloud Hypervisor: see [vsock híbrido](concepts/node-runtime.md#del-guest-al-host-identidad-y-agente-ssh---host-vsock). AF_VSOCK Listen alone is insufficient for CH hybrid muxer.
 
 ### 4. microVM
 
@@ -158,7 +158,7 @@ guest POST /v1/tokens/oidc {"aud":"https://api.ejemplo"}   # user_sub/act ignora
 
 Rotación: `ASP_OIDC_KEY` + `ASP_OIDC_KEY_PREV`. Attest claim opcional `x_asp_attestation`.
 
-> **ADR-0007 fases 1–5 hechas** (schema + JWT IdP + RBAC + SSH scoped + workload `user_sub`/`act`). Gaps ops: IdP real, `tenant_memberships`, socks SSH. Ver [ADR-0007](adr/0007-multi-user-identity.md), [`why-multi-user-identity.md`](why-multi-user-identity.md).
+> **ADR-0007 fases 1–5 hechas** (schema + JWT IdP + RBAC + SSH scoped + workload `user_sub`/`act`). Gaps ops: IdP real, `tenant_memberships`, socks SSH. Ver [ADR-0007](adr/0007-multi-user-identity.md).
 
 ## Red, egress y nft
 
@@ -170,9 +170,9 @@ Ver ADR-0002 y ADR-0006. Resumen operativo:
 4. Con `--egress-proxy-listen` el nodo aplica por defecto el redirect nft en modo `enforce`: fuerza HTTP(S)+DNS por proxy/sink y descarta el resto (otros puertos, guest→guest, guest→servicios del host y orígenes falsificados), y un nodo que no puede aplicarlo no arranca. Informa `egress_enforced` al plano de control (`asp node list`, columna `EGRESS`).
 5. En CI y con `--dry-run`: modo `soft` (SoftFail sin root); `--nft-egress-mode=soft` lo pide en un nodo real, con aviso.
 
-**Atribución de flujos → humano (futuro):** hoy el proxy puede ver `X-ASP-Sandbox-ID` (forgeable) y no propaga `owner_sub`. Diseño en evaluación — [ADR-0008](adr/0008-network-flow-attribution.md), [`why-network-flow-attribution.md`](why-network-flow-attribution.md): lookup host-side (IP/TAP o `ct mark`) → `sandbox_id` → `owner_sub`; forced egress corporativo con identidad inyectada en el host. **No implementado.**
+**Atribución de flujos → humano (futuro):** hoy el proxy puede ver `X-ASP-Sandbox-ID` (forgeable) y no propaga `owner_sub`. Diseño en evaluación — [ADR-0008](adr/0008-network-flow-attribution.md): lookup host-side (IP/TAP o `ct mark`) → `sandbox_id` → `owner_sub`; forced egress corporativo con identidad inyectada en el host. **No implementado.**
 
-**LAN del usuario (corte mínimo, sin WireGuard de kernel):** sin opt-in, el sandbox no llega a prefijos tipo `192.168.1.0/24` (salen por el egress del nodo y mueren ahí). [ADR-0010](adr/0010-on-demand-local-net.md) describe un túnel saliente, solo con `local_net` explícito: cuando está on, la ruta por defecto de **esa** sesión (`0.0.0.0/0` y `::/0` si existe, DNS incluido) va por el agente local, que la ve y la hace NAT. No hay lista de CIDR en v1. Si el agente cae, el egress se hunde; no vuelve en silencio al proxy del nodo. No abre el router de casa ni la ruta por defecto del nodo. Ver [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
+**LAN del usuario (corte mínimo, sin WireGuard de kernel):** sin opt-in, el sandbox no llega a prefijos tipo `192.168.1.0/24` (salen por el egress del nodo y mueren ahí). [ADR-0010](adr/0010-on-demand-local-net.md) describe un túnel saliente, solo con `local_net` explícito: cuando está on, la ruta por defecto de **esa** sesión (`0.0.0.0/0` y `::/0` si existe, DNS incluido) va por el agente local, que la ve y la hace NAT. No hay lista de CIDR en v1. Si el agente cae, el egress se hunde; no vuelve en silencio al proxy del nodo. No abre el router de casa ni la ruta por defecto del nodo. Ver [ADR-0010](adr/0010-on-demand-local-net.md).
 
 ## Modelo de datos (control plane)
 
@@ -220,7 +220,7 @@ Stores: `PostgresStore` si `ASP_DATABASE_URL=postgres://…`; `SQLiteStore` si `
 ## Cómo usan la plataforma los agentes
 
 1. Ops levanta el CP y uno o varios node-agents, uno por servidor (+ pod-daemon en dry-run). Añadir servidores: [`ops-multi-node.md`](ops-multi-node.md).
-2. Un agente largo abre **una sesión** y engancha el shell a `exec` (no una VM por tool). Dirección: [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md) · [`ops-asp-session.md`](ops-asp-session.md).
+2. Un agente largo abre **una sesión** y engancha el shell a `exec` (no una VM por tool). Dirección: [ADR-0009](adr/0009-agent-sessions.md) · [`ops-asp-session.md`](ops-asp-session.md).
 
 ```bash
 make asp
@@ -231,7 +231,7 @@ make asp
 
 3. `asp sandbox run` (create → wait `running` → exec → destroy) es la primitiva de CI/un comando, no la integración del bucle. Auth Bearer: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md).
 4. El exec (`POST /v1/sandboxes/{id}/exec`) es el dataplane dentro de la sesión: NDJSON si `?stream=1`, JSON acumulado si no. Con `pty` el guest asigna un pseudoterminal (solo en streaming); el cuerpo sigue siendo NDJSON. Un stream dura lo que el comando en el CP; los cortes que quedan están en [timeouts](../control-plane/README.md#timeouts-hacia-el-node-agent). `--workspace` queda en el spec; en KVM el host no entra al guest.
-5. Detalle CLI: [`why-cli-asp.md`](why-cli-asp.md).
+5. Detalle CLI: [README del CLI](../cli/README.md).
 
 Los agentes **no** necesitan hablar con CH ni con nft; solo con el control plane.
 

@@ -3,7 +3,7 @@
 - **Estado:** Propuesta / **Aceptada como dirección**
 - **Fecha:** 2026-10-03
 - **Enmendada por:** [0012](0012-retained-disks.md): parar ya no borra. `asp session stop` y el idle reap conservan el disco (`asp session resume` lo arranca otra vez) y `asp session rm` borra la sandbox; `--local` pasó de `stop` a `rm`. Donde este texto dice que el reaper «destruye» o que `stop` hace `DELETE`, léase con esa enmienda.
-- **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide; no implementada), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [`../why-agent-sessions.md`](../why-agent-sessions.md), [`../why-cli-asp.md`](../why-cli-asp.md), [`../roadmap.md`](../roadmap.md)
+- **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide; no implementada), [`../ops-asp-session.md`](../ops-asp-session.md) (CLI actual), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (primitiva one-shot + auth), [README del CLI](../../cli/README.md), [`../roadmap.md`](../roadmap.md)
 - **No es:** un plugin de OpenCode. El segundo seguimiento (misma fecha) sí arranca virtiofsd y añade PTY/stdin al exec. Un tercer corte monta el tag en la imagen (`workspace-virtiofs.service`); un rootfs viejo no. Sigue sin SSH.
 
 ## Seguimiento implementado (2026-10-03)
@@ -32,7 +32,7 @@ Un harness real choca con tres cosas del primer corte. Un único `session.json` 
 - ADR-0010 (red local bajo demanda). La sesión de hoy no abre túnel. `local_net` nacería apagado; `--local-net` en el `start` (no un efecto de tener sesión) mandaría la ruta por defecto de esa microVM por el agente local, sin lista de CIDR. El guest no podría encenderlo. El JSON de sesión seguiría sin secretos.
 - SIGWINCH, byte pipe opaco, EOF real sobre PTY en raw mode, sandbox de usuario para virtiofsd.
 
-El resto de este ADR describe la dirección original. Donde diga «no hay sesiones con nombre», «el exec no es stream», «no hay PTY» o «no hay virtiofs», léase con esta sección y con [`why-virtiofs-pty.md`](../why-virtiofs-pty.md): el dispositivo y el PTY ya están, con los límites de arriba. El texto posterior no se reescribe entero para no borrar el razonamiento.
+El resto de este ADR describe la dirección original. Donde diga «no hay sesiones con nombre», «el exec no es stream», «no hay PTY» o «no hay virtiofs», léase con esta sección y con [sesiones](../ops-asp-session.md#virtiofs-y-pty--qué-aterrizó): el dispositivo y el PTY ya están, con los límites de arriba. El texto posterior no se reescribe entero para no borrar el razonamiento.
 
 ## Contexto
 
@@ -267,9 +267,8 @@ Una integración de harness está alineada con esta dirección solo si:
 
 ## Referencias
 
-- Narrativa corta: [`../why-agent-sessions.md`](../why-agent-sessions.md)
 - Contrato CLI de la sesión: [`../ops-asp-session.md`](../ops-asp-session.md)
 - Primitiva one-shot y Bearer: [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md)
 - Identidad: [0007](0007-multi-user-identity.md)
-- CLI demo: [`../why-cli-asp.md`](../why-cli-asp.md)
+- CLI demo: [README del CLI](../../cli/README.md)
 - Roadmap (2f, sesión, idle): [`../roadmap.md`](../roadmap.md)

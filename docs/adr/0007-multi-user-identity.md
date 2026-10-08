@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada — **fases 1–5 implementadas** (schema/audit + IdP JWT + RBAC + SSH scoped MVP + workload `user_sub`/`act`)
 - **Fecha:** 2026-10
-- **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0008](0008-network-flow-attribution.md) (flujos de red → `owner_sub`, evaluación), [`../why-multi-user-identity.md`](../why-multi-user-identity.md), [`../architecture.md`](../architecture.md), [`../roadmap.md`](../roadmap.md) (§ readiness corporativa)
+- **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0008](0008-network-flow-attribution.md) (flujos de red → `owner_sub`, evaluación), [`../architecture.md`](../architecture.md), [`../roadmap.md`](../roadmap.md) (§ readiness corporativa)
 - **Extiende:** el modelo de “identidad” de ADR-0003 (tenant + sandbox + nodo) con **sujeto humano** del IdP corporativo
 
 ## Contexto
@@ -142,7 +142,17 @@ guest POST /v1/tokens/oidc {"aud":"…"}     # solo aud (+nonce)
          + x_asp_attestation si Fase 2c lo exige
 ```
 
-El guest **no** puede pedir un `user_sub` distinto del owner del sandbox.
+El guest **no** puede pedir un `user_sub` distinto del owner del sandbox. Qué claim lo decide quién:
+
+| Claim | Origen | ¿Lo puede elegir el guest? |
+|---|---|---|
+| `sub` | `sandbox/{id}` | no |
+| `tenant_id`, `sandbox_id` | el store | no |
+| `user_sub` | `owner_sub` de la sandbox | **no** (se ignora) |
+| `act.sub` | el mismo `user_sub` (el dueño) | **no** (se ignora) |
+| `aud` | el cuerpo del guest | sí: es el único campo que elige |
+
+**Límite honesto:** el mint del guest no lleva el `actor_sub` de la acción en curso (el guest no es autoridad): `act` refleja al **dueño** de la sandbox. Los consumidores de Entra u Okta confían en el JWKS de ASP (`ASP_OIDC_*`), no en el del IdP humano. Sin `owner_sub` persistido (laboratorio, sandboxes antiguas) el token no lleva cadena humana.
 
 #### 4) SSH agent — opciones de scoping (decidir en fase 4 del rollout)
 
@@ -261,8 +271,7 @@ El cableado del laboratorio de los mantenedores (el realm, el cliente, los grupo
 ## Referencias cruzadas
 
 - Identidad guest SSH/OIDC: [0003](0003-identity.md)
-- SSH confirm: [0005](0005-fase-2d-hardening.md), [`../why-2d-ssh-confirm.md`](../why-2d-ssh-confirm.md)
-- Por qué / qué ganamos: [`../why-multi-user-identity.md`](../why-multi-user-identity.md)
+- SSH confirm: [0005](0005-fase-2d-hardening.md)
 - Roadmap readiness: [`../roadmap.md`](../roadmap.md)
 - Arquitectura § identidad / modelo de datos: [`../architecture.md`](../architecture.md)
-- Atribución de egress/TCP a `owner_sub` (evaluación, no implementada): [0008](0008-network-flow-attribution.md), [`../why-network-flow-attribution.md`](../why-network-flow-attribution.md)
+- Atribución de egress/TCP a `owner_sub` (evaluación, no implementada): [0008](0008-network-flow-attribution.md)

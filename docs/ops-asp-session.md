@@ -1,10 +1,10 @@
 # Ops — Sesión de agente `asp session` (shell del harness)
 
-**Esta es la superficie de integración.** Un agente largo se engancha a una sesión (un sandbox: `owner_sub`, disco del guest, egress, idle) y llama a `exec` durante horas. Create→exec→destroy por comando **no** es el producto. Dirección: [ADR-0009](adr/0009-agent-sessions.md) · [por qué](why-agent-sessions.md).
+**Esta es la superficie de integración.** Un agente largo se engancha a una sesión (un sandbox: `owner_sub`, disco del guest, egress, idle) y llama a `exec` durante horas. Create→exec→destroy por comando **no** es el producto. Dirección: [ADR-0009](adr/0009-agent-sessions.md).
 
 Cómo un harness tipo [OpenCode](https://github.com/sst/opencode) apunta su herramienta de shell a ese sandbox ya creado, en lugar de ejecutar cada comando en el host.
 
-La primitiva one-shot (CI / un comando) sigue existiendo y no es esta página: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). CLI base: [`why-cli-asp.md`](why-cli-asp.md). Identidad del dueño: [ADR-0007](adr/0007-multi-user-identity.md) (`owner_sub` sale del JWT, no del guest). El exec API es el dataplane **dentro** de la sesión, no el contrato que el harness debe diseñar.
+La primitiva one-shot (CI / un comando) sigue existiendo y no es esta página: [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md). CLI base: [README del CLI](../cli/README.md). Identidad del dueño: [ADR-0007](adr/0007-multi-user-identity.md) (`owner_sub` sale del JWT, no del guest). El exec API es el dataplane **dentro** de la sesión, no el contrato que el harness debe diseñar.
 
 ## Por qué
 
@@ -198,7 +198,7 @@ El spec `workspace_host_path` sin daemon era una etiqueta: el guest no veía el 
 
 | Pieza | Comportamiento |
 |---|---|
-| `virtiofsd` por sandbox | Solo si `workspace_host_path` no está vacío. Socket `virtiofs-{id}.sock` bajo el directorio de sockets del nodo (`--ch-socket-dir`, default `/run/asp`). Argumentos: `--socket-path`, `--shared-dir`, `--cache never`, `--sandbox none`. Binario: `--virtiofsd-bin` o `ASP_VIRTIOFSD_BIN` (default `virtiofsd`, CLI Rust). |
+| `virtiofsd` por sandbox | Solo si `workspace_host_path` no está vacío. Socket `virtiofs-{id}.sock` bajo el directorio de sockets del nodo (`--ch-socket-dir`, default `/run/asp`). Argumentos: `--socket-path`, `--shared-dir`, `--cache never` y `--sandbox` según `--virtiofsd-sandbox` (`chroot` si el agente es root). Binario: `--virtiofsd-bin` o `ASP_VIRTIOFSD_BIN` (default `virtiofsd`, CLI Rust). |
 | `vm.create` | `fs: [{ "tag": "workspace", "socket": "…" }]`. Sin workspace, o con socket vacío, el campo `fs` no va en el JSON. |
 | Fallo cerrado | Workspace pedido y `virtiofsd` ausente, o el directorio no existe en **el nodo**: el sandbox pasa a `failed` y no se llama al VMM. Sin workspace, no se busca el binario. |
 | Mount del guest | Automático en la imagen de este corte: `workspace-virtiofs.service` ejecuta `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`. Si el tag no está, el helper sale 0 y el boot sigue. Las imágenes ya desplegadas, anteriores a este corte, **no** lo hacen hasta reconstruir el rootfs; ahí sigue valiendo el comando a mano. |
@@ -206,10 +206,14 @@ El spec `workspace_host_path` sin daemon era una etiqueta: el guest no veía el 
 | Stdin | `POST /v1/sandboxes/{id}/exec/stdin` con `{"exec_id","data","close","rows","cols"}`. El CP lo proxya a `POST /v1/internal/exec/stdin` y eso al guest `POST /v1/exec/stdin`. Un `close` en pipe cierra el write end (EOF real). En PTY escribe dos Ctrl-D (modo canónico). Cada POST de stdin refresca `last_activity_at`. |
 | JSON acumulado | `POST /exec` sin `?stream=1` sigue devolviendo `{stdout,stderr,exit_code}`. `--buffered` / `--json` no piden PTY. Si hay stdin por pipe, viaja en el campo `stdin`. |
 
+### El mount en la imagen
+
+El dispositivo lo pone el nodo; el `mount` lo pone el guest, y solo si la imagen lo trae. Dejarlo como comando de ops hacía que el `exec` viera el disco del guest aunque `vm.create` ya llevara `fs`, y el harness no tiene un paso fiable para entrar y montar antes del primer tool; el nodo no puede hacerlo: el *namespace* es el de la VM. `images/guest/systemd/workspace-virtiofs.service` es un *oneshot* (`WantedBy=multi-user.target`, antes de `pod-daemon`, `TimeoutStartSec=15`) y no es `RequiredBy` de ningún target: no bloquea el arranque. Su helper `images/guest/helpers/mount-virtiofs-workspace.sh` hace `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace` (con unos reintentos cortos, por si el *driver* aparece un poco después de `local-fs`) y sale **0** si el tag no está o el `mount` falla, porque una sandbox sin workspace tiene que arrancar igual. El `Dockerfile` de `images/guest` copia ambos y habilita la unidad; hay un ejemplo de OpenRC en `images/guest/openrc/workspace-virtiofs`.
+
 ### Qué no ganamos
 
 - El auto-mount vive en la **imagen**, no en el nodo. Un rootfs anterior no tiene `workspace-virtiofs.service`: hasta reconstruirlo, `/workspace` no aparece solo. Sin tag (no hubo `--workspace`) la unidad no falla el boot; el directorio se crea vacío y no es el checkout del host.
-- `--sandbox none` no mete a virtiofsd en un user namespace. La superficie es el directorio pedido y los privilegios del node-agent.
+- `virtiofsd` no corre en un user namespace: con `--sandbox chroot` (el valor por defecto del agente root) queda confinado al directorio pedido, con `none` la superficie es ese directorio y los privilegios del node-agent.
 - Hace falta el `virtiofsd` Rust en el nodo. El helper C viejo (`-o source=`) no vale. Sin KVM estos tests no arrancan la VM: comprueban socket y tag.
 - El PTY mezcla stderr en el master. No hay evento `stderr` separado en ese modo.
 - No hay `SIGWINCH`. El tamaño se fija al empezar; un `rows`/`cols` posterior en `/exec/stdin` sí hace `TIOCSWINSZ`, pero el CLI no lo manda al cambiar la ventana.
@@ -234,10 +238,10 @@ Cubren el directorio de sesiones (nombres distintos, modo `0600`, rechazo de `..
 ## Referencias
 
 - [ADR-0009](adr/0009-agent-sessions.md) — dirección y seguimiento
-- [`why-agent-sessions.md`](why-agent-sessions.md)
+- [ADR-0009](adr/0009-agent-sessions.md)
 - [`ops-asp-agent-runner.md`](ops-asp-agent-runner.md) — primitiva one-shot + IdP
 - [`how-to/install-node.md`](how-to/install-node.md) y [`concepts/node-runtime.md`](concepts/node-runtime.md) — CH real; el nodo arranca virtiofsd si hay workspace
-- [`why-virtiofs-pty.md`](why-virtiofs-pty.md) — por qué este corte
-- [`why-cli-asp.md`](why-cli-asp.md)
+- [sesiones](ops-asp-session.md#virtiofs-y-pty--qué-aterrizó) — por qué este corte
+- [README del CLI](../cli/README.md)
 - [`roadmap.md`](roadmap.md)
 - [ADR-0007](adr/0007-multi-user-identity.md)

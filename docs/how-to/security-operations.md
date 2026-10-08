@@ -52,7 +52,7 @@ mtls_strict: true
 enroll_listen: 127.0.0.1:8081      # solo enroll, con el token; el listener TLS principal exige certificado
 ```
 
-La rotación con un certificado vigente más una API key sigue por el listener TLS.
+Necesita `tls_cert`, `tls_key` y `client_ca` (sin TLS se ignora, con un aviso en el log). La rotación con un certificado vigente más una API key sigue por el listener TLS. Si alguien pone `enroll_listen` en `0.0.0.0` en una red hostil, el token de enroll es el único candado: protege el *bind*.
 
 ## Atestación remota
 

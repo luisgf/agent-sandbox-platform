@@ -2,7 +2,7 @@
 
 - **Estado:** Propuesta / **Aceptada para evaluación** — **no implementada**
 - **Fecha:** 2026-10
-- **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft), [0006](0006-fase-2e-nft-ssh-guest.md) (nft redirect), [0007](0007-multi-user-identity.md) (`owner_sub` / `actor_sub`), [0010](0010-on-demand-local-net.md) (otro path de red, misma identidad), [`../why-network-flow-attribution.md`](../why-network-flow-attribution.md), [`../architecture.md`](../architecture.md) § Red, [`../roadmap.md`](../roadmap.md)
+- **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft), [0006](0006-fase-2e-nft-ssh-guest.md) (nft redirect), [0007](0007-multi-user-identity.md) (`owner_sub` / `actor_sub`), [0010](0010-on-demand-local-net.md) (otro path de red, misma identidad), [`../architecture.md`](../architecture.md) § Red, [`../roadmap.md`](../roadmap.md)
 - **Extiende:** la frontera de egress de ADR-0002 con **sujeto humano** en el plano de red (no solo en create/exec/OIDC)
 
 ## Contexto
@@ -181,7 +181,6 @@ ADR-0010 no implementa este ADR ni al revés. Con `local_net` apagado el egress 
 
 - Red / proxy / nft: [0002](0002-networking.md), [0006](0006-fase-2e-nft-ssh-guest.md)
 - Identidad humana: [0007](0007-multi-user-identity.md)
-- Por qué / qué ganamos: [`../why-network-flow-attribution.md`](../why-network-flow-attribution.md)
 - Arquitectura § Red: [`../architecture.md`](../architecture.md)
 - Roadmap (ítem futuro): [`../roadmap.md`](../roadmap.md)
 - Red local (propuesta, path distinto): [0010](0010-on-demand-local-net.md)
