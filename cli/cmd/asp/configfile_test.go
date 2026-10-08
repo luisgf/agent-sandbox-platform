@@ -33,9 +33,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// The names the source mentions that are not settings of a file: the variable that names the
-// file itself.
-var notSettings = map[string]bool{"ASP_CONFIG": true}
+// The names the source mentions that are not settings of the CLI's file: the variable that names
+// the file itself, and the node-agent's own setting that asp doctor hands over to it.
+var notSettings = map[string]bool{"ASP_CONFIG": true, "ASP_CONTROL_PLANE_CA": true}
 
 var settingName = regexp.MustCompile(`^ASP_[A-Z0-9_]+$`)
 

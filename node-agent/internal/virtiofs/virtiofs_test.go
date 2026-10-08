@@ -165,3 +165,44 @@ func TestStartInATransientUnit(t *testing.T) {
 		}
 	}
 }
+
+// `apt install virtiofsd` leaves the Rust daemon in /usr/libexec, off PATH: the default name finds it
+// there, and a name the operator chose is never second-guessed.
+func TestResolveFindsTheDistributionsVirtiofsd(t *testing.T) {
+	dir := t.TempDir()
+	onPath := filepath.Join(dir, "bin")
+	if err := os.Mkdir(onPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", onPath)
+	libexec := filepath.Join(dir, "virtiofsd")
+	old := DistroPath
+	DistroPath = libexec
+	t.Cleanup(func() { DistroPath = old })
+
+	if got := Resolve(""); got != DefaultBinary {
+		t.Errorf("nothing installed: got %q, want the plain name so that the error names it", got)
+	}
+	if err := os.WriteFile(libexec, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := Resolve(""); got != DefaultBinary {
+		t.Errorf("a file that cannot run: got %q", got)
+	}
+	if err := os.Chmod(libexec, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := Resolve(DefaultBinary); got != libexec {
+		t.Errorf("in libexec: got %q, want %q", got, libexec)
+	}
+	if got := Resolve("/opt/mine/virtiofsd"); got != "/opt/mine/virtiofsd" {
+		t.Errorf("a chosen path is kept: got %q", got)
+	}
+	onPathBin := filepath.Join(onPath, "virtiofsd")
+	if err := os.WriteFile(onPathBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := Resolve(""); got != onPathBin {
+		t.Errorf("on PATH wins: got %q, want %q", got, onPathBin)
+	}
+}

@@ -220,6 +220,13 @@ pub fn is_refusal(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<Refused>())
 }
 
+/// A spawn that failed, said with the program it was for. "No such file or directory (os error 2)"
+/// alone leaves the user guessing which file: it is the command, often a shell construct passed
+/// as one word (`--cmd 'id; uname'` runs a program called `id;`).
+pub fn spawn_error(program: &str, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("cannot run {program:?}: {e}"))
+}
+
 impl From<ResolveError> for io::Error {
     fn from(e: ResolveError) -> io::Error {
         match e {
@@ -442,6 +449,18 @@ pub fn setup_cgroup(root: &Path, name: &str, max_procs: u64, memory_percent: u64
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_failed_spawn_names_the_program() {
+        let e = Command::new("/nonexistent/id;").spawn().unwrap_err();
+        let kind = e.kind();
+        let wrapped = spawn_error("id;", e);
+        assert_eq!(wrapped.kind(), kind);
+        let text = wrapped.to_string();
+        assert!(text.starts_with("cannot run \"id;\": "), "{text}");
+        assert!(text.contains("No such file or directory"), "{text}");
+        assert!(!is_refusal(&wrapped));
+    }
 
     struct Fake {
         names: HashMap<String, Account>,

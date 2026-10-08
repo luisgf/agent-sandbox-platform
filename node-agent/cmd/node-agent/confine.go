@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -91,6 +92,7 @@ func adoptableIDs(ctx context.Context, cfg config) []string {
 		return nil
 	}
 	ch := vmm.NewSpawningCloudHypervisor(cfg.VMMBinary, cfg.CHSocketDir)
+	ch.LookPath = exec.LookPath
 	ch.Confine = confine
 	return reconciler.AdoptableIDs(ctx, dir, ch.Alive, slog.Default())
 }

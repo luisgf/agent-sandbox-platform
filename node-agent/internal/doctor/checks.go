@@ -148,7 +148,7 @@ func checkVirtiofsd(ctx context.Context, h Host, c Config) Result {
 	path, err := h.LookPath(c.VirtiofsdBin)
 	if err != nil {
 		return Result{Status: Warn, Detail: fmt.Sprintf("%q not found: a sandbox with a workspace cannot start", c.VirtiofsdBin),
-			Fix: "install the Rust virtiofsd (not the QEMU one) or point --virtiofsd-bin at it"}
+			Fix: "install the Rust virtiofsd (not the QEMU one: sudo apt install virtiofsd on Ubuntu 24.04 and Debian 13) or point --virtiofsd-bin at it"}
 	}
 	out, err := h.Run(ctx, path, "--version")
 	if err != nil {
@@ -300,8 +300,10 @@ func checkVsock(h Host, c Config) Result {
 		return Result{Status: Skip, Detail: "guest-to-host services use unix sockets under " + c.HostVsockDir + " (--host-vsock-dir)"}
 	}
 	if _, err := h.Stat("/dev/vsock"); err != nil {
-		return Result{Status: Fail, Detail: "/dev/vsock does not exist: --host-vsock listens on AF_VSOCK ports 26501 and 26502",
-			Fix: "modprobe vsock (and vhost_vsock); or use --host-vsock-dir for unix sockets (labs)"}
+		// Cloud Hypervisor's vsock device is not the kernel's: a guest's connection to the node arrives on a
+		// unix socket of its sandbox ({vsock}_26501, {vsock}_26502), and the node falls back to unix sockets for
+		// the listeners of the host by itself. Nothing here needs the module, and a host without it works.
+		return Result{Status: Skip, Detail: "/dev/vsock does not exist, and the node does not need it: the services the guests reach (SSH agent 26501, identity 26502) listen on a unix socket per sandbox"}
 	}
 	return Result{Status: OK, Detail: "/dev/vsock is there"}
 }

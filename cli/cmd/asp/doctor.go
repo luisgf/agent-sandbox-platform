@@ -40,11 +40,16 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	var env []string
+	if ca := controlPlaneCAFromCLI(os.Getenv); ca != "" {
+		env = append(env, "ASP_CONTROL_PLANE_CA="+ca)
+	}
 	if *envFile != "" {
-		if env, err = readEnvFile(*envFile); err != nil {
+		fileEnv, err := readEnvFile(*envFile)
+		if err != nil {
 			fmt.Fprintf(stderr, "doctor: %v\n", err)
 			return 2
 		}
+		env = append(env, fileEnv...)
 	}
 	cmdArgs := append([]string{"--doctor"}, fs.Args()...)
 	if *asJSON {
@@ -61,6 +66,18 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// controlPlaneCAFromCLI is the CA the node-agent should trust when nothing told it which. The asp
+// command of this host reaches its control plane with ca_file (ASP_CA_FILE) and the URL that goes
+// with it, which the node-agent also reads (ASP_CONTROL_PLANE_URL): they are the same control plane.
+// On a host that runs its own (asp-server) the node trusts that certificate through a variable only
+// the supervisor sets, so without this the check of the control plane fails on a host that works.
+func controlPlaneCAFromCLI(getenv func(string) string) string {
+	if getenv("ASP_CONTROL_PLANE_CA") != "" || getenv("ASP_CONTROL_PLANE_URL") == "" {
+		return ""
+	}
+	return strings.TrimSpace(getenv("ASP_CA_FILE"))
 }
 
 // The places the node-agent is installed: the package puts it in /usr/bin as

@@ -133,6 +133,17 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Fixed
 
+- **`sudo asp doctor` failed on a host that works.** On a host that runs its own control plane (`asp-server`) it
+  reported the control plane unreachable, because the certificate it must trust was known to the supervisor only;
+  `asp doctor` now hands the node-agent the CA of this host's `asp` command. A host without `/dev/vsock` was
+  reported as failing too: Cloud Hypervisor's guests reach the node through a unix socket per sandbox, so the
+  check says `skip`.
+- **`virtiofsd` from the distribution is found.** `apt install virtiofsd` (Ubuntu 24.04, Debian 13) puts it in
+  `/usr/libexec`, off `PATH`, and the node looked only on `PATH`; it now looks there too.
+- **A node without Cloud Hypervisor fails a start at once** and says what to install, instead of waiting 30 s
+  for a socket nobody opens. `asp session start` prints the reason the node gave when a start fails (it used to
+  print only `failed`), and a command that cannot run says which program it was (`cannot run "id;": No such file
+  or directory`).
 - The node-agent's help said `--agent-listen` has no authentication (it takes the bearer token of
   `--agent-token-file`) and that `--tap-auto` soft-fails (a TAP that cannot be created fails the start).
   `asp config show -h` prints its help. `--egress-enforce`'s help said the egress proxy needs it; the proxy
