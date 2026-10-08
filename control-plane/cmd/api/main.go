@@ -165,7 +165,8 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("bootstrap api key: %w", err)
 		}
 		if key.ID != "" {
-			slog.Info("bootstrap api key ready", "tenant", key.TenantID, "name", key.Name, "prefix", key.KeyPrefix)
+			// No part of the secret goes in a log: its prefix is how asp apikey list shows it, to the admin.
+			slog.Info("bootstrap api key ready", "tenant", key.TenantID, "name", key.Name)
 		}
 	}
 
@@ -228,6 +229,9 @@ func run(ctx context.Context, args []string) error {
 		slog.Info("boot evidence is accepted only for allowlisted images", "path", path)
 	} else {
 		slog.Info("no image allowlist: boot evidence is accepted for any kernel and base image the node reports; set " + attest.EnvAllowedImages + " to restrict it")
+	}
+	if err := fence.Validate(); err != nil {
+		return configError{err}
 	}
 	srv.Fence = fence.FromEnv()
 	slog.Info("attestor ready", "name", attestor.Name(), "kid", attestor.KID(), "fence", srv.Fence.Name())

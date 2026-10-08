@@ -11,11 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// migrationLockKey is the advisory lock that makes control planes that start together take turns
+// at the schema ("aspMIGR1").
+const migrationLockKey int64 = 0x6173704d49475231
+
 // ApplyMigrations applies embedded *.sql files in lexical order, once each.
 // Each file is executed statement-by-statement inside a transaction.
 // dir is typically "." when FS was built with //go:embed *.sql.
+//
+// It runs on one connection that holds an advisory lock: the replicas of a deployment start
+// at the same moment, and without it each saw the same migration as not yet applied and the
+// losers died with a duplicate key (even CREATE TABLE IF NOT EXISTS fails when two run at
+// once). The one that waits finds the work done.
 func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, migrations embed.FS, dir string) error {
-	if _, err := pool.Exec(ctx, `
+	pc, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("migrations: connect: %w", err)
+	}
+	// The connection is closed, not given back: that ends the session, and the lock with it, and
+	// leaves the settings below out of the pool.
+	conn := pc.Hijack()
+	defer func() { _ = conn.Close(context.Background()) }()
+	// Waiting for another control plane's migration is not a statement that has taken too long.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = 0`); err != nil {
+		return fmt.Errorf("migrations: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `SET lock_timeout = '10min'`); err != nil {
+		return fmt.Errorf("migrations: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("migrations: wait for the other control plane that is migrating: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version text PRIMARY KEY,
 			applied_at timestamptz NOT NULL DEFAULT now()
@@ -38,7 +65,7 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, migrations embed.F
 
 	for _, name := range names {
 		var exists bool
-		if err := pool.QueryRow(ctx,
+		if err := conn.QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name,
 		).Scan(&exists); err != nil {
 			return fmt.Errorf("check migration %s: %w", name, err)
@@ -55,7 +82,7 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, migrations embed.F
 			return fmt.Errorf("read %s: %w", path, err)
 		}
 
-		tx, err := pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return err
 		}

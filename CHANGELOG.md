@@ -147,6 +147,16 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Fixed
 
+- **Control planes that start together no longer fight over the schema.** The Postgres migrations ran
+  unlocked: the replicas of a deployment each saw the same migration as not yet applied, and all but one died
+  with a duplicate key (even `CREATE TABLE IF NOT EXISTS` fails when two run at once) and lived on a restart
+  loop. They now take an advisory lock and the one that waits finds the work done.
+- **Two certificate rotations at once could leave a node's certificate neither current nor revoked** (Postgres
+  did not lock the node's row); a misspelled `ASP_FENCE_PROVIDER` (`redfsh`) turned fencing into a no-op while
+  the control plane recorded `node.fenced` for nodes nobody powered off, and now stops the start; the
+  start-up log no longer prints the first characters of the bootstrap key; the in-memory store forgot a node's
+  certificate expiry when the agent registered again; a local-net grant could be asked for a sandbox that was
+  being deleted.
 - **`asp session start` no longer refuses over a session whose sandbox is gone.** After a reinstall (or a
   restore of an older database, or an expiry) the session file still named a sandbox the control plane does not
   have, and `start` answered "active session" until `asp session rm`; it now says the sandbox is gone, drops the

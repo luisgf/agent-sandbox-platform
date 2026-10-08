@@ -581,6 +581,7 @@ func (m *MemoryStore) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		node.CreatedAt = existing.CreatedAt
 		node.CertFingerprint = existing.CertFingerprint
 		node.CertSerial = existing.CertSerial
+		node.CertNotAfter = existing.CertNotAfter
 		node.EnrolledAt = existing.EnrolledAt
 		node.RevokedAt = existing.RevokedAt
 		// Cordon is an admin decision; an agent re-registering never lifts it.

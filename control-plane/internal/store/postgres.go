@@ -854,8 +854,10 @@ func (p *PostgresStore) RotateNodeCert(ctx context.Context, nodeID string, cert 
 
 	var oldFP, oldSerial string
 	var revoked *time.Time
+	// FOR UPDATE: two rotations at once would each take the same certificate for the one they replace,
+	// and the first one's new certificate would end up neither current nor revoked.
 	err = tx.QueryRow(ctx, `
-		SELECT cert_fingerprint, cert_serial, revoked_at FROM nodes WHERE id=$1`, nodeID).
+		SELECT cert_fingerprint, cert_serial, revoked_at FROM nodes WHERE id=$1 FOR UPDATE`, nodeID).
 		Scan(&oldFP, &oldSerial, &revoked)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

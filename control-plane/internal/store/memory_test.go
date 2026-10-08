@@ -570,3 +570,15 @@ func TestRevokedNodeStaysRevokedUntilReEnroll(t *testing.T) {
 		t.Fatalf("heartbeat after re-enroll: node=%+v err=%v", n, err)
 	}
 }
+
+// A sandbox that is being deleted, or is gone, is not one a local-net tunnel can be attached to.
+func TestLocalNetTerminalStates(t *testing.T) {
+	for state, want := range map[SandboxState]bool{
+		SandboxRequested: false, SandboxStarting: false, SandboxRunning: false, SandboxPaused: false,
+		SandboxStopping: true, SandboxStopped: true, SandboxFailed: true, SandboxDeleting: true, SandboxDeleted: true,
+	} {
+		if got := localNetTerminal(state); got != want {
+			t.Errorf("localNetTerminal(%s)=%v, want %v", state, got, want)
+		}
+	}
+}

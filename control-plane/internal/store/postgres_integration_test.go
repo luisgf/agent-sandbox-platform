@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/luisgf/agent-sandbox-platform/control-plane/internal/pgtest"
 	"github.com/luisgf/agent-sandbox-platform/control-plane/migrations"
 )
 
@@ -266,11 +268,20 @@ func testNodeCertNotAfter(t *testing.T, pg Store) {
 	if n, err = pg.GetNode(context.Background(), "exp"); err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(second) {
 		t.Fatalf("after rotate: cert_not_after=%v err=%v", n.CertNotAfter, err)
 	}
+	// The agent registers again at every start; that is not a new certificate.
+	if _, err := pg.RegisterNode(context.Background(), RegisterNodeInput{ID: "exp", Name: "exp", Endpoint: "http://127.0.0.1:9100", AgentEndpoint: "http://127.0.0.1:9100"}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err = pg.GetNode(context.Background(), "exp"); err != nil || n.CertNotAfter == nil || !n.CertNotAfter.Equal(second) {
+		t.Fatalf("after a re-register: cert_not_after=%v err=%v", n.CertNotAfter, err)
+	}
 }
 
 func TestPostgresNodeCertNotAfter(t *testing.T) { testNodeCertNotAfter(t, newPostgresTestStore(t)) }
 
 func TestSQLiteNodeCertNotAfter(t *testing.T) { testNodeCertNotAfter(t, newSQLiteTestStore(t)) }
+
+func TestMemoryNodeCertNotAfter(t *testing.T) { testNodeCertNotAfter(t, NewMemoryStore()) }
 
 func testListEgressRulesForTenants(t *testing.T, pg Store) {
 	if _, err := pg.PutEgressRules(context.Background(), "eg-t1", []EgressRule{{HostPattern: "api.github.com", Enabled: true}}); err != nil {
@@ -426,4 +437,119 @@ func TestPostgresWritesAreOneStatementPlusTheEvent(t *testing.T) {
 // rotation replaces the secret in place, a revoked key stays listed.
 func TestPostgresAPIKeyLifecycle(t *testing.T) {
 	exerciseAPIKeyLifecycle(t, newPostgresTestStore(t))
+}
+
+// Two rotations at once must not both think the same certificate is the one they replace: then the
+// certificate of the first would be neither current nor revoked, and still be good.
+func testConcurrentRotationsRevokeEveryCertificateTheyReplace(t *testing.T, s Store) {
+	ctx := context.Background()
+	if _, err := s.EnrollNode(ctx, EnrollNodeInput{ID: "rot", AgentEndpoint: "http://127.0.0.1:9100"}, CertMeta{Fingerprint: "fp-0"}, EnrollAuth{}); err != nil {
+		t.Fatal(err)
+	}
+	const rotations = 8
+	var wg sync.WaitGroup
+	for i := 1; i <= rotations; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.RotateNodeCert(ctx, "rot", CertMeta{Fingerprint: fmt.Sprintf("fp-%d", i)}); err != nil {
+				t.Errorf("rotation %d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+	node, err := s.GetNode(ctx, "rot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := 0
+	for i := 0; i <= rotations; i++ {
+		fp := fmt.Sprintf("fp-%d", i)
+		r, err := s.IsCertRevoked(ctx, fp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r && fp == node.CertFingerprint {
+			t.Errorf("the current certificate %s is revoked", fp)
+		}
+		if r {
+			revoked++
+		}
+	}
+	if revoked != rotations {
+		t.Errorf("%d certificates revoked, want %d: every one but the current (%s) was replaced by a rotation", revoked, rotations, node.CertFingerprint)
+	}
+}
+
+func TestPostgresConcurrentRotations(t *testing.T) {
+	testConcurrentRotationsRevokeEveryCertificateTheyReplace(t, newPostgresTestStore(t))
+}
+
+func TestSQLiteConcurrentRotations(t *testing.T) {
+	testConcurrentRotationsRevokeEveryCertificateTheyReplace(t, newSQLiteTestStore(t))
+}
+
+func TestMemoryConcurrentRotations(t *testing.T) {
+	testConcurrentRotationsRevokeEveryCertificateTheyReplace(t, NewMemoryStore())
+}
+
+// Control planes that start together (the replicas of a deployment) must each find the schema done
+// or do it, never fail because another was doing it: the one that lost used to die with a duplicate
+// key on schema_migrations or on a table, and rely on its supervisor to start it again.
+func TestApplyMigrationsFromSeveralReplicasAtOnce(t *testing.T) {
+	if pgtest.Server() == "" {
+		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
+	}
+	url, drop, err := pgtest.Database("asp_migrate_race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drop()
+	const replicas = 8
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	errs := make(chan error, replicas)
+	var wg sync.WaitGroup
+	for i := 0; i < replicas; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool, err := NewPool(ctx, url, DefaultDBTimeouts())
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer pool.Close()
+			errs <- ApplyMigrations(ctx, pool, migrations.FS, ".")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("a replica failed to migrate: %v", err)
+		}
+	}
+	pool, err := NewPool(ctx, url, DefaultDBTimeouts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var applied int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			files++
+		}
+	}
+	if applied != files {
+		t.Errorf("%d migrations recorded, %d files", applied, files)
+	}
 }

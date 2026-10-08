@@ -51,7 +51,7 @@ func withdrawLocalNetFields(sb *Sandbox) {
 
 func localNetTerminal(state SandboxState) bool {
 	switch state {
-	case SandboxStopped, SandboxStopping, SandboxFailed:
+	case SandboxStopped, SandboxStopping, SandboxFailed, SandboxDeleting, SandboxDeleted:
 		return true
 	default:
 		return false
