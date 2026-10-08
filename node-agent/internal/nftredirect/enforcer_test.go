@@ -98,6 +98,54 @@ func TestDryRunDeniesEverythingElse(t *testing.T) {
 	}
 }
 
+// The proxy and the DNS sink are bound to every address, so the table decides who reaches
+// them: the guests (their TAPs) and the node itself (loopback), nobody else, over IPv4 and
+// IPv6. The drops have to come after the guest accepts, or the guests would be cut off too.
+func TestDryRunProxyAndSinkAreForGuestsOnly(t *testing.T) {
+	root := findRepoRoot(t)
+	script := filepath.Join(root, "scripts", "nftables-egress-redirect.sh")
+	for _, action := range []string{"redirect", "drop"} {
+		out, err := DryRun(Config{
+			ScriptPath:  script,
+			GuestSubnet: "10.66.0.0/16",
+			ProxyPort:   8888,
+			DNSSinkPort: 5353,
+			DNSAction:   action,
+			Table:       "asp_egress",
+			Mode:        ModeSoft,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ip4, ip6, found := strings.Cut(out, "table ip6 ")
+		if !found {
+			t.Fatalf("no ip6 table:\n%s", out)
+		}
+		for family, rules := range map[string]string{"ip": ip4, "ip6": ip6} {
+			for _, want := range []string{
+				`iifname "lo" accept comment "asp_loopback"`,
+				`tcp dport 8888 drop comment "asp_proxy_guests_only"`,
+				`tcp dport 5353 drop comment "asp_dns_sink_guests_only"`,
+				`udp dport 5353 drop comment "asp_dns_sink_guests_only"`,
+			} {
+				if !strings.Contains(rules, want) {
+					t.Errorf("dns action %s, %s table: missing %q:\n%s", action, family, want, out)
+				}
+			}
+			// Loopback first; then the guest rules; the guard only for what is left.
+			loopback := strings.Index(rules, `iifname "lo" accept`)
+			guestDrop := strings.Index(rules, `iifname "asp-*" drop comment "asp_guest_to_host_drop"`)
+			guard := strings.Index(rules, `tcp dport 8888 drop comment "asp_proxy_guests_only"`)
+			if !(loopback >= 0 && loopback < guestDrop && guestDrop < guard) {
+				t.Errorf("dns action %s, %s table: the order has to be loopback, guests, then the guard (%d, %d, %d):\n%s", action, family, loopback, guestDrop, guard, out)
+			}
+		}
+		if accept := strings.Index(ip4, `iifname "asp-*" tcp dport 8888 accept`); accept < 0 || accept > strings.Index(ip4, `tcp dport 8888 drop comment "asp_proxy_guests_only"`) {
+			t.Errorf("dns action %s: the guests' accept of the proxy port has to come before the guard:\n%s", action, out)
+		}
+	}
+}
+
 func TestApplySoftFailWithoutRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; SoftFail path not exercised")

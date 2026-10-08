@@ -53,4 +53,6 @@ El host necesita root, `/dev/kvm` con `nested` activo, `cloud-hypervisor`, `qemu
 
 ## En CI
 
+Lo que no necesita un guest corre en CI. `scripts/smoke-egress-nft.sh` (`sudo make smoke-egress-nft`) carga las reglas de egress del nodo en nftables, en tres *network namespaces* (un guest, el nodo y la red), y comprueba quién llega al proxy y al sink de DNS, que el tráfico web y DNS de un guest acaba en ellos, que lo demás se descarta (otros puertos, orígenes falsificados, conexiones hacia un guest) y que la red del nodo no alcanza ni el proxy ni el sink, por IPv4 ni por IPv6. Solo necesita root, `ip`, `nft` y `python3`.
+
 [`.github/workflow-drafts/nightly-kvm.yml`](../../.github/workflow-drafts/nightly-kvm.yml) lo ejecuta cada noche en un runner propio con KVM, con `smoke-vmm-user-kvm.sh`, `smoke-egress-kvm.sh` y `e2e-install-kvm.sh`, sobre el kernel y la imagen que construye el propio repositorio, y para un PR que un mantenedor etiquete `needs-kvm`. Hace falta un runner (`self-hosted, linux, kvm`) en una máquina para él solo, con `sudo` sin contraseña, y mover el borrador a `.github/workflows/` cuando el runner exista (con el permiso `workflow` del token: `gh auth refresh -s workflow`). No lo ejecuta para PRs de forks.
