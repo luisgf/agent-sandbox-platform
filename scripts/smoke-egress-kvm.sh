@@ -197,14 +197,20 @@ want() { # label pattern answer
   fi
 }
 
-run_phase() { # name redirect-flags...
-  local name=$1; shift
+run_phase() { # name egress-column redirect-flags...
+  local name=$1 want_egress=$2; shift 2
   echo "==> phase: $name (node-agent $*)"
   : >"$AGENT_LOG"
   start_agent "$@"
   wait_node_schedulable "$CP" smoke-egress 60 || fail "the node never registered"
-  local row
-  row=$(asp node list | grep smoke-egress || true)
+  # The control plane still holds the node (the same id) as the last phase's agent left it, schedulable,
+  # until this agent registers and says what it enforces: wait for its answer, not for the old row.
+  local row i
+  for ((i = 0; i < 100; i++)); do
+    row=$(asp node list | grep smoke-egress || true)
+    grep -qE "[[:space:]]${want_egress}[[:space:]]" <<<"$row" && break
+    sleep 0.3
+  done
   echo "  node: $row"
 
   asp session start --name egress --timeout 180s >/dev/null || fail "the sandbox did not start"
@@ -248,7 +254,8 @@ run_phase() { # name redirect-flags...
       want "no proxy, port 80 to anywhere is NOT redirected" '^ERR' "$(probe 192.0.2.10 80 denied.test)"
       want "no proxy, a service on another port is reachable" 'bypass-open' "$(probe 10.99.0.2 22222 x)"
       # Without the redirect nothing would answer on the gateway's port 53: no resolver.
-      want "no resolver is handed out" '^$' "$(gx "sh -c 'grep nameserver /etc/resolv.conf || true'")"
+      # (the image has no /etc/resolv.conf of its own: the node writes one only when it hands out a resolver)
+      want "no resolver is handed out" '^$' "$(gx "sh -c 'grep nameserver /etc/resolv.conf 2>/dev/null || true'")"
       want "the proxy variables are still set" "HTTP_PROXY=http://$gw:8888" "$(gx 'env')"
       ;;
   esac
@@ -262,6 +269,6 @@ run_phase() { # name redirect-flags...
   in_a nft delete table ip6 asp_egress 2>/dev/null || true
 }
 
-run_phase enforced
-run_phase open --egress-nft-redirect=false
+run_phase enforced enforced
+run_phase open off --egress-nft-redirect=false
 echo "OK smoke-egress-kvm"
