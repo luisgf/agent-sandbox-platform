@@ -472,7 +472,9 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 
 | Topic | Document |
 |---|---|
-| Architecture, trust boundaries, threat model | [`docs/architecture.md`](docs/architecture.md) |
+| Architecture | [`docs/architecture.md`](docs/architecture.md) |
+| Security model: what ASP protects, from whom, and what it does not guarantee | [`docs/concepts/security-model.md`](docs/concepts/security-model.md) |
+| ASP and Kubernetes (agent-sandbox, Kata, KubeVirt, E2B): what each is for | [`docs/concepts/asp-vs-kubernetes.md`](docs/concepts/asp-vs-kubernetes.md) |
 | Phases delivered and open gaps | [`docs/roadmap.md`](docs/roadmap.md) |
 | Dry-run smoke test | [`docs/mvp-smoke.md`](docs/mvp-smoke.md) |
 | Real Cloud Hypervisor on bare metal | [`docs/how-to/install-node.md`](docs/how-to/install-node.md) · [control plane](docs/how-to/install-control-plane.md) · [how a node runs sandboxes](docs/concepts/node-runtime.md) · [networking and egress](docs/concepts/networking-and-egress.md) · [security operations](docs/how-to/security-operations.md) |
@@ -497,18 +499,19 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | [0002](docs/adr/0002-networking.md) | Node networking and egress |
 | [0003](docs/adr/0003-identity.md) | SSH agent and OIDC kept outside the guest |
 | [0004](docs/adr/0004-k8s-scope.md) | Kubernetes only to deploy the control plane |
-| [0005](docs/adr/0005-fase-2d-hardening.md) | Phase 2d hardening |
-| [0006](docs/adr/0006-fase-2e-nft-ssh-guest.md) | nftables and SSH in the guest |
+| [0005](docs/adr/0005-fase-2d-hardening.md) | Node certificate rotation, strict mTLS and SSH signing confirmation |
+| [0006](docs/adr/0006-fase-2e-nft-ssh-guest.md) | Complete nftables redirect and automatic SSH agent in the guest |
 | [0007](docs/adr/0007-multi-user-identity.md) | Multi-user identity via IdP |
-| [0008](docs/adr/0008-network-flow-attribution.md) | Network flow → `owner_sub` attribution (evaluation, not implemented) |
+| [0008](docs/adr/0008-network-flow-attribution.md) | Network flow → `owner_sub` attribution (proposed, partly implemented) |
 | [0009](docs/adr/0009-agent-sessions.md) | Sessions as the primary use of isolation |
 | [0010](docs/adr/0010-on-demand-local-net.md) | On-demand local network: full tunnel, opt-in |
 | [0011](docs/adr/0011-multi-node.md) | Multiple nodes: node identity bound to its certificate, mutual TLS between control plane and nodes, capacity placement |
 | [0012](docs/adr/0012-retained-disks.md) | Stop is not delete: a sandbox's disk survives a stop, bounded by a TTL |
 | [0014](docs/adr/0014-vms-outlive-the-agent.md) | VMs outlive the node-agent: a restart leaves them running and the next process adopts them |
 | [0015](docs/adr/0015-unprivileged-vmm.md) | The VMM runs as an unprivileged user of its own, one per VM |
+| [0016](docs/adr/0016-single-host.md) | One host: SQLite and `asp-server`, a server that configures itself |
 
-Design rationale notes (`why-*.md`) are in [`docs/`](docs/).
+The full index, with each ADR's status: [`docs/adr/README.md`](docs/adr/README.md).
 
 ---
 
