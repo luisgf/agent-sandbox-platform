@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0005](0005-fase-2d-hardening.md), [0006](0006-fase-2e-nft-ssh-guest.md), [0008](0008-network-flow-attribution.md) (atribución flujos → `owner_sub`, evaluación), [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../bare-metal-ch.md`](../bare-metal-ch.md) §3
+- **Relacionados:** [0005](0005-fase-2d-hardening.md), [0006](0006-fase-2e-nft-ssh-guest.md), [0008](0008-network-flow-attribution.md) (atribución flujos → `owner_sub`, evaluación), [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [red y egress](../concepts/networking-and-egress.md)
 
 ## Contexto
 
@@ -91,11 +91,12 @@ Subnet por defecto del sketch: **`10.200.0.0/16`** (con `--tap-auto`, una /30 po
 - **SoftFail ≠ Enforce.** Sin root/`nft`, el enforcer avisa y sigue; eso **no** prueba anti-bypass.
 - nft `asp_egress` cubre TCP HTTP(S) configurables + DNS UDP/TCP 53. **No** cubre IPv6, ni “todos los puertos del mundo”, ni QUIC/UDP arbitrario.
 - MITM desactivado por defecto; activarlo es decisión corporativa explícita.
-- NAT (`asp_nat`) sigue siendo **ops manual** en bare-metal; `--tap-auto` no configura MASQUERADE solo.
+- ~~NAT (`asp_nat`) sigue siendo ops manual en bare-metal.~~ Ya no hace falta NAT: el guest solo habla con el proxy y el sumidero del nodo (ver la enmienda de 2026-10).
 - No exponer microVMs directamente a Internet (sin DNAT de entrada).
 
 ## Enmiendas
 
+- **2026-10 (documentación):** el egress público sale por el proxy desde el host, y con el redirect de nftables (por defecto con `--egress-proxy-listen`) la tabla `asp_egress` descarta todo reenvío del guest. No hace falta `MASQUERADE`, y una tabla de NAT de antes no cambia nada: manda el descarte. Ver [red y egress](../concepts/networking-and-egress.md).
 - **2026-10 (#98):** el proxy comprobaba solo el nombre contra la allowlist y marcaba lo que resolviera. Ahora comprueba la dirección a la que va a conectar, tras resolver, y nunca marca loopback, link-local, multicast, reservadas, las direcciones del nodo ni la red de los guests; las redes privadas solo las abre el operador (`--egress-allow-cidr`). Una regla sin puerto vale para 80 y 443, no para todos.
 
 ## Referencias cruzadas
@@ -103,4 +104,4 @@ Subnet por defecto del sketch: **`10.200.0.0/16`** (con `--tap-auto`, una /30 po
 - Hardening nft 2d/2e: ADR-0005, ADR-0006
 - Why: [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md)
 - Arquitectura § Red: [`../architecture.md`](../architecture.md)
-- Ops: [`../bare-metal-ch.md`](../bare-metal-ch.md) §3, §8e
+- Ops: [red y egress](../concepts/networking-and-egress.md)

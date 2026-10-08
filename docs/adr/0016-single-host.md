@@ -5,7 +5,7 @@
 
 ## Contexto
 
-Poner ASP en marcha en un servidor eran unos 24 pasos a mano (`bare-metal-ch.md`): compilar o bajar tres programas, un Postgres en Docker como única forma de que el estado sobreviviera a un reinicio, la CA, las claves OIDC y de atestación (por defecto en `/tmp`, y por defecto un API abierta hasta #95), el token de alta del nodo, el certificado TLS, una clave de administración y el enlace de todo ello con la unit. El modelo a copiar es k3s: un instalador de una línea, un servidor que funciona sin configuración, SQLite por defecto y agentes que se unen con una URL y un token. El objetivo: **tres comandos hasta la primera sesión en un host, dos para añadir otro**.
+Poner ASP en marcha en un servidor eran unos 24 pasos a mano (la antigua guía `bare-metal-ch.md`, hoy repartida en [instalar un nodo](../how-to/install-node.md) y [el plano de control](../how-to/install-control-plane.md)): compilar o bajar tres programas, un Postgres en Docker como única forma de que el estado sobreviviera a un reinicio, la CA, las claves OIDC y de atestación (por defecto en `/tmp`, y por defecto un API abierta hasta #95), el token de alta del nodo, el certificado TLS, una clave de administración y el enlace de todo ello con la unit. El modelo a copiar es k3s: un instalador de una línea, un servidor que funciona sin configuración, SQLite por defecto y agentes que se unen con una URL y un token. El objetivo: **tres comandos hasta la primera sesión en un host, dos para añadir otro**.
 
 ## Decisión
 

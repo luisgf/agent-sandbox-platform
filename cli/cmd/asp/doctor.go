@@ -64,7 +64,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 }
 
 // The places the node-agent is installed: the package puts it in /usr/bin as
-// asp-node-agent; a build copied by hand (docs/bare-metal-ch.md) is node-agent in
+// asp-node-agent; a build copied by hand (docs/how-to/install-node.md) is node-agent in
 // /usr/local/bin.
 var (
 	installedNodeAgent = "/usr/local/bin/node-agent"

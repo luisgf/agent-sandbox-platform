@@ -72,7 +72,7 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 
 ### Follow-ups
 
-- Medición bypass-proof en lab KVM real (checklist bare-metal §8e).
+- Medición bypass-proof en lab KVM real (`make smoke-egress-kvm`, [red y egress](../concepts/networking-and-egress.md)).
 - Posible ampliar `--nft-http-ports` por tenant (hoy: flag de nodo).
 - CLI `asp` ya existe (2f) para ejercitar lifecycle sin curl.
 
@@ -124,5 +124,5 @@ node-agent ... --dry-run --egress-proxy-listen=:8888 \
 - Sketch previo: [0005](0005-fase-2d-hardening.md)
 - Identidad: [0003](0003-identity.md) · Red: [0002](0002-networking.md)
 - Roadmap §2e: [`../roadmap.md`](../roadmap.md)
-- Bare-metal §8e: [`../bare-metal-ch.md`](../bare-metal-ch.md)
+- Operaciones: [red y egress](../concepts/networking-and-egress.md)
 - Diagrama (nft + ssh-agent-vsock): [`../diagram.svg`](../diagram.svg)

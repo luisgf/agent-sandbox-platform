@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0001-vmm-choice](0001-vmm-choice.md), [`../architecture.md`](../architecture.md), [`../bare-metal-ch.md`](../bare-metal-ch.md)
+- **Relacionados:** [0001-vmm-choice](0001-vmm-choice.md), [`../architecture.md`](../architecture.md), [instalar un nodo](../how-to/install-node.md)
 
 ## Contexto
 
@@ -67,7 +67,7 @@ Restricción FOSS/corp: el control plane **sí** puede desplegarse en K8s (Deplo
 | Node-agent | Proceso host; enroll `POST /v1/nodes/enroll`; register/heartbeat; `--reconcile` |
 | Store | `nodes`, `sandboxes` — **no** objetos kube |
 | Empaquetado | `make pack` / `scripts/pack-release.sh` — tarball de binarios, no chart de sandboxes |
-| Docs ops | [`../bare-metal-ch.md`](../bare-metal-ch.md) asume host KVM, no `kubectl apply` de VMs |
+| Docs ops | [instalar un nodo](../how-to/install-node.md) asume host KVM, no `kubectl apply` de VMs |
 
 No hay manifiestos de “Sandbox CRD” en el árbol a propósito.
 

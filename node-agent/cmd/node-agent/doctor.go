@@ -89,7 +89,7 @@ func checkVMMUser(cfg config, available error, probes vmUserProbes) doctor.Resul
 		if mode == "on" {
 			status = doctor.Fail
 		}
-		return doctor.Result{Status: status, Detail: err.Error(), Fix: "see docs/bare-metal-ch.md section 5.7; --vm-unprivileged=off keeps the VMMs root"}
+		return doctor.Result{Status: status, Detail: err.Error(), Fix: "see docs/concepts/node-runtime.md (the unprivileged VMM); --vm-unprivileged=off keeps the VMMs root"}
 	}
 	return doctor.Result{Status: doctor.OK, Detail: fmt.Sprintf("each Cloud Hypervisor can run as its own user (%d + the VM's CID)", u.UIDBase)}
 }

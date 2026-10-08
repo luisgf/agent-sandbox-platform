@@ -94,7 +94,7 @@ func vmUnprivileged(cfg config, confine *vmm.Confinement, p vmUserProbes) (*vmm.
 			return nil, fmt.Errorf("cannot run microVMs as unprivileged users: %w", err)
 		}
 		slog.Warn("microVMs run as root: they cannot run as users of their own on this host", "reason", err.Error(),
-			"fix", "see docs/bare-metal-ch.md, section 5.7; --vm-unprivileged=off silences this")
+			"fix", "see docs/concepts/node-runtime.md, the unprivileged VMM; --vm-unprivileged=off silences this")
 		return nil, nil
 	}
 	if confine == nil {

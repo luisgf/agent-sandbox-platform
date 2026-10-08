@@ -21,10 +21,10 @@
 #
 # Runs as root: TAPs, nftables and WireGuard need CAP_NET_ADMIN, the VMs /dev/kvm.
 # One node-agent per host (it removes every asp-* TAP and wg-asp-* tunnel
-# another process left). Docs: docs/bare-metal-ch.md §5.6, docs/ops-multi-node.md
+# another process left). Docs: docs/concepts/node-runtime.md, docs/ops-multi-node.md
 [Unit]
 Description=ASP node-agent (Cloud Hypervisor sandboxes)
-Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/docs/bare-metal-ch.md
+Documentation=https://github.com/luisgf/agent-sandbox-platform/blob/main/docs/how-to/install-node.md
 After=network-online.target
 Wants=network-online.target
 # At boot the control plane may not answer yet (another host, or its Postgres is still

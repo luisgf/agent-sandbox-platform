@@ -114,6 +114,7 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 - The node-agent's help said `--agent-listen` has no authentication (it takes the bearer token of
   `--agent-token-file`) and that `--tap-auto` soft-fails (a TAP that cannot be created fails the start).
-  `asp config show -h` prints its help.
+  `asp config show -h` prints its help. `--egress-enforce`'s help said the egress proxy needs it; the proxy
+  denies either way and only the agent's warning depends on it.
 - Many races and leaks around stop, resume, delete and agent restarts; see the pull requests of the
   [design review](https://github.com/luisgf/agent-sandbox-platform/issues/145).

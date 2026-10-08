@@ -154,4 +154,4 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 
 - Roadmap § Fase 2d: [`../roadmap.md`](../roadmap.md)
 - Compleción nft/SSH guest: [0006](0006-fase-2e-nft-ssh-guest.md)
-- Bare-metal §8d: [`../bare-metal-ch.md`](../bare-metal-ch.md)
+- Operaciones: [operaciones de seguridad](../how-to/security-operations.md)

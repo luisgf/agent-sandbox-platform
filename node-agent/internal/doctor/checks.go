@@ -124,7 +124,7 @@ func checkCloudHypervisor(ctx context.Context, h Host, c Config) Result {
 	path, err := h.LookPath(c.CHBinary)
 	if err != nil {
 		return Result{Status: Fail, Detail: fmt.Sprintf("%q not found", c.CHBinary),
-			Fix: "install cloud-hypervisor v" + strconv.Itoa(TestedCloudHypervisor) + " (docs/bare-metal-ch.md section 2.1), or point --ch-binary at it"}
+			Fix: "install cloud-hypervisor v" + strconv.Itoa(TestedCloudHypervisor) + " (docs/how-to/install-node.md section 2), or point --ch-binary at it"}
 	}
 	out, err := h.Run(ctx, path, "--version")
 	if err != nil {

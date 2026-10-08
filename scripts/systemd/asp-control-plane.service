@@ -18,7 +18,7 @@ Wants=network-online.target
 # With database_url pointing at a Postgres that may start later (a container, or another
 # host) the control plane exits until it answers: retry for ever instead of hitting
 # systemd's start limit (5 starts in 10 s). For a Postgres container on this host also add
-# After=docker.service and Wants=docker.service (docs/bare-metal-ch.md section 4.1).
+# After=docker.service and Wants=docker.service (docs/how-to/install-control-plane.md section 1).
 StartLimitIntervalSec=0
 
 [Service]
