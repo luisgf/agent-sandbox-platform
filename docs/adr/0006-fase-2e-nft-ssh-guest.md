@@ -134,6 +134,6 @@ node-agent ... --dry-run --egress-proxy-listen=:8888 \
 
 - Sketch previo: [0005](0005-fase-2d-hardening.md)
 - Identidad: [0003](0003-identity.md) · Red: [0002](0002-networking.md)
-- Roadmap §2e: [`../roadmap.md`](../roadmap.md)
+- Historia, fase 2e: [`../history.md`](../history.md)
 - Operaciones: [red y egress](../concepts/networking-and-egress.md)
 - Diagrama (nft + ssh-agent-vsock): [`../diagram.svg`](../diagram.svg)

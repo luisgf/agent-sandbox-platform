@@ -210,4 +210,4 @@ Los agentes **no** necesitan hablar con CH ni con nft; solo con el control plane
 
 ## Evolución
 
-Orden de fases, gaps y criterios: [`roadmap.md`](roadmap.md). Decisiones normativas: [`adr/`](adr/). Atribución de red a `owner_sub` (evaluación): [ADR-0008](adr/0008-network-flow-attribution.md).
+Lo que el código no hace: [límites conocidos](reference/limitations.md). Lo que viene: [`roadmap.md`](roadmap.md); cómo se construyó, fase a fase: [`history.md`](history.md). Decisiones normativas: [`adr/`](adr/). Atribución de red a `owner_sub` (evaluación): [ADR-0008](adr/0008-network-flow-attribution.md).

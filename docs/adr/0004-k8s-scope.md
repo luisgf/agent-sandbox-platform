@@ -86,5 +86,5 @@ No hay manifiestos de “Sandbox CRD” en el árbol a propósito.
 
 - VMM: ADR-0001
 - Red host-side: ADR-0002
-- Roadmap “fuera de alcance”: [`../roadmap.md`](../roadmap.md) § Fuera de alcance inicial
+- Roadmap “fuera de alcance”: [`../roadmap.md`](../roadmap.md#fuera-de-alcance)
 - Diagrama (nodo bare metal / VM): [`../diagram.svg`](../diagram.svg)

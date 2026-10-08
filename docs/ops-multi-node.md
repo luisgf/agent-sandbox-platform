@@ -130,12 +130,12 @@ Los nodos se autentican ante el plano de control con su certificado de cliente (
 - **Sacar un nodo del reparto:** `asp node cordon node2`. Las sandboxes que ya corren siguen ahí; no se colocan nuevas.
 - **Drenar** (para apagar o actualizar): `cordon`, y esperar a que `asp node list` muestre `0/…` sandboxes, o pedir a los usuarios que paren sus sesiones. Las sesiones no se migran: el disco del guest vive en ese servidor. Las **paradas** no cuentan en `SANDBOXES` pero siguen fijadas a ese nodo (`STOPPED (DISKS)`): no se pueden reanudar mientras esté en cordon, y se borran solas al pasar `ASP_STOPPED_SANDBOX_TTL` (7 días); para vaciarlo antes, `asp session rm` / `asp sandbox delete`.
 - **Volver al reparto:** `asp node uncordon node2`.
-- **Actualizar o reiniciar el node-agent no interrumpe las VMs** (confinadas, con `--vm-survive-restart`, el valor por defecto): siguen corriendo y el proceso nuevo las adopta. No hace falta drenar; durante los segundos de la actualización los `exec` a ese nodo fallan con 502 y la política de egress se reaplica en el primer sondeo. Sin confinamiento, o con `--vm-survive-restart=false`, el reinicio sí las detiene (sus sandboxes quedan `stopped` con el disco intacto): haz `cordon`, drena, y después `systemctl restart asp-node-agent`. **La primera actualización a una versión con esto también las detiene**: las VMs que arrancó el agente anterior están atadas a su servicio (`BindsTo=`) y no tienen registro que adoptar. Para parar de verdad todas las VMs de un nodo: `systemctl stop asp-vms.slice`.
+- **Actualizar o reiniciar el node-agent no interrumpe las VMs** ([actualizar](how-to/upgrade.md#2-cada-nodo)) (confinadas, con `--vm-survive-restart`, el valor por defecto): siguen corriendo y el proceso nuevo las adopta. No hace falta drenar; durante los segundos de la actualización los `exec` a ese nodo fallan con 502 y la política de egress se reaplica en el primer sondeo. Sin confinamiento, o con `--vm-survive-restart=false`, el reinicio sí las detiene (sus sandboxes quedan `stopped` con el disco intacto): haz `cordon`, drena, y después `systemctl restart asp-node-agent`. **La primera actualización a una versión con esto también las detiene**: las VMs que arrancó el agente anterior están atadas a su servicio (`BindsTo=`) y no tienen registro que adoptar. Para parar de verdad todas las VMs de un nodo: `systemctl stop asp-vms.slice`.
 - **Retirar un nodo para siempre:** `POST /v1/nodes/{id}/revoke`, con un admin del IdP o una API key de plataforma. Un nodo revocado no vuelve con un heartbeat; necesita re-enrolar.
 - **Certificados de nodo:** caducan al año y el node-agent los renueva solo, con un tercio de vida por delante, si habla mTLS con un control plane `https://` que tenga `ASP_CLIENT_CA`. La columna `CERT EXPIRES` de `asp node list` muestra cuánto queda; menos de 30 días significa que la renovación está fallando (mira el log del agente). Sin mTLS no hay renovación automática: usa `rotate-cert` o un token fijado al nodo antes de que caduque.
 - **Quién administra nodos:** listar, cordon, uncordon, revoke y rotate-cert piden un admin del IdP (operador basta para listar) o una API key de plataforma. Una API key de tenant recibe 403.
 
-**Orden de actualización:** primero los node-agents y después el plano de control. Un agente antiguo declara siempre 4 cores y 8 GiB, y el planificador nuevo aplica esos valores. Una excepción: para que un reinicio **conserve** las VMs (ADR-0014) el plano de control tiene que entender `adopted_sandboxes` antes de que se reinicie ningún agente; con uno anterior el reinicio acaba como siempre (las pasa a `stopped` y el agente las para), sin perder datos.
+**Orden de actualización:** el plano de control primero y los nodos después, de uno en uno. Un nodo nuevo dice cosas que un plano de control anterior no entiende (`adopted_sandboxes`, para que un reinicio conserve las VMs, y campos de atestación) y las migraciones solo añaden. El paso a paso, qué hace cada reinicio con lo que corre y cómo volver atrás: [actualizar ASP](how-to/upgrade.md).
 
 ## Diagnóstico
 
@@ -145,6 +145,8 @@ Los síntomas de varios servidores (`503 no node can fit`, `409 node … is not 
 
 
 ## Límites
+
+Todos los límites del proyecto, en una página: [límites conocidos](reference/limitations.md). Los de varios servidores:
 
 - No hay migración: si un servidor se pierde, sus sesiones se pierden con él.
 - Una sandbox sobrevive a un reinicio del node-agent solo si su VM está confinada (su propio servicio systemd); un reinicio del servidor las pierde (pasan a `stopped`, con su disco).

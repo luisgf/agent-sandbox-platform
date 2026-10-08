@@ -75,6 +75,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
   flags. `make docs` writes it and a test in each module fails when a page is out of date, so the hand-written
   lists of the READMEs and of `bare-metal-ch.md` are gone. `scripts/check-doc-links.py` checks the relative
   links of the Markdown files.
+- **Pages that were missing.** A [glossary](docs/reference/glossary.md); one page of [known limits](docs/reference/limitations.md)
+  (before they were split between the README, the roadmap and the ADRs); an [upgrade guide](docs/how-to/upgrade.md)
+  (the order, what each restart does to what is running, how to go back); a
+  [backup and restore guide](docs/how-to/backup-and-restore.md), with its commands rehearsed against SQLite and
+  Postgres and what a restored database does to the nodes; and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Changed
 
@@ -96,6 +101,8 @@ The first release will be 0.1.0. Until then this is what `main` has.
   with `ASP_INSECURE_OPEN_API=1`. Nodes authenticate with a certificate or a platform key.
 - **Guest egress is enforced by default** on a node that has an egress proxy.
 - A node that has enrolled takes no sandboxes until it registers.
+- **The roadmap lists only what is ahead.** The history of the phases (`1a` … `3m`) moved to
+  [docs/history.md](docs/history.md); what the code does not do is in [known limits](docs/reference/limitations.md).
 - Node names are unique in the memory store too, as they are in Postgres; two API keys cannot share
   a secret (migration 022).
 - Migrations 018 to 023: retained disks, the first boot, free disk, egress enforcement, the key secret

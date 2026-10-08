@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0002-networking](0002-networking.md), [0004-k8s-scope](0004-k8s-scope.md), [instalar un nodo](../how-to/install-node.md), [`../roadmap.md`](../roadmap.md) §1g–2a
+- **Relacionados:** [0002-networking](0002-networking.md), [0004-k8s-scope](0004-k8s-scope.md), [instalar un nodo](../how-to/install-node.md), [`../history.md`](../history.md) §1g–2a
 
 ## Contexto
 
@@ -54,7 +54,7 @@ El node-agent habla con CH vía su HTTP API sobre Unix socket:
 
 ### Follow-ups
 
-- Perfil Firecracker (Fase 4 del roadmap): adaptador + benchmarks, sin prometer paridad inmediata.
+- Perfil Firecracker (en la [hoja de ruta](../roadmap.md#más-adelante)): adaptador + benchmarks, sin prometer paridad inmediata.
 - Pin de release CH en el tarball de `make pack` / checklist bare-metal.
 
 ## Detalle de implementación en este repo
@@ -93,5 +93,5 @@ node-agent \
 
 - Arquitectura: [`../architecture.md`](../architecture.md)
 - Diagrama: [`../diagram.svg`](../diagram.svg) / [`../diagram.mmd`](../diagram.mmd)
-- Roadmap fases 1g (multi-socket), 2a (TAP/host-vsock): [`../roadmap.md`](../roadmap.md)
+- Historia de las fases 1g (multi-socket), 2a (TAP/host-vsock): [`../history.md`](../history.md)
 - Smoke sin KVM: [`../mvp-smoke.md`](../mvp-smoke.md)
