@@ -3,10 +3,17 @@
 # enrollment. Install it as /etc/asp/agent.yaml (mode 0600). These were the flags of ExecStart;
 # `node-agent --config /etc/asp/agent.yaml --print-config` shows them with their sources.
 control_plane_url: http://127.0.0.1:18112
+# Plain HTTP has no client certificate, so the node authenticates with a platform-scoped API key:
+# the control plane's ASP_BOOTSTRAP_API_KEY (in its EnvironmentFile), kept here in a file only
+# root and its owner read. Without it the node cannot register and the agent exits.
+api_key_file: /home/ubuntu/.secrets/asp-node.key
 node_id: ncc1701d
 ch_binary: /usr/local/bin/cloud-hypervisor
 ch_socket_dir: /run/asp
 disk_dir: /sandbox/disks
+# A workspace has to live under <workspace_root>/<tenant>/ (the tenant of the sandbox's owner):
+# the node refuses a path outside it. Create /sandbox/workspaces/<tenant> for each tenant.
+workspace_root: /sandbox/workspaces
 agent_listen: 127.0.0.1:9100
 reconcile: true
 reconcile_interval: 2s
