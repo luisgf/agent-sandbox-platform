@@ -1,4 +1,4 @@
-# ADR-0006: Fase 2e — nft redirect completo + SSH agent auto en guest
+# ADR-0006: Redirect de nftables completo y agente SSH automático en el guest (antes «Fase 2e»)
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09

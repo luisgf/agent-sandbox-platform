@@ -1,6 +1,7 @@
 # ADR-0015: El VMM corre como un usuario sin privilegios, uno por VM
 
-- **Estado:** Aceptada (2026-10, #105)
+- **Estado:** Aceptada
+- **Fecha:** 2026-10 (#105)
 - **Contexto:** [ADR-0014](0014-vms-outlive-the-agent.md) (cada VM en su unit), [ADR-0012](0012-retained-disks.md) (discos retenidos)
 
 ## Contexto

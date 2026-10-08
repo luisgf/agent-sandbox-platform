@@ -1,6 +1,7 @@
 # ADR-0014: Las VMs sobreviven al node-agent y el siguiente proceso las adopta
 
-- **Estado:** Aceptada (2026-10, #111)
+- **Estado:** Aceptada
+- **Fecha:** 2026-10 (#111)
 - **Contexto:** [ADR-0011](0011-multi-node.md) (nodos), [ADR-0012](0012-retained-disks.md) (discos retenidos)
 - Nota: el número 0013 está reservado para la evaluación de Kubernetes/k3s (#143).
 

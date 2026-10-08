@@ -1,7 +1,8 @@
 # ADR-0008: Atribución de flujos de red (TCP/egress) a `owner_sub`
 
-- **Estado:** Propuesta / **Aceptada para evaluación** — **no implementada**
+- **Estado:** Propuesta
 - **Fecha:** 2026-10
+- **Implementación:** parcial. Hecho: una /30 y un TAP por sandbox, y el proxy y el sumidero de DNS identifican la sandbox por la IP de origen (no por una cabecera del guest), así que el audit del proxy trae su `sandbox_id`. Sin hacer: `owner_sub` y tenant en el audit, identidad inyectada hacia el proxy corporativo, y marcas de nft para TCP crudo. Ver las enmiendas.
 - **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft), [0006](0006-fase-2e-nft-ssh-guest.md) (nft redirect), [0007](0007-multi-user-identity.md) (`owner_sub` / `actor_sub`), [0010](0010-on-demand-local-net.md) (otro path de red, misma identidad), [`../architecture.md`](../architecture.md) § Red, [`../roadmap.md`](../roadmap.md)
 - **Extiende:** la frontera de egress de ADR-0002 con **sujeto humano** en el plano de red (no solo en create/exec/OIDC)
 
@@ -17,7 +18,7 @@ Hoy el dataplane de red sabe (de forma fiable o semi-fiable):
 
 | Señal | Dónde | Atribuye a humano | Honesto |
 |---|---|---|---|
-| `sandbox_id` opcional en header `X-ASP-Sandbox-ID` | Forward proxy audit JSON | Solo si el cliente lo manda y se confía | **No** — el guest puede forjar/omitir el header |
+| `sandbox_id` opcional en header `X-ASP-Sandbox-ID` | Forward proxy audit JSON | Solo si el cliente lo manda y se confía | **No** — el guest puede forjar/omitir el header. *Actualizado 2026-10: el proxy ya no lo lee; el `sandbox_id` del audit sale de la IP de origen* |
 | Allowlist / deny / CONNECT host:port | Proxy + DNS sink | Tenant vía política adjunta a exec | Parcial: tenant/política, no `owner_sub` |
 | Nombre TAP `asp-{shortID}` | Host (`--tap-auto`) | Sandbox (8 chars del UUID) | Sí a sandbox **si** se correlaciona; hoy no se propaga a logs de egress |
 | IP host TAP | una `/30` propia por sandbox dentro de `--guest-subnet` (`10.200.0.0/16`): TAP `.1`, guest `.2` (`--tap-auto`) | Sandbox, dentro del nodo | **Sí, dentro del nodo** — la IP origen identifica la sandbox; el proxy ya la usa para elegir la política del tenant. *Actualizado 2026-10: antes era `10.200.0.1/24` en cada TAP* |
@@ -26,7 +27,7 @@ Hoy el dataplane de red sabe (de forma fiable o semi-fiable):
 
 Restricciones reales del código actual (no wishful):
 
-- `node-agent/internal/egress.ForwardProxy` audita `sandbox_id` leído del header; **no** consulta store/`owner_sub`.
+- `node-agent/internal/egress.ForwardProxy` audita un `sandbox_id`; **no** consulta store/`owner_sub`. *Actualizado 2026-10:* ese `sandbox_id` sale de la IP de origen (`PolicyCache.SandboxFor`), no del header que escribe el guest.
 - *Actualizado 2026-10:* el reconciler da a cada TAP su propia `/30` (`tap.GuestNet`), así que dentro de un nodo la IP origen sí es única por sandbox (`tap.Manager.DefaultHostCIDR` solo queda para quien crea un TAP sin pasar por el reconciler). **No** hay IP única global: dos nodos reparten el mismo `--guest-subnet`.
 - nft redirect opera por **subnet** (`10.200.0.0/16`), no por mark por sandbox.
 - El guest **no es confiable** (ADR-0002/0003): no `NET_ADMIN` de producción; cualquier mark/header que el guest elija es forgeable.
@@ -176,6 +177,10 @@ Requisito: nft enforce + deny default (ADR-0002/0006). Sin enforce, el guest dia
 ## Relación con ADR-0010 (red local)
 
 ADR-0010 no implementa este ADR ni al revés. Con `local_net` apagado el egress sigue el proxy de este diseño. Con `local_net` encendido (propuesta, sin código: [0010](0010-on-demand-local-net.md)) la ruta por defecto de **esa** microVM sale por el túnel del agente local —Internet público y DNS incluidos— y el proxy `:8888` no ve esos flujos. Siguen siendo otro `path` (`local_net`) y la identidad estable sigue siendo `owner_sub`: lookup host-side, headers del guest ignorados. La ruta por defecto **del nodo** (la máquina, y los sandboxes sin el flag) no se sustituye.
+
+## Enmiendas
+
+- **2026-10:** se implementó la mitad de **(2)**: una /30 y un TAP por sandbox (`tap.GuestNet`), y el proxy y el sumidero de DNS buscan la sandbox por la IP de origen para elegir su política y para el rate limit. Un guest que mande `X-ASP-Sandbox-ID` o `X-ASP-Allowlist-JSON` no cambia nada. El audit JSON del proxy lleva `sandbox_id`. Falta lo que hace falta para el auditor: `owner_sub` y `tenant_id` en esa línea, la identidad hacia un proxy corporativo y las marcas para el TCP que no es HTTP.
 
 ## Referencias cruzadas
 
