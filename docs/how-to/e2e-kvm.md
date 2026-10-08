@@ -31,6 +31,8 @@ ASP_E2E_WORKSPACE=/srv/asp/workspaces/default/e2e \   # un directorio del nodo, 
      scripts/e2e-kvm.sh
 ```
 
+El workspace es un directorio **del nodo**, bajo su raíz de workspaces (`<raíz>/<tenant>/…`), del uid 1000 y con un `host.txt` que diga `host-file`, que la sandbox tiene que ver (el modo local lo crea solo; aquí lo pones tú, en el nodo: `echo host-file | sudo -u '#1000' tee …/host.txt`). Si falta, el script falla con eso mismo en el mensaje. Sin `ASP_E2E_WORKSPACE` la sandbox no tiene workspace y esa parte no se comprueba.
+
 Hace lo mismo menos lo que solo ve el host del nodo (el estado del disco, el TAP, las units). Crea la sandbox `e2e-<pid>` y la borra al terminar, también si falla. Los scripts ignoran los ficheros de configuración (`ASP_CONFIG=/dev/null`, [el fichero de configuración](config-file.md)): ni el `/etc/asp` del host donde corren ni el `asp.yaml` de quien los lanza entran en la prueba, y las credenciales para un despliegue van en el entorno.
 
 ## El instalador en máquinas limpias

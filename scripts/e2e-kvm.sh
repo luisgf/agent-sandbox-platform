@@ -20,7 +20,9 @@
 #        scripts/e2e-kvm.sh
 #     An existing deployment, through its API only (any machine with `asp`): the same life, minus
 #     what only the node's host can see. ASP_E2E_WORKSPACE is a directory on the node, under its
-#     workspace root and owned by uid 1000, to test the owner; without it there is no workspace.
+#     workspace root (<root>/<tenant>/...) and owned by uid 1000, to test the owner; it has to hold a
+#     file host.txt with the text host-file, which the sandbox must see (the first mode makes it
+#     itself). Without ASP_E2E_WORKSPACE there is no workspace.
 #     Credentials are the ones `asp` takes (ASP_API_KEY, ASP_ID_TOKEN, asp auth login).
 set -euo pipefail
 
@@ -104,7 +106,11 @@ want "booted once" '^1$' "$(status_field boot_count)"
 echo "==> commands run as the owner of the workspace, and as root when asked"
 if [[ -n "$WORKSPACE" ]]; then
   want "the owner of /workspace" '^1000$' "$(gx "$NAME" 'id -u')"
-  want "the workspace is shared" 'host-file' "$(gx "$NAME" 'cat /workspace/host.txt')"
+  shared="$(gx "$NAME" 'cat /workspace/host.txt')" || true   # a missing file is the failure to explain, not an exit
+  if (( EXISTING )) && grep -q 'No such file' <<<"$shared"; then
+    fail "the workspace is shared: $WORKSPACE on the node has no host.txt (create it, owned by uid 1000, with the text host-file)"
+  fi
+  want "the workspace is shared" 'host-file' "$shared"
 fi
 want "root, when asked" '^0$' "$(asp session exec --name "$NAME" --buffered --root --cmd 'id -u' 2>&1)"
 
