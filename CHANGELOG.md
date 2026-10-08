@@ -45,9 +45,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
 - **An installer**: `curl -fsSL …/releases/latest/download/install.sh | sudo sh` (roles `cli`, `server`,
-  `agent`) installs a release's packages after checking them against `SHA256SUMS`, writes the
-  settings of the `INSTALL_ASP_*` variables into a drop-in under `/etc/asp`, pulls the guest image and
-  starts the service; `asp-killall.sh` and `asp-uninstall.sh` take ASP away again.
+  `agent`) installs a release's packages after checking them against `SHA256SUMS`, through the package
+  manager so that `nftables` and `iproute2` come with a node, writes the settings of the `INSTALL_ASP_*`
+  variables into a drop-in under `/etc/asp`, pulls the guest image and starts the service. On a node it
+  also installs Cloud Hypervisor (the tested version, refused unless it has the SHA-256 the script pins)
+  and `virtiofsd` where the distribution has it. `asp-killall.sh` and `asp-uninstall.sh` take ASP away again.
 - **Joining a node with a private certificate:** the CLI trusts a PEM file named by `ASP_CA_FILE`, reads its key from `ASP_API_KEY_FILE`, and `asp node enroll-token` prints the installer command to add the node, with the
   fingerprint of the certificate (`INSTALL_ASP_CA_SHA256`): the installer reads the certificate from the server, refuses it if the fingerprint differs, and trusts it.
 - **A configuration file** for each component, with drop-ins like k3s's: `/etc/asp/agent.yaml` and
@@ -133,6 +135,11 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Fixed
 
+- **The installer left a clean Debian node crash-looping** (the node-agent needs `nft`, which was only a
+  recommendation and the installer used `dpkg -i`), **and deleted the enroll token of a node that had not
+  enrolled.** The node-agent package depends on `nftables` and `iproute2`, the installer installs through
+  `apt-get`/`dnf` so that they come along, and the token stays (with a warning) until the journal says the node
+  enrolled. `asp-killall.sh` also removes the `ip6` nftables table the node leaves.
 - **`sudo asp doctor` failed on a host that works.** On a host that runs its own control plane (`asp-server`) it
   reported the control plane unreachable, because the certificate it must trust was known to the supervisor only;
   `asp doctor` now hands the node-agent the CA of this host's `asp` command. A host without `/dev/vsock` was

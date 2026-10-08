@@ -1,6 +1,6 @@
 # Instalar un nodo a mano
 
-Un **nodo** es un servidor con KVM que ejecuta las sandboxes como microVMs de Cloud Hypervisor. [El instalador](install.md) lo deja listo con un comando (`INSTALL_ASP_ROLE=agent`); esta guía son los mismos pasos a mano, para quien no lo usa o quiere saber qué toca. El plano de control se instala aparte ([instalar el plano de control](install-control-plane.md)), o todo en un solo host con [`asp-server`](single-host.md).
+Un **nodo** es un servidor con KVM que ejecuta las sandboxes como microVMs de Cloud Hypervisor. [El instalador](install.md) lo deja listo con un comando (`INSTALL_ASP_ROLE=agent`: los paquetes, Cloud Hypervisor, la imagen del guest y el servicio); esta guía son los mismos pasos a mano, para quien no lo usa o quiere saber qué toca. El plano de control se instala aparte ([instalar el plano de control](install-control-plane.md)), o todo en un solo host con [`asp-server`](single-host.md).
 
 > **Sin `/dev/kvm`** (CI, un contenedor, un portátil): no hace falta arrancar Cloud Hypervisor para probar ASP. Un nodo con `--dry-run` usa un VMM de mentira y ejercita todo menos el aislamiento ([`mvp-smoke.md`](../mvp-smoke.md)). Esta guía es para el host con KVM.
 

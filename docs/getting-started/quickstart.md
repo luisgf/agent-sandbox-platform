@@ -20,7 +20,7 @@ sudo asp session start
 sudo asp session exec --cmd 'uname -a'
 ```
 
-El script comprueba cada descarga contra el `SHA256SUMS` de la release, instala los paquetes, baja el kernel y la imagen del guest, y arranca `asp-server`, que hace la base de datos (SQLite), las claves y un certificado TLS autofirmado, ejecuta un plano de control (sin privilegios) y un nodo, y deja el comando `asp` del host configurado. Las variables y el recorrido con dos hosts: [instalar con el script](../how-to/install.md). **Todavía no hay ninguna versión publicada** (la primera será la 0.1.0, [hoja de ruta](../roadmap.md)); hasta entonces, compila (`make build`) y sigue [un solo host, a mano](../how-to/single-host.md#sin-systemd-o-a-mano) o las guías de [un nodo](../how-to/install-node.md) y del [plano de control](../how-to/install-control-plane.md).
+El script comprueba cada descarga contra el `SHA256SUMS` de la release, instala los paquetes (con `nftables`), instala Cloud Hypervisor (la versión probada, con su suma fijada en el script) y `virtiofsd` si la distribución lo tiene, baja el kernel y la imagen del guest, y arranca `asp-server`, que hace la base de datos (SQLite), las claves y un certificado TLS autofirmado, ejecuta un plano de control (sin privilegios) y un nodo, y deja el comando `asp` del host configurado. Las variables y el recorrido con dos hosts: [instalar con el script](../how-to/install.md). **Todavía no hay ninguna versión publicada** (la primera será la 0.1.0, [hoja de ruta](../roadmap.md)); hasta entonces, compila (`make build`) y sigue [un solo host, a mano](../how-to/single-host.md#sin-systemd-o-a-mano) o las guías de [un nodo](../how-to/install-node.md) y del [plano de control](../how-to/install-control-plane.md).
 
 ## Sin KVM (dry-run)
 

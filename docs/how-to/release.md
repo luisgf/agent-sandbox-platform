@@ -40,6 +40,14 @@ Una versión con sufijo (`v0.2.0-rc.1`) se publica como pre-release.
 
 [SemVer](https://semver.org/). Mientras la mayor sea 0, una menor puede cambiar ajustes o comportamiento, y el changelog lo dice. Una migración de base de datos (`control-plane/migrations`) solo añade: el control plane nuevo arranca sobre la base del anterior, y se actualiza **antes** que los nodos ([`ops-multi-node.md`](../ops-multi-node.md)).
 
+## Subir Cloud Hypervisor
+
+El instalador lleva fijada la versión de Cloud Hypervisor que pone en los nodos y la suma SHA-256 de sus binarios (`CH_VERSION`, `CH_SHA256_AMD64` y `CH_SHA256_ARM64`, al principio de `scripts/install.sh`): se niega a instalar un fichero con otra suma. Para subir la versión:
+
+1. Pruébala en un host con KVM (`make e2e-kvm`): su API REST y sus opciones cambian entre mayores, y el cliente del nodo (`node-agent/internal/vmm`) las sigue.
+2. Pon las sumas que GitHub publica para esos ficheros: `gh api repos/cloud-hypervisor/cloud-hypervisor/releases/tags/vX.Y --jq '.assets[] | select(.name|test("^cloud-hypervisor-static")) | [.name, .digest] | @tsv'`.
+3. Cambia `TestedCloudHypervisor` en `node-agent/internal/doctor/checks.go` (el doctor avisa si la mayor instalada es otra) y la versión en [instalar un nodo](install-node.md#2-cloud-hypervisor). Un test (`TestTheInstallerPinsTheCloudHypervisorThatIsTested`) falla si el script y el doctor dicen mayores distintas.
+
 ## Primera vez en un repositorio
 
 - El workflow vive en `.github/workflow-drafts/release.yml` hasta que quien empuja tenga el permiso `workflow` (`gh auth refresh -s workflow`): `git mv .github/workflow-drafts/release.yml .github/workflows/release.yml`.

@@ -22,6 +22,9 @@ fi
 for l in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(asp-|wg-asp-)'); do
 	ip link delete "$l" 2>/dev/null
 done
-command -v nft >/dev/null 2>&1 && nft delete table ip asp_egress 2>/dev/null
+if command -v nft >/dev/null 2>&1; then
+	nft delete table ip asp_egress 2>/dev/null
+	nft delete table ip6 asp_egress 2>/dev/null
+fi
 echo "asp-killall: the sandboxes' VMs are stopped"
 exit 0
