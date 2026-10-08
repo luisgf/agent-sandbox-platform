@@ -80,7 +80,7 @@ Son los mismos *handlers* que el camino global, pero ligados a **esa** sandbox: 
 
 `--ssh-agent-bridge` (un socket unix; el reconciler crea `/run/asp/ssh-agent-{id}.sock` hacia él) y `--identity-listen` (sin vínculo con una sandbox: solo laboratorio, con `--insecure-identity-sandbox-header`) siguen existiendo, igual que AF_VSOCK de verdad y `--host-vsock-dir` (sockets unix de laboratorio). Un dry-run con `FakeVMM` y `PodDaemonUnix` **no** abre listeners híbridos.
 
-La imagen lleva `ssh-agent-vsock.service` (vsock CID 2:26501 → `/run/agent-sandbox/ssh-agent.sock`): al nodo le basta `--host-vsock` (la antigua `--guest-ssh-agent-auto` ya no hace nada). `--host-vsock` necesita `/dev/vsock`, o `--host-vsock-dir`.
+La imagen lleva `ssh-agent-vsock.service` (vsock CID 2:26501 → `/run/agent-sandbox/ssh-agent.sock`): al nodo le basta `--host-vsock` (la antigua `--guest-ssh-agent-auto` ya no hace nada). `--host-vsock` no necesita el módulo `vsock` del kernel: sin `/dev/vsock` el nodo abre sus listeners globales como sockets unix (con un aviso en el log), y los de cada sandbox son unix de todos modos.
 
 **Límites.** Un listener por sandbox y puerto. Hay que abrirlos *antes* de que el guest marque. Si la ruta del multiplexor cambia (restaurar un snapshot), habría que reabrirlos: no está implementado. Comprobarlo en un host exige una imagen con `vsock-ssh-agent-proxy` y un nodo con esto.
 

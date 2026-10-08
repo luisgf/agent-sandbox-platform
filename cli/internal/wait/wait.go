@@ -55,6 +55,10 @@ func WaitForState(ctx context.Context, get Getter, id, want string, opt Options)
 			return sb, nil
 		}
 		if isTerminalFailure(sb.State, want) {
+			// The node says why a start failed (status_detail): "failed" alone sends the user to a journal.
+			if sb.StatusDetail != "" {
+				return sb, fmt.Errorf("sandbox %s reached terminal state %q while waiting for %q: %s", id, sb.State, want, sb.StatusDetail)
+			}
 			return sb, fmt.Errorf("sandbox %s reached terminal state %q while waiting for %q", id, sb.State, want)
 		}
 		if time.Now().After(deadline) {

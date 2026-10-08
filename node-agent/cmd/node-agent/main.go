@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -259,6 +260,7 @@ func main() {
 	} else {
 		// Default: spawn one cloud-hypervisor per sandbox under --ch-socket-dir.
 		ch := vmm.NewSpawningCloudHypervisor(cfg.VMMBinary, cfg.CHSocketDir)
+		ch.LookPath = exec.LookPath
 		vmConfine, err = vmConfinement(cfg, unit.Available())
 		if err != nil {
 			slog.Error("--vm-confine", "error", err)
@@ -911,6 +913,7 @@ func loadConfig() config {
 	if cfg.EnrollURL == "" {
 		cfg.EnrollURL = cfg.ControlPlaneURL
 	}
+	cfg.VirtiofsdBin = virtiofs.Resolve(cfg.VirtiofsdBin)
 	cfg.GuestVerify = strings.ToLower(strings.TrimSpace(cfg.GuestVerify))
 	switch cfg.GuestVerify {
 	case reconciler.GuestVerifyAuto, reconciler.GuestVerifyOn, reconciler.GuestVerifyOff:

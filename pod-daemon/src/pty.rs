@@ -127,7 +127,7 @@ pub fn spawn(spec: PtyCommand, prepared: Prepared) -> io::Result<(Child, File)> 
         }
         Err(err) => {
             unsafe { libc::close(slave_fd) };
-            Err(err)
+            Err(crate::runas::spawn_error(&spec.cmd[0], err))
         }
     }
 }

@@ -34,7 +34,7 @@ sudo apt install -y \
 # golang-go rustc cargo
 ```
 
-Dos programas que no están en los repositorios de las distribuciones: `cloud-hypervisor` (abajo) y el `virtiofsd` en Rust (no el de QEMU; solo hace falta para las sandboxes con workspace, y `--virtiofsd-bin` lo apunta). `setpriv` (util-linux 2.31 o posterior, ya instalado en Ubuntu y Debian) lo usa el VMM sin privilegios, y `wireguard-tools` solo la red local-net. `sudo asp doctor` dice qué falta.
+Dos programas que normalmente no están en los repositorios: `cloud-hypervisor` (abajo) y el `virtiofsd` en Rust (no el de QEMU; solo hace falta para las sandboxes con workspace). `virtiofsd` sí está en Ubuntu 24.04 y Debian 13 (`sudo apt install virtiofsd`, que lo deja en `/usr/libexec/virtiofsd`: el nodo lo busca ahí además de en el `PATH`); en otras distribuciones, de [su repositorio](https://gitlab.com/virtio-fs/virtiofsd), y `--virtiofsd-bin` lo apunta. `setpriv` (util-linux 2.31 o posterior, ya instalado en Ubuntu y Debian) lo usa el VMM sin privilegios, y `wireguard-tools` solo la red local-net. `sudo asp doctor` dice qué falta.
 
 El usuario del servicio node-agent debe pertenecer al grupo `kvm` (y normalmente `netdev` si crea TAPs):
 

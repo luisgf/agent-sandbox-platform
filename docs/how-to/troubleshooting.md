@@ -19,7 +19,7 @@ node doctor (node1)
   ok    kvm               /dev/kvm opens read-write (-rw-rw----)
   ok    cloud-hypervisor  /usr/local/bin/cloud-hypervisor v53.0
   warn  virtiofsd         "virtiofsd" not found: a sandbox with a workspace cannot start
-                          fix: install the Rust virtiofsd (not the QEMU one) or point --virtiofsd-bin at it
+                          fix: install the Rust virtiofsd (not the QEMU one: sudo apt install virtiofsd on Ubuntu 24.04 and Debian 13) or point --virtiofsd-bin at it
   fail  nft               the table asp_egress is not applied: guests are not forced through the proxy
                           fix: restart the agent; if it started, read its log for the nft error
   ...
@@ -35,12 +35,12 @@ Una comprobación que no aplica a la configuración del nodo sale como `skip` co
 | `privileges` | no es root (fuera de `--dry-run`) o el sistema no es Linux | ejecuta el agente como root, p. ej. con su unit de systemd |
 | `kvm` | `/dev/kvm` no existe o el agente no puede abrirlo en lectura y escritura | activa VT-x/AMD-V en el firmware y carga `kvm_intel`/`kvm_amd`; dentro de una VM, activa la virtualización anidada en el host que la corre; usuario en el grupo `kvm` |
 | `cloud-hypervisor` | no está, o `--version` falla. **`warn`** si la versión mayor no es la probada (v53): su API REST y sus opciones cambian entre mayores | instala la v53 ([instalar un nodo](install-node.md#2-cloud-hypervisor)), o apunta `--ch-binary` |
-| `virtiofsd` | (solo `warn`) no está: una sandbox con workspace no arranca | instala el `virtiofsd` en Rust (no el de QEMU), o `--virtiofsd-bin` |
+| `virtiofsd` | (solo `warn`) no está en el `PATH` ni en `/usr/libexec/virtiofsd` (donde lo deja el paquete de Ubuntu y Debian): una sandbox con workspace no arranca | `sudo apt install virtiofsd` (Ubuntu 24.04, Debian 13) o el `virtiofsd` en Rust de otra fuente (no el de QEMU), o `--virtiofsd-bin` |
 | `guest-kernel`, `guest-rootfs` | el fichero no existe, está vacío, o su digest no es el que dice un `SHA256SUMS` en su directorio. El kernel se hashea siempre; la imagen base (gigas) solo para compararla con un `SHA256SUMS` | `sudo asp image pull --version X` (baja, comprueba e instala una versión) o `scripts/build-guest-image.sh`, y apunta `--guest-kernel` / `--guest-rootfs`. Con `SHA256SUMS` al lado (o enlazado desde `/opt/sandbox`) y `--guest-verify=auto`, un fichero que no coincide **no arranca**: la sandbox falla con el motivo |
 | `disk-dir` | no se puede crear un fichero en `--disk-dir`, o queda menos libre que `--disk-min-free-mib` (el nodo se niega entonces a clonar o reanudar). **`warn`** por debajo del doble | libera espacio, borra sandboxes paradas (`asp session rm`), sube el disco o baja el mínimo |
 | `systemd` | con `--vm-confine=on`: no hay systemd, `systemd-run` o cgroup v2 con el controlador de memoria. **`warn`** con `auto`: las VMs correrían como hijas del agente, sin cgroup y sin sobrevivir a su reinicio | un host con systemd y cgroup v2, o `--vm-confine=off` a conciencia |
 | `tap` | con `--tap-auto`: no hay `ip`, o no se puede crear un TAP de prueba (`aspdoctor0`, que se borra al instante) | root (CAP_NET_ADMIN) y el módulo `tun` |
-| `vsock` | con `--host-vsock` sin `--host-vsock-dir`: no existe `/dev/vsock` (los servicios guest→host escuchan en AF_VSOCK 26501/26502) | `modprobe vsock vhost_vsock`, o `--host-vsock-dir` para sockets unix (labs) |
+| `vsock` | nunca falla: sin `/dev/vsock` dice `skip`, porque con Cloud Hypervisor los servicios guest→host (26501, 26502) escuchan en un socket unix por sandbox y no hace falta el módulo | nada |
 | `nft` | el nodo debería forzar el egress por su proxy (`--egress-proxy-listen`) y no hay `nft`, o la tabla `asp_egress` no está aplicada, o le falta una cadena o el puerto del proxy. **`warn`** si la tabla está pero este nodo no pide egress: **un resto de otro agente, cuyas reglas siguen vivas y aplican a todos los TAP `asp-*` del host** (soltó las respuestas de un guest de otra subred) | reinicia el agente; para un resto: `nft delete table ip asp_egress` (y `ip6`) |
 | `ip-forward` | nunca falla: informa del valor. Los túneles local-net lo necesitan a 1; el redirect de egress no | `sysctl net.ipv4.ip_forward=1` solo si usas local-net |
 | `time` | (solo `warn`) el reloj del host no está sincronizado: los guests lo siguen por el dispositivo PTP | un cliente NTP (systemd-timesyncd o chrony) |

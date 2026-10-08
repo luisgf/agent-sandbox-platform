@@ -57,7 +57,11 @@ type CloudHypervisor struct {
 	Confine *Confinement
 	// ReadyTimeout is how long Start waits for the API socket to accept Ping.
 	ReadyTimeout time.Duration
-	Logger       *slog.Logger
+	// LookPath, when set, is asked for the binary before a VM is started, so that a node that has no
+	// Cloud Hypervisor fails a start at once and says so, instead of after ReadyTimeout of waiting for a
+	// socket nobody will open. A node sets exec.LookPath; tests that fake the process leave it nil.
+	LookPath func(string) (string, error)
+	Logger   *slog.Logger
 
 	HTTPClient *http.Client // shared-mode / injected client
 
@@ -83,6 +87,9 @@ type chInstance struct {
 	console      *Console
 	serialSocket string
 }
+
+// ErrBinaryNotFound means the Cloud Hypervisor binary is not on this node.
+var ErrBinaryNotFound = errors.New("cloud-hypervisor is not on this node")
 
 // NewCloudHypervisor constructs a shared-socket client (legacy / --ch-api-socket).
 // Does not spawn cloud-hypervisor; the process must already be listening on apiSocket.
@@ -462,6 +469,11 @@ func (c *CloudHypervisor) startPerSandbox(ctx context.Context, config MicroVMCon
 	binary := c.BinaryPath
 	if binary == "" {
 		binary = "cloud-hypervisor"
+	}
+	if c.LookPath != nil {
+		if _, err := c.LookPath(binary); err != nil {
+			return fmt.Errorf("%w: %q is not installed (install Cloud Hypervisor v53, docs/how-to/install-node.md section 2, or point --ch-binary at it; sudo asp doctor says what else is missing)", ErrBinaryNotFound, binary)
+		}
 	}
 	// --seccomp true is Cloud Hypervisor's default; it is spelled out so that a
 	// different default in some version cannot turn the filter off.

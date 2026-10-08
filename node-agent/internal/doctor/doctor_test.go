@@ -295,7 +295,8 @@ func TestVsock(t *testing.T) {
 	c := baseConfig()
 	want(t, run(t, find(t, f.host(), c, "vsock")), Skip, "--host-vsock is off")
 	c.HostVsock = true
-	want(t, run(t, find(t, f.host(), c, "vsock")), Fail, "/dev/vsock does not exist")
+	// A host without the module works: the guests of Cloud Hypervisor connect to a unix socket per sandbox.
+	want(t, run(t, find(t, f.host(), c, "vsock")), Skip, "does not need it")
 	f.files["/dev/vsock"] = 0
 	want(t, run(t, find(t, f.host(), c, "vsock")), OK, "/dev/vsock")
 	c.HostVsockDir = "/run/asp/hv"

@@ -51,6 +51,17 @@ func TestWaitForStateFailed(t *testing.T) {
 	}
 }
 
+// The reason the node gave for a failed start is part of the error: "failed" alone says nothing.
+func TestWaitForStateFailedSaysWhy(t *testing.T) {
+	get := func(ctx context.Context, id string) (client.Sandbox, error) {
+		return client.Sandbox{ID: id, State: "failed", StatusDetail: `vmm start: cloud-hypervisor is not on this node: "cloud-hypervisor" is not installed`}, nil
+	}
+	_, err := WaitForState(context.Background(), get, "sb1", "running", Options{Timeout: time.Second, Log: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), `reached terminal state "failed"`) || !strings.HasSuffix(err.Error(), `"cloud-hypervisor" is not installed`) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestWaitForStateTimeout(t *testing.T) {
 	get := func(ctx context.Context, id string) (client.Sandbox, error) {
 		return client.Sandbox{ID: id, State: "starting"}, nil

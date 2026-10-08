@@ -116,7 +116,7 @@ func TestReadEnvFileLikeSystemd(t *testing.T) {
 func TestDoctorRunsTheNodeAgentWithTheNodesSettings(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "node-agent")
-	script := "#!/bin/sh\necho \"args: $*\"\necho \"url: $ASP_CONTROL_PLANE_URL\"\nexit ${FAKE_EXIT:-0}\n"
+	script := "#!/bin/sh\necho \"args: $*\"\necho \"url: $ASP_CONTROL_PLANE_URL\"\necho \"ca: $ASP_CONTROL_PLANE_CA\"\nexit ${FAKE_EXIT:-0}\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -172,5 +172,53 @@ func TestFindNodeAgentPrefersPathThenThePackage(t *testing.T) {
 	}
 	if got, _ := findNodeAgent("/elsewhere/na"); got != "/elsewhere/na" {
 		t.Errorf("a named one wins: got %s", got)
+	}
+}
+
+// The asp command of a standalone host knows the control plane's certificate (ca_file); the node on
+// that host is given it in an environment variable only asp-server sets, so asp doctor hands the
+// CLI's own over unless something else says which.
+func TestDoctorTrustsTheCAOfThisHostsCLI(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "node-agent")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"ca: $ASP_CONTROL_PLANE_CA\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		env     map[string]string
+		envFile string
+		want    string
+	}{
+		{"the CLI's ca_file goes with its URL", map[string]string{"ASP_CONTROL_PLANE_URL": "https://127.0.0.1:8443", "ASP_CA_FILE": "/var/lib/asp/server/tls.crt"}, "", "ca: /var/lib/asp/server/tls.crt"},
+		{"no URL, no CA (another control plane may be meant)", map[string]string{"ASP_CA_FILE": "/var/lib/asp/server/tls.crt"}, "", "ca: \n"},
+		{"a CA already set wins", map[string]string{"ASP_CONTROL_PLANE_URL": "https://cp:8443", "ASP_CA_FILE": "/cli.crt", "ASP_CONTROL_PLANE_CA": "/node.crt"}, "", "ca: /node.crt"},
+		{"the env file wins", map[string]string{"ASP_CONTROL_PLANE_URL": "https://cp:8443", "ASP_CA_FILE": "/cli.crt"}, "ASP_CONTROL_PLANE_CA=/from-file.crt\n", "ca: /from-file.crt"},
+		{"nothing to hand over", nil, "", "ca: \n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range []string{"ASP_CONTROL_PLANE_URL", "ASP_CA_FILE", "ASP_CONTROL_PLANE_CA"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			args := []string{"doctor", "--node-agent", fake}
+			if c.envFile != "" {
+				f := filepath.Join(dir, "env")
+				if err := os.WriteFile(f, []byte(c.envFile), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--env-file", f)
+			}
+			var stdout, stderr strings.Builder
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit %d: %s", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), c.want) {
+				t.Errorf("got %q, want it to contain %q", stdout.String(), c.want)
+			}
+		})
 	}
 }

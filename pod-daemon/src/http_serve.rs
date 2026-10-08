@@ -364,7 +364,7 @@ fn spawn_piped(req: &ExecRequest, policy: &ExecPolicy, stdin: Stdio) -> io::Resu
         .process_group(0);
     prepared.apply(&mut command);
     apply_env(&mut command, req);
-    command.spawn()
+    command.spawn().map_err(|e| runas::spawn_error(&req.cmd[0], e))
 }
 
 struct SessionGuard(Option<String>);

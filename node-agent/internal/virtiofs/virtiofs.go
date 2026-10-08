@@ -13,6 +13,29 @@ import (
 	"github.com/luisgf/agent-sandbox-platform/node-agent/internal/unit"
 )
 
+// DefaultBinary is the name looked up when none is configured.
+const DefaultBinary = "virtiofsd"
+
+// DistroPath is where the distributions' package of the Rust virtiofsd puts it (Debian, Ubuntu and
+// Fedora: /usr/libexec), which is not on PATH. A variable so that a test can point it elsewhere.
+var DistroPath = "/usr/libexec/virtiofsd"
+
+// Resolve is the virtiofsd to run for the setting bin ("" is the default name). The default name is
+// looked up on PATH and then at DistroPath, so that `apt install virtiofsd` is enough; any other
+// setting is taken as it is given.
+func Resolve(bin string) string {
+	if bin != "" && bin != DefaultBinary {
+		return bin
+	}
+	if p, err := exec.LookPath(DefaultBinary); err == nil {
+		return p
+	}
+	if info, err := os.Stat(DistroPath); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		return DistroPath
+	}
+	return DefaultBinary
+}
+
 // ErrNotFound means the virtiofsd binary is not on PATH (or the configured
 // path does not exist). The reconciler fails sandbox start only when a
 // workspace was requested.
@@ -113,7 +136,7 @@ func Start(ctx context.Context, cfg Config) (func(), error) {
 	}
 	bin := cfg.Binary
 	if bin == "" {
-		bin = "virtiofsd"
+		bin = DefaultBinary
 	}
 	path, err := exec.LookPath(bin)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -860,5 +861,46 @@ func TestExitWatchersAreIndependent(t *testing.T) {
 		if err := ch.Stop(ctx, id); err != nil {
 			t.Fatalf("stop %s: %v", id, err)
 		}
+	}
+}
+
+// A node without Cloud Hypervisor fails a start at once and says what to install, instead of waiting
+// ReadyTimeout for an API socket that nothing will open (30 s, and then only "timeout").
+func TestNoBinaryFailsAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeCHRunner{}
+	ch := NewSpawningCloudHypervisor("cloud-hypervisor", dir)
+	ch.Runner = runner
+	ch.ReadyTimeout = time.Minute
+	ch.LookPath = func(name string) (string, error) {
+		if name != "cloud-hypervisor" {
+			t.Errorf("looked up %q", name)
+		}
+		return "", exec.ErrNotFound
+	}
+	began := time.Now()
+	err := ch.Start(context.Background(), MicroVMConfig{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128})
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Fatalf("got %v, want ErrBinaryNotFound", err)
+	}
+	for _, want := range []string{`"cloud-hypervisor"`, "install-node.md", "--ch-binary"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say %q: %v", want, err)
+		}
+	}
+	if time.Since(began) > 5*time.Second {
+		t.Errorf("took %s: it waited", time.Since(began))
+	}
+	runner.mu.Lock()
+	n := len(runner.starts)
+	runner.mu.Unlock()
+	if n != 0 || ch.InstanceCount() != 0 {
+		t.Errorf("a process was started (%d) or an instance kept (%d)", n, ch.InstanceCount())
+	}
+	// With the binary there, the start goes on.
+	ch.LookPath = func(string) (string, error) { return "/usr/local/bin/cloud-hypervisor", nil }
+	ch.ReadyTimeout = 2 * time.Second
+	if err := ch.Start(context.Background(), MicroVMConfig{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", KernelPath: "/k", RootFSPath: "/r", CPUs: 1, MemoryMiB: 128}); err != nil {
+		t.Fatalf("with the binary: %v", err)
 	}
 }
