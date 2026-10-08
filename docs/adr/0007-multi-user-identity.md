@@ -246,25 +246,13 @@ Orden intencional: **no** mintir `user_sub` antes de tener owner real en store (
 | **4 SSH scoped** | **Hecho (MVP 2026-10):** registry `sandboxID→unix path`; `ASP_SSH_AGENT_SOCK_TEMPLATE` (`{owner_sub}`/`{sandbox_id}`); hybrid con upstream por sandbox (sin fallback a `SSH_AUTH_SOCK` global); symlink `ssh-agent-{id}.sock` → path resuelto; confirm default-on en multi-user; approve registra `actor_sub`. **No** spawnea ssh-agent por usuario (ops provisiona socks/keys). |
 | **5 Workload `user_sub`** | **Hecho** (2026-10): `user_sub`/`act` desde `sandbox.owner_sub`; guest `user_sub`/`act` ignorados en proxy y CP; lab sin owner sigue mintando sin claims humanos. |
 
-**Límite honesto fase 1–5:** sin IdP configurado (lab), el cliente *puede* enviar `owner_sub` en el body y `X-ASP-Actor-Sub`; **no hay RBAC**. Con Bearer JWT IdP presente (o `ASP_IDP_REQUIRED=1`), el CP toma `sub` del token, mapea rol desde groups/roles claims, y **aplica la matriz**. Tabla `tenant_memberships` aún no. SSH fase 4 es **path injection / template** — no un gestor de agentes; sin template el bridge legacy (`SSH_AUTH_SOCK` global) sigue existiendo y **no** es multi-user-safe. Fase 5: `user_sub`/`act` solo si hay `owner_sub` en store; el mint **no** lee `actor_sub` de la petición guest (el guest no es autoridad); `act.sub` = `user_sub` (= owner) salvo que un path confiable futuro pase `actorSub` a `MintIdentity`. Ops lab Keycloak (`asp` @ auth.luisgf.es) cableado en ncc1701d (ver § ops lab). Gaps residuales: IdP corporativo Entra/Okta, tabla `tenant_memberships`, materializar socks SSH por usuario.
+**Límite honesto fase 1–5:** sin IdP configurado (lab), el cliente *puede* enviar `owner_sub` en el body y `X-ASP-Actor-Sub`; **no hay RBAC**. Con Bearer JWT IdP presente (o `ASP_IDP_REQUIRED=1`), el CP toma `sub` del token, mapea rol desde groups/roles claims, y **aplica la matriz**. Tabla `tenant_memberships` aún no. SSH fase 4 es **path injection / template** — no un gestor de agentes; sin template el bridge legacy (`SSH_AUTH_SOCK` global) sigue existiendo y **no** es multi-user-safe. Fase 5: `user_sub`/`act` solo si hay `owner_sub` en store; el mint **no** lee `actor_sub` de la petición guest (el guest no es autoridad); `act.sub` = `user_sub` (= owner) salvo que un path confiable futuro pase `actorSub` a `MintIdentity`. Un Keycloak real cableado en el laboratorio (ver § ops lab). Gaps residuales: IdP corporativo Entra/Okta, tabla `tenant_memberships`, materializar socks SSH por usuario.
 
-## Ops lab — Keycloak realm `asp` (ncc1701d)
+## Ops lab — Keycloak realm `asp`
 
-Cableado real (2026-10), **sin secretos en git**:
+El cableado del laboratorio de los mantenedores (el realm, el cliente, los grupos, dónde están los secretos) está en [`../lab/idp-keycloak.md`](../lab/idp-keycloak.md); cómo conectar un IdP propio, con la matriz de roles, en [`../how-to/idp.md`](../how-to/idp.md).
 
-| Pieza | Valor / ruta |
-|---|---|
-| Issuer | `https://auth.luisgf.es/realms/asp` |
-| Cliente / `aud` | `asp-api` |
-| Grupos | `asp-admin` / `asp-operator` / `asp-user` / `asp-viewer`; destroy-any = `sandbox:destroy-any`; exec-any = `sandbox:exec-any` |
-| Env CP | `ASP_IDP_ISSUER` / `AUDIENCE` / `JWKS_URL` / `REQUIRED` / `ROLE_CLAIM` / `ROLE_PREFIX` / `DESTROY_ANY_GROUP` |
-| Secretos host | `~/.secrets/asp-idp.env` (solo `ASP_IDP_*`); `~/.secrets/asp-keycloak-lab.txt` (client secret + user `asp-lab`) |
-| CP listen | `127.0.0.1:18112` — unit `asp-control-plane.service` ([plantilla](../../scripts/systemd/asp-control-plane.service)) |
-| Admin KC | Preferir `ssh -L 8081:127.0.0.1:8081`; edge hoy **no** niega `/admin` (límite documentado) |
-
-Detalle (flujos, alternativas, verificación 401): [`../ops-idp-keycloak-lab.md`](../ops-idp-keycloak-lab.md).
-
-**Límite honesto residual ops:** lab ≠ Entra/Okta; sin `tenant_memberships`; este CP lab puede ir en MemoryStore; password grant solo para pruebas.
+**Límite honesto residual ops:** lab ≠ Entra/Okta; sin `tenant_memberships`; el password grant es solo para pruebas.
 
 ## Enmiendas
 

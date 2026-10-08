@@ -74,6 +74,10 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Changed
 
+- **Roles:** a new role, `user` (`asp-user`), creates and runs its own sandboxes and sees no one else's.
+  An `operator` can `exec` in other people's sandboxes only with the group `sandbox:exec-any` (as for
+  destroying with `sandbox:destroy-any`): move the people and agents that only use sandboxes to
+  `asp-user`. [Connect an IdP](docs/how-to/idp.md)
 - **The packaged units read a file, not `Environment=` lines:** `ExecStart=… --config /etc/asp/agent.yaml`
   (or `server.yaml`), with the settings the unit used to carry in the file the package installs. The
   control plane's files belong to the group `asp-control-plane`, whose user reads them itself, so the

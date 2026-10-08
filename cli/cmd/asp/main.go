@@ -122,8 +122,8 @@ Global env:
   ASP_IDP_SECRETS_FILE    KEY=VALUE secrets (default ~/.secrets/asp-keycloak-lab.txt)
   ASP_IDP_CLIENT_ID/_SECRET / ASP_IDP_USERNAME/_PASSWORD / ASP_IDP_GRANT_TYPE
 
-Agent one-liner (lab IdP on ncc1701d — see docs/ops-asp-agent-runner.md):
-  export ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 ASP_REQUIRE_TOKEN=1
+Agent one-liner (with an IdP — see docs/ops-asp-agent-runner.md):
+  export ASP_CONTROL_PLANE_URL=https://cp.example:8443 ASP_REQUIRE_TOKEN=1
   asp sandbox run --tenant=default --cmd 'echo hello'
 
 Reusable shell session (OpenCode bash tool — see docs/ops-asp-session.md):

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Lab control-plane with Keycloak IdP required (realm asp @ auth.luisgf.es).
+# Lab control-plane with Keycloak IdP required (realm asp of the lab's Keycloak, docs/lab/idp-keycloak.md).
 # Env: ~/.secrets/asp-idp.env (ASP_IDP_*). Does not touch Keycloak.
-# Prefer systemd unit asp-control-plane.service on ncc1701d (see scripts/systemd/).
+# Prefer systemd unit asp-control-plane.service on the lab host (see scripts/systemd/ and docs/lab/).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO="${ASP_CP_DEMO_DIR:-/tmp/asp-idp-lab}"

@@ -364,7 +364,7 @@ In scripts, give `opencode run` an empty stdin: `opencode run "…" < /dev/null`
 
 ```bash
 export ASP_SSH=ubuntu@node1
-export ASP_REMOTE_EXEC='env ASP_CONTROL_PLANE_URL=http://127.0.0.1:18112 /home/ubuntu/.local/bin/asp-opencode-shell --remote-exec'
+export ASP_REMOTE_EXEC='env ASP_CONTROL_PLANE_URL=http://127.0.0.1:8080 /home/ubuntu/.local/bin/asp-opencode-shell --remote-exec'
 ```
 
 Over ssh, session names and guest directories may only use `A-Z a-z 0-9 _ . / -`, and there is no interactive terminal.
@@ -408,7 +408,7 @@ Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs
 |---|---|---|
 | `--workspace /abs/path` | Shares a host directory into the guest via virtiofs, mounted at `/workspace`. | [`why-virtiofs-pty.md`](docs/why-virtiofs-pty.md) |
 | `--local-net` + `asp session local-net up` | Routes the session's traffic through a WireGuard tunnel to your machine. | [`ops-local-net.md`](docs/ops-local-net.md) |
-| `asp auth login` | Fetches and caches an IdP token; the CLI then sends it as Bearer automatically. | [`ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) |
+| `asp auth login` | Fetches and caches an IdP token; the CLI then sends it as Bearer automatically. | [`how-to/idp.md`](docs/how-to/idp.md) |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | Stops idle sandboxes on the control plane (their disks are kept). | [`control-plane/README.md`](control-plane/README.md) |
 | `asp session stop` / `resume` / `rm` | Stop keeps the disk, resume boots it again on the same node, rm deletes it. `ASP_STOPPED_SANDBOX_TTL` (7 days) bounds how long a stopped one is kept. | [ADR-0012](docs/adr/0012-retained-disks.md) |
 
@@ -483,7 +483,8 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 |---|---|
 | Agent sessions and harness wrapper | [`docs/ops-asp-session.md`](docs/ops-asp-session.md) |
 | One-shot `asp sandbox run` | [`docs/ops-asp-agent-runner.md`](docs/ops-asp-agent-runner.md) |
-| Keycloak IdP lab | [`docs/ops-idp-keycloak-lab.md`](docs/ops-idp-keycloak-lab.md) |
+| Connect an IdP (OIDC): roles, claims, Keycloak example | [`docs/how-to/idp.md`](docs/how-to/idp.md) |
+| The maintainers' test host (not a deployment guide) | [`docs/lab/`](docs/lab/README.md) |
 | On-demand local network | [`docs/ops-local-net.md`](docs/ops-local-net.md) |
 | Multiple servers: capacity, placement, cordon, adding a node | [`docs/ops-multi-node.md`](docs/ops-multi-node.md) |
 | Guest vsock notes | [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) |

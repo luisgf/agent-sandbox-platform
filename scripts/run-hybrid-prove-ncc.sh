@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bare-metal prove on ncc1701d: CH hybrid guest→host SSH agent type=12.
+# Bare-metal prove on the lab host (docs/lab/): CH hybrid guest→host SSH agent type=12.
 set -uo pipefail
 export PATH=/usr/local/go/bin:${HOME}/src/bots/build:${PATH}
 DEMO=/tmp/asp-hybrid-prove

@@ -17,7 +17,7 @@ Hacía falta el daemon de verdad y un protocolo de stdin que los `httptest` pued
 - **Fallo visible.** Si el workspace está pedido y el binario no está, o el directorio no existe en el nodo, el sandbox queda `failed`. No arrancamos una VM que finja el directorio.
 - **PTY en el guest** cuando `asp session exec` no lleva `--buffered` ni `--no-pty`. El pod-daemon abre el PTY. El CLI, si su stdout es una TTY, se pone en raw y reenvía el teclado. Un pipe también entra: con PTY el `close` son dos Ctrl-D; con `--no-pty` es EOF de pipe.
 - **El JSON de siempre sigue.** `sandbox run` y `--buffered` no cambian de forma. El campo opcional `stdin` mete un blob en ese camino.
-- **Tests sin ncc1701d.** Socket y tag en el config de FakeVMM; `httptest` del protocolo `ready` + `/exec/stdin`; `cargo test` con un PTY de verdad contra `/bin/sh -c cat`.
+- **Tests sin un host KVM.** Socket y tag en el config de FakeVMM; `httptest` del protocolo `ready` + `/exec/stdin`; `cargo test` con un PTY de verdad contra `/bin/sh -c cat`.
 
 ## Auto-mount en la imagen
 
@@ -33,7 +33,7 @@ El dispositivo lo pone el nodo. El `mount` lo pone el guest, y solo si la imagen
 
 El `Dockerfile` de `images/guest` copia la unidad y el helper y la habilita en `multi-user.target.wants`. Ejemplo OpenRC: `images/guest/openrc/workspace-virtiofs`.
 
-**Imágenes viejas.** Un rootfs ya arrancado (el de ncc1701d u otro construido antes de esta unidad) no la tiene. Hasta reconstruirlo con `./scripts/build-guest-image.sh` (o instalar una versión con `asp image pull`) y apuntar `/opt/sandbox/rootfs.img` al nuevo fichero, dentro del guest sigue haciendo falta:
+**Imágenes viejas.** Un rootfs ya desplegado (u otro construido antes de esta unidad) no la tiene. Hasta reconstruirlo con `./scripts/build-guest-image.sh` (o instalar una versión con `asp image pull`) y apuntar `/opt/sandbox/rootfs.img` al nuevo fichero, dentro del guest sigue haciendo falta:
 
 ```sh
 mkdir -p /workspace

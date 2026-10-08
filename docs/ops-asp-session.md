@@ -53,7 +53,7 @@ Dos nombres son dos sandboxes. No comparten disco ni egress.
 | No aísla herramientas entre sí | Todos los `exec` de esa sesión comparten un guest. Eso es la ventaja y el riesgo. |
 | Auth sigue siendo por invocación | Cada `exec` resuelve el Bearer de nuevo. Si el token caduca, el siguiente comando falla con 401. El sandbox no se entera. |
 | `owner_sub` | Lo pone el CP desde el JWT ([ADR-0007](adr/0007-multi-user-identity.md)). La sesión no acepta un owner de mentira en el JSON local. |
-| Dry-run ≠ KVM | Tests de sesión y de stream = `httptest`. El pod-daemon se cubre con `cargo test`. El auto-mount se cubre leyendo la unidad y el helper (sale 0 si `mount` falla). No hace falta ncc1701d para eso. Aislamiento real y el share de verdad solo con CH + KVM y un rootfs que lleve la unidad. |
+| Dry-run ≠ KVM | Tests de sesión y de stream = `httptest`. El pod-daemon se cubre con `cargo test`. El auto-mount se cubre leyendo la unidad y el helper (sale 0 si `mount` falla). No hace falta un host KVM para eso. Aislamiento real y el share de verdad solo con CH + KVM y un rootfs que lleve la unidad. |
 
 ## Alternativas que descartamos (y la consecuencia)
 
@@ -106,8 +106,8 @@ Lo que no arregla el kit:
 Secuencia de operador / agente:
 
 ```bash
-export ASP_CONTROL_PLANE_URL=http://127.0.0.1:8080   # dry-run local; lab: http://127.0.0.1:18112
-# lab IdP: export ASP_REQUIRE_TOKEN=1  y secretos en ~/.secrets/ (ver ops-asp-agent-runner.md)
+export ASP_CONTROL_PLANE_URL=http://127.0.0.1:8080   # dry-run local; uno real: https://cp.example:8443
+# con IdP: export ASP_REQUIRE_TOKEN=1  y los secretos del IdP (ver ops-asp-agent-runner.md)
 asp session start --name opencode --workspace /ruta/absoluta/del/repo \
   --tenant=tenant-demo --timeout=120s
 # el plano de control elige un nodo con hueco; --node-id=… lo fija
@@ -220,7 +220,7 @@ El spec `workspace_host_path` sin daemon era una etiqueta: el guest no veía el 
 | `virtiofsd` por sandbox | Solo si `workspace_host_path` no está vacío. Socket `virtiofs-{id}.sock` bajo el directorio de sockets del nodo (`--ch-socket-dir`, default `/run/asp`). Argumentos: `--socket-path`, `--shared-dir`, `--cache never`, `--sandbox none`. Binario: `--virtiofsd-bin` o `ASP_VIRTIOFSD_BIN` (default `virtiofsd`, CLI Rust). |
 | `vm.create` | `fs: [{ "tag": "workspace", "socket": "…" }]`. Sin workspace, o con socket vacío, el campo `fs` no va en el JSON. |
 | Fallo cerrado | Workspace pedido y `virtiofsd` ausente, o el directorio no existe en **el nodo**: el sandbox pasa a `failed` y no se llama al VMM. Sin workspace, no se busca el binario. |
-| Mount del guest | Automático en la imagen de este corte: `workspace-virtiofs.service` ejecuta `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`. Si el tag no está, el helper sale 0 y el boot sigue. Imágenes ya desplegadas (p. ej. la de ncc1701d) **no** lo hacen hasta reconstruir el rootfs; ahí sigue valiendo el comando a mano. |
+| Mount del guest | Automático en la imagen de este corte: `workspace-virtiofs.service` ejecuta `mkdir -p /workspace` y `mount -t virtiofs workspace /workspace`. Si el tag no está, el helper sale 0 y el boot sigue. Las imágenes ya desplegadas, anteriores a este corte, **no** lo hacen hasta reconstruir el rootfs; ahí sigue valiendo el comando a mano. |
 | PTY | `asp session exec` manda `"pty":true` con `rows`/`cols` de la TTY local (si las hay). El pod-daemon abre `/dev/ptmx`, hace `setsid` + `TIOCSCTTY` y el slave es stdin/stdout/stderr. El primer evento del stream es `{"type":"ready","exec_id":"…"}`. |
 | Stdin | `POST /v1/sandboxes/{id}/exec/stdin` con `{"exec_id","data","close","rows","cols"}`. El CP lo proxya a `POST /v1/internal/exec/stdin` y eso al guest `POST /v1/exec/stdin`. Un `close` en pipe cierra el write end (EOF real). En PTY escribe dos Ctrl-D (modo canónico). Cada POST de stdin refresca `last_activity_at`. |
 | JSON acumulado | `POST /exec` sin `?stream=1` sigue devolviendo `{stdout,stderr,exit_code}`. `--buffered` / `--json` no piden PTY. Si hay stdin por pipe, viaja en el campo `stdin`. |
@@ -248,7 +248,7 @@ cd node-agent && go test ./...
 cd pod-daemon && cargo test
 ```
 
-Cubren el directorio de sesiones (nombres distintos, modo `0600`, rechazo de `../`), el CLI contra `httptest` (start→exec reutilizando el id, `--buffered`, stream que entrega el primer chunk **antes** de que el servidor cierre el body, `--workspace` en el POST, PTY+stdin: el cliente manda bytes **después** del evento `ready`), el proxy del CP y del node-agent con el mismo patrón, el fallback 404→JSON, FakeVMM **sin** `fs` cuando no hay workspace, y que con workspace el config lleva socket y tag `workspace` aunque aquí no haya KVM. El `cargo test` del pod-daemon comprueba el JSON acumulado, el stream chunked, un pipe de stdin y un PTY real (`/bin/sh -c cat`). No requieren ncc1701d. El camino FakeVMM de `sandbox run` sigue siendo `make smoke-asp`.
+Cubren el directorio de sesiones (nombres distintos, modo `0600`, rechazo de `../`), el CLI contra `httptest` (start→exec reutilizando el id, `--buffered`, stream que entrega el primer chunk **antes** de que el servidor cierre el body, `--workspace` en el POST, PTY+stdin: el cliente manda bytes **después** del evento `ready`), el proxy del CP y del node-agent con el mismo patrón, el fallback 404→JSON, FakeVMM **sin** `fs` cuando no hay workspace, y que con workspace el config lleva socket y tag `workspace` aunque aquí no haya KVM. El `cargo test` del pod-daemon comprueba el JSON acumulado, el stream chunked, un pipe de stdin y un PTY real (`/bin/sh -c cat`). No requieren KVM. El camino FakeVMM de `sandbox run` sigue siendo `make smoke-asp`.
 
 ## Referencias
 
