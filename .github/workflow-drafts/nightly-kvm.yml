@@ -10,9 +10,11 @@
 # the units they start, but they do run as root), and never run it for a pull request from a fork:
 # the `if` below refuses those.
 #
-# Repository variables (Settings → Secrets and variables → Actions → Variables):
-#   ASP_E2E_KERNEL   the guest kernel on the runner (default /opt/sandbox/vmlinux)
-#   ASP_E2E_MODULES  its lib/modules/<release> directory, when the kernel has its drivers as modules
+# The lane boots the kernel and the image the repository builds (scripts/build-guest-image.sh --kernel):
+# what a release ships, not whatever kernel the runner has. Repository variables (Settings → Secrets and
+# variables → Actions → Variables) can still point it at another:
+#   ASP_E2E_KERNEL   a guest kernel on the runner to use instead (default: the one built here)
+#   ASP_E2E_MODULES  its lib/modules/<release> directory, when that kernel has its drivers as modules
 #                    (a distribution kernel); empty for a kernel that has them built in
 name: Nightly KVM
 
@@ -41,7 +43,7 @@ jobs:
     runs-on: [self-hosted, linux, kvm]
     timeout-minutes: 90
     env:
-      KERNEL: ${{ vars.ASP_E2E_KERNEL || '/opt/sandbox/vmlinux' }}
+      OWN_KERNEL: ${{ vars.ASP_E2E_KERNEL }}
       MODULES: ${{ vars.ASP_E2E_MODULES }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,11 +59,15 @@ jobs:
             cli/go.*
       - name: Build the binaries
         run: make build
-      - name: Build the guest image (twice, from scratch, and compare)
-        env:
-          ASP_GUEST_KERNEL_FILE: ${{ env.KERNEL }}
-          ASP_GUEST_MODULES: ${{ env.MODULES }}
-        run: scripts/build-guest-image.sh --verify build/guest
+      - name: Build the guest kernel and image (each twice, from scratch, and compare)
+        run: |
+          if [ -n "$OWN_KERNEL" ]; then
+            ASP_GUEST_KERNEL_FILE="$OWN_KERNEL" ASP_GUEST_MODULES="$MODULES" scripts/build-guest-image.sh --verify build/guest
+            echo "KERNEL=$OWN_KERNEL" >> "$GITHUB_ENV"
+          else
+            scripts/build-guest-image.sh --verify --kernel build/guest
+            echo "KERNEL=$PWD/build/guest/vmlinux" >> "$GITHUB_ENV"
+          fi
       - name: The life of a sandbox
         run: |
           sudo env ASP_E2E_ROOTFS="$PWD/build/guest/rootfs.img" ASP_E2E_KERNEL="$KERNEL" \

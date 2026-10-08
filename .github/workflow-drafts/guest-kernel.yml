@@ -1,0 +1,38 @@
+# The guest kernel is the same bytes every time: a change to its recipe (the source, the compiler, the
+# configuration) builds it twice from scratch and fails if the two differ (scripts/build-guest-kernel.sh
+# --verify). It compiles Linux, about 7 minutes on 12 cores and an hour or so on a hosted runner, twice,
+# so it has a workflow of its own, for the files that can change the kernel. A release builds it with the
+# image (release.yml), and the nightly KVM lane boots it.
+name: Guest kernel
+
+on:
+  pull_request:
+    paths:
+      - "images/guest/kernel/**"
+      - "scripts/build-guest-kernel.sh"
+      - ".github/workflows/guest-kernel.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproducible:
+    name: reproducible kernel
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build twice from scratch and compare
+        run: scripts/build-guest-kernel.sh --verify build/kernel
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guest-kernel
+          path: |
+            build/kernel/kernel.config
+            build/kernel/kernel.env
+          if-no-files-found: error

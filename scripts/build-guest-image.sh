@@ -5,12 +5,15 @@
 #
 #   scripts/build-guest-image.sh [output-dir]          # default build/guest
 #   scripts/build-guest-image.sh --verify [output-dir] # build twice from scratch, fail if they differ
+#   scripts/build-guest-image.sh --kernel [--verify] [output-dir]
+#                                                      # also build the guest kernel (scripts/build-guest-kernel.sh,
+#                                                      # a few minutes) and publish it as vmlinux
 #
 # Environment:
 #   SOURCE_DATE_EPOCH       the build date, in seconds (default: the time of the HEAD commit)
 #   ASP_ROOTFS_SIZE_MB      size of the filesystem (default 512)
 #   ASP_GUEST_VERSION       the version image.json says (default: git describe, or "dev")
-#   ASP_GUEST_KERNEL_FILE   a kernel to publish with the image, as vmlinux
+#   ASP_GUEST_KERNEL_FILE   a kernel to publish with the image, as vmlinux (--kernel builds one)
 #   ASP_GUEST_MODULES       a lib/modules/<kernel release> directory to put in the image (a kernel
 #                           built with its drivers as modules, e.g. the host's Ubuntu kernel)
 #
@@ -32,7 +35,15 @@ else
 fi
 
 verify=0
-if [[ "${1:-}" == "--verify" ]]; then verify=1; shift; fi
+with_kernel=0
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --verify) verify=1 ;;
+    --kernel) with_kernel=1 ;;
+    *) echo "usage: $0 [--verify] [--kernel] [output-dir]" >&2; exit 2 ;;
+  esac
+  shift
+done
 OUT="${1:-$ROOT/build/guest}"
 SIZE_MB="${ASP_ROOTFS_SIZE_MB:-512}"
 EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || true)}"
@@ -69,9 +80,13 @@ build() {
     # In usr/lib/modules, not lib/modules: /lib is a symlink to usr/lib in the image, and a
     # tar member "lib" of another kind would replace it and take /sbin/init with it.
     local stage; stage="$(mktemp -d)"
-    mkdir -p "$stage/usr/lib/modules"
+    mkdir -p "$stage/usr/lib/modules" "$stage/etc/modules-load.d"
     cp -a "$ASP_GUEST_MODULES" "$stage/usr/lib/modules/$(basename "$ASP_GUEST_MODULES")"
-    tar -rf "$out/rootfs.tar" --numeric-owner --owner=0 --group=0 -C "$stage" "usr/lib/modules/$(basename "$ASP_GUEST_MODULES")"
+    # The modules a kernel with them as modules (Ubuntu's) loads at boot; a kernel with them built in has
+    # no /lib/modules and nothing to load, and systemd-modules-load would fail on these names.
+    cp "$ROOT/images/guest/modules-load.d/"*.conf "$stage/etc/modules-load.d/"
+    tar -rf "$out/rootfs.tar" --numeric-owner --owner=0 --group=0 -C "$stage" \
+      "usr/lib/modules/$(basename "$ASP_GUEST_MODULES")" etc/modules-load.d
     rm -rf "$stage"
   fi
 
@@ -99,7 +114,12 @@ build() {
     echo "  \"rootfs\": {\"file\": \"rootfs.img\", \"sha256\": \"$(sha256 "$out/rootfs.img")\", \"size\": $(size "$out/rootfs.img"),"
     echo "    \"gzip\": {\"file\": \"rootfs.img.gz\", \"sha256\": \"$(sha256 "$out/rootfs.img.gz")\", \"size\": $(size "$out/rootfs.img.gz")}},"
     if [[ -f "$out/vmlinux" ]]; then
-      echo "  \"kernel\": {\"file\": \"vmlinux\", \"sha256\": \"$(sha256 "$out/vmlinux")\", \"size\": $(size "$out/vmlinux")},"
+      local kextra=""
+      if [[ -n "$KERNEL_ENV" ]]; then
+        # shellcheck disable=SC1090
+        kextra=", \"version\": \"$(. "$KERNEL_ENV"; echo "$KERNEL_VERSION")\", \"config_sha256\": \"$(. "$KERNEL_ENV"; echo "$CONFIG_SHA256")\""
+      fi
+      echo "  \"kernel\": {\"file\": \"vmlinux\", \"sha256\": \"$(sha256 "$out/vmlinux")\", \"size\": $(size "$out/vmlinux")$kextra},"
     fi
     echo '  "packages": ['
     echo "$pkgs"
@@ -113,6 +133,16 @@ build() {
     for f in "${files[@]}"; do echo "$(sha256 "$f")  $f"; done
   ) >"$out/SHA256SUMS"
 }
+
+KERNEL_ENV=""
+if (( with_kernel )); then
+  [[ -z "${ASP_GUEST_KERNEL_FILE:-}" ]] || { echo "--kernel builds the kernel: do not set ASP_GUEST_KERNEL_FILE as well" >&2; exit 2; }
+  # The kernel is built (twice, with --verify) into a directory of its own, and every image build copies its vmlinux.
+  KERNEL_DIR="$OUT.kernel"
+  "$ROOT/scripts/build-guest-kernel.sh" $( (( verify )) && echo --verify ) "$KERNEL_DIR"
+  export ASP_GUEST_KERNEL_FILE="$KERNEL_DIR/vmlinux"
+  KERNEL_ENV="$KERNEL_DIR/kernel.env"
+fi
 
 if (( verify )); then
   A="$OUT.a"; B="$OUT.b"

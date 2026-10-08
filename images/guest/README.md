@@ -59,16 +59,36 @@ El node-agent comprueba el kernel y la imagen base contra el `SHA256SUMS` que te
 
 El nodo escribe en la línea de comandos del kernel lo que el guest necesita saber de sí mismo y la imagen lo aplica al arrancar:
 
-- **`cmdline-ip.service`** (antes de `network.target` y de pod-daemon) lee `ip=<guest>::<gw>:<mask>:<hostname>:eth0:off:<dns>`: pone la dirección y la ruta por defecto (el kernel del lab no tiene `IP_PNP`), el **hostname** (`asp-<shortid>`; también `/etc/hostname` y `/etc/hosts`) y el **resolver** en `/etc/resolv.conf` (`options timeout:2 attempts:2`). Un campo vacío no se toca. Pruebas: `sh images/guest/helpers/cmdline-ip_test.sh` (`make test-guest-helper`, y en CI).
+- **`cmdline-ip.service`** (antes de `network.target` y de pod-daemon) lee `ip=<guest>::<gw>:<mask>:<hostname>:eth0:off:<dns>`: pone la dirección y la ruta por defecto (un kernel sin `IP_PNP`, como el de Ubuntu del lab, ignora `ip=`; con el del proyecto el kernel ya lo aplicó y esto lo repite sin cambiar nada), el **hostname** (`asp-<shortid>`; también `/etc/hostname` y `/etc/hosts`) y el **resolver** en `/etc/resolv.conf` (`options timeout:2 attempts:2`). Un campo vacío no se toca. Pruebas: `sh images/guest/helpers/cmdline-ip_test.sh` (`make test-guest-helper`, y en CI).
 - **`systemd.setenv=HTTP_PROXY=…`** (y `HTTPS_PROXY`, `NO_PROXY`, en mayúsculas y minúsculas) lo entiende systemd como entorno por defecto de todos los servicios: pod-daemon y, por tanto, los comandos que ejecuta lo heredan.
-- **`chrony`** sigue el reloj del host con `refclock PHC /dev/ptp0` (el módulo `ptp_kvm` se carga por `modules-load.d/ptp_kvm.conf`; el árbol `lib/modules` de `ASP_GUEST_MODULES` debe traerlo). No hay servidores de red: el guest no tiene ruta a ninguno. `chronyc tracking` muestra la fuente `PHC0`. Sin esto la hora de un guest que dura días se aleja de la del host y los `exp` de los tokens dejan de ser fiables.
+- **`chrony`** sigue el reloj del host con `refclock PHC /dev/ptp0` (el kernel del proyecto trae el dispositivo dentro; con un kernel de módulos, `ptp_kvm` se carga por `modules-load.d/ptp_kvm.conf` y el árbol `lib/modules` de `ASP_GUEST_MODULES` debe traerlo). No hay servidores de red: el guest no tiene ruta a ninguno. `chronyc tracking` muestra la fuente `PHC0`. Sin esto la hora de un guest que dura días se aleja de la del host y los `exp` de los tokens dejan de ser fiables.
 - El usuario **`sandbox`** (uid 1000, con `/home/sandbox`) da nombre al dueño habitual de un workspace; pod-daemon lo usa para `HOME`, `USER` y `LOGNAME` de los comandos.
+
+## El kernel
+
+[`scripts/build-guest-kernel.sh`](../../scripts/build-guest-kernel.sh) construye el kernel que arranca el guest con la receta de [`kernel/`](kernel/Dockerfile): un `vmlinux` sin comprimir con **todo dentro** (virtio de bloque, red, consola, vsock y virtio-fs; el reloj PTP de KVM que sigue `chrony`; cgroup v2; ext4; devtmpfs), así que la imagen no necesita `/lib/modules`. Sale igual en cada build, como la imagen:
+
+| Qué podía cambiar | Cómo está fijado |
+|---|---|
+| El fuente | el tarball de kernel.org de una serie *longterm* (6.18), contra su SHA-256 (el de `sha256sums.asc` de kernel.org) |
+| El compilador | el gcc 12 de Debian bookworm, de la misma foto del archivo que los paquetes de la imagen |
+| La configuración | la `ch_defconfig` de Cloud Hypervisor para guests (de su rama del kernel, en el commit de la release que usan sus pruebas de integración, contra su SHA-256), más [`kernel/asp.fragment`](kernel/asp.fragment) (el sufijo `-asp` y `/proc/config.gz`), y `make olddefconfig` |
+| Lo que el guest necesita | [`kernel/required-options`](kernel/required-options): si la configuración final no tiene una de esas líneas (un kernel que renombra una opción, una base que cambia) **el build falla**, en vez de dar un kernel que arranca sin disco, sin red o sin vsock |
+| La fecha y el autor | `KBUILD_BUILD_TIMESTAMP` es la fecha de la release del kernel (`BUILD_EPOCH`) y el autor `asp@asp`: el kernel cambia con la receta, no con cada commit |
+
+```bash
+scripts/build-guest-kernel.sh              # build/kernel/{vmlinux,kernel.config,kernel.env}
+scripts/build-guest-kernel.sh --verify     # lo construye dos veces desde cero y falla si difieren
+scripts/build-guest-image.sh --kernel      # la imagen y ese kernel juntos: image.json lleva su versión y el hash de su configuración
+```
+
+Para pasar a otro kernel se cambian `KERNEL_VERSION`, `KERNEL_SHA256` (la línea de [sha256sums.asc](https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc)) y `BUILD_EPOCH` en el [Dockerfile](kernel/Dockerfile) y se construye; si Cloud Hypervisor cambia su defconfig, `CH_DEFCONFIG_COMMIT` y su suma. Solo x86-64: la imagen y los nodos de hoy lo son.
 
 ## Rootfs.img
 
 [`scripts/build-guest-image.sh`](../../scripts/build-guest-image.sh) construye el `rootfs.img` ext4 que usa Cloud Hypervisor (`disks[].path`) a partir de esta imagen. [`scripts/build-guest-rootfs.sh`](../../scripts/build-guest-rootfs.sh) sigue existiendo con su nombre de antes y lo llama.
 
-Con un kernel que trae vsock y virtio como **módulos** (el de Ubuntu del lab), la imagen necesita su `/lib/modules/<release>` (`vsock.ko`, `vmw_vsock_virtio_transport.ko`, `ptp_kvm.ko`; los cargan `modules-load.d/`): `ASP_GUEST_MODULES=/lib/modules/$(uname -r) ASP_GUEST_KERNEL_FILE=… scripts/build-guest-image.sh`. El directorio de módulos debe llamarse como el `uname -r` del kernel del guest. Con un kernel que los trae dentro (compilado para microVMs) no hace falta.
+Con el kernel del proyecto ([abajo](#el-kernel)) no hace falta nada más: trae todo dentro. Con un kernel que trae vsock y virtio como **módulos** (el de Ubuntu), la imagen necesita su `/lib/modules/<release>` (`vsock.ko`, `vmw_vsock_virtio_transport.ko`, `ptp_kvm.ko`; los cargan `modules-load.d/`, que `build-guest-image.sh` añade solo en ese caso): `ASP_GUEST_MODULES=/lib/modules/$(uname -r) ASP_GUEST_KERNEL_FILE=… scripts/build-guest-image.sh`. El directorio de módulos debe llamarse como el `uname -r` del kernel del guest.
 
 En producción: pin de versión CH/kernel y sin herramientas de build en el guest (no las hay: el compilador está en etapas del build que no pasan a la imagen).
 

@@ -44,6 +44,13 @@ The first release will be 0.1.0. Until then this is what `main` has.
   release's kernel and image and refuses anything that does not match its checksums; the node-agent
   refuses to boot from a file its `SHA256SUMS` lists with another digest (`--guest-verify`), and
   `asp node list` shows the digest of the image each node runs.
+- **A guest kernel built from source, the same bytes every time.** `scripts/build-guest-kernel.sh` compiles Linux 6.18
+  (longterm) with Cloud Hypervisor's guest configuration, everything built in (virtio, vsock, virtio-fs, the KVM
+  clock, cgroup v2), from a tarball checked against its SHA-256 with a pinned compiler; the build fails if the final
+  configuration lacks an option the guest needs ([`required-options`](images/guest/kernel/required-options)).
+  `scripts/build-guest-image.sh --kernel` publishes it with the image (`image.json` carries its version and the hash
+  of its configuration), so a release no longer depends on the kernel of the host that builds it, and the image is
+  200 MB smaller without the Ubuntu module tree (`asp image pull` downloads about 90 MB instead of 250).
 - **An installer**: `curl -fsSL …/releases/latest/download/install.sh | sudo sh` (roles `cli`, `server`,
   `agent`) installs a release's packages after checking them against `SHA256SUMS`, through the package
   manager so that `nftables` and `iproute2` come with a node, writes the settings of the `INSTALL_ASP_*`

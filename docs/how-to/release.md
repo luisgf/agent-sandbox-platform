@@ -16,7 +16,7 @@ Una versión es una etiqueta `vX.Y.Z`. Al empujarla, el workflow de release (`.g
 | `SHA256SUMS` | las sumas de todo lo anterior: `sha256sum -c SHA256SUMS --ignore-missing` |
 | `ghcr.io/luisgf/asp-control-plane:<versión>` | el control plane como imagen (amd64 y arm64, distroless, usuario no root) |
 
-El kernel y la imagen del guest se publican aparte, con su propio `SHA256SUMS` ([`images/guest/README.md`](../../images/guest/README.md)).
+El kernel y la imagen del guest se publican aparte, con su propio `SHA256SUMS` (`scripts/build-guest-image.sh --verify --kernel`: el kernel se compila desde el fuente y la imagen se construye, cada uno dos veces desde cero, y el job falla si difieren; [`images/guest/README.md`](../../images/guest/README.md)).
 
 Los binarios dicen de qué versión son: `asp version`, `asp-node-agent --version`, `asp-control-plane --version`. El agente la manda al registrarse y `asp node list` la muestra en la columna `VERSION`; las métricas `asp_build_info`, `asp_agent_build_info` y `asp_node_agent_info{node,version}` permiten seguir una actualización en un panel.
 

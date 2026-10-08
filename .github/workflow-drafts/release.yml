@@ -64,7 +64,7 @@ jobs:
       - name: Build the image twice and compare
         env:
           ASP_GUEST_VERSION: ${{ github.ref_name }}
-        run: scripts/build-guest-image.sh --verify build/guest
+        run: scripts/build-guest-image.sh --verify --kernel build/guest
       - name: Attach it to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

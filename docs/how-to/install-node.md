@@ -89,7 +89,7 @@ sudo ln -sfn /var/lib/asp/images/rootfs.img /opt/sandbox/rootfs.img
 Fuentes típicas de kernel y rootfs:
 
 - **Una versión publicada** (`asp image pull`): el `rootfs.img` y el `vmlinux` de la release, con su `SHA256SUMS` y su `image.json` (la lista de paquetes con su versión).
-- Construirlos tú: `scripts/build-guest-image.sh` hace de [`images/guest`](../../images/guest/) un `rootfs.img` ext4 idéntico en cada build, sin root ni montar nada ([`images/guest/README.md`](../../images/guest/README.md#reproducible-el-mismo-rootfsimg-en-cada-build)). Un kernel Linux con virtio y vsock: la rama de Cloud Hypervisor (`ch_*` defconfig) o el de tu distribución (con vsock como módulo hace falta `ASP_GUEST_MODULES`).
+- Construirlos tú: `scripts/build-guest-image.sh --kernel` hace de [`images/guest`](../../images/guest/) un `rootfs.img` ext4 idéntico en cada build, sin root ni montar nada, y compila el kernel del proyecto (6.18, la configuración de Cloud Hypervisor con todo dentro, también reproducible: [el kernel](../../images/guest/README.md#el-kernel)). Con otro kernel (el de tu distribución, con vsock como módulo: `ASP_GUEST_MODULES`) se pasa con `ASP_GUEST_KERNEL_FILE`.
 - Una cloud image mínima convertida a raw (`qemu-img convert`) con `pod-daemon` inyectado.
 
 **El nodo comprueba lo que arranca.** Si junto al kernel o a la imagen hay un `SHA256SUMS` que los lista (`asp image pull` lo deja), el node-agent compara su digest con el de la lista antes de arrancar una VM o clonar un disco (`--guest-verify`, por defecto `auto`) y, si no coincide, la sandbox falla con el motivo. `on` exige además que estén listados; `off` no comprueba. `sudo asp doctor` lo dice antes de arrancar.
