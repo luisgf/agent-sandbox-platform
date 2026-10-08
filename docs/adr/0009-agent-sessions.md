@@ -4,7 +4,7 @@
 - **Fecha:** 2026-10-03
 - **Implementación:** hecha. Sesiones con nombre, exec en stream con PTY y stdin, workspace del host por virtiofs, y parar que conserva el disco (`asp session stop`, `resume`, `rm`). No hay plugin de OpenCode en este repositorio.
 - **Enmendada por:** [0012](0012-retained-disks.md): parar ya no borra. `asp session stop` y el idle reap conservan el disco (`asp session resume` lo arranca otra vez) y `asp session rm` borra la sandbox; `--local` pasó de `stop` a `rm`.
-- **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide), [`../ops-asp-session.md`](../ops-asp-session.md) (la CLI de la sesión), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (la primitiva one-shot y la autenticación), [`../reference/cli.md`](../reference/cli.md), [`../roadmap.md`](../roadmap.md)
+- **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide), [`../ops-asp-session.md`](../ops-asp-session.md) (la CLI de la sesión), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (la primitiva one-shot y la autenticación), [`../reference/cli.md`](../reference/cli.md), [`../history.md`](../history.md)
 - **No es:** un plugin de OpenCode, ni un SSH (el exec con PTY y stdin no es una shell remota), ni un puente de bytes opacos.
 
 ## Contexto
@@ -248,4 +248,4 @@ Una integración de harness está alineada con esta dirección solo si:
 - Primitiva one-shot y Bearer: [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md)
 - Todas las órdenes y sus opciones: [`../reference/cli.md`](../reference/cli.md)
 - Identidad: [0007](0007-multi-user-identity.md) · discos: [0012](0012-retained-disks.md) · LAN del usuario: [0010](0010-on-demand-local-net.md)
-- Roadmap (2f, sesión, idle): [`../roadmap.md`](../roadmap.md)
+- Historia (2f, sesión, idle): [`../history.md`](../history.md)

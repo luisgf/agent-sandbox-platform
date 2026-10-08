@@ -427,22 +427,13 @@ Every setting is a flag or an `ASP_*` environment variable, and a key in a YAML 
 
 ## Status and known limits
 
-ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.md)). What the code does **not** do yet:
+ASP is an MVP (version 0.x) that has been hardened in phases ([the history of the phases](docs/history.md); what is next: [roadmap](docs/roadmap.md)). **What the code does not do yet is on one page: [known limits](docs/reference/limitations.md).** The ones to know before you start:
 
-| Area | Reality today |
-|---|---|
-| Dry-run | `FakeVMM` exercises the control plane only. No KVM, no isolation. |
-| nftables | `soft` mode tolerates missing root; `enforce` needs privileges. CI does not prove bypass resistance. |
-| Attestation | Software signature, not TPM/SEV. The control plane only trusts keys it is configured with (`ASP_ATTEST_KEY`, `ASP_ATTEST_TRUSTED_PUBS`) or, over mTLS, the key of the node certificate the request came with. The signed statement carries the SHA-256 of the kernel and of the base image the node booted, hashed on the node; with `ASP_ATTEST_ALLOWED_IMAGES` the control plane accepts only images the operator listed. It proves what that node says it booted, not what a hardware root of trust measured: a compromised node can lie. |
-| Fencing | Lost-node failover calls a `FenceProvider` (the webhook works; Redfish and IPMI are stubs). Not real BMC STONITH. |
-| Exec timeouts | Only buffered execs have a time limit (`ASP_BUFFERED_EXEC_TIMEOUT`, 10 minutes by default, the same in the guest). Streams and PTY sessions last as long as the command. See [timeouts](control-plane/README.md#timeouts-hacia-el-node-agent). |
-| Idle timeout | Off by default. Does not delete the local session file. |
-| `--local-net` | Real `ip`/`wg` commands on node and client; needs `wireguard-tools` and `CAP_NET_ADMIN`. Tested by hand on a KVM host with two sessions and the client in a network namespace; forwarding/NAT to a real LAN, home DNS and the macOS client end to end are not verified, and nothing of it runs in CI. |
-| Workspace (virtiofs) | Auto-mount ships in newly built guest images; older images need `mount -t virtiofs workspace /workspace`. No KVM test in CI. |
-| Harness integration | A shell wrapper is the integration point; for OpenCode, `integrations/opencode/` adds a plugin, instructions and example configs. |
-| Flow attribution | Mapping network flows to `owner_sub` is designed ([ADR-0008](docs/adr/0008-network-flow-attribution.md)) but not implemented. |
-| Kubernetes | Optional, only to deploy the API. Sandboxes are not Pods. |
-| Multiple nodes | Capacity placement, cordon, lost-node failover and mTLS between control plane and nodes. No migration: a lost server takes its sessions with it. Running VMs survive a node-agent restart or upgrade and the new process adopts them ([ADR-0014](docs/adr/0014-vms-outlive-the-agent.md)); only the first upgrade to a version with this still stops them. A starting agent removes whatever a previous one left dead (VMs, TAPs, tunnels, sockets). One node-agent per server. Placement does not know about `--workspace` paths. Not tested on a multi-server KVM lab yet. |
+- **Isolation needs KVM, and CI has none.** The tests and smokes run the node agent in `--dry-run` (`FakeVMM`), which exercises the control plane and isolates nothing. Real VMs, `enforce` for nftables, `virtiofs` and `--local-net` are checked by hand on a KVM host, and not on a lab of several servers yet.
+- **Egress is filtered only in `enforce` mode, for HTTP(S) and DNS over IPv4.** Not IPv6, QUIC or arbitrary UDP; a node that cannot enforce says so (`asp node list`).
+- **No migration between nodes.** A sandbox's disk lives on the server that created it: a lost server takes its sessions with it, and a stopped sandbox can only resume on its node. Restarting the node-agent does not stop the VMs; restarting the server does.
+- **Attestation is a software signature, not TPM/SEV, and fencing is a webhook** (Redfish and IPMI are stubs). A compromised node can lie about what it booted.
+- **The API can change between minor versions** while the major version is 0; [CHANGELOG.md](CHANGELOG.md) says when.
 
 ---
 
@@ -475,7 +466,9 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | Architecture | [`docs/architecture.md`](docs/architecture.md) |
 | Security model: what ASP protects, from whom, and what it does not guarantee | [`docs/concepts/security-model.md`](docs/concepts/security-model.md) |
 | ASP and Kubernetes (agent-sandbox, Kata, KubeVirt, E2B): what each is for | [`docs/concepts/asp-vs-kubernetes.md`](docs/concepts/asp-vs-kubernetes.md) |
-| Phases delivered and open gaps | [`docs/roadmap.md`](docs/roadmap.md) |
+| What the code does not do yet | [`docs/reference/limitations.md`](docs/reference/limitations.md) |
+| What is ahead · how the phases went | [`docs/roadmap.md`](docs/roadmap.md) · [`docs/history.md`](docs/history.md) |
+| The words (sandbox, session, tenant, node, fencing, phase codes…) | [`docs/reference/glossary.md`](docs/reference/glossary.md) |
 | Dry-run smoke test | [`docs/mvp-smoke.md`](docs/mvp-smoke.md) |
 | Real Cloud Hypervisor on bare metal | [`docs/how-to/install-node.md`](docs/how-to/install-node.md) · [control plane](docs/how-to/install-control-plane.md) · [how a node runs sandboxes](docs/concepts/node-runtime.md) · [networking and egress](docs/concepts/networking-and-egress.md) · [security operations](docs/how-to/security-operations.md) |
 
@@ -489,6 +482,8 @@ ASP is an MVP that has been hardened in phases (see the [roadmap](docs/roadmap.m
 | The maintainers' test host (not a deployment guide) | [`docs/lab/`](docs/lab/README.md) |
 | On-demand local network | [`docs/ops-local-net.md`](docs/ops-local-net.md) |
 | Multiple servers: capacity, placement, cordon, adding a node | [`docs/ops-multi-node.md`](docs/ops-multi-node.md) |
+| Upgrade the control plane, the nodes and the guest image | [`docs/how-to/upgrade.md`](docs/how-to/upgrade.md) |
+| Back up and restore: the database, the keys, the nodes | [`docs/how-to/backup-and-restore.md`](docs/how-to/backup-and-restore.md) |
 | Guest vsock notes | [`scripts/guest-vsock-notes.md`](scripts/guest-vsock-notes.md) |
 
 **Architecture decision records**
@@ -529,6 +524,8 @@ make pack             # release tarball
 ```
 
 Each Go component is its own module (`control-plane/`, `node-agent/`, `cli/`); `pod-daemon/` is a Cargo crate.
+
+How a change gets in (tests, the generated pages, commits and pull requests): [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

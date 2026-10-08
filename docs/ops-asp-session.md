@@ -243,5 +243,5 @@ Cubren el directorio de sesiones (nombres distintos, modo `0600`, rechazo de `..
 - [`how-to/install-node.md`](how-to/install-node.md) y [`concepts/node-runtime.md`](concepts/node-runtime.md) — CH real; el nodo arranca virtiofsd si hay workspace
 - [sesiones](ops-asp-session.md#virtiofs-y-pty--qué-aterrizó) — por qué este corte
 - [README del CLI](../cli/README.md)
-- [`roadmap.md`](roadmap.md)
+- [`roadmap.md`](roadmap.md) · [límites conocidos](reference/limitations.md)
 - [ADR-0007](adr/0007-multi-user-identity.md)

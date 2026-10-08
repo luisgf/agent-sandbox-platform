@@ -3,7 +3,7 @@
 - **Estado:** Aceptada
 - **Implementación:** hecha, fases 1–5 (schema/audit + IdP JWT + RBAC + SSH scoped MVP + workload `user_sub`/`act`)
 - **Fecha:** 2026-10
-- **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0008](0008-network-flow-attribution.md) (flujos de red → `owner_sub`, evaluación), [`../architecture.md`](../architecture.md), [`../roadmap.md`](../roadmap.md) (§ readiness corporativa)
+- **Relacionados:** [0003](0003-identity.md) (SSH/OIDC workload), [0005](0005-fase-2d-hardening.md) (SSH confirm), [0008](0008-network-flow-attribution.md) (flujos de red → `owner_sub`, evaluación), [`../architecture.md`](../architecture.md), [`../history.md`](../history.md) (§ readiness corporativa)
 - **Extiende:** el modelo de “identidad” de ADR-0003 (tenant + sandbox + nodo) con **sujeto humano** del IdP corporativo
 
 ## Contexto
@@ -273,6 +273,6 @@ El cableado del laboratorio de los mantenedores (el realm, el cliente, los grupo
 
 - Identidad guest SSH/OIDC: [0003](0003-identity.md)
 - SSH confirm: [0005](0005-fase-2d-hardening.md)
-- Roadmap readiness: [`../roadmap.md`](../roadmap.md)
+- Historia, readiness corporativa: [`../history.md`](../history.md)
 - Arquitectura § identidad / modelo de datos: [`../architecture.md`](../architecture.md)
 - Atribución de egress/TCP a `owner_sub` (evaluación, no implementada): [0008](0008-network-flow-attribution.md)
