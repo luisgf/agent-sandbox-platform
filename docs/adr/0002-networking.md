@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
-- **Relacionados:** [0005](0005-fase-2d-hardening.md), [0006](0006-fase-2e-nft-ssh-guest.md), [0008](0008-network-flow-attribution.md) (atribución flujos → `owner_sub`, evaluación), [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [red y egress](../concepts/networking-and-egress.md)
+- **Relacionados:** [0005](0005-fase-2d-hardening.md), [0006](0006-fase-2e-nft-ssh-guest.md), [0008](0008-network-flow-attribution.md) (atribución flujos → `owner_sub`, evaluación), [red y egress](../concepts/networking-and-egress.md)
 
 ## Contexto
 
@@ -102,6 +102,5 @@ Subnet por defecto del sketch: **`10.200.0.0/16`** (con `--tap-auto`, una /30 po
 ## Referencias cruzadas
 
 - Hardening nft 2d/2e: ADR-0005, ADR-0006
-- Why: [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md)
 - Arquitectura § Red: [`../architecture.md`](../architecture.md)
 - Ops: [red y egress](../concepts/networking-and-egress.md)

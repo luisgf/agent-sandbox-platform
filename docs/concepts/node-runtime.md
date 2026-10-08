@@ -62,14 +62,31 @@ Cliente
 
 ### Del guest al host: identidad y agente SSH (`--host-vsock`)
 
+Cloud Hypervisor (y Firecracker) usan *vsock híbrido*: un multiplexor en un socket unix del host (`--vsock cid=…,socket=/run/asp/vsock-{id}.sock`). Las dos direcciones no son simétricas:
+
+| Dirección | Mecánica | En ASP |
+|---|---|---|
+| Host → guest | `connect(multiplexor)`, `CONNECT <puerto>\n` → `OK …\n` | `HybridVsockDialer` (el `exec` y el `pod-daemon`) |
+| Guest → host | el guest marca AF_VSOCK, CID **2**, puerto; **el VMM** conecta al socket unix del host `{multiplexor}_{puerto}` | un listener unix por sandbox y puerto, abierto al arrancar la VM |
+
+Por eso un `vsock.Listen(26501)` en el host no recibe nada: el VMM nunca entrega esas conexiones a AF_VSOCK, y espera un listener en `/run/asp/vsock-{id}.sock_26501`; sin él, CH responde RST al guest (`connection reset by peer` en el proxy del agente SSH). Al arrancar una sandbox, antes de `Engine.Start`, el reconciler abre:
+
 ```text
-guest AF_VSOCK connect(cid=2, port=26501) → bomba del agente SSH del nodo
-guest AF_VSOCK connect(cid=2, port=26502) → identidad: POST /v1/tokens/oidc
+guest AF_VSOCK connect(cid=2, port=26501) → {vsock}_26501 → bomba del agente SSH del nodo
+guest AF_VSOCK connect(cid=2, port=26502) → {vsock}_26502 → identidad: POST /v1/tokens/oidc
 ```
 
-CH conecta esas llamadas a `{vsock}_26501` y `{vsock}_26502` de la sandbox; el token es siempre el de esa sandbox y un `X-ASP-Sandbox-ID` de otra da 403 ([ADR-0003](../adr/0003-identity.md) § 2). También hay `--ssh-agent-bridge` (un socket unix; el reconciler crea `/run/asp/ssh-agent-{id}.sock` hacia él) y `--identity-listen` (sin vínculo con una sandbox: solo laboratorio, con `--insecure-identity-sandbox-header`).
+Son los mismos *handlers* que el camino global, pero ligados a **esa** sandbox: el token de identidad es el suyo y las firmas solo consumen aprobaciones suyas; un `X-ASP-Sandbox-ID` de otra da 403 ([ADR-0003](../adr/0003-identity.md) § 2) y el guest sigue siendo no confiable. Al parar la sandbox se cierran. El guest no cambia: sigue marcando CID 2.
 
-La imagen lleva `ssh-agent-vsock.service` (vsock CID 2:26501 → `/run/agent-sandbox/ssh-agent.sock`): al nodo le basta `--host-vsock` (la antigua `--guest-ssh-agent-auto` ya no hace nada). `--host-vsock` necesita `/dev/vsock`, o `--host-vsock-dir` para sockets unix de laboratorio. Detalle: [`guest-vsock-notes.md`](../../scripts/guest-vsock-notes.md), [`why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [ADR-0006](../adr/0006-fase-2e-nft-ssh-guest.md). Confirmar cada firma: [operaciones de seguridad](../how-to/security-operations.md#confirmación-del-agente-ssh).
+`--ssh-agent-bridge` (un socket unix; el reconciler crea `/run/asp/ssh-agent-{id}.sock` hacia él) y `--identity-listen` (sin vínculo con una sandbox: solo laboratorio, con `--insecure-identity-sandbox-header`) siguen existiendo, igual que AF_VSOCK de verdad y `--host-vsock-dir` (sockets unix de laboratorio). Un dry-run con `FakeVMM` y `PodDaemonUnix` **no** abre listeners híbridos.
+
+La imagen lleva `ssh-agent-vsock.service` (vsock CID 2:26501 → `/run/agent-sandbox/ssh-agent.sock`): al nodo le basta `--host-vsock` (la antigua `--guest-ssh-agent-auto` ya no hace nada). `--host-vsock` necesita `/dev/vsock`, o `--host-vsock-dir`.
+
+**Límites.** Un listener por sandbox y puerto. Hay que abrirlos *antes* de que el guest marque. Si la ruta del multiplexor cambia (restaurar un snapshot), habría que reabrirlos: no está implementado. Comprobarlo en un host exige una imagen con `vsock-ssh-agent-proxy` y un nodo con esto.
+
+**Probarlo.** `cd node-agent && go test ./internal/hostvsock/ -count=1` (`TestHybridAttachSSHAgentFake`: escucha `{path}_26501`, pide las identidades y recibe un `type 12`); en un host con KVM, [`guest-vsock-notes.md`](../../scripts/guest-vsock-notes.md) y su script de demostración. El protocolo, en la [documentación de CH](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/vsock.md) (`socat - UNIX-LISTEN:/tmp/ch.vsock_1234` en el host, `socat - VSOCK-CONNECT:2:1234` en el guest; Firecracker usa la misma convención `uds_path_PORT`).
+
+Detalle del agente SSH: [`guest-vsock-notes.md`](../../scripts/guest-vsock-notes.md), [ADR-0006](../adr/0006-fase-2e-nft-ssh-guest.md). Confirmar cada firma: [operaciones de seguridad](../how-to/security-operations.md#confirmación-del-agente-ssh).
 
 ## El workspace del host (virtiofs) y el exec con PTY
 
@@ -82,7 +99,7 @@ mkdir -p /workspace
 mount -t virtiofs workspace /workspace
 ```
 
-Sin ese mount (imagen vieja) el exec ve el disco del guest. FakeVMM no bootea; los tests afirman socket, tag, y que el helper sale 0 si `mount` falla. Detalle: [`ops-asp-session.md`](../ops-asp-session.md), [`why-virtiofs-pty.md`](../why-virtiofs-pty.md).
+Sin ese mount (imagen vieja) el exec ve el disco del guest. FakeVMM no bootea; los tests afirman socket, tag, y que el helper sale 0 si `mount` falla. Detalle: [`ops-asp-session.md`](../ops-asp-session.md), [sesiones](../ops-asp-session.md#virtiofs-y-pty--qué-aterrizó).
 
 El exec con PTY también viaja por el vsock **26500** (`POST /v1/exec?stream=1` y `POST /v1/exec/stdin`). La imagen tiene que llevar el pod-daemon de este corte; si no, no hay `ready` y el node-agent degrada a un JSON final reescrito como un solo burst. El stream no tiene timeout total en el guest: `--exec-timeout-secs` (default 30) solo limita el exec acumulado, y `--stream-idle-timeout-secs` añade, si se pone, un límite por inactividad.
 

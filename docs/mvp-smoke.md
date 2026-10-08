@@ -339,7 +339,7 @@ Smoke dedicado (arranca CP en `:18081`):
 # o: make smoke-asp
 ```
 
-Ver [`why-cli-asp.md`](why-cli-asp.md).
+Ver [README del CLI](../cli/README.md).
 
 
 ## Lab JWT IdP (ADR-0007 fase 2)

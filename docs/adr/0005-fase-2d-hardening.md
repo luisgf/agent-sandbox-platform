@@ -82,6 +82,8 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 - Antes de `SSH2_AGENTC_SIGN_REQUEST`, hace falta approve one-shot: `POST /v1/internal/ssh-agent/approve` (TTL default 30s). Sin approve → `SSH_AGENT_FAILURE` (auto-deny).
 - Listar claves sigue funcionando. El resto de mensajes no llega nunca al agente del host ([ADR-0003](0003-identity.md) § 1).
 - Aplica al bridge unix y a host-vsock :26501.
+- El mount automático del agente en el guest ([0006](0006-fase-2e-nft-ssh-guest.md)) **no** desactiva el confirm gate: con `SSH_AUTH_SOCK` más a mano en el guest, la aprobación explícita importa más en los hosts sensibles.
+- Con `ASP_MULTI_USER=1` o `ASP_SSH_AGENT_SOCK_TEMPLATE` el gate queda *default-on*; el approve acepta `actor_sub` / `X-ASP-Actor-Sub` para el audit, y el scoping de claves lo hace la plantilla de sockets ([0007](0007-multi-user-identity.md)), no el gate solo.
 
 **Actualizado 2026-10 (aprobaciones por sandbox):** una aprobación la consumía la primera firma que llegara, de cualquier sandbox del nodo, y el `token` de la respuesta no lo pedía nadie. Ahora:
 
@@ -141,13 +143,15 @@ Restricciones: CI/box sin root ni KVM → cualquier nft debe SoftFail; enroll de
 | Migración | `control-plane/migrations/006_node_cert_rotation.sql` |
 | SSH confirm | `node-agent/internal/sshagent/confirm.go` |
 | nft sketch→2e | `node-agent/internal/nftredirect/`, `scripts/nftables-egress-redirect.sh` |
-| Why docs | `docs/why-2d-certs.md`, `why-2d-mtls.md`, `why-2d-ssh-confirm.md`, `why-2d-nft.md` |
 
 ## Límites honestos / no-goals
 
 - SoftFail nft **no** demuestra bypass-proof en CI.
 - Strict mTLS sin cuidar el enroll listener puede dejar un plaintext expuesto si se bind-ea a `0.0.0.0` por error.
-- Confirm gate no distingue claves “sensibles” vs “ci”; es all-or-nothing por proceso.
+- Confirm gate no distingue claves “sensibles” vs “ci”; es all-or-nothing por proceso, y la aprobación es por sandbox, no por clave (no hay allowlist de fingerprints). Una automatización que firma en bucle necesita un supervisor que renueve aprobaciones, o desactivar el flag en un laboratorio.
+- El endpoint de approve vive en la API local del agente (`--agent-listen`, con el token del agente): no se expone fuera del host.
+- La CA de enrollment sigue siendo la raíz de confianza de los nodos: proteger `ASP_CA_KEY` es ops, no algo que resuelva esta API. Revocar no se deshace en silencio: el nodo vuelve con un re-enroll.
+- `ASP_MTLS_STRICT` solo vale con TLS (`ASP_TLS_CERT` / `ASP_TLS_KEY`) y `ASP_CLIENT_CA`; sin TLS se ignora con un aviso. El enroll listener sirve `/healthz` a propósito, para probes locales, y no expone datos de ningún tenant.
 - Attestation sigue siendo software (2c); este ADR no añade TPM.
 
 ## Referencias cruzadas

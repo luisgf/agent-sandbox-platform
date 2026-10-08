@@ -4,7 +4,7 @@ Historia de fases del MVP hasta el estado **solution complete** (2a) y endurecim
 
 Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi-nodo / escala). La parte multi-nodo de la Fase 3 (3m.*) está hecha: [ADR-0011](adr/0011-multi-node.md). Ver § «Readiness corporativa» y [ADR-0007](adr/0007-multi-user-identity.md). Atribución de flujos de red a `owner_sub`: [ADR-0008](adr/0008-network-flow-attribution.md) (evaluación, no implementada). Red local bajo demanda (túnel completo de la sesión, default off, sin CIDR en v1): [ADR-0010](adr/0010-on-demand-local-net.md) (comandos `ip`/`wg` por sesión; sin lab de paquetes).
 
-**Dirección de producto (agentes):** el aislamiento se usa en una **sesión** larga (un sandbox: `owner_sub`, workspace del guest, egress, idle), no con create→exec→destroy por comando de shell. [ADR-0009](adr/0009-agent-sessions.md) · [`why-agent-sessions.md`](why-agent-sessions.md). `asp sandbox run` sigue siendo la primitiva de CI/ops.
+**Dirección de producto (agentes):** el aislamiento se usa en una **sesión** larga (un sandbox: `owner_sub`, workspace del guest, egress, idle), no con create→exec→destroy por comando de shell. [ADR-0009](adr/0009-agent-sessions.md). `asp sandbox run` sigue siendo la primitiva de CI/ops.
 
 ## Fase 0 — Esqueleto
 
@@ -108,7 +108,7 @@ Tras 2f: **readiness corporativa** (IdP humano, multi-user) y Fases 3–4 (multi
 
 Cierre shippable del MVP:
 
-1. **Identity + SSH guest→host vsock** — `HostVsockService` (`--host-vsock`): **26501** SSH / **26502** identity; lab `--host-vsock-dir`. En CH productive: reconciler **`AttachSandbox`** → UDS `{vsock}_{port}` (ver [`why-ch-hybrid-guest-host.md`](why-ch-hybrid-guest-host.md)); AF_VSOCK Listen solo no basta.
+1. **Identity + SSH guest→host vsock** — `HostVsockService` (`--host-vsock`): **26501** SSH / **26502** identity; lab `--host-vsock-dir`. En CH productive: reconciler **`AttachSandbox`** → UDS `{vsock}_{port}` (ver [vsock híbrido](concepts/node-runtime.md#del-guest-al-host-identidad-y-agente-ssh---host-vsock)); AF_VSOCK Listen solo no basta.
 2. **TAP auto** — `--tap-auto` SoftFail sin CAP_NET_ADMIN.
 3. **Guest image** — Dockerfile + systemd/OpenRC; `scripts/build-guest-rootfs.sh`.
 4. **Pack** — `scripts/pack-release.sh` + `Makefile`.
@@ -168,7 +168,7 @@ Cierre shippable del MVP:
 
 **Gaps residuales:** nft incompleto (DNS/puertos); SSH guest mount manual → **2e**.
 
-Docs: [`adr/0005-fase-2d-hardening.md`](adr/0005-fase-2d-hardening.md), `docs/why-2d-*.md`.
+Docs: [`adr/0005-fase-2d-hardening.md`](adr/0005-fase-2d-hardening.md).
 
 - **Hecho.**
 
@@ -193,7 +193,7 @@ ADR: [`adr/0006-fase-2e-nft-ssh-guest.md`](adr/0006-fase-2e-nft-ssh-guest.md).
 
 **Gaps residuales:** no es SDK multi-lenguaje ni TUI. `sandbox run` sigue en JSON acumulado; `asp session exec` streamea NDJSON y puede pedir PTY/stdin (no es SSH; ver límites en ops).
 
-Docs: [`why-cli-asp.md`](why-cli-asp.md).
+Docs: [README del CLI](../cli/README.md).
 
 - **Hecho.**
 
@@ -208,7 +208,7 @@ Contrato para harnesses (OpenCode y similares) que enganchan el shell **dentro**
 - `exec` reutiliza `POST /v1/sandboxes/{id}/exec`. Por defecto NDJSON (`?stream=1`); `--buffered` conserva el JSON acumulado de los smokes
 - `--workspace` guarda `workspace_host_path`. El nodo arranca `virtiofsd` y CH recibe `fs` tag `workspace`. La imagen nueva auto-monta `/workspace` (sale 0 si no hay tag). Un rootfs viejo monta a mano. Sin binario el start falla. Sin path no hay `fs`
 
-**Qué entregó / por qué importaba:** el one-shot queda para CI; la sesión es el camino del agente y evita pagar el boot en cada tool. Narrativa: [`why-agent-sessions.md`](why-agent-sessions.md).
+**Qué entregó / por qué importaba:** el one-shot queda para CI; la sesión es el camino del agente y evita pagar el boot en cada tool. Narrativa: [ADR-0009](adr/0009-agent-sessions.md).
 
 **Límites honestos:** no es plugin de OpenCode (hay wrapper de ejemplo); el auto-mount de virtiofs está en la imagen nueva, no en un rootfs ya desplegado; el PTY no es un terminal completo (sin SIGWINCH, stderr mezclado, timeout del pod-daemon); sin GC si se olvida `stop` y el reaper está apagado; el idle sigue siendo global (el exec terminado y el stdin proxyado refrescan el reloj).
 
@@ -220,7 +220,7 @@ Docs: [`ops-asp-session.md`](ops-asp-session.md).
 
 Gap post-2f (cerrado en código 3u.1–3u.5): faltaba sujeto humano, RBAC fino y `user_sub` en tokens de workload. **Implementado** en CP/node-agent; queda **ops**: JWKS IdP corporativo, memberships, socks SSH por usuario. Sin template, el bridge SSH global sigue siendo inseguro multi-user.
 
-**Decisión de diseño:** [ADR-0007](adr/0007-multi-user-identity.md) · narrativa [`why-multi-user-identity.md`](why-multi-user-identity.md).
+**Decisión de diseño:** [ADR-0007](adr/0007-multi-user-identity.md).
 
 Rollout:
 
@@ -240,7 +240,7 @@ Rollout:
 
 Gap post-3u: el plano de control ya atribuye create/exec/OIDC a humano ([ADR-0007](adr/0007-multi-user-identity.md)), pero el **egress TCP/HTTPS** del guest no etiqueta de forma no forgeable quién es el dueño. El proxy solo ve `X-ASP-Sandbox-ID` opcional (guest-controlled); los TAP comparten CIDR host por defecto.
 
-**Decisión de diseño (evaluación):** [ADR-0008](adr/0008-network-flow-attribution.md) · narrativa [`why-network-flow-attribution.md`](why-network-flow-attribution.md).
+**Decisión de diseño (evaluación):** [ADR-0008](adr/0008-network-flow-attribution.md).
 
 Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`) por sandbox; VLAN/VRF/eBPF como opciones pesadas. Guest-set marks/headers **no** son autoridad. Visibilidad corporativa = forced egress con identidad **host-injected**.
 
@@ -257,7 +257,7 @@ Camino preferente a evaluar: **egress proxy attribution** + IP/TAP (o `ct mark`)
 
 Gap distinto del egress público: un sandbox en un nodo remoto no puede hablar con la LAN del usuario. No debe poder hacerlo abriendo el router de casa, ni desviando `0.0.0.0/0` por el portátil **salvo** un opt-in explícito de esa sesión. Ese opt-in es el diseño de v1; el desvío por defecto, y el desvío silencioso, no.
 
-**Decisión de diseño (propuesta):** [ADR-0010](adr/0010-on-demand-local-net.md) · narrativa [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
+**Decisión de diseño (propuesta):** [ADR-0010](adr/0010-on-demand-local-net.md).
 
 Default **apagado** (`local_net=false`). Solo `asp session start --local-net` (o `"local_net": true` en `POST /v1/sandboxes`) lo enciende. No hay prefijos ni puertos que declarar: v1 es todo o nada. El agente local abre un túnel saliente (WireGuard preferido, en un netns o TUN de usuario; el nodo no escucha en la LAN) y la **ruta por defecto de esa sesión** (`0.0.0.0/0` y `::/0` si existe, DNS incluido) sale por él. El portátil ve y hace NAT de todo ese tráfico, también el Internet público; la allowlist del nodo no aplica mientras el túnel está up. Si el agente se desconecta, el nodo blackholea esa default y **no** cae en silencio al proxy. El túnel muere con la sesión o el idle. Identidad: `owner_sub`. El guest no enciende ni apaga el flag. Excepciones estrechas, más adelante; no en v1.
 

@@ -80,7 +80,7 @@ En producción: pin de versión CH/kernel y sin herramientas de build en el gues
 | SSH agent | AF_VSOCK CID **2** port **26501** → unix `/run/agent-sandbox/ssh-agent.sock` | node-agent `--host-vsock` + guest `ssh-agent-vsock.service` |
 | OIDC identity | AF_VSOCK CID **2** port **26502** | node-agent `--host-vsock` |
 
-**Elección (SSH):** proxy vsock en guest (no virtiofs del socket). Ver [`docs/why-2e-ssh-guest-mount.md`](../../docs/why-2e-ssh-guest-mount.md).
+**Elección (SSH):** proxy vsock en guest (no virtiofs del socket). Ver [ADR-0006](../../docs/adr/0006-fase-2e-nft-ssh-guest.md).
 
 ## Workspace del host
 
@@ -92,7 +92,7 @@ Una imagen construida antes de esa unidad no monta sola. Hasta reconstruir el ro
 mkdir -p /workspace && mount -t virtiofs workspace /workspace
 ```
 
-Detalle: [`docs/why-virtiofs-pty.md`](../../docs/why-virtiofs-pty.md), [`docs/ops-asp-session.md`](../../docs/ops-asp-session.md).
+Detalle: [sesiones](../../docs/ops-asp-session.md#virtiofs-y-pty--qué-aterrizó), [`docs/ops-asp-session.md`](../../docs/ops-asp-session.md).
 
 Lab sin KVM: `ASP_SSH_AGENT_UPSTREAM=unix:/path/to/host-vsock-26501.sock`.
 

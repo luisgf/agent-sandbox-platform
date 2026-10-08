@@ -40,7 +40,7 @@ guest→host identity:  …/vsock-{sandboxID}.sock_26502
 
 With `--host-vsock --reconcile`, node-agent `AttachSandbox` listens on those
 paths per sandbox (before VMM start) and runs the same SSH/identity handlers.
-See [`docs/why-ch-hybrid-guest-host.md`](../docs/why-ch-hybrid-guest-host.md).
+See [vsock híbrido](../docs/concepts/node-runtime.md#del-guest-al-host-identidad-y-agente-ssh---host-vsock).
 
 ### Optional global listeners (lab / non-hybrid VMM)
 
@@ -87,7 +87,7 @@ ssh-add -l              # talks to host agent via vsock
 ```
 
 **Why vsock (not virtiofs):** matches existing `--host-vsock` architecture; no CH
-fs/virtiofs config per sandbox. See [`docs/why-2e-ssh-guest-mount.md`](../docs/why-2e-ssh-guest-mount.md).
+fs/virtiofs config per sandbox. See [ADR-0006](../docs/adr/0006-fase-2e-nft-ssh-guest.md).
 
 ```bash
 # Option A — manual socat fallback:

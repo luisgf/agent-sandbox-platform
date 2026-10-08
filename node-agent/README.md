@@ -58,4 +58,4 @@ Local-net ([ADR-0010](../docs/adr/0010-on-demand-local-net.md)): el reconciler a
 
 Guest→host: ver [`scripts/guest-vsock-notes.md`](../scripts/guest-vsock-notes.md).
 
-Fase 2e (nft + SSH guest auto): [`docs/why-2e-nft-redirect.md`](../docs/why-2e-nft-redirect.md), [`docs/why-2e-ssh-guest-mount.md`](../docs/why-2e-ssh-guest-mount.md), ADR-0006.
+Redirect de nftables y agente SSH en el guest: [ADR-0006](../docs/adr/0006-fase-2e-nft-ssh-guest.md).

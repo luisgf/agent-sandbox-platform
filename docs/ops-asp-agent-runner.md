@@ -1,10 +1,10 @@
 # Ops — Primitiva one-shot y auth IdP (`asp sandbox run`)
 
-**No es la superficie de integración del agente.** Un agente largo usa una [sesión](ops-asp-session.md) ([ADR-0009](adr/0009-agent-sessions.md) · [por qué](why-agent-sessions.md)): un sandbox, muchos `exec`, stop o idle. Esta página es la primitiva create→exec→destroy (CI, un comando de ops) y cómo el CLI obtiene el Bearer sin copiarlo a mano.
+**No es la superficie de integración del agente.** Un agente largo usa una [sesión](ops-asp-session.md) ([ADR-0009](adr/0009-agent-sessions.md)): un sandbox, muchos `exec`, stop o idle. Esta página es la primitiva create→exec→destroy (CI, un comando de ops) y cómo el CLI obtiene el Bearer sin copiarlo a mano.
 
 Cómo esa primitiva (o cualquier otro subcomando `asp`) corre **sin** gestionar el JWT de Keycloak a mano.
 
-Diseño IdP: [ADR-0007](adr/0007-multi-user-identity.md) · conectar un IdP: [how-to/idp.md](how-to/idp.md) · CLI base: [why-cli-asp.md](why-cli-asp.md).
+Diseño IdP: [ADR-0007](adr/0007-multi-user-identity.md) · conectar un IdP: [how-to/idp.md](how-to/idp.md) · CLI base: [README del CLI](../cli/README.md).
 
 El one-shot **no** desaparece. Deja de ser el contrato que un harness debe llamar por tool.
 
@@ -167,14 +167,14 @@ make smoke-asp
 | Estado en disco | `~/.cache/asp/sessions/<nombre>.json` (0600), sin secretos | ninguno |
 | Workspace del host | `virtiofsd` + tag `workspace` si el path no está vacío; la imagen nueva monta `/workspace` al boot (la vieja, a mano) | el one-shot no pasa `--workspace` |
 
-Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.md) · [why-agent-sessions.md](why-agent-sessions.md).
+Detalle, wrapper de shell y consecuencias: [ops-asp-session.md](ops-asp-session.md) · [ADR-0009](adr/0009-agent-sessions.md).
 
 ## Referencias
 
 - [adr/0009-agent-sessions.md](adr/0009-agent-sessions.md)
-- [why-agent-sessions.md](why-agent-sessions.md)
+- [ADR-0009](adr/0009-agent-sessions.md)
 - [ops-asp-session.md](ops-asp-session.md)
 - [how-to/idp.md](how-to/idp.md)
-- [why-cli-asp.md](why-cli-asp.md)
+- [README del CLI](../cli/README.md)
 - [adr/0007-multi-user-identity.md](adr/0007-multi-user-identity.md)
 - La unit del paquete: [`packaging/systemd/asp-control-plane.service`](../packaging/systemd/asp-control-plane.service)

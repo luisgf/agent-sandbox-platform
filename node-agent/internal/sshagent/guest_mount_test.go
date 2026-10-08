@@ -14,8 +14,6 @@ func TestGuestSSHAgentUnitFilesExist(t *testing.T) {
 		"images/guest/openrc/ssh-agent-vsock",
 		"images/guest/cmd/vsock-ssh-agent-proxy/main.go",
 		"images/guest/helpers/ssh-agent-vsock-socat.sh",
-		"docs/why-2e-ssh-guest-mount.md",
-		"docs/why-2e-nft-redirect.md",
 		"docs/adr/0006-fase-2e-nft-ssh-guest.md",
 	}
 	for _, rel := range files {

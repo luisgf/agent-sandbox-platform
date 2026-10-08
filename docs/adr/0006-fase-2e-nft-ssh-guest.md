@@ -41,6 +41,7 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 - Unidad **`ssh-agent-vsock.service`** (+ ejemplo OpenRC) en `images/guest/`, habilitada al build del rootfs.
 - Preferencia **vsock** sobre virtiofs (menos superficie CH, mismo mapa de puertos).
 - Lab sin KVM: `ASP_SSH_AGENT_UPSTREAM=unix:/path/to/host-vsock-26501.sock`.
+- Alternativa dentro del propio guest: `pod-daemon --ssh-auth-bridge` (el mismo contrato de ruta).
 - Flag node-agent **`--guest-ssh-agent-auto`** (retirado, #126): solo escribía una línea en el log; que la imagen monte el agente lo decide la imagen.
 - Con Cloud Hypervisor, el path productivo guest→host es **`AttachSandbox`** → `{vsock}_{26501}` (no basta AF_VSOCK Listen); ver why hybrid.
 - El confirm gate de 2d (`--ssh-agent-confirm`) **sigue aplicando** a firmas que llegan por host-vsock/bridge.
@@ -54,6 +55,15 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 | SSH mount | Virtiofs del sock host | Menos proceso guest | Config CH + mount por sandbox; frágil | Manual OK; auto = vsock |
 | SSH mount | socat one-shot en cloud-init | Rápido de documentar | No reproducible en imagen | Rechazado como path primary |
 | Enforce default | `enforce` en todos lados | Más seguro | Rompe CI/box | Default **`soft`**; enforce en bare-metal docs |
+
+Por qué el proxy vsock en el guest y no el socket del host por virtiofs:
+
+| Criterio | Proxy vsock en el guest | Socket del host por virtiofs |
+|---|---|---|
+| Configuración extra de CH | No | Sí (un `fs` por VM) |
+| Alineado con el 26501 | Sí (el mismo puerto) | No aplica |
+| Dry-run sin KVM | `ASP_SSH_AGENT_UPSTREAM=unix:…` | Montaje artificial |
+| Superficie | Un binario pequeño en la imagen | Depende del `fs` del VMM |
 
 ## Consecuencias
 
@@ -88,7 +98,6 @@ Objetivo de 2e: cerrar esos dos gaps sin romper CI (sin root/KVM).
 | Rootfs build | `scripts/build-guest-rootfs.sh` |
 | Guest README | `images/guest/README.md` |
 | Flag auto | retirado (#126): `--guest-ssh-agent-auto` / `ASP_GUEST_SSH_AGENT_AUTO` se aceptan, avisan y no hacen nada |
-| Why | [`../why-2e-nft-redirect.md`](../why-2e-nft-redirect.md), [`../why-2e-ssh-guest-mount.md`](../why-2e-ssh-guest-mount.md), [`../why-ch-hybrid-guest-host.md`](../why-ch-hybrid-guest-host.md) |
 | Tests | `nftredirect/enforcer_test.go`, `vsock-ssh-agent-proxy/proxy_test.go`, `sshagent/guest_mount_test.go` |
 
 Ejemplo bare-metal (enforce):
@@ -117,6 +126,8 @@ node-agent ... --dry-run --egress-proxy-listen=:8888 \
 - **Sin TAP/KVM en CI no se prueba bypass-proof en hardware.** SoftFail mantiene verde el pipeline; no sustituye el checklist bare-metal.
 - SoftFail mal interpretado como “ya estamos seguros” es un anti-patrón — los docs deben decirlo en voz alta.
 - Virtiofs SSH **no** se automatiza; solo se documenta.
+- Un `FakeAgent` (0 claves) en un laboratorio sin `SSH_AUTH_SOCK` del host valida el protocolo, no un `git` real.
+- Sin `--host-vsock` ni puente, el guest no tiene a quién marcar.
 - Este ADR no añade TPM/SEV ni Windows guests.
 
 ## Referencias cruzadas

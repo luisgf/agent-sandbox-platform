@@ -1,6 +1,6 @@
 # Ops — Red local bajo demanda (`--local-net`)
 
-Contrato: [ADR-0010](adr/0010-on-demand-local-net.md). Por qué: [`why-on-demand-local-net.md`](why-on-demand-local-net.md).
+Contrato: [ADR-0010](adr/0010-on-demand-local-net.md).
 
 El nodo y el CLI **sí lanzan** `ip` y `wg` para crear `wg-asp-{id8}`. No es un esqueleto que se queda en disco. Probado a mano en un host KVM (Ubuntu 26.04, octubre de 2026) con dos sesiones a la vez y el cliente Linux en un network namespace: cada sandbox llegaba a la red de su propio cliente por su túnel, la del otro le daba `Network is unreachable` y el otro túnel no contaba ni un byte. **Lo que no se ha comprobado**: el reenvío y el NAT hasta una LAN real, el DNS de casa, el cliente macOS de punta a punta, y nada de esto corre en CI.
 

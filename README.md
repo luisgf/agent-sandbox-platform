@@ -406,7 +406,7 @@ Full session contract, flags and failure table: [`docs/ops-asp-session.md`](docs
 
 | Flag / setting | What it does | Guide |
 |---|---|---|
-| `--workspace /abs/path` | Shares a host directory into the guest via virtiofs, mounted at `/workspace`. | [`why-virtiofs-pty.md`](docs/why-virtiofs-pty.md) |
+| `--workspace /abs/path` | Shares a host directory into the guest via virtiofs, mounted at `/workspace`. | [sesiones](docs/ops-asp-session.md#virtiofs-y-pty--qué-aterrizó) |
 | `--local-net` + `asp session local-net up` | Routes the session's traffic through a WireGuard tunnel to your machine. | [`ops-local-net.md`](docs/ops-local-net.md) |
 | `asp auth login` | Fetches and caches an IdP token; the CLI then sends it as Bearer automatically. | [`how-to/idp.md`](docs/how-to/idp.md) |
 | `ASP_SANDBOX_IDLE_TIMEOUT` | Stops idle sandboxes on the control plane (their disks are kept). | [`control-plane/README.md`](control-plane/README.md) |

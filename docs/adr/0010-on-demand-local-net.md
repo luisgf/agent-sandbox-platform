@@ -3,7 +3,7 @@
 - **Estado:** Contrato de esta revisión vigente. Los comandos `ip`/`wg` del dispositivo por sesión están cableados (2026-10-03) — ver [Estado de implementación](#estado-de-implementación). Un lab con paquetes no está demostrado.
 - **Fecha:** 2026-10-03
 - **Revisión:** 2026-10-03. La primera redacción (commit `1858dd2`) fijaba v1 como allowlist de CIDR **y** puertos, y prohibía instalar `0.0.0.0/0` y `::/0` hacia el portátil. **Esta revisión sustituye ese contrato.** v1 es todo o nada: con el flag, la ruta por defecto del sandbox sale por el agente local; sin el flag, no hay túnel. Pedir prefijos al usuario no es v1.
-- **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft; egress del nodo cuando el flag está apagado), [0008](0008-network-flow-attribution.md) (flujo → `owner_sub`, evaluación), [0009](0009-agent-sessions.md) (la sesión es el objeto; egress de esa microVM), [0007](0007-multi-user-identity.md) (`owner_sub`), [`../why-on-demand-local-net.md`](../why-on-demand-local-net.md), [`../roadmap.md`](../roadmap.md)
+- **Relacionados:** [0002](0002-networking.md) (TAP + proxy + nft; egress del nodo cuando el flag está apagado), [0008](0008-network-flow-attribution.md) (flujo → `owner_sub`, evaluación), [0009](0009-agent-sessions.md) (la sesión es el objeto; egress de esa microVM), [0007](0007-multi-user-identity.md) (`owner_sub`), [`../roadmap.md`](../roadmap.md)
 - **No es:** una VPN de sistema en el portátil (no se toca la ruta por defecto de la máquina del usuario), un agujero de entrada en el router de casa, ni un split tunnel que el usuario tenga que rellenar con CIDRs. Con `local_net` apagado, el egress público de ADR-0002 no se mueve. Con `local_net` encendido, el default **de esa sesión** sí sale por el agente local, y el proxy del nodo deja de ser el camino.
 
 ## Contexto
@@ -452,5 +452,4 @@ Qué **sigue** sin estar demostrado (límite honesto):
 - Egress del nodo, vigente **solo** con `local_net=false`: [0002](0002-networking.md), [0006](0006-fase-2e-nft-ssh-guest.md)
 - Identidad de flujos (mismo `owner_sub`, otro path cuando el flag está on): [0008](0008-network-flow-attribution.md)
 - La sesión que acota la vida del túnel: [0009](0009-agent-sessions.md)
-- Por qué / qué ganamos: [`../why-on-demand-local-net.md`](../why-on-demand-local-net.md)
 - Roadmap (ítem futuro): [`../roadmap.md`](../roadmap.md)

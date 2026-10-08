@@ -36,6 +36,8 @@ idp_default_tenant: default   # solo si el token no lleva el claim del tenant
 3. El `sub` del token es el dueño (`owner_sub`) y el actor de lo que se haga; de los grupos sale el rol; del tenant, el tenant. Un `owner_sub` que mande el cliente en el cuerpo se rechaza.
 4. `/healthz`, el discovery OIDC del propio ASP y su JWKS (con los que las sandboxes validan los tokens de workload que ASP emite) son públicos. Las rutas de los nodos no piden el token de una persona: usan mTLS o una API key de plataforma.
 
+Un bearer que parece un JWT y no valida (firma, `iss`, `aud` o `exp`) da **401**, y con `idp_required: true` también las rutas de usuario sin token (`missing or invalid idp bearer token`); las de los nodos no piden un JWT de persona.
+
 Sin `ASP_IDP_ISSUER` no hay roles de IdP. Con una API key, el actor es la key y las sandboxes no tienen dueño; solo en un laboratorio abierto (`ASP_INSECURE_OPEN_API=1`, sin IdP ni keys) el cliente puede poner `owner_sub` en el cuerpo.
 
 ## Los roles
