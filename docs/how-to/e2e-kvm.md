@@ -13,10 +13,11 @@ Los tests y los smokes de CI mueven nodos `--dry-run` (FakeVMM): ejercitan el pl
 
 ## Cómo se ejecuta
 
-En un host con KVM, como root, con un kernel y una imagen del guest ([`images/guest/README.md`](../../images/guest/README.md)) y los binarios (`make build`):
+En un host con KVM, como root, con un kernel y una imagen del guest ([`images/guest/README.md`](../../images/guest/README.md)) y los binarios (`make build`). Lo que lleva una release se construye con `scripts/build-guest-image.sh --kernel` (el kernel se compila desde el fuente, unos minutos), y es lo que conviene probar:
 
 ```bash
-sudo ASP_E2E_ROOTFS=/var/lib/asp/images/rootfs.img ASP_E2E_KERNEL=/opt/sandbox/vmlinux \
+scripts/build-guest-image.sh --kernel build/guest        # build/guest/{rootfs.img,vmlinux,...}
+sudo ASP_E2E_ROOTFS=$PWD/build/guest/rootfs.img ASP_E2E_KERNEL=$PWD/build/guest/vmlinux \
      ASP_E2E_BIN=build scripts/e2e-kvm.sh        # o: sudo make e2e-kvm (con esas variables)
 ```
 
@@ -34,4 +35,4 @@ Hace lo mismo menos lo que solo ve el host del nodo (el estado del disco, el TAP
 
 ## En CI
 
-[`.github/workflow-drafts/nightly-kvm.yml`](../../.github/workflow-drafts/nightly-kvm.yml) lo ejecuta cada noche en un runner propio con KVM, con `smoke-vmm-user-kvm.sh` y `smoke-egress-kvm.sh`, y para un PR que un mantenedor etiquete `needs-kvm`. Hace falta un runner (`self-hosted, linux, kvm`) en una máquina para él solo, con `sudo` sin contraseña, y el permiso `workflow` para activar el workflow (`gh auth refresh -s workflow`, luego `git mv` a `.github/workflows/`). No lo ejecuta para PRs de forks.
+[`.github/workflow-drafts/nightly-kvm.yml`](../../.github/workflow-drafts/nightly-kvm.yml) lo ejecuta cada noche en un runner propio con KVM, con `smoke-vmm-user-kvm.sh` y `smoke-egress-kvm.sh`, sobre el kernel y la imagen que construye el propio repositorio, y para un PR que un mantenedor etiquete `needs-kvm`. Hace falta un runner (`self-hosted, linux, kvm`) en una máquina para él solo, con `sudo` sin contraseña, y el permiso `workflow` para activar el workflow (`gh auth refresh -s workflow`, luego `git mv` a `.github/workflows/`). No lo ejecuta para PRs de forks.

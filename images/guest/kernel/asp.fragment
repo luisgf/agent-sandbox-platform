@@ -1,0 +1,12 @@
+# What the guest image needs on top of Cloud Hypervisor's guest configuration (the base of
+# the kernel, see Dockerfile). Merged with scripts/kconfig/merge_config.sh, then olddefconfig.
+# Anything a sandbox needs from the kernel belongs in required-options too, which fails the
+# build when the final configuration lacks it.
+
+# uname -r says 6.18.55-asp, whatever git has to say about the tree.
+CONFIG_LOCALVERSION="-asp"
+# CONFIG_LOCALVERSION_AUTO is not set
+
+# /proc/config.gz: what the kernel running a sandbox was built with, readable from inside it.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y

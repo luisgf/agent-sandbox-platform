@@ -88,8 +88,6 @@ COPY images/guest/systemd/pod-daemon.service /etc/systemd/system/pod-daemon.serv
 COPY images/guest/systemd/ssh-agent-vsock.service /etc/systemd/system/ssh-agent-vsock.service
 COPY images/guest/systemd/workspace-virtiofs.service /etc/systemd/system/workspace-virtiofs.service
 COPY images/guest/systemd/cmdline-ip.service /etc/systemd/system/cmdline-ip.service
-COPY images/guest/modules-load.d/vsock.conf /etc/modules-load.d/vsock.conf
-COPY images/guest/modules-load.d/ptp_kvm.conf /etc/modules-load.d/ptp_kvm.conf
 COPY images/guest/chrony/chrony.conf /etc/chrony/chrony.conf
 COPY images/guest/openrc/pod-daemon /etc/init.d/pod-daemon.openrc-example
 COPY images/guest/openrc/ssh-agent-vsock /etc/init.d/ssh-agent-vsock.openrc-example

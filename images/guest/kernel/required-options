@@ -1,0 +1,54 @@
+# What a sandbox's guest needs from the kernel, as it must appear in the final .config (one per
+# line, exactly). The build fails if one is missing, so that a new kernel or a changed base
+# configuration cannot ship a kernel that boots without a disk, a network, vsock or a clock.
+
+# The boot: Cloud Hypervisor starts the uncompressed vmlinux through its PVH entry, with a
+# serial console, and the guest has the paravirtual clock.
+CONFIG_PVH=y
+CONFIG_KVM_GUEST=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_PTP_1588_CLOCK_KVM=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# The devices, all built in (there is no /lib/modules in the image): the disk the root filesystem
+# is, the TAP, the console, vsock for the host's exec, SSH agent and identity, and virtio-fs
+# for a workspace.
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
+CONFIG_FUSE_FS=y
+CONFIG_VIRTIO_FS=y
+
+# The root filesystem and what systemd wants of the kernel.
+CONFIG_EXT4_FS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_TMPFS=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_UNIX98_PTYS=y
+CONFIG_INOTIFY_USER=y
+CONFIG_FHANDLE=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EPOLL=y
+CONFIG_SECCOMP=y
+CONFIG_NAMESPACES=y
+
+# The network address comes on the kernel command line (ip=...), before init.
+CONFIG_IP_PNP=y
+
+# The limits of a command (pod-daemon's exec cgroup, cgroup v2): memory, processes, CPU time.
+CONFIG_CGROUPS=y
+CONFIG_MEMCG=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_FAIR_GROUP_SCHED=y
+CONFIG_CFS_BANDWIDTH=y
+
+# Debugging a sandbox: zcat /proc/config.gz, and the release the image is named for.
+CONFIG_IKCONFIG_PROC=y
+CONFIG_LOCALVERSION="-asp"

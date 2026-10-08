@@ -56,12 +56,14 @@ func newRelease(t testing.TB) release {
 	return r
 }
 
-// build writes SHA256SUMS and image.json from the files.
+// build writes SHA256SUMS and image.json from the files. The kernel carries where it came from
+// (version, config_sha256), as scripts/build-guest-image.sh --kernel writes it; a reader of today ignores that.
 func (r *release) build() {
 	r.manifest = []byte(fmt.Sprintf(`{"schema":1,"version":"1.0","commit":"abc","source_date_epoch":1,
  "base":{"image":"debian@sha256:x","snapshot":"20261005T000000Z"},
  "rootfs":{"file":"rootfs.img","sha256":%q,"size":%d,"gzip":{"file":"rootfs.img.gz","sha256":%q,"size":%d}},
- "kernel":{"file":"vmlinux","sha256":%q,"size":%d},"packages":[{"name":"systemd","version":"252"}]}`,
+ "kernel":{"file":"vmlinux","sha256":%q,"size":%d,"version":"6.18.55","config_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},
+ "packages":[{"name":"systemd","version":"252"}]}`,
 		hexSum(r.rootfs), len(r.rootfs), hexSum(r.rootfsGz), len(r.rootfsGz), hexSum(r.kernel), len(r.kernel)))
 	r.sums = []byte(fmt.Sprintf("%s  rootfs.img\n%s  rootfs.img.gz\n%s  image.json\n%s  vmlinux\n",
 		hexSum(r.rootfs), hexSum(r.rootfsGz), hexSum(r.manifest), hexSum(r.kernel)))
