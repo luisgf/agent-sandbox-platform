@@ -16,7 +16,7 @@ Cada ADR recoge una decisión que costó tomar: el contexto, lo que se decidió,
 | [0010](0010-on-demand-local-net.md) | Red local bajo demanda: un túnel completo iniciado por el agente local | Aceptada |
 | [0011](0011-multi-node.md) | Varios nodos: identidad, canal con el plano de control, colocación por capacidad y nodos caídos | Aceptada |
 | [0012](0012-retained-disks.md) | Parar no es borrar: el disco de una sandbox sobrevive a la parada | Aceptada |
-| 0013 | *(reservado)* Reevaluar Kubernetes con un spike medido ([#143](https://github.com/luisgf/agent-sandbox-platform/issues/143)) | — |
+| [0013](0013-kubernetes-reevaluation.md) | Kubernetes, `agent-sandbox`, Kata y E2B frente al orquestador propio, medidos: un host primero y la orquestación congelada | **Propuesta** |
 | [0014](0014-vms-outlive-the-agent.md) | Las VMs sobreviven al node-agent y el siguiente proceso las adopta | Aceptada |
 | [0015](0015-unprivileged-vmm.md) | El VMM corre como un usuario sin privilegios, uno por VM | Aceptada |
 | [0016](0016-single-host.md) | Un solo host: SQLite y `asp-server`, un servidor que se configura solo | Aceptada |

@@ -30,19 +30,19 @@ Para quien llega con Kubernetes en la cabeza: qué es una sandbox de ASP en esos
 
 Lo de ASP es lo que hace hoy el código; lo del resto, lo que dicen sus proyectos (fuentes abajo). Una celda sin cifra es una cifra que este proyecto no ha medido.
 
-| | ASP | Kubernetes + `agent-sandbox` | KubeVirt | Virtink | E2B (infra abierta) |
+| | ASP | Kubernetes + `agent-sandbox` | KubeVirt | Virtink | E2B (runtime abierto) |
 |---|---|---|---|---|---|
 | **Unidad de aislamiento** | microVM de Cloud Hypervisor; el VMM corre como un usuario sin privilegios por VM | Pod con `RuntimeClass`: gVisor, o Kata (una VM por pod) | VM QEMU/libvirt dentro de un pod | VM de Cloud Hypervisor dentro de un pod | microVM de Firecracker |
 | **Planificador** | propio, por capacidad | kube-scheduler | kube-scheduler | kube-scheduler | la API decide el nodo; un orquestador por nodo ejecuta |
-| **Reiniciar el agente del nodo** | las VMs confinadas siguen y el proceso nuevo las adopta; la primera actualización a esta versión sí las para | reiniciar kubelet o containerd no mata los pods | `virt-handler`: las VMs viven en pods independientes | `virt-daemon`: CH en pods | un orquestador por nodo gestiona los procesos de Firecracker |
-| **Identidad del workload** | token OIDC corto acuñado en el servidor (`user_sub`, `act`) y **agente SSH del host por vsock**, sin que la clave entre en el guest | tokens de ServiceAccount proyectados | ídem | ídem | no se ha comparado |
-| **Egress** | allowlist por tenant en un proxy + sumidero de DNS + nftables en el nodo, **activo por defecto** con el proxy; la IP de origen identifica la sandbox | NetworkPolicy (L3/L4); filtrado por nombre con proxies de terceros | NetworkPolicy, Multus | NetworkPolicy | según el despliegue |
+| **Reiniciar el agente del nodo** | las VMs confinadas siguen y el proceso nuevo las adopta (medido: el `exec` vuelve en 0,44 s); la primera actualización a esta versión sí las para | reiniciar k3s, y actualizarlo de v1.36 a v1.37, no mató la VM de Kata (medido) | `virt-handler`: las VMs viven en pods independientes | `virt-daemon`: CH en pods | reiniciar el orquestador **se lleva las sandboxes** (medido) |
+| **Identidad del workload** | token OIDC corto acuñado en el servidor (`user_sub`, `act`) y **agente SSH del host por vsock**, sin que la clave entre en el guest | tokens de ServiceAccount proyectados (`system:serviceaccount:…`): no dicen qué persona es la dueña | ídem | ídem | tokens de workload con audiencia, por sandbox, derivados de equipo, sandbox y plantilla |
+| **Egress** | allowlist por tenant en un proxy + sumidero de DNS + nftables en el nodo, **activo por defecto** con el proxy; la IP de origen identifica la sandbox; auditoría por sandbox | NetworkPolicy (L3/L4; con Kata funciona, medido); filtrado por nombre con proxies de terceros | NetworkPolicy, Multus | NetworkPolicy | listas por sandbox de CIDR, IPs o nombres (SNI y Host), **abiertas** por defecto |
 | **Persistencia** | disco local retenido al parar, fijado a su nodo, con caducidad (7 días por defecto); reanudar es **arrancar de nuevo** sobre ese disco | `PersistentVolumeClaim` (puede cambiar de nodo); pausa y reanudación | PVC/CDI; migración en vivo | PVC | snapshots de memoria y disco en almacenamiento de objetos |
-| **Arranque** | unos 5 s en frío y 3 s al reanudar, medidos en el laboratorio; sin pool precalentado | pools precalentados (`SandboxWarmPool`); el tiempo depende del runtime | VMs completas con libvirt y QEMU: más lento y más pesado por VM | la huella por VM que declara el proyecto es de ≈30 MB | restaura un snapshot (sin arrancar kernel) |
+| **Arranque** | 3,1 s en frío en metal (5,1 s en una VM anidada); reanudar es arrancar de nuevo (5 a 7 s anidado); sin pool | 2,6 s con Kata en una VM anidada; 0,65 s desde un `SandboxWarmPool` | VMs completas con libvirt y QEMU: más lento y más pesado por VM | la huella por VM que declara el proyecto es de ≈30 MB | **0,09 s**: restaura un snapshot; pausa en 0,2 s y reanuda en 0,14 s **con la memoria** (medido, anidado) |
 | **API y SDK** | REST y la CLI `asp`; sin SDK | CRDs, `kubectl`, SDK Go y Python | CRDs, `virtctl` | CRDs | REST y SDKs |
-| **Un solo host** | `asp-server` (tres comandos) | k3s más manifiestos y `kata-deploy` | un cluster y un operador | un cluster, cert-manager y Kubernetes ≤ 1.25 | «Embed»: una máquina con KVM por Docker Compose |
+| **Un solo host** | `asp-server`: una orden, 44 s, unos 50 MiB de plano de control (medido) | k3s, helm, kata-deploy y `agent-sandbox`: 4 o más órdenes, una imagen de 1,8 GB y 1 GB de memoria en reposo (medido) | un cluster y un operador | un cluster, cert-manager y Kubernetes ≤ 1,25 | «Embed» por Docker Compose: 3 órdenes, 3,2 GB de imágenes y 4 GiB de memoria reservados; sus plantillas necesitan salir a Internet (medido) |
 | **Observabilidad y control de acceso** | `/metrics` de Prometheus, logs, eventos por sandbox; roles del IdP y API keys | métricas, RBAC, auditoría y eventos del cluster | ídem | ídem | observabilidad propia (ClickHouse) |
-| **Madurez** | un laboratorio; sin releases (la primera será la 0.1.0) | `v1beta1`; SIG Apps; Kata y gVisor maduros | proyecto *incubating* de la CNCF, en camino de graduarse | «work in progress», API inestable | en producción en E2B |
+| **Madurez** | un laboratorio; sin releases (la primera será la 0.1.0) | `agent-sandbox` v1.0 (API `v1beta1`); SIG Apps; Kata y gVisor maduros | proyecto *incubating* de la CNCF, en camino de graduarse | sin versiones desde diciembre de 2024; API inestable | en producción en E2B |
 
 ## Lo que Kubernetes cubre y ASP reimplementa
 
@@ -65,15 +65,15 @@ Esas cosas son portables: podrían entregarse como un DaemonSet (el proxy de ide
 
 ## Qué se ha decidido y qué se está evaluando
 
-[ADR-0004](../adr/0004-k8s-scope.md) decidió que Kubernetes es opcional y se limita al despliegue del plano de control, y descartó la sandbox-como-Pod con razones reales (dos planificadores, CNI frente a TAP, recuperación ambigua). Lo que **no** examinó es el proyecto `agent-sandbox`, ni Kata con Cloud Hypervisor como `RuntimeClass`, ni Virtink o E2B como alternativas completas. El ADR-0013 (reservado, [#143](https://github.com/luisgf/agent-sandbox-platform/issues/143)) los medirá con la misma prueba de punta a punta que usa ASP (sesión, parar, reanudar, workspace, identidad, egress) sobre un k3s, y decidirá con datos. Hasta entonces, la superficie de orquestación (planificador, fencing, PKI, liveness) no crece: se corrigen sus errores y la inversión va a los diferenciales y a la simplicidad de un host.
+[ADR-0004](../adr/0004-k8s-scope.md) decidió que Kubernetes es opcional y se limita al despliegue del plano de control. [ADR-0013](../adr/0013-kubernetes-reevaluation.md) (una propuesta) lo revisó con una medición: el ciclo de vida de una sandbox en ASP, en k3s con Kata y `agent-sandbox`, y en E2B Embed, en las mismas VMs. Propone que ASP sirva a «mi servidor o el de mi equipo», congele la orquestación de varios nodos y dedique el esfuerzo al arranque y la reanudación, que es donde pierde. Las cifras de la tabla marcadas como medidas salen de ahí.
 
 ## Fuentes
 
-Consultadas el 8 de octubre de 2026.
+Consultadas el 8 de octubre de 2026 y revisadas el 12, con el spike de [ADR-0013](../adr/0013-kubernetes-reevaluation.md).
 
 - Agent Sandbox: [visión general](https://agent-sandbox.sigs.k8s.io/docs/getting_started/overview/) (CRDs, runtimes gVisor y Kata, `v1beta1`, SDK de Go y Python, pausa y reanudación).
 - Kata Containers: [arquitectura](https://github.com/kata-containers/kata-containers/blob/main/docs/design/architecture/README.md) (shim v2 y `RuntimeClass`).
 - KubeVirt: [guía de usuario](https://kubevirt.io/user-guide/) y su estado en la CNCF ([*incubating* desde 2022](https://www.cncf.io/blog/2022/04/19/kubevirt-becomes-a-cncf-incubating-project/); [camino a la graduación en 2026](https://siliconangle.com/2026/03/30/kubernetes-virtualization-approaches-cncf-graduation-kubeconeu/)).
-- Virtink: [README](https://github.com/smartxworks/virtink) (Kubernetes v1.16–v1.25, cert-manager v1.0–v1.8, ≈30 MB por VM, API inestable).
-- E2B: [infraestructura abierta](https://github.com/e2b-dev/infra) (Apache-2.0, Firecracker, restauración de snapshots, opciones de despliegue).
+- Virtink: [README](https://github.com/smartxworks/virtink) (Kubernetes v1.16–v1.25, cert-manager v1.0–v1.8, ≈30 MB por VM, API inestable; la última versión, v0.17.0, es de diciembre de 2024).
+- E2B: [runtime abierto](https://github.com/e2b-dev/runtime) (antes `e2b-dev/infra`; Apache-2.0, Firecracker, restauración de snapshots) y [E2B Embed](https://github.com/e2b-dev/runtime/blob/main/embed/README.md) (toda la pila en una máquina, por Docker Compose, Terraform o Kubernetes).
 - gVisor: [documentación](https://gvisor.dev/docs/).

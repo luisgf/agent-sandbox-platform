@@ -16,7 +16,7 @@ Las piezas están escritas y probadas: una release se instala en una Ubuntu y un
 
 Cada una acaba en un ADR o en una issue cerrada con su motivo; ninguna se da por tomada.
 
-- **¿Y Kubernetes?** [ADR-0004](adr/0004-k8s-scope.md) decidió que las sandboxes no son Pods, sin examinar `agent-sandbox`, Kata con Cloud Hypervisor, Virtink ni E2B. Se reevalúa, con una medición, en el ADR-0013 (#143).
+- **¿Y Kubernetes?** Medido en [ADR-0013](adr/0013-kubernetes-reevaluation.md) (propuesta, a la espera de que se acepte): ASP, k3s con Kata y `agent-sandbox`, y E2B Embed en las mismas VMs. Propone servir a «mi servidor o el de mi equipo», congelar la orquestación de varios nodos y llevar el esfuerzo al arranque y la reanudación, donde ASP tarda segundos y E2B décimas.
 - **Arranque rápido de una sesión:** el [ADR-0017](adr/0017-fast-start.md) (propuesta) mide qué hay en los 6 s de un arranque y propone arreglar primero lo que sobra, sin construir ahora ni el pool de VMs precalentadas (#81) ni las instantáneas de Cloud Hypervisor (#144): el helper del guest que esperaba a un tag que no existe (hecho, −1,8 s), los discos como overlay qcow2 en vez de copias (−1,5 s, #204) y un sondeo de trabajo más corto (#205).
 
 ## Más adelante
