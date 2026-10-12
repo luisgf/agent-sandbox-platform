@@ -16,8 +16,7 @@ Las piezas están escritas y probadas: una release se instala en una Ubuntu y un
 
 Cada una acaba en un ADR o en una issue cerrada con su motivo; ninguna se da por tomada.
 
-- **¿Y Kubernetes?** Medido en [ADR-0013](adr/0013-kubernetes-reevaluation.md) (propuesta, a la espera de que se acepte): ASP, k3s con Kata y `agent-sandbox`, y E2B Embed en las mismas VMs. Propone servir a «mi servidor o el de mi equipo», congelar la orquestación de varios nodos y llevar el esfuerzo al arranque y la reanudación, donde ASP tarda segundos y E2B décimas.
-- **Arranque rápido de una sesión:** el [ADR-0017](adr/0017-fast-start.md) (propuesta) mide qué hay en los 6 s de un arranque y propone arreglar primero lo que sobra, sin construir ahora ni el pool de VMs precalentadas (#81) ni las instantáneas de Cloud Hypervisor (#144): el helper del guest que esperaba a un tag que no existe (hecho, −1,8 s), los discos como overlay qcow2 en vez de copias (−1,5 s, #204) y un sondeo de trabajo más corto (#205).
+- **Arranque rápido de una sesión**, que [ADR-0013](adr/0013-kubernetes-reevaluation.md) pone primero (ASP tarda segundos donde E2B tarda décimas): el [ADR-0017](adr/0017-fast-start.md) (propuesta) mide qué hay en los 6 s de un arranque y propone arreglar primero lo que sobra, sin construir ahora ni el pool de VMs precalentadas (#81) ni las instantáneas de Cloud Hypervisor (#144): el helper del guest que esperaba a un tag que no existe (hecho, −1,8 s), los discos como overlay qcow2 en vez de copias (−1,5 s, #204) y un sondeo de trabajo más corto (#205).
 
 ## Más adelante
 
@@ -26,14 +25,14 @@ Sin fecha y sin compromiso. Son lo que los ADRs y la revisión de diseño dejaro
 **Seguridad**
 
 - Atestación de hardware (TPM, SEV) detrás de la interfaz `Attestor`; hoy la firma es de software ([modelo de seguridad](concepts/security-model.md#atestación-fencing-y-nodos-perdidos)).
-- Fencing de producción por BMC (Redfish, IPMI): hoy son stubs y solo funciona el webhook.
+- Fencing de producción por BMC (Redfish, IPMI): hoy son stubs y solo funciona el webhook. *Congelado* por [ADR-0013](adr/0013-kubernetes-reevaluation.md): necesitaría un ADR que diga por qué no es Kubernetes.
 - `virtiofsd` sin root: exige traducir ids o un namespace de usuario por VM, y [ADR-0015](adr/0015-unprivileged-vmm.md) lo deja para aparte.
 - **Atribución de los flujos de red a `owner_sub`** ([ADR-0008](adr/0008-network-flow-attribution.md)). Ya se reconoce la sandbox por su IP de origen y el audit del proxy lleva su `sandbox_id`; faltan `owner_sub` en esa línea, la identidad hacia un proxy corporativo y las marcas de nftables (`ct mark`). Criterio de aceptación: dos sandboxes de distinto `owner_sub` hacia el mismo destino dan líneas de audit distintas sin cabeceras del guest.
 - IPv6 y QUIC en el egress, y reglas por sandbox al estilo de NetworkPolicy en el nodo.
 
 **Operación**
 
-- Un plano de control con más de una réplica de verdad: elección de líder para el monitor de nodos (hoy cada réplica corre el suyo y el fencing podría repetirse, [ADR-0011](adr/0011-multi-node.md)).
+- Un plano de control con más de una réplica de verdad: elección de líder para el monitor de nodos (hoy cada réplica corre el suyo y el fencing podría repetirse, [ADR-0011](adr/0011-multi-node.md)). *Congelado* por [ADR-0013](adr/0013-kubernetes-reevaluation.md), como el resto de la orquestación de varios nodos.
 - SLOs y alertas sobre las métricas que ya hay ([monitorizar](how-to/monitoring.md)); pruebas de caos.
 - Métricas de lo que hoy no tiene ninguna: revocaciones, firmas SSH denegadas, fallos del redirect de nftables.
 - Copias de seguridad automáticas; hoy son un procedimiento a mano ([copias y restauración](how-to/backup-and-restore.md)).
@@ -50,7 +49,9 @@ Sin fecha y sin compromiso. Son lo que los ADRs y la revisión de diseño dejaro
 
 Decisiones tomadas, no pendientes:
 
-- Ejecutar sandboxes como Pods de Kubernetes ([ADR-0004](adr/0004-k8s-scope.md)).
+- Ejecutar sandboxes como Pods de Kubernetes ([ADR-0004](adr/0004-k8s-scope.md), con las razones de [ADR-0013](adr/0013-kubernetes-reevaluation.md)).
+- El caso corporativo de muchos nodos, muchos tenants y actualizaciones sin cortes: el público de ASP es «mi servidor o el de mi equipo, de uno a tres hosts», y para ese caso la recomendación es Kubernetes con `agent-sandbox` y Kata ([ADR-0013](adr/0013-kubernetes-reevaluation.md)).
+- Hacer crecer la orquestación de varios nodos (planificador, fencing, PKI, detección de nodos caídos) sin un ADR que diga por qué no es Kubernetes; lo que hay se mantiene y se arregla ([ADR-0013](adr/0013-kubernetes-reevaluation.md)).
 - Exponer microVMs directamente a Internet.
 - Guardar claves privadas o refresh tokens en las imágenes del guest.
 - Cargas que necesiten `NET_ADMIN` en el guest, y guests que no sean Linux.

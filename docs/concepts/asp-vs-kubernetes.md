@@ -65,7 +65,7 @@ Esas cosas son portables: podrían entregarse como un DaemonSet (el proxy de ide
 
 ## Qué se ha decidido y qué se está evaluando
 
-[ADR-0004](../adr/0004-k8s-scope.md) decidió que Kubernetes es opcional y se limita al despliegue del plano de control. [ADR-0013](../adr/0013-kubernetes-reevaluation.md) (una propuesta) lo revisó con una medición: el ciclo de vida de una sandbox en ASP, en k3s con Kata y `agent-sandbox`, y en E2B Embed, en las mismas VMs. Propone que ASP sirva a «mi servidor o el de mi equipo», congele la orquestación de varios nodos y dedique el esfuerzo al arranque y la reanudación, que es donde pierde. Las cifras de la tabla marcadas como medidas salen de ahí.
+[ADR-0004](../adr/0004-k8s-scope.md) decidió que Kubernetes es opcional y se limita al despliegue del plano de control. [ADR-0013](../adr/0013-kubernetes-reevaluation.md) lo revisó con una medición: el ciclo de vida de una sandbox en ASP, en k3s con Kata y `agent-sandbox`, y en E2B Embed, en las mismas VMs. Decidió que ASP sirve a «mi servidor o el de mi equipo», que la orquestación de varios nodos se congela y que el esfuerzo va al arranque y la reanudación, que es donde pierde; el caso corporativo de muchos nodos, a Kubernetes con `agent-sandbox` y Kata. Las cifras de la tabla marcadas como medidas salen de ahí.
 
 ## Fuentes
 

@@ -1,6 +1,6 @@
 # ADR-0013: Kubernetes, `agent-sandbox`, Kata y E2B frente al orquestador propio, medidos
 
-- **Estado:** Propuesta
+- **Estado:** Aceptada
 - **Fecha:** 2026-10-12
 - **Revisa:** [ADR-0004](0004-k8s-scope.md)
 - **Relacionados:** [ADR-0016](0016-single-host.md) (un solo host), [ADR-0017](0017-fast-start.md) (arranque rápido), [ADR-0011](0011-multi-node.md) (varios nodos), [ASP frente a Kubernetes](../concepts/asp-vs-kubernetes.md), [#143](https://github.com/luisgf/agent-sandbox-platform/issues/143)
@@ -97,7 +97,7 @@ Se leyó, no se ejecutó. La última versión es la v0.17.0, de diciembre de 202
 4. **Lo que Kubernetes hace mejor ya funciona con Kata.** Actualizar el demonio del nodo sin matar las VMs (verificado), RBAC por namespace (verificado), un pool precalentado (0,65 s) y una API estándar. Para varios nodos, varios tenants, un IdP y actualizaciones sin cortes, ASP reimplementa con años de retraso lo que ahí ya está, y el coste de mantenerlo es permanente.
 5. **E2B Embed es la alternativa real en el terreno de ASP**, no Kubernetes: un host, Apache-2.0, microVMs y arranques de decenas de milisegundos. Lo que pesa en contra para el público de ASP es su huella (memoria reservada, imágenes, ClickHouse), que sus plantillas necesitan salir a Internet al construirse, que no comparte directorios del host y que un reinicio del orquestador se lleva las sandboxes.
 
-## Decisión (propuesta)
+## Decisión
 
 **(A) ASP sigue con su plano de control, para un público explícito, y congela la orquestación.**
 
@@ -112,7 +112,7 @@ Se leyó, no se ejecutó. La última versión es la v0.17.0, de diciembre de 202
 
 | Alternativa | A favor | En contra | Decisión |
 |---|---|---|---|
-| **(A)** Plano de control propio, un solo host primero, orquestación congelada | la huella más pequeña medida (1 orden, 44 s, unos 50 MiB); identidad y egress propios; directorios del host | arranque y reanudación lentos (hay que arreglarlos); lo de varios nodos queda como está | **Propuesta** |
+| **(A)** Plano de control propio, un solo host primero, orquestación congelada | la huella más pequeña medida (1 orden, 44 s, unos 50 MiB); identidad y egress propios; directorios del host | arranque y reanudación lentos (hay que arreglarlos); lo de varios nodos queda como está | **Aceptada** |
 | **(B)** Pasar a Kubernetes + `agent-sandbox` + Kata/CH y entregar lo de ASP como complementos (un DaemonSet de identidad y egress, un controlador) | actualizaciones sin cortes, RBAC, pools y API estándar ya hechos y verificados; ASP dejaría de mantener su orquestación | 1 GB y 4 o más piezas antes de la primera sandbox: demasiado para el público de un host; reescribir identidad y egress como complementos; el fallo de densidad observado | rechazada **para este público**; es la recomendación para el corporativo |
 | **(C)** Una API fina de ASP sobre los CRDs de `agent-sandbox` | conserva la CLI y la sesión de ASP | hereda la huella de B y además mantiene una capa propia; no resuelve identidad ni egress por sí sola | rechazada |
 | **(D)** Construir sobre E2B Embed (o recomendarlo) | arranque y reanudación de decenas de milisegundos, con memoria; un host; Apache-2.0 | 4 a 6 GiB reservados, 3,2 GB de imágenes, salida a Internet para las plantillas, sin directorios del host, el reinicio del orquestador pierde las sandboxes; otra base de código grande que seguir | rechazada como base; es la referencia de arranque a batir y la recomendación para quien necesite miles de sandboxes cortas |
@@ -152,3 +152,5 @@ El laboratorio fueron tres VMs con la red y el proxy de [`scripts/e2e-install-kv
 Cada medida cronometra desde la petición hasta que `true` corre dentro.
 
 ## Enmiendas
+
+- **2026-10-12:** aceptada por el mantenedor tal como se propuso: la opción A, con el público de uno a tres hosts y la orquestación de varios nodos congelada.
