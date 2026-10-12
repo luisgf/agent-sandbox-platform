@@ -2,6 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-09
+- **Enmendada por:** [ADR-0013](0013-kubernetes-reevaluation.md)
 - **Relacionados:** [0001-vmm-choice](0001-vmm-choice.md), [`../architecture.md`](../architecture.md), [instalar un nodo](../how-to/install-node.md)
 
 ## Contexto
@@ -81,7 +82,7 @@ No hay manifiestos de “Sandbox CRD” en el árbol a propósito.
 ## Enmiendas
 
 - **2026-10:** esta decisión descartó la sandbox-como-Pod con Kata y KubeVirt, pero no examinó el proyecto `agent-sandbox` de Kubernetes (SIG Apps), ni Kata con Cloud Hypervisor como `RuntimeClass`, ni Virtink o E2B como alternativas completas. Se reevaluará con una medición en el ADR-0013 (reservado, [#143](https://github.com/luisgf/agent-sandbox-platform/issues/143)). Entretanto, la comparación está en [ASP frente a Kubernetes](../concepts/asp-vs-kubernetes.md).
-- **2026-10-12:** [ADR-0013](0013-kubernetes-reevaluation.md) (propuesta) hizo la medición: ASP, k3s con Kata (Cloud Hypervisor) y `agent-sandbox`, y E2B Embed, en las mismas VMs. Las razones de arriba no se sostienen frente a Kata (no hay dos planificadores, y Kata pone el TAP en el netns del pod). La conclusión se mantiene para el público de un solo host, por otras razones: la huella (ASP, una orden y unos 50 MiB de plano de control; k3s con Kata, 4 o más piezas y 1 GB), la identidad del host por vsock y el egress por nombre. Para el caso corporativo de muchos nodos, ADR-0013 recomienda Kubernetes con `agent-sandbox` y Kata.
+- **2026-10-12:** [ADR-0013](0013-kubernetes-reevaluation.md), aceptado ese día, hizo la medición: ASP, k3s con Kata (Cloud Hypervisor) y `agent-sandbox`, y E2B Embed, en las mismas VMs. Las razones de arriba no se sostienen frente a Kata (no hay dos planificadores, y Kata pone el TAP en el netns del pod). La conclusión se mantiene para el público de un solo host, por otras razones: la huella (ASP, una orden y unos 50 MiB de plano de control; k3s con Kata, 4 o más piezas y 1 GB), la identidad del host por vsock y el egress por nombre. Para el caso corporativo de muchos nodos, ADR-0013 recomienda Kubernetes con `agent-sandbox` y Kata, y congela la orquestación de varios nodos de ASP.
 
 ## Referencias cruzadas
 
