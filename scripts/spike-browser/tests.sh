@@ -4,8 +4,11 @@
 #   tests.sh plain       cold start of the plain image (the installed one)
 #   tests.sh switch      install the desktop image set and make it current
 #   tests.sh desktop     everything about the desktop image
+#   tests.sh background  what an idle browser tries to reach in 120 s, with the managed policy and without
+#   tests.sh background-flags  the same, with the policy and Playwright's switches against background traffic
 #   tests.sh headless    the same browser with and without a screen
 #   tests.sh density N M N desktop sandboxes of M MiB at once
+#   tests.sh density-plain N M   the same with the plain image (switch back to it first), until each runs a command
 set -uo pipefail
 V=0.0.0-SNAPSHOT-bb9ad4a
 W=/srv/asp/workspaces/default/browser
@@ -176,6 +179,23 @@ headless)
     rmall $n
   done
   ;;
+density-plain)
+  # The baseline of density in the same machine: the plain image (switch back to it first), until each runs a command.
+  N=${2:-8}; M=${3:-512}
+  echo "== density, plain image: $N sandboxes of $M MiB at once, until each runs a command"
+  rmall $(seq -f "p%g" 1 "$N")
+  for _ in $(seq 1 180); do [[ $(systemctl list-units --no-legend --plain 'asp-vm-*' | wc -l) == 0 ]] && break; sleep 1; done
+  sleep 5
+  s=$(ms)
+  for i in $(seq 1 "$N"); do (
+    A session start --timeout 900s --name p$i --memory-mib "$M" --workspace "$W" >/tmp/start-p$i.log 2>&1 || { echo "  p$i start failed after $(( $(ms) - s )) ms: $(tail -2 /tmp/start-p$i.log | tr '\n' ' ')"; exit 1; }
+    wait_exec p$i 900 && echo "  p$i command at $(( $(ms) - s )) ms"
+  ) & done; wait
+  res density_plain_all_commands_ms $(( $(ms) - s ))
+  res density_plain_disk_per_sandbox "$(du -m /var/lib/asp/disks/rootfs-*.img 2>/dev/null | awk '{s+=$1; n++} END{printf "%d MiB allocated each, %d sandboxes", (n ? s/n : 0), n}')"
+  rmall $(seq -f "p%g" 1 "$N")
+  for _ in $(seq 1 180); do [[ $(systemctl list-units --no-legend --plain 'asp-vm-*' | wc -l) == 0 ]] && break; sleep 1; done
+  ;;
 density)
   N=${2:-8}; M=${3:-1536}
   echo "== density: $N desktop sandboxes of $M MiB at once, each loads the article"
@@ -202,5 +222,5 @@ density)
   rmall $(seq -f "n%g" 1 "$N")
   for _ in $(seq 1 180); do [[ $(systemctl list-units --no-legend --plain 'asp-vm-*' | wc -l) == 0 ]] && break; sleep 1; done
   ;;
-*) echo "usage: $0 plain|switch|desktop|background|background-flags|headless|density [N M]" >&2; exit 2 ;;
+*) echo "usage: $0 plain|switch|desktop|background|background-flags|headless|density N M|density-plain N M" >&2; exit 2 ;;
 esac

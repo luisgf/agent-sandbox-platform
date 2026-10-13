@@ -21,6 +21,7 @@ Cada ADR recoge una decisión que costó tomar: el contexto, lo que se decidió,
 | [0015](0015-unprivileged-vmm.md) | El VMM corre como un usuario sin privilegios, uno por VM | Aceptada |
 | [0016](0016-single-host.md) | Un solo host: SQLite y `asp-server`, un servidor que se configura solo | Aceptada |
 | [0017](0017-fast-start.md) | Arrancar y reanudar rápido: primero el desperdicio medido, después el pool y las instantáneas | **Propuesta** (implementada en parte) |
+| [0018](0018-browser-desktop.md) | Un navegador y un escritorio sencillo dentro de la sandbox, medidos: una variante de la imagen, cuando haya overlay, imagen por sandbox y reenvío por vsock | **Propuesta** |
 
 ## Estados
 
