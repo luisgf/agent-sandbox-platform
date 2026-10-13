@@ -1,0 +1,16 @@
+[Unit]
+Description=ASP desktop: Chromium, through the node's proxy, DevTools on the guest's loopback
+PartOf=asp-desktop.target
+After=asp-desktop-display.service asp-desktop-wm.service
+
+[Service]
+User=sandbox
+Environment=DISPLAY=:1 HOME=/home/sandbox
+EnvironmentFile=/etc/default/asp-desktop
+ExecStartPre=/usr/local/share/asp/desktop-wait-display.sh
+ExecStart=/usr/local/share/asp/desktop-browser.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=asp-desktop.target

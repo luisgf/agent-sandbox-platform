@@ -1,0 +1,15 @@
+[Unit]
+Description=ASP desktop: window manager (Openbox)
+PartOf=asp-desktop.target
+After=asp-desktop-display.service
+
+[Service]
+User=sandbox
+Environment=DISPLAY=:1 HOME=/home/sandbox
+ExecStartPre=/usr/local/share/asp/desktop-wait-display.sh
+ExecStart=/usr/bin/openbox --sm-disable
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=asp-desktop.target

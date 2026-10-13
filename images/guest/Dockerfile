@@ -55,7 +55,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
 COPY images/guest/pack-rootfs.sh /usr/local/bin/pack-rootfs
 ENTRYPOINT ["/usr/local/bin/pack-rootfs"]
 
-FROM ${DEBIAN_IMAGE}
+FROM ${DEBIAN_IMAGE} AS guest
 ARG SNAPSHOT
 ARG SOURCE_DATE_EPOCH
 # CH boots the kernel with root=/dev/vda and /sbin/init. docker export does not
@@ -123,3 +123,27 @@ ENV SSH_AUTH_SOCK=/run/agent-sandbox/ssh-agent.sock
 USER sandboxd
 ENTRYPOINT ["/usr/local/bin/pod-daemon"]
 CMD ["--listen", "vsock", "--vsock-port", "26500"]
+
+# The desktop variant (#231, a spike): the guest above plus a display, a window manager,
+# Chromium and noVNC, started at boot by asp-desktop.target. Built with
+# ASP_GUEST_VARIANT=desktop; the default build stops at the guest stage (build-guest-image.sh
+# always names its target). The screen is drawn in memory by Xvnc and leaves the guest only
+# through vsock (asp-desktop-vsock.service): no network port is opened.
+FROM guest AS desktop
+ARG SOURCE_DATE_EPOCH
+USER root
+RUN apt-get update -qq \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+         chromium fonts-dejavu-core fonts-liberation novnc openbox socat tigervnc-standalone-server websockify \
+    && rm -rf /var/lib/apt/lists/*
+COPY images/guest/desktop/asp-desktop.target images/guest/desktop/*.service /etc/systemd/system/
+COPY images/guest/desktop/chromium-policy.json /etc/chromium/policies/managed/asp.json
+COPY images/guest/desktop/asp-desktop.env /etc/default/asp-desktop
+COPY images/guest/desktop/desktop-browser.sh /usr/local/share/asp/desktop-browser.sh
+COPY images/guest/desktop/desktop-wait-display.sh /usr/local/share/asp/desktop-wait-display.sh
+RUN chmod 0755 /usr/local/share/asp/desktop-browser.sh /usr/local/share/asp/desktop-wait-display.sh \
+    && ln -sfn /etc/systemd/system/asp-desktop.target /etc/systemd/system/multi-user.target.wants/asp-desktop.target \
+    && rm -rf /var/log/* /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old \
+         /var/cache/apt/* /tmp/* /etc/passwd- /etc/group- /etc/shadow- /etc/gshadow- /etc/subuid- /etc/subgid- \
+    && sed -i -E "s/^([^:]*:[^:]*:)[0-9]*:/\1$((SOURCE_DATE_EPOCH / 86400)):/" /etc/shadow
+USER sandboxd

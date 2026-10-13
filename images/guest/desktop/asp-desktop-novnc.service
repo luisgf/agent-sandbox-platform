@@ -1,0 +1,13 @@
+[Unit]
+Description=ASP desktop: noVNC (websockify) on the guest's loopback, port 6080
+PartOf=asp-desktop.target
+After=asp-desktop-display.service
+
+[Service]
+User=sandbox
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5901
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=asp-desktop.target

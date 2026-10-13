@@ -11,8 +11,10 @@
 #
 # Environment:
 #   SOURCE_DATE_EPOCH       the build date, in seconds (default: the time of the HEAD commit)
-#   ASP_ROOTFS_SIZE_MB      size of the filesystem (default 512)
-#   ASP_GUEST_VERSION       the version image.json says (default: git describe, or "dev")
+#   ASP_GUEST_VARIANT       guest (default) or desktop: the guest plus a display, Chromium and noVNC (#231, a spike)
+#   ASP_ROOTFS_SIZE_MB      size of the filesystem (default 512; 2048 for the desktop variant)
+#   ASP_GUEST_VERSION       the version image.json says (default: git describe, or "dev"; "-desktop" appended
+#                           for the desktop variant)
 #   ASP_GUEST_KERNEL_FILE   a kernel to publish with the image, as vmlinux (--kernel builds one)
 #   ASP_GUEST_MODULES       a lib/modules/<kernel release> directory to put in the image (a kernel
 #                           built with its drivers as modules, e.g. the host's Ubuntu kernel)
@@ -49,13 +51,19 @@ OUT="${1:-$ROOT/build/guest}"
 # and "$OUT.a" below must be a sibling of it.
 case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 OUT="${OUT%/}"
-SIZE_MB="${ASP_ROOTFS_SIZE_MB:-512}"
+VARIANT="${ASP_GUEST_VARIANT:-guest}"
+case "$VARIANT" in
+  guest) DEFAULT_SIZE_MB=512 ;;
+  desktop) DEFAULT_SIZE_MB=2048 ;;
+  *) echo "ASP_GUEST_VARIANT must be guest or desktop, not $VARIANT" >&2; exit 2 ;;
+esac
+SIZE_MB="${ASP_ROOTFS_SIZE_MB:-$DEFAULT_SIZE_MB}"
 EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || true)}"
 [[ -n "$EPOCH" ]] || { echo "SOURCE_DATE_EPOCH is not set and this is not a git checkout" >&2; exit 2; }
-VERSION="${ASP_GUEST_VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)}"
+VERSION="${ASP_GUEST_VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)$([[ $VARIANT == guest ]] || echo "-$VARIANT")}"
 COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 DOCKERFILE="$ROOT/images/guest/Dockerfile"
-TAG="asp-guest-build:$EPOCH"
+TAG="asp-guest-build:$EPOCH-$VARIANT"
 PACKER="asp-guest-packer:$EPOCH"
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
@@ -68,12 +76,13 @@ build() {
   rm -rf "$out"; mkdir -p "$out"
   local flags=(--build-arg "SOURCE_DATE_EPOCH=$EPOCH" -f "$DOCKERFILE")
 
-  echo "==> the filesystem of the guest (SOURCE_DATE_EPOCH=$EPOCH)"
+  # The last stage of the Dockerfile is a variant, so the target is always named.
+  echo "==> the filesystem of the guest, $VARIANT variant (SOURCE_DATE_EPOCH=$EPOCH)"
   if (( ${#LOAD[@]} )); then
-    docker build "$@" "${flags[@]}" --output "type=tar,dest=$out/rootfs.tar" "$ROOT"
-    docker build "${flags[@]}" -t "$TAG" "${LOAD[@]}" "$ROOT" >/dev/null
+    docker build "$@" "${flags[@]}" --target "$VARIANT" --output "type=tar,dest=$out/rootfs.tar" "$ROOT"
+    docker build "${flags[@]}" --target "$VARIANT" -t "$TAG" "${LOAD[@]}" "$ROOT" >/dev/null
   else
-    docker build "$@" "${flags[@]}" -t "$TAG" "$ROOT" >/dev/null
+    docker build "$@" "${flags[@]}" --target "$VARIANT" -t "$TAG" "$ROOT" >/dev/null
     local cid; cid="$(docker create "$TAG")"
     docker export "$cid" >"$out/rootfs.tar"
     docker rm -f "$cid" >/dev/null
@@ -112,6 +121,7 @@ build() {
     echo '{'
     echo '  "schema": 1,'
     echo "  \"version\": \"$VERSION\","
+    [[ $VARIANT == guest ]] || echo "  \"variant\": \"$VARIANT\","
     echo "  \"commit\": \"$COMMIT\","
     echo "  \"source_date_epoch\": $EPOCH,"
     echo "  \"base\": {\"image\": \"$(arg DEBIAN_IMAGE)\", \"snapshot\": \"$(arg SNAPSHOT)\"},"
