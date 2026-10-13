@@ -1,0 +1,8 @@
+[Unit]
+Description=ASP desktop variant: display, window manager, browser and noVNC
+Documentation=https://github.com/luisgf/agent-sandbox-platform/issues/231
+Wants=asp-desktop-display.service asp-desktop-wm.service asp-desktop-browser.service asp-desktop-novnc.service asp-desktop-vsock.service
+After=network.target cmdline-ip.service
+
+[Install]
+WantedBy=multi-user.target

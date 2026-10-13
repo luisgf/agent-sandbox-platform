@@ -1,0 +1,17 @@
+[Unit]
+Description=ASP desktop: X display :1 with its VNC server on the guest's loopback (TigerVNC Xvnc)
+PartOf=asp-desktop.target
+
+[Service]
+# One process is both the X server and the VNC server: nothing draws on a GPU, and nothing
+# but the guest's own loopback can reach the VNC port (noVNC and the vsock bridge sit in
+# front of it). No VNC password: who reaches the port is decided outside the guest.
+User=sandbox
+EnvironmentFile=/etc/default/asp-desktop
+ExecStart=/usr/bin/Xvnc :1 -geometry ${ASP_DESKTOP_GEOMETRY} -depth 24 -rfbport 5901 -interface 127.0.0.1 \
+  -SecurityTypes None -AlwaysShared -nolisten tcp -desktop asp
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=asp-desktop.target

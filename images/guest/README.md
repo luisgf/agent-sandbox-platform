@@ -7,8 +7,10 @@ Objetivo: Debian stable mínimo, kernel compatible con virtio/vsock y `pod-daemo
 Desde la raíz del repo:
 
 ```bash
-docker build -t agent-sandbox-guest -f images/guest/Dockerfile .
+docker build --target guest -t agent-sandbox-guest -f images/guest/Dockerfile .
 ```
+
+`--target guest`: la última etapa del `Dockerfile` es la variante `desktop` (Chromium, un escritorio y noVNC, [#231](https://github.com/luisgf/agent-sandbox-platform/issues/231), un estudio), que se construye con `ASP_GUEST_VARIANT=desktop scripts/build-guest-image.sh`.
 
 El `Dockerfile`:
 

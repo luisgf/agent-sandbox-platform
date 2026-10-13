@@ -1,0 +1,15 @@
+[Unit]
+Description=ASP desktop: noVNC and DevTools over vsock, for the node to reach without a guest port
+PartOf=asp-desktop.target
+
+[Service]
+# The node reaches a guest's vsock ports through Cloud Hypervisor's socket (CONNECT <port>),
+# the way it reaches pod-daemon on 26500. These bridges are what a port forward of ASP would
+# dial: vsock 6080 → noVNC, vsock 9222 → Chromium's DevTools. No network port is opened.
+User=sandbox
+ExecStart=/bin/sh -c 'socat VSOCK-LISTEN:6080,reuseaddr,fork TCP:127.0.0.1:6080 & exec socat VSOCK-LISTEN:9222,reuseaddr,fork TCP:127.0.0.1:9222'
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=asp-desktop.target
