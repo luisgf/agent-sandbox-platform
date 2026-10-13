@@ -16,8 +16,8 @@ Las piezas están escritas y probadas: una release se instala en una Ubuntu y un
 
 Cada una acaba en un ADR o en una issue cerrada con su motivo; ninguna se da por tomada.
 
-- **Arranque rápido de una sesión**, que [ADR-0013](adr/0013-kubernetes-reevaluation.md) pone primero (ASP tarda segundos donde E2B tarda décimas): el [ADR-0017](adr/0017-fast-start.md) (propuesta) mide qué hay en los 6 s de un arranque y propone arreglar primero lo que sobra, sin construir ahora ni el pool de VMs precalentadas (#81) ni las instantáneas de Cloud Hypervisor (#144): el helper del guest que esperaba a un tag que no existe (hecho, −1,8 s), los discos como overlay qcow2 en vez de copias (−1,5 s, #204) y un sondeo de trabajo más corto (#205).
-- **Un navegador y un escritorio sencillo dentro de la sandbox**: el [ADR-0018](adr/0018-browser-desktop.md) (propuesta, #231) lo mide con una variante de la imagen (Chromium, Xvnc y noVNC) y propone ofrecerla solo cuando haya discos como overlay (#204), elegir la imagen por sandbox y un reenvío de puertos autenticado por vsock.
+- **Arranque rápido de una sesión**, que [ADR-0013](adr/0013-kubernetes-reevaluation.md) pone primero (ASP tarda segundos donde E2B tarda décimas): el [ADR-0017](adr/0017-fast-start.md) (propuesta) mide qué hay en los 6 s de un arranque y propone arreglar primero lo que sobra, sin construir ahora ni el pool de VMs precalentadas (#81) ni las instantáneas de Cloud Hypervisor (#144): el helper del guest que esperaba a un tag que no existe (hecho, −1,8 s), los discos como overlay qcow2 en vez de copias (−1,5 s con la imagen normal y −8 s con la de escritorio de [ADR-0018](adr/0018-browser-desktop.md), #204) y un sondeo de trabajo más corto (#205).
+- **Reenviar un puerto hacia una sandbox** (#234): la primera vía de entrada hacia un guest, para el escritorio de [ADR-0018](adr/0018-browser-desktop.md) (noVNC y DevTools) y, después, para cualquier servidor que corra dentro. Necesita su propio ADR antes del código: quién puede abrirlo, a qué puertos, qué se audita y qué cambia respecto a [ADR-0010](adr/0010-on-demand-local-net.md).
 
 ## Más adelante
 
@@ -40,6 +40,7 @@ Sin fecha y sin compromiso. Son lo que los ADRs y la revisión de diseño dejaro
 
 **Producto**
 
+- **Un escritorio con navegador en la sandbox** ([ADR-0018](adr/0018-browser-desktop.md), aceptada): la variante de la imagen ya se construye (`ASP_GUEST_VARIANT=desktop`, Chromium, Xvnc y noVNC) y se ofrecerá cuando los discos sean overlay (#204), se pueda elegir la imagen por sandbox (#233) y exista el reenvío de puertos por vsock (#234). Lo que le falta a la variante para publicarla, en #235.
 - Un perfil de Firecracker ([ADR-0001](adr/0001-vmm-choice.md)): adaptador y mediciones, sin prometer paridad.
 - Un workspace persistente cifrado.
 - Excepciones estrechas en `--local-net` (hoy es todo o nada, [ADR-0010](adr/0010-on-demand-local-net.md)): solo con un caso de uso y un ADR nuevo.

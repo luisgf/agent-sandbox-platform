@@ -4,7 +4,7 @@
 - **Fecha:** 2026-10-08 (#144, #81)
 - **Implementación:** en parte. Hecho: el helper del guest deja de esperar a un tag virtiofs que no existe (primer cambio de la decisión). Pendiente: los discos como overlay qcow2 ([#204](https://github.com/luisgf/agent-sandbox-platform/issues/204)) y un sondeo de trabajo más corto ([#205](https://github.com/luisgf/agent-sandbox-platform/issues/205)).
 - **Extiende:** [ADR-0012](0012-retained-disks.md) (qué es parar y reanudar)
-- **Relacionados:** [ADR-0014](0014-vms-outlive-the-agent.md) (las VMs sobreviven al agente), [ADR-0015](0015-unprivileged-vmm.md) (el VMM sin capacidades), [#81](https://github.com/luisgf/agent-sandbox-platform/issues/81) (pool precalentado), [#144](https://github.com/luisgf/agent-sandbox-platform/issues/144) (esta decisión)
+- **Relacionados:** [ADR-0014](0014-vms-outlive-the-agent.md) (las VMs sobreviven al agente), [ADR-0015](0015-unprivileged-vmm.md) (el VMM sin capacidades), [#81](https://github.com/luisgf/agent-sandbox-platform/issues/81) (pool precalentado), [#144](https://github.com/luisgf/agent-sandbox-platform/issues/144) (esta decisión), [ADR-0018](0018-browser-desktop.md) (el escritorio, que hace de los overlays su primer requisito)
 
 ## Contexto
 
