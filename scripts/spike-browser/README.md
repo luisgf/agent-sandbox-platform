@@ -7,7 +7,7 @@ Los scripts que produjeron las cifras de [ADR-0018](../../docs/adr/0018-browser-
 | [`rig.sh`](rig.sh) | el host, como root | una VM Ubuntu 24.04 desechable con KVM anidado en un network namespace propio, un proxy con lista blanca y un servidor de ficheros para la release (`up`, `ssh asp …`, `tproxy`, `down [purge]`); el del estudio de Kubernetes recortado a una máquina |
 | [`tproxy-host.py`](tproxy-host.py) | el host (lo arranca `rig.sh tproxy`) | la salida del proxy de ASP: el namespace redirige `93.184.216.34:80/443` aquí, y esto lo pasa al proxy del laboratorio por la cabecera `Host` o el SNI |
 | [`rig-setup.sh`](rig-setup.sh) | la VM, como root, tras el instalador | los sitios de las pruebas resuelven a esa dirección; la lista blanca del tenant `default` |
-| [`tests.sh`](tests.sh) | la VM, como root | las medidas: `plain`, `switch`, `desktop`, `background`, `background-flags`, `headless`, `density N MiB` |
+| [`tests.sh`](tests.sh) | la VM, como root | las medidas: `plain`, `switch`, `desktop`, `background`, `background-flags`, `headless`, `density N MiB` y, con la imagen normal, `density-plain N MiB` |
 | [`cdp.py`](cdp.py) | dentro del guest o en el nodo | un cliente mínimo de DevTools (solo la biblioteca estándar): `wait`, `version`, `goto URL [--screenshot]` |
 | [`vsock_bridge.py`](vsock_bridge.py) | el nodo | un puerto TCP delante de un puerto vsock del guest, por el socket de Cloud Hypervisor (`CONNECT <puerto>`): lo que haría el nodo en un reenvío de puertos |
 | [`rm-all-sandboxes.sh`](rm-all-sandboxes.sh) | la VM, como root | borra por id las sandboxes que una medida interrumpida dejó sin fichero de sesión, y espera a que no quede ninguna VM |

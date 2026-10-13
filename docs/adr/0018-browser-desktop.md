@@ -1,15 +1,15 @@
 # ADR-0018: Un navegador y un escritorio sencillo dentro de la sandbox, medidos
 
-- **Estado:** Propuesta
+- **Estado:** Aceptada
 - **Fecha:** 2026-10-13
-- **Implementación:** un estudio. En la rama `spike/browser-desktop`: la variante `desktop` de la imagen del guest (`ASP_GUEST_VARIANT=desktop scripts/build-guest-image.sh`). Nada de lo que la decisión pide antes de ofrecerla está hecho.
-- **Relacionados:** [ADR-0001](0001-vmm-choice.md) (Cloud Hypervisor y «un camino creíble hacia desktop»), [ADR-0002](0002-networking.md) (el egress), [ADR-0010](0010-on-demand-local-net.md) (red local), [ADR-0013](0013-kubernetes-reevaluation.md) (el público de ASP), [ADR-0017](0017-fast-start.md) (arrancar rápido, [#204](https://github.com/luisgf/agent-sandbox-platform/issues/204)), [#231](https://github.com/luisgf/agent-sandbox-platform/issues/231)
+- **Implementación:** en parte. Hecho: la variante `desktop` de la imagen del guest (`ASP_GUEST_VARIANT=desktop scripts/build-guest-image.sh`), tal como se midió. Pendiente, antes de ofrecerla: los discos como overlay ([#204](https://github.com/luisgf/agent-sandbox-platform/issues/204)), elegir la imagen por sandbox ([#233](https://github.com/luisgf/agent-sandbox-platform/issues/233)), el reenvío de puertos por vsock ([#234](https://github.com/luisgf/agent-sandbox-platform/issues/234), con su ADR) y lo que le falta a la variante para publicarla ([#235](https://github.com/luisgf/agent-sandbox-platform/issues/235)).
+- **Relacionados:** [ADR-0001](0001-vmm-choice.md) (Cloud Hypervisor), [ADR-0002](0002-networking.md) (el egress), [ADR-0010](0010-on-demand-local-net.md) (red local), [ADR-0013](0013-kubernetes-reevaluation.md) (el público de ASP), [ADR-0017](0017-fast-start.md) (arrancar rápido, [#204](https://github.com/luisgf/agent-sandbox-platform/issues/204)), [#231](https://github.com/luisgf/agent-sandbox-platform/issues/231)
 
 ## Contexto
 
 Un agente necesita cada vez más un navegador de verdad: para leer páginas que solo existen con JavaScript, para probar la aplicación web que está construyendo, o para que una persona vea lo que hace y le eche una mano. Hoy el guest es una Debian 12 sin pantalla (1 vCPU y 512 MiB por defecto) cuya única salida es el proxy con lista blanca del host y su sumidero de DNS. Un navegador es el programa más grande y más hablador que se le puede meter.
 
-[ADR-0001](0001-vmm-choice.md) eligió Cloud Hypervisor en parte por «un camino creíble hacia desktop», pero nadie lo había medido. Lo que había que averiguar ([#231](https://github.com/luisgf/agent-sandbox-platform/issues/231)):
+Nadie lo había estudiado: cuando [ADR-0001](0001-vmm-choice.md) pide «un camino creíble hacia desktop/local», habla de correr ASP en un portátil, no de una pantalla dentro de la sandbox. Lo que había que averiguar ([#231](https://github.com/luisgf/agent-sandbox-platform/issues/231)):
 
 - **La pantalla.** Cloud Hypervisor no tiene dispositivo gráfico: su modelo de dispositivos es bloque, red, consola, vsock, virtio-fs, rng, pmem y VFIO, y la única vía a virtio-gpu es un parche de Spectrum, fuera del árbol, que el propio Spectrum no cree que vaya a entrar. Firecracker tampoco tiene. Así que la pantalla se dibuja en memoria dentro del guest y se saca por la red, que es lo que hacen E2B Desktop, Daytona y la imagen de referencia de *computer use* de Anthropic (Xvfb, un gestor de ventanas, x11vnc y noVNC).
 - **El coste.** Cuánto ocupa la imagen, cuánta memoria hace falta, cuánto tarda en arrancar hasta que el navegador contesta y cuántas caben en un host.
@@ -35,7 +35,7 @@ Un agente necesita cada vez más un navegador de verdad: para leer páginas que 
 | Salida | dos puentes `socat` de vsock (6080 y 9222) al loopback | el nodo llega a ellos como llega al pod-daemon (26500), por el socket de Cloud Hypervisor; el guest no abre ningún puerto de red |
 | Política | `/etc/chromium/policies/managed/asp.json`: sin QUIC, sin DNS sobre HTTPS, sin métricas, sin Safe Browsing, sin actualizaciones de componentes, sin sincronización, WebRTC solo por el proxy | menos ruido en el proxy; **la frontera sigue siendo el nodo** |
 
-Todo arranca con el guest (`asp-desktop.target`) como el usuario `sandbox` (uid 1000), con la pantalla a 1280x800. El navegador usa el proxy del nodo (`HTTPS_PROXY`, que el nodo ya pone en la línea de comandos del kernel). Ninguna línea de ASP cambió: es una imagen distinta.
+Todo arranca con el guest (`asp-desktop.target`) como el usuario `sandbox` (uid 1000), con la pantalla a 1280x800. El navegador usa el proxy del nodo (`HTTPS_PROXY`, que el nodo ya pone en la línea de comandos del kernel). Ni el plano de control, ni el node-agent, ni la CLI cambiaron: es una imagen distinta.
 
 ## Resultados
 
@@ -172,15 +172,15 @@ Ocho sandboxes de escritorio pedidas a la vez, cada una carga el artículo cuand
 
 ## Decisión
 
-**Propuesta: el escritorio entra como una variante opcional de la imagen, pero no se ofrece hasta que existan tres cosas.**
+**El escritorio entra como una variante opcional de la imagen, pero no se ofrece hasta que existan tres cosas.**
 
 - **La variante.** `ASP_GUEST_VARIANT=desktop` construye la imagen normal más Xvnc, Openbox, Chromium y noVNC, reproducible como la otra (tres builds del mismo commit, dos de ellos desde cero, dieron los mismos bytes), y se publica junto a ella en cada release. La imagen normal no cambia ni engorda.
 - **Antes de ofrecerla, en este orden:**
   1. **Discos como overlay qcow2** ([#204](https://github.com/luisgf/agent-sandbox-platform/issues/204)). Sin ellos cada sandbox de escritorio copia 1,1 GiB y arranca 6 s más tarde, y varias a la vez se estorban.
-  2. **Elegir la imagen por sandbox.** Hoy un nodo arranca una sola imagen (`/opt/sandbox`), y `image_ref` solo se guarda. El nodo tendría varios juegos instalados (`asp image pull --version <v>-desktop`) y la sandbox diría cuál (`asp session start --image desktop`); el planificador solo pondría una sandbox en un nodo que tenga su imagen.
-  3. **Un reenvío de puertos autenticado por vsock**: `asp session forward <puerto>` y, encima, `asp session desktop`. El nodo llega al puerto vsock del guest como llega al pod-daemon; el plano de control lo autoriza como un `exec` (la dueña de la sandbox, o `sandbox:exec-any`); la CLI escucha solo en el loopback del portátil. El guest no abre puertos de red y el nodo no acepta tráfico entrante: [ADR-0010](0010-on-demand-local-net.md) sigue igual. **noVNC va en la CLI**, no en el guest: la CLI sirve sus ficheros estáticos y traduce WebSocket a VNC sobre el reenvío, y el guest solo expone VNC y DevTools por vsock. Eso quita de la imagen 73 paquetes y 128 MiB (Node.js, NumPy, websockify y lo que arrastran).
+  2. **Elegir la imagen por sandbox** ([#233](https://github.com/luisgf/agent-sandbox-platform/issues/233)). Hoy un nodo arranca una sola imagen (`/opt/sandbox`), y `image_ref` solo se guarda. El nodo tendría varios juegos instalados (`asp image pull --version <v>-desktop`) y la sandbox diría cuál (`asp session start --image desktop`); el planificador solo pondría una sandbox en un nodo que tenga su imagen.
+  3. **Un reenvío de puertos autenticado por vsock** ([#234](https://github.com/luisgf/agent-sandbox-platform/issues/234)): `asp session forward <puerto>` y, encima, `asp session desktop`. El nodo llega al puerto vsock del guest como llega al pod-daemon; el plano de control lo autoriza como un `exec` (la dueña de la sandbox, o `sandbox:exec-any`); la CLI escucha solo en el loopback del portátil. El guest no abre puertos de red y el nodo no acepta tráfico entrante: [ADR-0010](0010-on-demand-local-net.md) sigue igual. **noVNC va en la CLI**, no en el guest: la CLI sirve sus ficheros estáticos y traduce WebSocket a VNC sobre el reenvío, y el guest solo expone VNC y DevTools por vsock. Eso quita de la imagen 73 paquetes y 128 MiB (Node.js, NumPy, websockify y lo que arrastran).
 - **El tamaño.** Una sandbox de escritorio pide 1,5 GiB (el mínimo útil es 1 GiB; 512 MiB no sirve). La CLI lo pone por defecto con `--image desktop`.
-- **El egress no cambia.** La política gestionada del navegador y los flags contra el tráfico de fondo son higiene (menos líneas de auditoría), no la frontera: la frontera es el nodo, y las pruebas lo confirman. Quedan pendientes, antes de publicarla, dos cambios que la variante medida no tiene: arrancar el navegador con los flags de Playwright (de 15 a 9 conexiones de fondo en dos minutos) y añadir a su política `DefaultSearchProviderEnabled: false`, para que la barra de direcciones no busque en un sitio denegado.
+- **El egress no cambia.** La política gestionada del navegador y los flags contra el tráfico de fondo son higiene (menos líneas de auditoría), no la frontera: la frontera es el nodo, y las pruebas lo confirman. Quedan pendientes, antes de publicarla ([#235](https://github.com/luisgf/agent-sandbox-platform/issues/235)), dos cambios que la variante medida no tiene: arrancar el navegador con los flags de Playwright (de 15 a 9 conexiones de fondo en dos minutos) y añadir a su política `DefaultSearchProviderEnabled: false`, para que la barra de direcciones no busque en un sitio denegado.
 
 **Fuera de esta decisión:** un navegador sin pantalla como imagen aparte (la pantalla cuesta 73 MiB: no compensa otra imagen que mantener), recuperar la memoria del guest con balloon o free page reporting (mejoraría la densidad de todas las sandboxes, no solo estas; merece su propia medida), y grabar o compartir la sesión de escritorio.
 
@@ -188,7 +188,7 @@ Ocho sandboxes de escritorio pedidas a la vez, cada una carga el artículo cuand
 
 | Opción | A favor | En contra | Veredicto |
 |---|---|---|---|
-| **(A)** Variante opcional de la imagen, con overlay, imagen por sandbox y reenvío por vsock | funciona hoy sin tocar ASP; la imagen normal no cambia; el egress y la identidad, iguales | tres piezas antes de ofrecerla; otra imagen que construir y publicar | **Propuesta** |
+| **(A)** Variante opcional de la imagen, con overlay, imagen por sandbox y reenvío por vsock | funciona hoy sin tocar ASP; la imagen normal no cambia; el egress y la identidad, iguales | tres piezas antes de ofrecerla; otra imagen que construir y publicar | **Aceptada** |
 | **(B)** Meterlo en la imagen normal | una sola imagen | multiplica por 8 la imagen de todas las sandboxes y les añade 6 s de arranque, la usen o no | rechazada |
 | **(C)** Instalar el navegador al vuelo dentro de la sandbox | ninguna imagen nueva | el guest no tiene DNS ni apt por diseño; ~1 GB por sandbox cada vez | rechazada |
 | **(D)** Solo un navegador sin pantalla, con DevTools | un poco menos de memoria | ahorra 73 MiB y deja a la persona sin ver nada; la imagen apenas adelgaza (Chromium arrastra GTK igual) | rechazada como imagen aparte; se puede arrancar así dentro de la variante |
@@ -201,7 +201,7 @@ Ocho sandboxes de escritorio pedidas a la vez, cada una carga el artículo cuand
 
 - Una imagen más en cada release: `asp-guest_<v>-desktop_*` (380 MiB comprimida). El CI la construiría en `release.yml`; en cada PR, construirla dos veces para comprobar que es reproducible añade unos minutos y depende de `snapshot.debian.org`, así que iría solo en la release y en un workflow manual.
 - Chromium sigue a la rama de seguridad de Debian 12 (`bookworm-security` lo tenía al día en la foto del archivo). Si Debian deja de actualizarlo en oldstable, la variante pasa a Debian 13 antes que la imagen normal, o toma el Chromium de otro sitio con su hash fijado.
-- El reenvío de puertos sirve para más que el escritorio (un servidor de desarrollo en la sandbox, por ejemplo), y es la primera vía de entrada hacia un guest: necesita su propio ADR.
+- El reenvío de puertos sirve para más que el escritorio (un servidor de desarrollo en la sandbox, por ejemplo), y es la primera vía de entrada hacia un guest: necesita su propio ADR ([#234](https://github.com/luisgf/agent-sandbox-platform/issues/234)).
 
 ## Límites honestos
 
@@ -215,3 +215,7 @@ Ocho sandboxes de escritorio pedidas a la vez, cada una carga el artículo cuand
 ## Cómo repetirlo
 
 Los scripts están en [`scripts/spike-browser/`](../../scripts/spike-browser/README.md): la VM desechable, la salida del proxy, las medidas, el cliente de DevTools y el puente vsock. La variante se construye con `ASP_GUEST_VARIANT=desktop scripts/build-guest-image.sh`.
+
+## Enmiendas
+
+- **2026-10-13:** aceptada por el mantenedor tal como se propuso. La variante queda en `main` tal como se midió y no se ofrece hasta que estén [#204](https://github.com/luisgf/agent-sandbox-platform/issues/204), [#233](https://github.com/luisgf/agent-sandbox-platform/issues/233) y [#234](https://github.com/luisgf/agent-sandbox-platform/issues/234); [#235](https://github.com/luisgf/agent-sandbox-platform/issues/235) recoge lo que le falta antes de publicarla. Al aceptarla se corrigió la cita de [ADR-0001](0001-vmm-choice.md), que hablaba de correr ASP en un portátil y no de una pantalla en la sandbox, y se precisó un punto de la decisión: colocar sandboxes por imagen entre varios nodos es una función del planificador, congelada por [ADR-0013](0013-kubernetes-reevaluation.md), así que [#233](https://github.com/luisgf/agent-sandbox-platform/issues/233) empieza por un solo host (el nodo rechaza la sandbox si no tiene su imagen).
