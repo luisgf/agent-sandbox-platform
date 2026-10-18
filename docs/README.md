@@ -16,7 +16,6 @@ Un índice con una línea por página. Las páginas están agrupadas por lo que 
 
 - [Empezar](getting-started/quickstart.md): los tres caminos (un host con KVM, un portátil sin KVM, varios servidores) y el *dry-run* paso a paso.
 - [Usar ASP con OpenCode](getting-started/opencode.md): el wrapper, el plugin y las configuraciones, en dos montajes; qué corre en la sandbox y qué no.
-- [Usar ASP con infrabroker](how-to/infrabroker.md): hosts y clusters por un broker fuera del guest; el montaje que funciona hoy y lo que cambia cuando el agente vive en la sandbox.
 
 ## Conceptos
 
@@ -47,6 +46,7 @@ Un índice con una línea por página. Las páginas están agrupadas por lo que 
 - [Operaciones de seguridad](how-to/security-operations.md): la lista de producción, rotaciones, mTLS estricto, atestación, fencing.
 - [El fichero de configuración](how-to/config-file.md): YAML y *drop-ins*, con ejemplos.
 - [Conectar un IdP (OIDC)](how-to/idp.md): roles, claims, y un ejemplo con Keycloak.
+- [Usar ASP con infrabroker](how-to/infrabroker.md): hosts y clusters por un broker fuera del guest; el montaje que funciona hoy y lo que cambia cuando el agente vive en la sandbox.
 - [Publicar una versión](how-to/release.md): la etiqueta, goreleaser y lo que lleva una release.
 - [Comprobar un nodo o una actualización de extremo a extremo](how-to/e2e-kvm.md): el ciclo real con KVM.
 

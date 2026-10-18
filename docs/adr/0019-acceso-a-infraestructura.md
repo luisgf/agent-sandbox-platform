@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada
 - **Fecha:** 2026-10-18
-- **Implementación:** la Fase 0 no necesita código en ASP (es un montaje: [usar ASP con infrabroker](../how-to/infrabroker.md)). La Fase 1 toca infrabroker (un claim de contexto hasta el certificado y su audit), no ASP. Nada de esto está probado en un host con KVM todavía.
+- **Implementación:** la Fase 0 no necesita código en ASP (es un montaje: [usar ASP con infrabroker](../how-to/infrabroker.md)). La Fase 1 la cubre infrabroker (el claim de contexto hasta el certificado y su audit, [luisgf/infrabroker#426](https://github.com/luisgf/infrabroker/pull/426)); ASP no cambia. Nada de esto está probado en un host con KVM todavía.
 - **Relacionados:** [0002](0002-networking.md) (el egress solo deja HTTP(S) y DNS), [0003](0003-identity.md) (el puente del agente SSH y los tokens OIDC), [0007](0007-multi-user-identity.md) (`user_sub` en el token de workload), [0010](0010-on-demand-local-net.md) (con `--local-net` no hay allowlist), [0013](0013-kubernetes-reevaluation.md) (el público de ASP), [0018](0018-browser-desktop.md) (un agente que corre dentro del guest), [el modelo de seguridad](../concepts/security-model.md), [infrabroker](https://github.com/luisgf/infrabroker) y su [`docs/SANDBOX.md`](https://github.com/luisgf/infrabroker/blob/main/docs/SANDBOX.md)
 - **No es:** un cliente MCP en la imagen del guest, un vault de secretos dentro del guest, ni un cambio en el egress de [0002](0002-networking.md).
 
@@ -16,8 +16,8 @@ Lo que sí hay es un camino, y es el equivocado. El puente del agente SSH por vs
 
 Dos hechos del código de hoy hacen que los dos encajen sin tocarse:
 
-1. **En modo `enforce` el guest no puede hacer SSH a nada.** El egress solo deja HTTP(S) y DNS hacia la allowlist del tenant ([modelo de seguridad](../concepts/security-model.md#el-guest-frente-a-la-red)). `infrabroker serve-mcp-http` es HTTPS: cabe en la allowlist. La conexión SSH **nace en el broker, fuera de la sandbox**. El límite conocido «el egress solo filtra HTTP(S)» se cierra desde el otro lado: nadie necesita :22.
-2. **El token de workload ya es una identidad que infrabroker entiende.** El guest pide un token por vsock 26502 eligiendo solo `aud`; el plano de control pone `sub=sandbox/{id}`, `tenant_id`, `sandbox_id` y `user_sub` (el humano dueño, [0007](0007-multi-user-identity.md)) y publica discovery y JWKS. El frontend HTTP de infrabroker valida un bearer contra cualquier issuer OIDC, con el claim de usuario configurable (`user_claim`), y su signer puede revalidarlo dentro de su frontera de confianza (`require_verified_end_user`). `user_claim: "user_sub"` atribuye cada acción del broker al humano dueño de la sandbox.
+1. **En modo `enforce` el guest no llega a :22 por su cuenta.** La tabla de nftables solo redirige 80 y 443 al proxy y descarta el resto; el proxy marca otro puerto solo si una regla del tenant lo nombra (`{"host_pattern": …, "port": 22}`), y entonces por `CONNECT` ([red y egress](../concepts/networking-and-egress.md)). `infrabroker serve-mcp-http` es HTTPS: cabe en la allowlist. La conexión SSH **nace en el broker, fuera de la sandbox**: nadie necesita una regla con `port: 22`, y el límite conocido de que el egress filtrado es HTTP(S) y DNS deja de importar para la infraestructura.
+2. **El token de workload ya es una identidad que infrabroker entiende.** El guest pide un token por vsock 26502 eligiendo solo `aud`; el plano de control pone `sub=sandbox/{id}`, `tenant_id`, `sandbox_id` y `user_sub` (el humano dueño, [0007](0007-multi-user-identity.md); solo cuando la sandbox tiene dueño: creada con un token del IdP, no con una clave de API) y publica discovery y JWKS. El frontend HTTP de infrabroker valida un bearer contra cualquier issuer OIDC, con el claim de usuario configurable (`user_claim`), y su signer puede revalidarlo dentro de su frontera de confianza (`require_verified_end_user`). `user_claim: "user_sub"` atribuye cada acción del broker al humano dueño de la sandbox.
 
 Ninguno de los dos repositorios nombraba al otro.
 
@@ -30,7 +30,7 @@ Ninguno de los dos repositorios nombraba al otro.
 | Puente del agente SSH por vsock ([0003](0003-identity.md)) | Control de versiones: `git fetch`, `git push`, deploy keys | Entrar en hosts: no hay política por comando, no hay aprobación por acción, y la clave que firma sirve para todo lo que confíe en ella |
 | infrabroker (HTTPS, por la allowlist del tenant) | Hosts y clusters: una acción, un certificado de minutos, política, aprobación, audit | — |
 
-[0003](0003-identity.md) queda enmendado: «bastion» deja de ser un caso de uso del puente. La recomendación operativa: con `--local-net`, la confirmación por firma encendida (`--ssh-agent-confirm`, que ya es el valor por defecto en multiusuario) o el puente apagado para esa sesión.
+[0003](0003-identity.md) queda enmendado: «bastion» deja de ser un caso de uso del puente. La recomendación operativa: con `--local-net`, la confirmación por firma encendida (`--ssh-agent-confirm`, que ya es el valor por defecto en multiusuario y con `ASP_SSH_AGENT_SOCK_TEMPLATE`) o esa sandbox sin claves (con `ASP_SSH_AGENT_SOCK_TEMPLATE`, una ruta de socket que no exista da un agente vacío; sin plantilla el puente es global al nodo).
 
 ### 2. El broker vive en el host de infrabroker, no en el nodo
 
@@ -40,7 +40,7 @@ No es solo que cueste cero código. El nodo es la máquina más privilegiada del
 
 ### 3. La identidad cruza por el token de workload
 
-Cuando el runtime del agente corre dentro del guest (el caso de [0018](0018-browser-desktop.md)), pide un token con `aud=infrabroker` al socket de identidad y lo presenta como bearer a `serve-mcp-http`. infrabroker se configura con el plano de control de ASP como issuer, `user_claim: "user_sub"` y, cuando exista (Fase 1), un claim de contexto `sandbox_id` que el signer sella en el `KeyID` del certificado y en su audit. Así el audit de infrabroker (por `serial`) y el de ASP (por `sandbox_id`) se unen por `user_sub` + `sandbox_id`. ASP no cambia nada para esto: el token ya lleva esos claims.
+Cuando el runtime del agente corre dentro del guest (el caso de [0018](0018-browser-desktop.md)), pide un token con `aud=infrabroker` al socket de identidad y lo presenta como bearer a `serve-mcp-http`. infrabroker se configura con el plano de control de ASP como issuer, `user_claim: "user_sub"` y un claim de contexto `sandbox_id` (`context_claim`, en infrabroker desde [#426](https://github.com/luisgf/infrabroker/pull/426)) que el signer sella en el `KeyID` del certificado y en su audit. Así el audit de infrabroker (por `serial`) y el de ASP (por `sandbox_id`) se unen por `user_sub` + `sandbox_id`. ASP no cambia nada para esto: el token ya lleva esos claims.
 
 ### 4. Fases
 
@@ -64,7 +64,7 @@ Cuando el runtime del agente corre dentro del guest (el caso de [0018](0018-brow
 
 ### Positivas
 
-- Un hueco real de ASP (el puente como camino a la infraestructura) se convierte en una frontera dicha con claridad: el guest no puede hacer SSH a nada y no lo necesita.
+- Un hueco real de ASP (el puente como camino a la infraestructura) se convierte en una frontera dicha con claridad: el guest no llega a :22 por su cuenta y no lo necesita.
 - La Fase 0 funciona hoy, sin tocar código en ningún repositorio.
 - El audit de cada acción sobre infraestructura lleva el humano dueño de la sandbox, sin que ASP acuñe nada nuevo.
 - Cada proyecto sigue valiendo solo. La pareja es la arquitectura de referencia, no un requisito.

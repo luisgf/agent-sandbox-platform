@@ -16,8 +16,8 @@ The first release will be 0.1.0. Until then this is what `main` has.
 - **ASP with infrabroker.** [ADR-0019](docs/adr/0019-acceso-a-infraestructura.md) (accepted) splits the roles: the
   host SSH agent bridge signs for version control only; hosts and clusters are reached through
   [infrabroker](https://github.com/luisgf/infrabroker), a broker outside the guest and outside the node, over HTTPS
-  through the tenant allowlist, so the guest never needs port 22. [Usar ASP con infrabroker](docs/how-to/infrabroker.md)
-  describes the setup that works today (the harness outside the guest, infrabroker as a stdio MCP server next to it,
+  through the tenant allowlist, so the guest never needs port 22. [The infrabroker how-to](docs/how-to/infrabroker.md)
+  (in Spanish) describes the setup that works today (the harness outside the guest, infrabroker as a stdio MCP server next to it,
   `integrations/opencode/opencode.infrabroker.json`) and what changes when the agent runtime lives in the sandbox
   (the workload token as the bearer). ADR-0003 is amended: "bastion" is no longer a use case of the bridge.
 - **An OpenAPI description of the control-plane API.** `GET /openapi.json` serves it without credentials; the
