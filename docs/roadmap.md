@@ -56,7 +56,7 @@ Decisiones tomadas, no pendientes:
 - Hacer crecer la orquestación de varios nodos (planificador, fencing, PKI, detección de nodos caídos) sin un ADR que diga por qué no es Kubernetes; lo que hay se mantiene y se arregla ([ADR-0013](adr/0013-kubernetes-reevaluation.md)).
 - Exponer microVMs directamente a Internet.
 - Guardar claves privadas o refresh tokens en las imágenes del guest.
-- Entrar en hosts o clusters desde el guest con el puente del agente SSH, o abrir en el proxy una dirección del nodo para un broker: la infraestructura se alcanza por un broker fuera del guest y fuera del nodo ([ADR-0019](adr/0019-acceso-a-infraestructura.md), propuesta); el puente firma para git.
+- Entrar en hosts o clusters desde el guest con el puente del agente SSH, o abrir en el proxy una dirección del nodo para un broker: la infraestructura se alcanza por un broker fuera del guest y fuera del nodo ([ADR-0019](adr/0019-acceso-a-infraestructura.md)); el puente firma para git.
 - Cargas que necesiten `NET_ADMIN` en el guest, y guests que no sean Linux.
 - Decir que `soft` (nftables, TAP) equivale a `enforce` en producción.
 - Tratar el UID Linux del guest como identidad humana ([ADR-0007](adr/0007-multi-user-identity.md)), ni las marcas o cabeceras que pone el guest como atribución de red ([ADR-0008](adr/0008-network-flow-attribution.md)).

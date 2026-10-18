@@ -169,7 +169,7 @@ Lo que esto **sí** da: los hashes los calcula el nodo y los firma el nodo, y el
 
 ## Enmiendas
 
-- **2026-10-18 ([0019](0019-acceso-a-infraestructura.md)):** el puente del agente SSH es un oráculo de firma con las claves del operador, y «bastion» aparecía entre sus casos de uso. Entrar en hosts y clusters deja de serlo: el puente firma para control de versiones (git, deploy keys); la infraestructura se alcanza por un broker fuera del guest y fuera del nodo (infrabroker), con una conexión SSH que nace en el broker y que el guest no ve. Con `--local-net` ([0010](0010-on-demand-local-net.md)), la confirmación por firma encendida o el puente apagado para esa sesión.
+- **2026-10-18 ([0019](0019-acceso-a-infraestructura.md)):** el puente del agente SSH es un oráculo de firma con las claves del operador, y «bastion» aparecía entre sus casos de uso. Entrar en hosts y clusters deja de serlo: el puente firma para control de versiones (git, deploy keys); la infraestructura se alcanza por un broker fuera del guest y fuera del nodo (infrabroker), con una conexión SSH que nace en el broker y que el guest no ve. Con `--local-net` ([0010](0010-on-demand-local-net.md)), la confirmación por firma encendida o esa sandbox sin claves (con `ASP_SSH_AGENT_SOCK_TEMPLATE`, una ruta de socket que no exista da un agente vacío).
 
 ## Referencias cruzadas
 
