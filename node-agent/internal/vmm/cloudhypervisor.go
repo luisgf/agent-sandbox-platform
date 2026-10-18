@@ -823,7 +823,9 @@ type ExitInfo struct {
 // own: a crash, an OOM kill, a guest that powered itself off.
 type ExitNotifier interface {
 	// SetExitHandler registers fn, called once for each process that exits
-	// without Stop having asked it to. It runs on its own goroutine.
+	// without Stop having asked it to. It runs on its own goroutine. Install it
+	// before the first Start: an exit seen while no handler is installed is
+	// logged and not kept for a later one.
 	SetExitHandler(fn func(id string, info ExitInfo))
 }
 

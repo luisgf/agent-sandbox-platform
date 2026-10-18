@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -823,14 +824,43 @@ func TestExitHandlerDoesNotHearAProcessStopEnded(t *testing.T) {
 	}
 }
 
+// exitLogged is a slog handler that tells, on a channel, which sandbox each
+// "exited on its own" record names. The watcher writes that record after it has
+// read the exit handler under the lock, so a test that has seen the record knows
+// the exit was consumed with whatever handler was installed at the time.
+type exitLogged struct {
+	ids chan string
+}
+
+func (h *exitLogged) Enabled(context.Context, slog.Level) bool { return true }
+func (h *exitLogged) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *exitLogged) WithGroup(string) slog.Handler            { return h }
+
+func (h *exitLogged) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "cloud-hypervisor exited on its own" {
+		return nil
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "sandbox_id" {
+			h.ids <- a.Value.String()
+			return false
+		}
+		return true
+	})
+	return nil
+}
+
 // Every process has its own watcher, and a Cloud Hypervisor without a handler
-// still ends cleanly.
+// still ends cleanly: logged, never reported. A handler installed afterwards is
+// told only about the exits that come after it.
 func TestExitWatchersAreIndependent(t *testing.T) {
 	dir := shortTemp(t)
 	runner := &fakeCHRunner{}
 	ch := NewSpawningCloudHypervisor("/usr/bin/fake-cloud-hypervisor", dir)
 	ch.Runner = runner
 	ch.ReadyTimeout = 2 * time.Second
+	logged := &exitLogged{ids: make(chan string, 8)}
+	ch.Logger = slog.New(logged)
 	ctx := context.Background()
 	a, b := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "11111111-2222-3333-4444-555555555555"
 	for _, id := range []string{a, b} {
@@ -839,15 +869,23 @@ func TestExitWatchersAreIndependent(t *testing.T) {
 		}
 	}
 	runner.mu.Lock()
-	first := runner.procs[0]
+	first, second := runner.procs[0], runner.procs[1]
 	runner.mu.Unlock()
 	first.crash(nil) // no handler yet: logged only
+	// crash only ends the fake's process; its watcher consumes the exit on its
+	// own goroutine, and the handler it tells is the one installed when it does.
+	// Installing ours before the watcher got there would hand it the first VM.
+	select {
+	case who := <-logged.ids:
+		if who != a {
+			t.Fatalf("logged %q, want the first VM", who)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first process's exit was never logged")
+	}
 
 	got := newExits()
 	ch.SetExitHandler(got.handle)
-	runner.mu.Lock()
-	second := runner.procs[1]
-	runner.mu.Unlock()
 	second.crash(errors.New("exit status 1"))
 	select {
 	case who := <-got.ch:
@@ -861,6 +899,12 @@ func TestExitWatchersAreIndependent(t *testing.T) {
 		if err := ch.Stop(ctx, id); err != nil {
 			t.Fatalf("stop %s: %v", id, err)
 		}
+	}
+	if n := got.count(a); n != 0 {
+		t.Fatalf("the first VM, which exited before the handler, was reported %d times", n)
+	}
+	if n := got.count(b); n != 1 {
+		t.Fatalf("the second VM was reported %d times, want once", n)
 	}
 }
 
