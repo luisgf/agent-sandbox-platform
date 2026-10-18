@@ -160,11 +160,12 @@ func (p *PostgresStore) CreateSandbox(ctx context.Context, input CreateSandboxIn
 			id, tenant_id, node_id, state, vmm_profile, image_ref,
 			cpu_millis, memory_mib, state_version, created_at, updated_at,
 			owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public
-		) VALUES ($1,$2,$14,'requested',$3,$4,$5,$6,1,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'')
+			local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash, local_net_client_public,
+			owner_groups
+		) VALUES ($1,$2,$14,'requested',$3,$4,$5,$6,1,$7,$7,$8,$9,$7,'',$10,$11,$12,NULL,NULL,$13,'',$15)
 		RETURNING `+sandboxColumns,
 		id, input.TenantID, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB, now,
-		ownerSub, ownerEmail, input.WorkspaceHostPath, lnOn, lnState, "", placedOn,
+		ownerSub, ownerEmail, input.WorkspaceHostPath, lnOn, lnState, "", placedOn, ownerGroupsArg(input.OwnerGroups),
 	))
 	if err != nil {
 		return Sandbox{}, fmt.Errorf("insert sandbox: %w", err)
@@ -1302,7 +1303,15 @@ const sandboxColumns = `id, tenant_id, node_id, state, vmm_profile, image_ref,
 	owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
 	local_net, local_net_state, local_net_attached_at, local_net_grant_expires_at, local_net_grant_hash,
 	local_net_client_public, local_net_node_public, local_net_listen_port, local_net_node_addr, local_net_client_addr,
-	status_detail, boot_count, stopped_at, booted_at`
+	status_detail, boot_count, stopped_at, booted_at, owner_groups`
+
+// ownerGroupsArg is owner_groups as a row stores it: an empty array, never NULL or JSON null.
+func ownerGroupsArg(groups []string) []string {
+	if groups == nil {
+		return []string{}
+	}
+	return groups
+}
 
 // qualify prefixes every column of a list with alias (for UPDATE … FROM).
 func qualify(cols, alias string) string {
@@ -1331,12 +1340,15 @@ func scanSandbox(row scannable, pre ...any) (Sandbox, error) {
 		&sb.LocalNet, &sb.LocalNetState, &sb.LocalNetAttachedAt, &sb.LocalNetGrantExpiresAt,
 		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic, &sb.LocalNetNodePublic,
 		&sb.LocalNetListenPort, &sb.LocalNetNodeAddr, &sb.LocalNetClientAddr,
-		&sb.StatusDetail, &sb.BootCount, &sb.StoppedAt, &sb.BootedAt,
+		&sb.StatusDetail, &sb.BootCount, &sb.StoppedAt, &sb.BootedAt, &sb.OwnerGroups,
 	)...)
 	if err != nil {
 		return Sandbox{}, err
 	}
 	sb.State = SandboxState(state)
+	if len(sb.OwnerGroups) == 0 {
+		sb.OwnerGroups = nil // '{}' in the row; none, not an empty list
+	}
 	return sb, nil
 }
 

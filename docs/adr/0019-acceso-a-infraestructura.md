@@ -48,7 +48,7 @@ Cuando el runtime del agente corre dentro del guest (el caso de [0018](0018-brow
 |---|---|---|
 | **0** | El harness (OpenCode u otro) corre fuera del guest, como hoy; bash va a la sesión; infrabroker es un MCP stdio junto al harness. El modelo pide `ssh_execute`, el broker acuña y ejecuta, el guest nunca ve :22 | Ninguno: [usar ASP con infrabroker](../how-to/infrabroker.md) |
 | **1** | El runtime del agente corre **dentro** de la sandbox y habla con `serve-mcp-http` con el token de workload; `sandbox_id` llega al certificado y al audit del broker | Ninguno (el claim de contexto es de infrabroker) |
-| **2** | Un claim de grupos o roles en el token de workload, derivado del rol del dueño en el IdP, para RBAC por usuario en el signer; un cliente bearer mínimo en el guest para scripts; un lab de extremo a extremo | Sí, con su propio corte |
+| **2** | Un claim de grupos o roles en el token de workload, derivado del rol del dueño en el IdP, para RBAC por usuario en el signer; un cliente bearer mínimo en el guest para scripts; un lab de extremo a extremo | Sí, con su propio corte. *Enmienda 2026-10-18:* el claim es [0020](0020-grupos-en-el-token-de-workload.md) (`groups`, los grupos del dueño en el create, no el rol); el cliente y el lab siguen pendientes |
 
 ## Alternativas consideradas
 
@@ -77,10 +77,14 @@ Cuando el runtime del agente corre dentro del guest (el caso de [0018](0018-brow
 
 ## Límites honestos
 
-- **En la Fase 1 la autorización es por broker, no por sandbox.** Cualquier guest de ese plano de control puede pedir `aud=infrabroker` (el `aud` lo elige el guest), y sin un claim de grupos el RBAC por usuario del signer está apagado: todo dueño de sandbox alcanza lo que alcance el broker. El token da **atribución**, no alcance, hasta la Fase 2.
+- **En la Fase 1 la autorización es por broker, no por sandbox.** Cualquier guest de ese plano de control puede pedir `aud=infrabroker` (el `aud` lo elige el guest), y sin un claim de grupos el RBAC por usuario del signer está apagado: todo dueño de sandbox alcanza lo que alcance el broker. El token da **atribución**, no alcance, hasta la Fase 2. *Enmienda 2026-10-18:* con [0020](0020-grupos-en-el-token-de-workload.md) el token lleva `groups` y el broker puede configurar `groups_claim`; el `aud` lo sigue eligiendo el guest.
 - Nada de esto está probado con KVM ni en un lab de dos máquinas. La Fase 0 se comprueba a mano ([usar ASP con infrabroker](../how-to/infrabroker.md#comprobarlo)).
 - El guest no trae cliente MCP: el runtime que lo use lo trae él. ASP no promete que una imagen tenga uno.
 - Kubernetes es ortogonal: [0013](0013-kubernetes-reevaluation.md) y las herramientas `k8s_*` de infrabroker no se tocan.
+
+## Enmiendas
+
+- **2026-10-18 ([0020](0020-grupos-en-el-token-de-workload.md)):** la Fase 2 decía «un claim de grupos o roles […] derivado del rol del dueño». El claim existe y no se deriva del rol: es `groups`, con los valores del claim de roles del IdP del dueño en el momento del create, persistidos con la sandbox. Una sandbox sin dueño no lo lleva. El cliente bearer mínimo en el guest y el lab de extremo a extremo siguen siendo Fase 2.
 
 ## Referencias
 

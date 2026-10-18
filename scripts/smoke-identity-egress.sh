@@ -137,6 +137,16 @@ MINT=$(curl -sf -X POST http://127.0.0.1:18081/v1/internal/oidc/token \
   -d "{\"sandbox_id\":\"$SID\",\"aud\":\"https://api.example.com\",\"nonce\":\"smoke\"}")
 echo "$MINT" | grep -q access_token
 echo "$MINT" | grep -q '"tenant_id":"smoke"'
+# No owner (no IdP): no human claims, and no groups claim at all, not an empty one (ADR-0020).
+echo "$MINT" | python3 -c '
+import sys, json, base64
+m = json.load(sys.stdin)
+payload = m["access_token"].split(".")[1]
+claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+for c in ("user_sub", "act", "groups"):
+    assert c not in claims, "ownerless sandbox token carries %s: %r" % (c, claims)
+    assert c not in m["claims"], "ownerless sandbox response claims carry %s" % c
+'
 
 echo "==> identity proxy (guest-facing) forwards mint"
 # --identity-listen has no sandbox binding (a guest's own vsock 26502 does): the

@@ -244,6 +244,9 @@ func (s *Server) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		if email := strings.TrimSpace(p.Email); email != "" {
 			input.OwnerEmail = email
 		}
+		// The groups of the token, as they came: what this sandbox's workload tokens will
+		// say as `groups` (ADR-0020). Only here: the body has no such field.
+		input.OwnerGroups = append([]string(nil), p.Groups...)
 		input.ActorSub = sub
 	} else if _, ok := APIKeyFromContext(r.Context()); ok {
 		// A key is a service principal: it cannot say which human a sandbox is
@@ -1322,9 +1325,10 @@ type oidcTokenRequest struct {
 	SandboxID string `json:"sandbox_id"`
 	Aud       string `json:"aud"`
 	Nonce     string `json:"nonce,omitempty"`
-	// UserSub / Act are accepted only to be ignored: guest/node must never set human claims.
+	// UserSub / Act / Groups are accepted only to be ignored: guest/node must never set human claims.
 	UserSub string `json:"user_sub,omitempty"`
 	Act     any    `json:"act,omitempty"`
+	Groups  any    `json:"groups,omitempty"`
 }
 
 // MintOIDCToken issues a short-lived JWT; tenant/sub/user_sub come from the store
@@ -1349,6 +1353,7 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 	// Explicitly discard guest/node-supplied human claims (never trusted).
 	_ = req.UserSub
 	_ = req.Act
+	_ = req.Groups
 
 	sb, err := s.Store.GetSandbox(r.Context(), req.SandboxID)
 	if err != nil {
@@ -1366,8 +1371,9 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attClaim := s.attestationClaim(r.Context(), sb.ID)
-	userSub := strings.TrimSpace(sb.OwnerSub) // authoritative; empty OK in lab
-	token, claims, err := s.OIDC.MintWithAttestation(sb.TenantID, sb.ID, req.Aud, req.Nonce, userSub, attClaim)
+	// The human claims come from the row (ADR-0007, ADR-0020); empty owner OK in lab.
+	identity := oidc.Identity{UserSub: strings.TrimSpace(sb.OwnerSub), Groups: sb.OwnerGroups}
+	token, claims, err := s.OIDC.MintFor(sb.TenantID, sb.ID, req.Aud, req.Nonce, identity, attClaim)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1388,6 +1394,9 @@ func (s *Server) MintOIDCToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if claims.Act != nil {
 		outClaims["act"] = claims.Act
+	}
+	if len(claims.Groups) > 0 {
+		outClaims["groups"] = claims.Groups
 	}
 	if claims.XAspAttestation != nil {
 		outClaims["x_asp_attestation"] = claims.XAspAttestation

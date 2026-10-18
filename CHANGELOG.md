@@ -20,6 +20,12 @@ The first release will be 0.1.0. Until then this is what `main` has.
   describes the setup that works today (the harness outside the guest, infrabroker as a stdio MCP server next to it,
   `integrations/opencode/opencode.infrabroker.json`) and what changes when the agent runtime lives in the sandbox
   (the workload token as the bearer). ADR-0003 is amended: "bastion" is no longer a use case of the bridge.
+- **A `groups` claim in the workload token.** [ADR-0020](docs/adr/0020-grupos-en-el-token-de-workload.md) (proposed):
+  a sandbox created with an IdP token keeps the values of its role claim (`owner_groups`, at most 64, a snapshot of
+  the create; migration 025), and every workload token minted for it carries them verbatim as `groups`, so an OIDC
+  consumer such as infrabroker (`groups_claim: "groups"`) can apply per-user RBAC to the sandbox. The guest cannot
+  choose them (the create body has no such field; the mint ignores one). A sandbox without an owner, or whose
+  owner's token named no groups, has no claim at all, never an empty list.
 - **An OpenAPI description of the control-plane API.** `GET /openapi.json` serves it without credentials; the
   [API reference](docs/reference/api.md) is generated from it (`make docs`). Tests keep it true: every route is in
   it and it has no other, the fields of each body are those of the Go type, a status a handler answers is listed,

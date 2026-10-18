@@ -205,9 +205,9 @@ paths:
       summary: Mint a token for a sandbox
       description: |
         A node mints a short-lived JWT for one of its sandboxes, for the services the sandbox calls.
-        The tenant, subject and the human owner (`user_sub`, and `act` for the delegation) come from the
-        store: what the node or the guest sends for them is ignored. When the sandbox has fresh boot
-        evidence the token carries it as `x_asp_attestation`.
+        The tenant, subject and the human owner (`user_sub`, `act` for the delegation and `groups` for the
+        owner's groups) come from the store: what the node or the guest sends for them is ignored. When
+        the sandbox has fresh boot evidence the token carries it as `x_asp_attestation`.
       tags: [Node agent]
       x-asp-access: node
       security:
@@ -1884,6 +1884,8 @@ components:
           description: Ignored. The human owner comes from the sandbox.
         act:
           description: Ignored. The delegation comes from the sandbox.
+        groups:
+          description: Ignored. The groups come from the sandbox (`owner_groups`).
     OIDCToken:
       type: object
       required: [access_token, token_type, expires_in, claims]
@@ -1903,7 +1905,9 @@ components:
           type: object
           description: |
             The claims of the token, for convenience: `sub`, `iss`, `aud`, `tenant_id`, `sandbox_id`, and when they apply
-            `user_sub` (the human owner), `act` (the delegation) and `x_asp_attestation` (what the node measured at boot).
+            `user_sub` (the human owner), `act` (the delegation), `groups` (the owner's groups when it was created:
+            `owner_groups`; absent, never empty, for a sandbox without them) and `x_asp_attestation` (what the node
+            measured at boot).
           additionalProperties: true
     SandboxState:
       type: string
@@ -1963,6 +1967,14 @@ components:
         owner_email:
           description: 'The creator''s e-mail, from the IdP token. For showing; it decides nothing.'
           type: string
+        owner_groups:
+          type: array
+          items:
+            type: string
+          description: >-
+            The groups the creator's IdP token carried (the values of the role claim, as they came), and what the
+            sandbox's workload tokens say as `groups`. A snapshot of the create. Absent for a sandbox without an
+            owner, or whose owner's token named no groups: its tokens then have no `groups` claim.
         last_activity_at:
           type: string
           format: date-time

@@ -174,9 +174,14 @@ func TestSQLiteKeepsItsDataAcrossOpens(t *testing.T) {
 	if k, err := s.LookupAPIKeyByHash(ctx, HashAPIKeySecret("secret-1")); err != nil || k.ID != key.ID {
 		t.Fatalf("key after reopen: %+v %v", k, err)
 	}
+	// Each migration is recorded once, however many times the database is opened.
+	entries, err := fs.ReadDir(migrations.SQLiteFS, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var applied int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 1 {
-		t.Fatalf("migrations recorded: %d %v", applied, err)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != len(entries) {
+		t.Fatalf("migrations recorded: %d %v, want %d", applied, err, len(entries))
 	}
 }
 

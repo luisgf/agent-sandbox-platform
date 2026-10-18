@@ -100,6 +100,7 @@ func (m *MemoryStore) CreateSandbox(ctx context.Context, input CreateSandboxInpu
 		BootCount:         1,
 		OwnerSub:          ownerSub,
 		OwnerEmail:        ownerEmail,
+		OwnerGroups:       append([]string(nil), input.OwnerGroups...),
 		LastActivityAt:    now,
 		WorkspaceHostPath: input.WorkspaceHostPath,
 		CreatedAt:         now,
@@ -1097,7 +1098,47 @@ func prepareCreateSandbox(input *CreateSandboxInput) error {
 		return err
 	}
 	input.WorkspaceHostPath = ws
+	groups, err := normalizeOwnerGroups(input.OwnerGroups)
+	if err != nil {
+		return err
+	}
+	input.OwnerGroups = groups
 	return validateCreateSandbox(*input)
+}
+
+// The bounds of owner_groups (ADR-0020): the list travels in every workload token, so a token
+// from an IdP that names more groups than this is refused at create rather than cut short (a
+// list missing a group is a denial in the consumer that nobody could explain). The way out is
+// a mapper in the IdP that emits fewer groups.
+const (
+	MaxOwnerGroups     = 64
+	MaxOwnerGroupBytes = 255
+)
+
+// normalizeOwnerGroups keeps the groups as the IdP spelled them, minus what carries no meaning:
+// surrounding space, empty values, repeats. The order is the token's. Nil when nothing is left,
+// so a sandbox without groups has none rather than an empty list.
+func normalizeOwnerGroups(groups []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		g = strings.TrimSpace(g)
+		if g == "" || seen[g] {
+			continue
+		}
+		if strings.ContainsRune(g, '\x00') {
+			return nil, fmt.Errorf("%w: owner group contains NUL", ErrInvalidInput)
+		}
+		if len(g) > MaxOwnerGroupBytes {
+			return nil, fmt.Errorf("%w: owner group longer than %d bytes", ErrInvalidInput, MaxOwnerGroupBytes)
+		}
+		seen[g] = true
+		out = append(out, g)
+	}
+	if len(out) > MaxOwnerGroups {
+		return nil, fmt.Errorf("%w: the IdP token names %d groups; a sandbox carries at most %d (emit fewer from the IdP)", ErrInvalidInput, len(out), MaxOwnerGroups)
+	}
+	return out, nil
 }
 
 func cleanWorkspaceHostPath(p string) (string, error) {
@@ -1138,6 +1179,9 @@ func validateCreateSandbox(input CreateSandboxInput) error {
 const MinSandboxMemoryMiB = 64
 
 func cloneSandbox(sb Sandbox) Sandbox {
+	if sb.OwnerGroups != nil {
+		sb.OwnerGroups = append([]string(nil), sb.OwnerGroups...)
+	}
 	if sb.NodeID != nil {
 		nid := *sb.NodeID
 		sb.NodeID = &nid

@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -222,5 +223,74 @@ func TestMintWithAttestationSignsOnce(t *testing.T) {
 	got, err := s.VerifyRS256(tok)
 	if err != nil || got.XAspAttestation["node_id"] != "n1" || claims.UserSub != "alice" {
 		t.Fatalf("token claims %+v err=%v", got, err)
+	}
+}
+
+// ADR-0020: groups travel with the owner, verbatim, and only when there are any.
+func TestMintForCarriesOwnerGroups(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSignerFromKey(key, "http://issuer.test")
+	id := Identity{UserSub: "user:alice", Groups: []string{"asp-operator", "SRE", " db-admins "}}
+	token, claims, err := s.MintFor("tenant-a", "sb-1", "https://api.example.com", "", id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"asp-operator", "SRE", "db-admins"}
+	if !reflect.DeepEqual(claims.Groups, want) {
+		t.Fatalf("groups=%v want %v", claims.Groups, want)
+	}
+	got, err := s.VerifyRS256(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Groups, want) || got.UserSub != "user:alice" {
+		t.Fatalf("jwt groups=%v user_sub=%q", got.Groups, got.UserSub)
+	}
+	// The wire form is a JSON array under "groups": what a consumer's groups_claim reads.
+	payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if arr, ok := raw["groups"].([]any); !ok || len(arr) != 3 || arr[1] != "SRE" {
+		t.Fatalf("wire groups=%v", raw["groups"])
+	}
+}
+
+func TestMintForOmitsGroupsWithoutOwnerOrWithoutGroups(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSignerFromKey(key, "http://issuer.test")
+	cases := map[string]Identity{
+		"no owner, groups given anyway": {Groups: []string{"sre"}},
+		"owner, no groups":              {UserSub: "user:alice"},
+		"owner, only blank groups":      {UserSub: "user:alice", Groups: []string{"", "  "}},
+	}
+	for name, id := range cases {
+		t.Run(name, func(t *testing.T) {
+			token, claims, err := s.MintFor("tenant-a", "sb-1", "https://api.example.com", "", id, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if claims.Groups != nil {
+				t.Fatalf("groups=%v want none", claims.Groups)
+			}
+			payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+			var raw map[string]any
+			_ = json.Unmarshal(payload, &raw)
+			if _, present := raw["groups"]; present {
+				t.Fatalf("the claim must be absent, not empty: %s", payload)
+			}
+			if id.UserSub == "" {
+				if _, present := raw["user_sub"]; present {
+					t.Fatalf("no owner, no user_sub: %s", payload)
+				}
+			}
+		})
 	}
 }

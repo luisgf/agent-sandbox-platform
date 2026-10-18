@@ -74,6 +74,11 @@ type Principal struct {
 	// TenantID is the tenant the principal acts within: TenantClaim, else
 	// DefaultTenant. Empty when neither applies; the API refuses such tokens.
 	TenantID string
+	// Groups are the values of the role claim (RoleClaim) as the token carried them,
+	// trimmed, empties dropped: what the role was derived from, kept whole so a sandbox
+	// this principal creates can carry them in its workload tokens (ADR-0020). Nil when
+	// the token has no such claim.
+	Groups []string
 }
 
 // Validator verifies RS256 IdP JWTs against JWKS (fetched or static).
@@ -428,7 +433,19 @@ func (v *Validator) Validate(token string) (Principal, error) {
 	if tenant == "" {
 		tenant = strings.TrimSpace(v.cfg.DefaultTenant)
 	}
-	return Principal{Sub: claims.Sub, Email: email, Role: grants.Role, DestroyAny: grants.DestroyAny, ExecAny: grants.ExecAny, TenantID: tenant}, nil
+	return Principal{Sub: claims.Sub, Email: email, Role: grants.Role, DestroyAny: grants.DestroyAny, ExecAny: grants.ExecAny, TenantID: tenant, Groups: cleanGroups(roleValues)}, nil
+}
+
+// cleanGroups trims the role claim's values and drops the empty ones, keeping their order and
+// their spelling: the consumer of a workload token matches them against the IdP's own names.
+func cleanGroups(values []string) []string {
+	var out []string
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // extractTenantClaim reads the tenant claim: a string, or an array with one

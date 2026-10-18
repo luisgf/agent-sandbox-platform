@@ -33,7 +33,7 @@ idp_default_tenant: default   # solo si el token no lleva el claim del tenant
 
 1. El cliente envía `Authorization: Bearer <JWT>`.
 2. Si hay `ASP_IDP_ISSUER` y el bearer es un JWT, comprueba su firma RS256 contra el JWKS y sus `iss`, `aud` y `exp`.
-3. El `sub` del token es el dueño (`owner_sub`) y el actor de lo que se haga; de los grupos sale el rol; del tenant, el tenant. Un `owner_sub` que mande el cliente en el cuerpo se rechaza.
+3. El `sub` del token es el dueño (`owner_sub`) y el actor de lo que se haga; de los grupos sale el rol; del tenant, el tenant. Un `owner_sub` que mande el cliente en el cuerpo se rechaza. Al crear una sandbox, los valores del claim de roles se guardan con ella (`owner_groups`, hasta 64) y viajan tal cual en sus tokens de workload como `groups`, para que un servicio como infrabroker aplique RBAC por usuario ([ADR-0020](../adr/0020-grupos-en-el-token-de-workload.md)); un *mapper* que emita solo los grupos que hacen falta mantiene el token pequeño.
 4. `/healthz`, el discovery OIDC del propio ASP y su JWKS (con los que las sandboxes validan los tokens de workload que ASP emite) son públicos. Las rutas de los nodos no piden el token de una persona: usan mTLS o una API key de plataforma.
 
 Un bearer que parece un JWT y no valida (firma, `iss`, `aud` o `exp`) da **401**, y con `idp_required: true` también las rutas de usuario sin token (`missing or invalid idp bearer token`); las de los nodos no piden un JWT de persona.
