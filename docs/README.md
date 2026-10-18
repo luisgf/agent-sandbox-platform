@@ -7,7 +7,7 @@ Un índice con una línea por página. Las páginas están agrupadas por lo que 
 | Si… | Empieza por |
 |---|---|
 | quieres **probar ASP** | [Empezar](getting-started/quickstart.md), y [cómo funciona una sesión](concepts/sessions-and-lifecycle.md) |
-| vas a **enganchar un agente** (OpenCode u otro harness) | [Usar ASP con OpenCode](getting-started/opencode.md), [sesiones](ops-asp-session.md), [la API](reference/api.md) |
+| vas a **enganchar un agente** (OpenCode u otro harness) | [Usar ASP con OpenCode](getting-started/opencode.md), [sesiones](ops-asp-session.md), [la API](reference/api.md); si el agente toca hosts o clusters, [usar ASP con infrabroker](how-to/infrabroker.md) |
 | **operas** un despliegue | [Instalar](how-to/install.md), [actualizar](how-to/upgrade.md), [copias y restauración](how-to/backup-and-restore.md), [monitorizar](how-to/monitoring.md), [diagnosticar](how-to/troubleshooting.md) |
 | **evalúas la seguridad** | [El modelo de seguridad](concepts/security-model.md), [límites conocidos](reference/limitations.md), los [ADRs](adr/README.md) |
 | vas a **tocar el código** | [CONTRIBUTING.md](../CONTRIBUTING.md), [la arquitectura](architecture.md), el [glosario](reference/glossary.md) |
@@ -16,6 +16,7 @@ Un índice con una línea por página. Las páginas están agrupadas por lo que 
 
 - [Empezar](getting-started/quickstart.md): los tres caminos (un host con KVM, un portátil sin KVM, varios servidores) y el *dry-run* paso a paso.
 - [Usar ASP con OpenCode](getting-started/opencode.md): el wrapper, el plugin y las configuraciones, en dos montajes; qué corre en la sandbox y qué no.
+- [Usar ASP con infrabroker](how-to/infrabroker.md): hosts y clusters por un broker fuera del guest; el montaje que funciona hoy y lo que cambia cuando el agente vive en la sandbox.
 
 ## Conceptos
 
