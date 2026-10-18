@@ -13,7 +13,7 @@ The first release will be 0.1.0. Until then this is what `main` has.
 
 ### Added
 
-- **ASP with infrabroker.** [ADR-0019](docs/adr/0019-acceso-a-infraestructura.md) (proposed) splits the roles: the
+- **ASP with infrabroker.** [ADR-0019](docs/adr/0019-acceso-a-infraestructura.md) (accepted) splits the roles: the
   host SSH agent bridge signs for version control only; hosts and clusters are reached through
   [infrabroker](https://github.com/luisgf/infrabroker), a broker outside the guest and outside the node, over HTTPS
   through the tenant allowlist, so the guest never needs port 22. [Usar ASP con infrabroker](docs/how-to/infrabroker.md)

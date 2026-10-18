@@ -1,6 +1,6 @@
 # ADR-0019: Acceso a infraestructura desde la sandbox: un broker fuera del guest (infrabroker)
 
-- **Estado:** Propuesta
+- **Estado:** Aceptada
 - **Fecha:** 2026-10-18
 - **Implementación:** la Fase 0 no necesita código en ASP (es un montaje: [usar ASP con infrabroker](../how-to/infrabroker.md)). La Fase 1 toca infrabroker (un claim de contexto hasta el certificado y su audit), no ASP. Nada de esto está probado en un host con KVM todavía.
 - **Relacionados:** [0002](0002-networking.md) (el egress solo deja HTTP(S) y DNS), [0003](0003-identity.md) (el puente del agente SSH y los tokens OIDC), [0007](0007-multi-user-identity.md) (`user_sub` en el token de workload), [0010](0010-on-demand-local-net.md) (con `--local-net` no hay allowlist), [0013](0013-kubernetes-reevaluation.md) (el público de ASP), [0018](0018-browser-desktop.md) (un agente que corre dentro del guest), [el modelo de seguridad](../concepts/security-model.md), [infrabroker](https://github.com/luisgf/infrabroker) y su [`docs/SANDBOX.md`](https://github.com/luisgf/infrabroker/blob/main/docs/SANDBOX.md)
@@ -81,6 +81,10 @@ Cuando el runtime del agente corre dentro del guest (el caso de [0018](0018-brow
 - Nada de esto está probado con KVM ni en un lab de dos máquinas. La Fase 0 se comprueba a mano ([usar ASP con infrabroker](../how-to/infrabroker.md#comprobarlo)).
 - El guest no trae cliente MCP: el runtime que lo use lo trae él. ASP no promete que una imagen tenga uno.
 - Kubernetes es ortogonal: [0013](0013-kubernetes-reevaluation.md) y las herramientas `k8s_*` de infrabroker no se tocan.
+
+## Enmiendas
+
+- **2026-10-18:** aceptada por el mantenedor tal como se propuso: el puente SSH firma para git, la infraestructura va por infrabroker, y el broker vive en el host de infrabroker y no en el nodo. La Fase 2 (un claim de grupos en el token de workload) empieza en su propio corte, con su ADR.
 
 ## Referencias
 
