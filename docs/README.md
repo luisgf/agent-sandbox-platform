@@ -7,7 +7,7 @@ Un índice con una línea por página. Las páginas están agrupadas por lo que 
 | Si… | Empieza por |
 |---|---|
 | quieres **probar ASP** | [Empezar](getting-started/quickstart.md), y [cómo funciona una sesión](concepts/sessions-and-lifecycle.md) |
-| vas a **enganchar un agente** (OpenCode u otro harness) | [Usar ASP con OpenCode](getting-started/opencode.md), [sesiones](ops-asp-session.md), [la API](reference/api.md) |
+| vas a **enganchar un agente** (OpenCode u otro harness) | [Usar ASP con OpenCode](getting-started/opencode.md), [sesiones](ops-asp-session.md), [la API](reference/api.md); si el agente toca hosts o clusters, [usar ASP con infrabroker](how-to/infrabroker.md) |
 | **operas** un despliegue | [Instalar](how-to/install.md), [actualizar](how-to/upgrade.md), [copias y restauración](how-to/backup-and-restore.md), [monitorizar](how-to/monitoring.md), [diagnosticar](how-to/troubleshooting.md) |
 | **evalúas la seguridad** | [El modelo de seguridad](concepts/security-model.md), [límites conocidos](reference/limitations.md), los [ADRs](adr/README.md) |
 | vas a **tocar el código** | [CONTRIBUTING.md](../CONTRIBUTING.md), [la arquitectura](architecture.md), el [glosario](reference/glossary.md) |
@@ -46,6 +46,7 @@ Un índice con una línea por página. Las páginas están agrupadas por lo que 
 - [Operaciones de seguridad](how-to/security-operations.md): la lista de producción, rotaciones, mTLS estricto, atestación, fencing.
 - [El fichero de configuración](how-to/config-file.md): YAML y *drop-ins*, con ejemplos.
 - [Conectar un IdP (OIDC)](how-to/idp.md): roles, claims, y un ejemplo con Keycloak.
+- [Usar ASP con infrabroker](how-to/infrabroker.md): hosts y clusters por un broker fuera del guest; el montaje que funciona hoy y lo que cambia cuando el agente vive en la sandbox.
 - [Publicar una versión](how-to/release.md): la etiqueta, goreleaser y lo que lleva una release.
 - [Comprobar un nodo o una actualización de extremo a extremo](how-to/e2e-kvm.md): el ciclo real con KVM.
 

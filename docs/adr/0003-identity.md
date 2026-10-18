@@ -8,7 +8,7 @@
 
 Los workloads de agente necesitan:
 
-1. **Firmar operaciones SSH** (git fetch, deploy keys, bastion) sin copiar claves privadas al disco del guest.
+1. **Firmar operaciones SSH** (git fetch, deploy keys, ~~bastion~~) sin copiar claves privadas al disco del guest. *Enmienda 2026-10-18:* entrar en hosts no es un caso de uso del puente; ver [Enmiendas](#enmiendas) y [0019](0019-acceso-a-infraestructura.md).
 2. **Identidad federada de corta vida** (OIDC) hacia APIs corporativas, sin refresh tokens ni atributos de tenancy elegidos por el guest.
 3. Canal host↔guest que no dependa de la red TAP (la red es no confiable / restringida).
 
@@ -167,8 +167,12 @@ Lo que esto **sí** da: los hashes los calcula el nodo y los firma el nodo, y el
 - No hay vault de secretos genérico dentro del guest; solo SSH bridge + OIDC corto.
 - Virtiofs SSH sigue documentado como path manual, no el automatizado.
 
+## Enmiendas
+
+- **2026-10-18 ([0019](0019-acceso-a-infraestructura.md)):** el puente del agente SSH es un oráculo de firma con las claves del operador, y «bastion» aparecía entre sus casos de uso. Entrar en hosts y clusters deja de serlo: el puente firma para control de versiones (git, deploy keys); la infraestructura se alcanza por un broker fuera del guest y fuera del nodo (infrabroker), con una conexión SSH que nace en el broker y que el guest no ve. Con `--local-net` ([0010](0010-on-demand-local-net.md)), la confirmación por firma encendida o esa sandbox sin claves (con `ASP_SSH_AGENT_SOCK_TEMPLATE`, una ruta de socket que no exista da un agente vacío).
+
 ## Referencias cruzadas
 
-- ADR-0005 (confirm), ADR-0006 (guest auto), **ADR-0007 (multi-user / IdP humano)**
+- ADR-0005 (confirm), ADR-0006 (guest auto), **ADR-0007 (multi-user / IdP humano)**, ADR-0019 (infraestructura por un broker, no por el puente)
 - Arquitectura § Identidad: [`../architecture.md`](../architecture.md)
 - Diagrama: [`../diagram.mmd`](../diagram.mmd)
