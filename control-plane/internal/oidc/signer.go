@@ -53,17 +53,22 @@ type ActClaim struct {
 
 // Claims embedded in the JWT (subset exposed for tests).
 type Claims struct {
-	Issuer          string         `json:"iss"`
-	Subject         string         `json:"sub"`
-	Audience        string         `json:"aud"`
-	Expiry          int64          `json:"exp"`
-	IssuedAt        int64          `json:"iat"`
-	JTI             string         `json:"jti"`
-	TenantID        string         `json:"tenant_id"`
-	SandboxID       string         `json:"sandbox_id"`
-	Nonce           string         `json:"nonce,omitempty"`
-	UserSub         string         `json:"user_sub,omitempty"` // human owner (ADR-0007 phase 5)
-	Act             *ActClaim      `json:"act,omitempty"`      // RFC 8693 actor chain
+	Issuer    string    `json:"iss"`
+	Subject   string    `json:"sub"`
+	Audience  string    `json:"aud"`
+	Expiry    int64     `json:"exp"`
+	IssuedAt  int64     `json:"iat"`
+	JTI       string    `json:"jti"`
+	TenantID  string    `json:"tenant_id"`
+	SandboxID string    `json:"sandbox_id"`
+	Nonce     string    `json:"nonce,omitempty"`
+	UserSub   string    `json:"user_sub,omitempty"` // human owner (ADR-0007 phase 5)
+	Act       *ActClaim `json:"act,omitempty"`      // RFC 8693 actor chain
+	// Groups are the owner's groups as the IdP token that created the sandbox carried them
+	// (ADR-0020). Only with a UserSub and never empty: a sandbox without an owner, or whose
+	// owner's token named no groups, has no claim at all (an empty list means something else
+	// to a consumer: "in no group", and denies every host in infrabroker).
+	Groups          []string       `json:"groups,omitempty"`
 	XAspAttestation map[string]any `json:"x_asp_attestation,omitempty"`
 }
 
@@ -171,8 +176,21 @@ func (s *Signer) PublicKey() *rsa.PublicKey {
 	return &s.key.PublicKey
 }
 
+// Identity is the human behind a sandbox, from trusted control-plane state (the sandbox row),
+// never from the guest or the node. An empty UserSub is a sandbox without an owner (lab, API
+// key): the token then carries no human claim, Groups included.
+type Identity struct {
+	// UserSub is sandbox.owner_sub: the claim user_sub, and act.sub unless ActorSub is set.
+	UserSub string
+	// ActorSub, when set, is act.sub instead of UserSub.
+	ActorSub string
+	// Groups is sandbox.owner_groups: the claim groups (ADR-0020). Ignored without UserSub;
+	// an empty list is no claim.
+	Groups []string
+}
+
 // Mint creates a signed JWT. sub = "sandbox/{sandboxID}"; tenant/sandbox claims are authoritative.
-// Lab / no owner: omits user_sub and act. Prefer MintIdentity when owner_sub is known.
+// Lab / no owner: omits user_sub and act. Prefer MintFor when the owner is known.
 func (s *Signer) Mint(tenantID, sandboxID, aud, nonce string) (string, Claims, error) {
 	return s.MintIdentity(tenantID, sandboxID, aud, nonce, "", "")
 }
@@ -183,16 +201,11 @@ func (s *Signer) Mint(tenantID, sandboxID, aud, nonce string) (string, Claims, e
 // actorSub, if non-empty, becomes act.sub; otherwise act.sub = userSub.
 // Empty userSub omits both claims (lab without IdP / owner).
 func (s *Signer) MintIdentity(tenantID, sandboxID, aud, nonce, userSub, actorSub string) (string, Claims, error) {
-	claims, err := s.identityClaims(tenantID, sandboxID, aud, nonce, userSub, actorSub)
-	if err != nil {
-		return "", Claims{}, err
-	}
-	token, err := s.sign(claims)
-	return token, claims, err
+	return s.MintFor(tenantID, sandboxID, aud, nonce, Identity{UserSub: userSub, ActorSub: actorSub}, nil)
 }
 
-// identityClaims builds the claims MintIdentity signs.
-func (s *Signer) identityClaims(tenantID, sandboxID, aud, nonce, userSub, actorSub string) (Claims, error) {
+// identityClaims builds the claims MintFor signs.
+func (s *Signer) identityClaims(tenantID, sandboxID, aud, nonce string, id Identity) (Claims, error) {
 	if strings.TrimSpace(sandboxID) == "" {
 		return Claims{}, errors.New("sandbox_id required")
 	}
@@ -218,8 +231,8 @@ func (s *Signer) identityClaims(tenantID, sandboxID, aud, nonce, userSub, actorS
 		SandboxID: sandboxID,
 		Nonce:     nonce,
 	}
-	userSub = strings.TrimSpace(userSub)
-	actorSub = strings.TrimSpace(actorSub)
+	userSub := strings.TrimSpace(id.UserSub)
+	actorSub := strings.TrimSpace(id.ActorSub)
 	if userSub != "" {
 		claims.UserSub = userSub
 		actSub := userSub
@@ -227,14 +240,27 @@ func (s *Signer) identityClaims(tenantID, sandboxID, aud, nonce, userSub, actorS
 			actSub = actorSub
 		}
 		claims.Act = &ActClaim{Sub: actSub}
+		// Groups go with the owner they belong to, and only when there are any: the claim
+		// is present or absent, never [] (ADR-0020).
+		for _, g := range id.Groups {
+			if g = strings.TrimSpace(g); g != "" {
+				claims.Groups = append(claims.Groups, g)
+			}
+		}
 	}
 	return claims, nil
 }
 
-// MintWithAttestation is MintIdentity plus optional x_asp_attestation when evidence is fresh.
-// userSub is authoritative owner_sub from the store (empty = omit human claims).
+// MintWithAttestation is MintFor for an owner without groups (kept for its callers).
 func (s *Signer) MintWithAttestation(tenantID, sandboxID, aud, nonce, userSub string, attestation map[string]any) (string, Claims, error) {
-	claims, err := s.identityClaims(tenantID, sandboxID, aud, nonce, userSub, "")
+	return s.MintFor(tenantID, sandboxID, aud, nonce, Identity{UserSub: userSub}, attestation)
+}
+
+// MintFor mints the token of a sandbox: the human claims from id (user_sub, act, groups; none
+// without id.UserSub) and x_asp_attestation when attestation is not empty. id comes from the
+// sandbox row; the guest and the node choose only aud and nonce.
+func (s *Signer) MintFor(tenantID, sandboxID, aud, nonce string, id Identity, attestation map[string]any) (string, Claims, error) {
+	claims, err := s.identityClaims(tenantID, sandboxID, aud, nonce, id)
 	if err != nil {
 		return "", Claims{}, err
 	}

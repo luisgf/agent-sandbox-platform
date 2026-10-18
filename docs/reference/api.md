@@ -887,9 +887,9 @@ The protocol between the control plane and the node agents. Not for people; list
 **Mint a token for a sandbox**. Acceso: `node`. Autenticación: certificado de nodo (mTLS) o clave de API de plataforma.
 
 A node mints a short-lived JWT for one of its sandboxes, for the services the sandbox calls.
-The tenant, subject and the human owner (`user_sub`, and `act` for the delegation) come from the
-store: what the node or the guest sends for them is ignored. When the sandbox has fresh boot
-evidence the token carries it as `x_asp_attestation`.
+The tenant, subject and the human owner (`user_sub`, `act` for the delegation and `groups` for the
+owner's groups) come from the store: what the node or the guest sends for them is ignored. When
+the sandbox has fresh boot evidence the token carries it as `x_asp_attestation`.
 
 **Cuerpo** (obligatorio): [OIDCTokenRequest](#schema-oidctokenrequest)
 
@@ -1413,6 +1413,7 @@ An RSA public key, RFC 7517.
 | `nonce` | string | no | Put into the token as its `nonce` claim. |
 | `user_sub` | string | no | Ignored. The human owner comes from the sandbox. |
 | `act` | cualquiera | no | Ignored. The delegation comes from the sandbox. |
+| `groups` | cualquiera | no | Ignored. The groups come from the sandbox (`owner_groups`). |
 
 ### OIDCToken <a id="schema-oidctoken"></a>
 
@@ -1421,7 +1422,7 @@ An RSA public key, RFC 7517.
 | `access_token` | string | sí | The JWT, signed RS256 with a key in the JWKS. |
 | `token_type` | string: `Bearer` | sí | Always `Bearer`. |
 | `expires_in` | integer (int64) | sí | Seconds until it expires. |
-| `claims` | objeto libre | sí | The claims of the token, for convenience: `sub`, `iss`, `aud`, `tenant_id`, `sandbox_id`, and when they apply `user_sub` (the human owner), `act` (the delegation) and `x_asp_attestation` (what the node measured at boot). |
+| `claims` | objeto libre | sí | The claims of the token, for convenience: `sub`, `iss`, `aud`, `tenant_id`, `sandbox_id`, and when they apply `user_sub` (the human owner), `act` (the delegation), `groups` (the owner's groups when it was created: `owner_groups`; absent, never empty, for a sandbox without them) and `x_asp_attestation` (what the node measured at boot). |
 
 ### SandboxState <a id="schema-sandboxstate"></a>
 
@@ -1446,6 +1447,7 @@ A sandbox, as the control plane and its node last knew it.
 | `state_version` | integer (int64) | sí | Goes up with every change of state. |
 | `owner_sub` | string | no | The IdP subject of the creator. Empty for a sandbox made with an API key. |
 | `owner_email` | string | no | The creator's e-mail, from the IdP token. For showing; it decides nothing. |
+| `owner_groups` | array de string | no | The groups the creator's IdP token carried (the values of the role claim, as they came), and what the sandbox's workload tokens say as `groups`. A snapshot of the create. Absent for a sandbox without an owner, or whose owner's token named no groups: its tokens then have no `groups` claim. |
 | `last_activity_at` | string (date-time) | sí | The last command, or the last time the sandbox started. The idle reaper counts from here. |
 | `stop_reason` | string | no | Why the sandbox was stopped or failed, when the user did not ask: `idle_timeout`, `node_lost`, `node_agent_restarted`, `vmm_exited`, `unscheduled`, `retention_expired` or `tenant_cap`. |
 | `status_detail` | string | no | Why the node last reported a failure, or why a resume went back to stopped. |

@@ -6,7 +6,7 @@ ASP decide **dónde corre el código del agente** y a qué red llega. [infrabrok
 
 - **El guest no llega a :22 por su cuenta**, y no lo necesita. En modo `enforce` la tabla de nftables solo deja 80, 443 y DNS hacia el proxy, y el proxy marca otro puerto solo si una regla del tenant lo nombra; la conexión SSH nace en el broker, fuera de la sandbox.
 - **El puente del agente SSH firma para git**, nada más ([ADR-0003](../adr/0003-identity.md), enmendado). Hosts y clusters, por infrabroker.
-- **El audit de cada acción lleva el dueño de la sandbox**: el token de workload de ASP (`user_sub`, `sandbox_id`) es una identidad que infrabroker entiende.
+- **El audit de cada acción lleva el dueño de la sandbox, y su alcance es el de sus grupos**: el token de workload de ASP (`user_sub`, `sandbox_id`, `groups`) es una identidad que infrabroker entiende ([ADR-0020](../adr/0020-grupos-en-el-token-de-workload.md)).
 
 Cada proyecto funciona solo. infrabroker tiene releases y una imagen; ASP es 0.x y no ha publicado la primera ([hoja de ruta](../roadmap.md)).
 
@@ -52,7 +52,7 @@ Con el túnel arriba la allowlist no aplica y la sesión llega a toda la LAN. El
 
 ## Fase 1: el runtime del agente dentro de la sandbox
 
-Cuando el agente **vive en el guest** (el caso de [ADR-0018](../adr/0018-browser-desktop.md), o cualquier runtime que no quieras en el host), sus llamadas a infrabroker salen de la sandbox. El guest le habla a `infrabroker serve-mcp-http` por HTTPS, con el token de workload de ASP como bearer. Esto es lo que cambia; nada de ello es código de ASP.
+Cuando el agente **vive en el guest** (el caso de [ADR-0018](../adr/0018-browser-desktop.md), o cualquier runtime que no quieras en el host), sus llamadas a infrabroker salen de la sandbox. El guest le habla a `infrabroker serve-mcp-http` por HTTPS, con el token de workload de ASP como bearer. Esto es lo que cambia. De ASP solo hace falta un plano de control con el claim `groups` ([ADR-0020](../adr/0020-grupos-en-el-token-de-workload.md)); lo demás es configuración de infrabroker.
 
 **Dónde vive el broker.** En el host de infrabroker, el mismo que recomienda para su signer, **nunca en el nodo**: el proxy de ASP se niega a marcar loopback, las direcciones del nodo y la red de los guests, y no se abre una excepción ([ADR-0019 § 2](../adr/0019-acceso-a-infraestructura.md#2-el-broker-vive-en-el-host-de-infrabroker-no-en-el-nodo)). Si ese host tiene una dirección privada (RFC 1918), el operador del nodo tiene que abrir su rango con `--egress-allow-cidr`; un tenant no puede ([red y egress](../concepts/networking-and-egress.md)).
 
@@ -71,18 +71,40 @@ curl -sS -X PUT "$ASP_CONTROL_PLANE_URL/v1/tenants/$TENANT/egress" \
 
 ```text
 POST /v1/tokens/oidc   {"aud": "infrabroker"}
-→ { "access_token": "<JWT>", "token_type": "Bearer", "expires_in": 300, "claims": { ... } }
-   claims: sub=sandbox/<id>  user_sub=<dueño>  sandbox_id=<id>  tenant_id=<tenant>
+→ { "access_token": "<JWT>", "token_type": "Bearer", "expires_in": 300 }
+   el JWT lleva: sub=sandbox/<id>  user_sub=<dueño>  groups=[<grupos del dueño>]  sandbox_id=<id>  tenant_id=<tenant>
 ```
+
+(El proxy de identidad del nodo devuelve al guest solo el token; los claims van dentro del JWT, que es lo que infrabroker lee. La respuesta del plano de control al nodo los repite además en `claims`, por comodidad: [la API](../reference/api.md#schema-oidctoken).)
+
+`groups` son los grupos que traía el token del IdP con que el dueño creó la sandbox (los valores de `ASP_IDP_ROLE_CLAIM`, tal cual), guardados con ella (`owner_groups`) y copiados en cada token. Una sandbox sin dueño (API key, lab abierto) no lleva el claim; el guest no puede pedir otros ([ADR-0020](../adr/0020-grupos-en-el-token-de-workload.md)).
 
 La imagen del guest no trae un cliente HTTP por vsock ni un cliente MCP: el runtime que los use los trae él ([notas de vsock del guest](../../scripts/guest-vsock-notes.md)). El token vive cinco minutos por defecto: pide uno por llamada, o al menos uno por TTL.
 
-**infrabroker.** El frontend HTTP con el plano de control de ASP como issuer: `oauth.issuer` = tu `ASP_OIDC_ISSUER`, `audience: "infrabroker"`, `user_claim: "user_sub"` (así cada acción se atribuye al humano dueño de la sandbox), sin `groups_claim`, y `context_claim: "sandbox_id"` (en infrabroker desde [#426](https://github.com/luisgf/infrabroker/pull/426)), para que el signer selle la sandbox en el `KeyID` del certificado y en su audit. El mismo bloque como `end_user_oidc` en `signer.json`, y `require_verified_end_user: true` en la entrada `callers` del CN del broker, para que la identidad y el contexto se verifiquen dentro de su frontera y no los afirme el broker. La receta completa está en [OPERATIONS de infrabroker](https://github.com/luisgf/infrabroker/blob/main/docs/OPERATIONS.md), junto a la de Keycloak.
+**infrabroker.** El frontend HTTP con el plano de control de ASP como issuer: `oauth.issuer` = tu `ASP_OIDC_ISSUER`, `audience: "infrabroker"`, `user_claim: "user_sub"` (así cada acción se atribuye al humano dueño de la sandbox), `groups_claim: "groups"` (así el signer aplica su RBAC por usuario con los grupos del dueño) y `context_claim: "sandbox_id"` (en infrabroker desde [#426](https://github.com/luisgf/infrabroker/pull/426)), para que el signer selle la sandbox en el `KeyID` del certificado y en su audit. El mismo bloque como `end_user_oidc` en `signer.json`, y `require_verified_end_user: true` en la entrada `callers` del CN del broker, para que la identidad, los grupos y el contexto se verifiquen dentro de su frontera y no los afirme el broker. La receta completa está en [OPERATIONS de infrabroker](https://github.com/luisgf/infrabroker/blob/main/docs/OPERATIONS.md), junto a la de Keycloak.
+
+```json
+"oauth": {
+  "issuer":                "https://asp.example.internal",
+  "audience":              "infrabroker",
+  "user_claim":            "user_sub",
+  "groups_claim":          "groups",
+  "context_claim":         "sandbox_id",
+  "max_token_age_seconds": 300
+}
+```
+
+**El RBAC por usuario, con `groups_claim`.** Cada host de infrabroker lleva sus `groups`; el signer exige que el dueño de la sandbox esté en al menos uno de ellos (además del RBAC por CN del broker). Son los grupos de tu IdP, los mismos de los que ASP saca el rol: un host con `"groups": ["sre"]` lo alcanza la sandbox de alguien del grupo `sre` de tu directorio, y ninguna otra. Dos consecuencias de que el verificador sea *fail-closed*:
+
+- Una sandbox **sin dueño** (creada con una API key, o en el lab abierto) no lleva `groups`, y con `groups_claim` configurado infrabroker rechaza su token (401). Es lo que quieres: una sandbox sin persona detrás no entra en ningún host.
+- Los grupos son **los del create**: alguien que sale de un grupo en el IdP sigue alcanzando sus hosts desde las sandboxes que ya tenía hasta que se destruyan. Para cortar de verdad, destrúyelas (`destroy-any` lo permite a un operador).
+
+Si no configuras `groups_claim`, nada cambia respecto a antes: el token da atribución, no alcance, y todo dueño de sandbox alcanza lo que alcance el CN del broker.
 
 **Lo que hay que saber antes de montarlo:**
 
-- **La sandbox tiene que tener dueño.** `user_sub` solo va en el token cuando la sandbox se creó con un token del IdP (`owner_sub`); una creada con una clave de API no tiene dueño, su token no lleva `user_sub` y el frontend de infrabroker lo rechaza (`user_claim` ausente). Para la Fase 1, crea las sandboxes con el IdP ([conectar un IdP](idp.md)).
-- **La autorización es por broker, no por sandbox.** Cualquier guest de tu plano de control puede pedir `aud=infrabroker`, y sin un claim de grupos el RBAC por usuario del signer está apagado: todo dueño de sandbox alcanza lo que alcance ese broker. El token da atribución, no alcance. Un claim de grupos en el token de workload es la Fase 2 de [ADR-0019](../adr/0019-acceso-a-infraestructura.md).
+- **La sandbox tiene que tener dueño.** `user_sub` solo va en el token cuando la sandbox se creó con un token del IdP (`owner_sub`); una creada con una clave de API no tiene dueño, su token no lleva `user_sub` y el frontend de infrabroker lo rechaza (`user_claim` ausente; con `groups_claim`, también por el claim de grupos ausente). Para la Fase 1, crea las sandboxes con el IdP ([conectar un IdP](idp.md)).
+- **Pedir el token no da alcance.** Cualquier guest de tu plano de control puede pedir `aud=infrabroker`; lo que esa sandbox alcanza lo deciden los `groups` de su dueño contra los `groups` de cada host, y solo si configuras `groups_claim`. Sin él, el RBAC por usuario del signer está apagado y todo dueño de sandbox alcanza lo que alcance ese broker. Las guías de infrabroker (`OPERATIONS.md`, `SANDBOX.md`) todavía dicen «sin `groups_claim`» para el token de ASP: valen para un plano de control anterior a [ADR-0020](../adr/0020-grupos-en-el-token-de-workload.md).
 - **Una aprobación humana que tarde más que la vida del token falla cerrada.** Con `require_verified_end_user`, infrabroker revalida el bearer al conceder; si han pasado más de cinco minutos, la acción se deniega y hay que pedirla otra vez con un token nuevo.
 - **Con `--local-net`** la sesión sale por el portátil: el nombre del broker tiene que resolverse y alcanzarse desde esa red.
 

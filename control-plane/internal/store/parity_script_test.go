@@ -188,7 +188,8 @@ func paritySteps() []step {
 	}
 	// Bound names are the step names; keep the ones later steps use short.
 	create("sb1", CreateSandboxInput{TenantID: "t1", ImageRef: "debian:bookworm", CPUMillis: 500, MemoryMiB: 256, NodeID: "n1",
-		OwnerSub: "alice", OwnerEmail: "alice@example.com", WorkspaceHostPath: "/srv/ws/t1"})
+		OwnerSub: "alice", OwnerEmail: "alice@example.com", WorkspaceHostPath: "/srv/ws/t1",
+		OwnerGroups: []string{"asp-operator", " sre ", "", "asp-operator", "db-admins"}})
 	create("sb2", CreateSandboxInput{TenantID: "t1", ImageRef: "debian:bookworm", CPUMillis: 250, MemoryMiB: 128, NodeID: "n2", LocalNet: &t})
 	create("sb3", CreateSandboxInput{TenantID: "t2", ImageRef: "alpine", CPUMillis: 100, MemoryMiB: 64, NodeID: "n1"})
 	create("sb4", CreateSandboxInput{TenantID: "t2", ImageRef: "alpine", CPUMillis: 100, MemoryMiB: 64})

@@ -152,6 +152,7 @@ El guest **no** puede pedir un `user_sub` distinto del owner del sandbox. Qué c
 | `user_sub` | `owner_sub` de la sandbox | **no** (se ignora) |
 | `act.sub` | el mismo `user_sub` (el dueño) | **no** (se ignora) |
 | `aud` | el cuerpo del guest | sí: es el único campo que elige |
+| `groups` | `owner_groups` de la sandbox (*enmienda 2026-10-18*, [0020](0020-grupos-en-el-token-de-workload.md)) | **no** (se ignora) |
 
 **Límite honesto:** el mint del guest no lleva el `actor_sub` de la acción en curso (el guest no es autoridad): `act` refleja al **dueño** de la sandbox. Los consumidores de Entra u Okta confían en el JWKS de ASP (`ASP_OIDC_*`), no en el del IdP humano. Sin `owner_sub` persistido (laboratorio, sandboxes antiguas) el token no lleva cadena humana.
 
@@ -268,6 +269,7 @@ El cableado del laboratorio de los mantenedores (el realm, el cliente, los grupo
 ## Enmiendas
 
 - **2026-10 (#101):** sin token del IdP, el dueño y el actor ya no los elige el cliente. Con una API key el actor es la key (`apikey:<prefijo>`), `owner_sub` / `owner_email` en el cuerpo dan 403 y la sandbox no tiene dueño, así que sus tokens de workload no llevan `user_sub`. La cabecera `X-ASP-Actor-Sub` y los campos del cuerpo solo valen en el lab abierto (sin IdP ni API keys).
+- **2026-10-18 ([0020](0020-grupos-en-el-token-de-workload.md)):** el token de workload lleva además `groups`, los valores del claim de roles del IdP del dueño en el momento del create, persistidos en la sandbox (`owner_groups`). Como `user_sub` y `act`, el guest no lo elige y una sandbox sin dueño no lo lleva.
 
 ## Referencias cruzadas
 

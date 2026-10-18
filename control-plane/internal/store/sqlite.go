@@ -356,12 +356,15 @@ func scanSandboxSQL(row scannable, pre ...any) (Sandbox, error) {
 		&sb.LocalNet, &sb.LocalNetState, tsPtrCol{&sb.LocalNetAttachedAt}, tsPtrCol{&sb.LocalNetGrantExpiresAt},
 		&sb.LocalNetGrantHash, &sb.LocalNetClientPublic, &sb.LocalNetNodePublic,
 		&sb.LocalNetListenPort, &sb.LocalNetNodeAddr, &sb.LocalNetClientAddr,
-		&sb.StatusDetail, &sb.BootCount, tsPtrCol{&sb.StoppedAt}, tsPtrCol{&sb.BootedAt},
+		&sb.StatusDetail, &sb.BootCount, tsPtrCol{&sb.StoppedAt}, tsPtrCol{&sb.BootedAt}, jsonStrings{&sb.OwnerGroups},
 	)...)
 	if err != nil {
 		return Sandbox{}, err
 	}
 	sb.State = SandboxState(state)
+	if len(sb.OwnerGroups) == 0 {
+		sb.OwnerGroups = nil // '[]' in the row; none, not an empty list
+	}
 	return sb, nil
 }
 

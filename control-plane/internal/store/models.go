@@ -44,6 +44,11 @@ type Sandbox struct {
 	OwnerSub string `json:"owner_sub,omitempty"`
 	// OwnerEmail is optional ops/UI claim; not an authz key.
 	OwnerEmail string `json:"owner_email,omitempty"`
+	// OwnerGroups are the groups the owner's IdP token carried when it created the sandbox
+	// (the values of the role claim, as they came), and what its workload tokens carry as
+	// `groups` (ADR-0020). Nil for a sandbox without an owner, or whose owner's token named
+	// none; the token then has no claim. A snapshot: it does not follow the IdP afterwards.
+	OwnerGroups []string `json:"owner_groups,omitempty"`
 	// LastActivityAt is the last successful exec, or create/start (transition to running).
 	// Lease renew and heartbeats do not move it. Idle reaping compares it to the threshold.
 	LastActivityAt time.Time `json:"last_activity_at"`
@@ -213,6 +218,10 @@ type CreateSandboxInput struct {
 	// OwnerSub / OwnerEmail: lab/transition accepts from JSON; phase 2+ come from IdP JWT.
 	OwnerSub   string `json:"owner_sub,omitempty"`
 	OwnerEmail string `json:"owner_email,omitempty"`
+	// OwnerGroups come from the IdP token only (the create handler sets them): never from the
+	// body, in the lab or anywhere else, so no caller can choose what a workload token says
+	// (ADR-0020). Normalized and bounded by the store (MaxOwnerGroups, MaxOwnerGroupBytes).
+	OwnerGroups []string `json:"-"`
 	// ActorSub is who performs create now (header X-ASP-Actor-Sub preferred; body ok; falls back to OwnerSub).
 	ActorSub string `json:"actor_sub,omitempty"`
 	// WorkspaceHostPath is an absolute host directory to share (optional).

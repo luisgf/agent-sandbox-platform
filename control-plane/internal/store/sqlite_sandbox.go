@@ -34,14 +34,14 @@ func saveSandboxSQL(ctx context.Context, q runner, sb Sandbox) error {
 			boot_count=?, booted_at=?, stopped_at=?, workspace_host_path=?,
 			local_net=?, local_net_state=?, local_net_attached_at=?, local_net_grant_expires_at=?,
 			local_net_grant_hash=?, local_net_client_public=?, local_net_node_public=?,
-			local_net_listen_port=?, local_net_node_addr=?, local_net_client_addr=?
+			local_net_listen_port=?, local_net_node_addr=?, local_net_client_addr=?, owner_groups=?
 		WHERE id=?`,
 		sb.NodeID, string(sb.State), sb.VMMProfile, sb.ImageRef, sb.CPUMillis, sb.MemoryMiB, sb.StateVersion,
 		sb.UpdatedAt, sb.OwnerSub, sb.OwnerEmail, sb.LastActivityAt, sb.StopReason, sb.StatusDetail,
 		sb.BootCount, sb.BootedAt, sb.StoppedAt, sb.WorkspaceHostPath,
 		sb.LocalNet, sb.LocalNetState, sb.LocalNetAttachedAt, sb.LocalNetGrantExpiresAt,
 		sb.LocalNetGrantHash, sb.LocalNetClientPublic, sb.LocalNetNodePublic,
-		sb.LocalNetListenPort, sb.LocalNetNodeAddr, sb.LocalNetClientAddr,
+		sb.LocalNetListenPort, sb.LocalNetNodeAddr, sb.LocalNetClientAddr, ownerGroupsArg(sb.OwnerGroups),
 		sb.ID)
 	if err != nil {
 		return err
@@ -99,10 +99,10 @@ func (s *SQLiteStore) CreateSandbox(ctx context.Context, input CreateSandboxInpu
 				id, tenant_id, node_id, state, vmm_profile, image_ref,
 				cpu_millis, memory_mib, state_version, boot_count, created_at, updated_at,
 				owner_sub, owner_email, last_activity_at, stop_reason, workspace_host_path,
-				local_net, local_net_state
-			) VALUES (?,?,?,'requested',?,?,?,?,1,1,?,?,?,?,?,'',?,?,?)`,
+				local_net, local_net_state, owner_groups
+			) VALUES (?,?,?,'requested',?,?,?,?,1,1,?,?,?,?,?,'',?,?,?,?)`,
 			id, input.TenantID, placedOn, vmm, input.ImageRef, input.CPUMillis, input.MemoryMiB,
-			now, now, ownerSub, ownerEmail, now, input.WorkspaceHostPath, lnOn, lnState,
+			now, now, ownerSub, ownerEmail, now, input.WorkspaceHostPath, lnOn, lnState, ownerGroupsArg(input.OwnerGroups),
 		); err != nil {
 			return fmt.Errorf("insert sandbox: %w", err)
 		}

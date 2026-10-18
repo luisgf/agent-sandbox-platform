@@ -23,6 +23,7 @@ Cada ADR recoge una decisión que costó tomar: el contexto, lo que se decidió,
 | [0017](0017-fast-start.md) | Arrancar y reanudar rápido: primero el desperdicio medido, después el pool y las instantáneas | **Propuesta** (implementada en parte) |
 | [0018](0018-browser-desktop.md) | Un navegador y un escritorio sencillo dentro de la sandbox, medidos: una variante de la imagen, cuando haya overlay, imagen por sandbox y reenvío por vsock | Aceptada |
 | [0019](0019-acceso-a-infraestructura.md) | Acceso a infraestructura desde la sandbox: el puente SSH firma para git, los hosts y clusters van por un broker (infrabroker) fuera del guest y fuera del nodo | Aceptada |
+| [0020](0020-grupos-en-el-token-de-workload.md) | Un claim de grupos en el token de workload: los grupos del dueño, fijados al crear la sandbox | **Propuesta** |
 
 ## Estados
 
