@@ -54,6 +54,8 @@ Con el túnel arriba la allowlist no aplica y la sesión llega a toda la LAN. El
 
 Cuando el agente **vive en el guest** (el caso de [ADR-0018](../adr/0018-browser-desktop.md), o cualquier runtime que no quieras en el host), sus llamadas a infrabroker salen de la sandbox. El guest le habla a `infrabroker serve-mcp-http` por HTTPS, con el token de workload de ASP como bearer. Esto es lo que cambia. De ASP solo hace falta un plano de control con el claim `groups` ([ADR-0020](../adr/0020-grupos-en-el-token-de-workload.md)); lo demás es configuración de infrabroker.
 
+El harness que ASP propone para vivir en el guest es Claude Code en modo headless, lanzado por el exec de la sesión, con infrabroker como servidor MCP por HTTPS en el `managed-mcp.json` de la imagen y sin ninguna clave de API dentro del guest ([ADR-0021](../adr/0021-harness-dentro-del-guest.md), propuesta; no hay variante de la imagen todavía). El token de cinco minutos lo renueva un `headersHelper` del servidor: un script que pide uno fresco al socket de identidad en cada conexión y ante cada 401 o 403.
+
 **Dónde vive el broker.** En el host de infrabroker, el mismo que recomienda para su signer, **nunca en el nodo**: el proxy de ASP se niega a marcar loopback, las direcciones del nodo y la red de los guests, y no se abre una excepción ([ADR-0019 § 2](../adr/0019-acceso-a-infraestructura.md#2-el-broker-vive-en-el-host-de-infrabroker-no-en-el-nodo)). Si ese host tiene una dirección privada (RFC 1918), el operador del nodo tiene que abrir su rango con `--egress-allow-cidr`; un tenant no puede ([red y egress](../concepts/networking-and-egress.md)).
 
 **La allowlist del tenant.** El nombre del broker, con su puerto si no es 443:

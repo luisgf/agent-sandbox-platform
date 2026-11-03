@@ -3,7 +3,7 @@
 - **Estado:** Aceptada
 - **Fecha:** 2026-10-03
 - **Implementación:** hecha. Sesiones con nombre, exec en stream con PTY y stdin, workspace del host por virtiofs, y parar que conserva el disco (`asp session stop`, `resume`, `rm`). No hay plugin de OpenCode en este repositorio.
-- **Enmendada por:** [0012](0012-retained-disks.md): parar ya no borra. `asp session stop` y el idle reap conservan el disco (`asp session resume` lo arranca otra vez) y `asp session rm` borra la sandbox; `--local` pasó de `stop` a `rm`.
+- **Enmendada por:** [0012](0012-retained-disks.md): parar ya no borra. `asp session stop` y el idle reap conservan el disco (`asp session resume` lo arranca otra vez) y `asp session rm` borra la sandbox; `--local` pasó de `stop` a `rm`. [0021](0021-harness-dentro-del-guest.md) (propuesta): el harness puede correr **dentro** del guest, como un proceso de la sesión lanzado por el mismo exec; el enganche externo (el wrapper del shell) se conserva.
 - **Relacionados:** [0003](0003-identity.md) (secretos fuera del guest), [0004](0004-k8s-scope.md) (el sandbox no es un Pod), [0007](0007-multi-user-identity.md) (`owner_sub` desde el IdP), [0010](0010-on-demand-local-net.md) (LAN del usuario, solo si la sesión lo pide), [`../ops-asp-session.md`](../ops-asp-session.md) (la CLI de la sesión), [`../ops-asp-agent-runner.md`](../ops-asp-agent-runner.md) (la primitiva one-shot y la autenticación), [`../reference/cli.md`](../reference/cli.md), [`../history.md`](../history.md)
 - **No es:** un plugin de OpenCode, ni un SSH (el exec con PTY y stdin no es una shell remota), ni un puente de bytes opacos.
 
@@ -62,6 +62,8 @@ La sesión queda definida por cuatro cosas, no por un fichero:
 - implementación: `session start` es create + wait `running`; `session exec` es el mismo proxy de exec.
 
 No se borra, no se esconde del `--help`, y no se reimplementa el dataplane «porque ahora hay sesiones». Deja de ser la historia que se cuenta primero.
+
+*Enmienda 2026-10-27 ([0021](0021-harness-dentro-del-guest.md), propuesta):* «el harness se engancha a la sesión» tiene una segunda forma. Con el harness fuera, solo su shell entra en el guest; las demás herramientas del modelo (leer, editar, traer una página, MCP) actúan donde el harness corre. [0021](0021-harness-dentro-del-guest.md) pone el harness **dentro**: Claude Code en modo headless como un proceso de la sesión, lanzado por el exec con stdin reenviado, con el driver fuera y sin cambiar el exec API. La cardinalidad no cambia: una sesión, una sandbox, una corrida.
 
 Cardinalidad aceptada: **1 sesión de agente ↔ 1 sandbox ↔ 1 corrida de agente.** Dos agentes paralelos son dos sesiones (dos nombres, `--name`, y dos sandboxes). Un sandbox compartido por agentes que no son la misma corrida mezcla workspace, procesos y egress; queda rechazado.
 
@@ -241,6 +243,7 @@ Una integración de harness está alineada con esta dirección solo si:
 - **2026-10-03 (seguimiento):** sesiones con nombre (`~/.cache/asp/sessions/<nombre>.json`, `--name`; antes, un solo `session.json` que mezclaba agentes en un mismo `$HOME`), exec en NDJSON (antes, el JSON acumulado escondía la salida hasta el `exit`), PTY y stdin (`ready` + `POST …/exec/stdin`), y `--workspace` por virtiofs con el montaje automático en la imagen (antes, «workspace» era solo el disco del guest, y llamarlo así invitaba a creer que el checkout del host ya estaba dentro).
 - **2026-10 (#86, [0012](0012-retained-disks.md)):** parar conserva el disco. `stop` ya no hace `DELETE`: `asp session stop` y el idle reap paran, `resume` arranca otra vez, `rm` borra. `--local` pasó de `stop` a `rm`.
 - **2026-10 (#118, #119):** una VM que muere sola se detecta y se informa `stopped` con el motivo (`vmm_exited`); un arranque cuyo guest no responde falla en vez de informar `running`.
+- **2026-10-27 ([0021](0021-harness-dentro-del-guest.md), propuesta):** el harness deja de ser necesariamente externo. La sesión admite el harness como un proceso del guest (Claude Code en modo headless, por el exec con `stdin_stream`), con la credencial del modelo fuera del guest por el token de workload. El wrapper del shell para un harness externo sigue siendo válido y documentado.
 
 ## Referencias
 
