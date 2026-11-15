@@ -31,7 +31,7 @@ ENV CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src/pod-daemon=/build/pod-daemon --remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/usr/local/rustup=/rustup"
 RUN cargo build --release --locked
 
-FROM golang:1.27-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS build-go
+FROM golang:1.27-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS build-go
 WORKDIR /src/vsock-ssh-agent-proxy
 COPY images/guest/cmd/vsock-ssh-agent-proxy/go.mod images/guest/cmd/vsock-ssh-agent-proxy/go.sum ./
 COPY images/guest/cmd/vsock-ssh-agent-proxy/*.go ./
