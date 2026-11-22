@@ -21,7 +21,7 @@ ARG PACKER_IMAGE=debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef0621
 # timestamp of every file and the "last password change" of the users.
 ARG SOURCE_DATE_EPOCH=0
 
-FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build-rust
+FROM rust:1-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS build-rust
 WORKDIR /src/pod-daemon
 COPY pod-daemon/Cargo.toml pod-daemon/Cargo.lock ./
 COPY pod-daemon/src ./src
